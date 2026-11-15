@@ -34,7 +34,7 @@ pub enum WorkspaceRole {
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
     /// nothing.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -64,6 +64,21 @@ pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
 }
 
+/// A member as the workspace's other members see them, under the name the server shows for
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MemberSummary {
+    pub id: MemberId,
+    pub name: String,
+}
+
+/// A workspace's members, past ones included, in the order they were added, from the server to
+/// clients that have the capability `workspace.members`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MemberList {
+    pub members: Vec<MemberSummary>,
+}
+
 /// What changed in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -76,14 +91,14 @@ pub enum WorkspaceChange {
     /// A doc was made, at version 1, or revised. Only for clients that have the capability
     /// `workspace.docs`, which read the doc again to see what it now says.
     DocChanged { doc: DocId, version: u64 },
-    /// A chat was made, or its title, state or latest turn changed. Only for clients that have
-    /// the capability `workspace.chats`, which read the chats again.
+    /// A chat was made, or its title, state, latest turn or latest run changed. Only for clients
+    /// that have the capability `workspace.chats`, which read the chats again.
     ChatChanged { chat: ChatId },
     /// A proposal was made or its state changed. Only for clients that have the capability
     /// `workspace.proposals`, which read the proposals again.
     ProposalChanged { proposal: ProposalId },
     /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -103,6 +118,21 @@ mod tests {
 
     use super::*;
     use crate::test_support::{chat, round_trips, workspace};
+
+    #[test]
+    fn a_member_list_names_each_member() {
+        let list = MemberList {
+            members: vec![MemberSummary {
+                id: "m-1".parse().unwrap(),
+                name: "Ada".to_owned(),
+            }],
+        };
+
+        round_trips(
+            &list,
+            json!({ "members": [{ "id": "m-1", "name": "Ada" }] }),
+        );
+    }
 
     #[test]
     fn an_update_carries_its_workspace_and_order() {

@@ -62,7 +62,7 @@ test("a socket offers what the server offered when it last welcomed the feed, ac
   assert.equal(socket.offers("machine.settings"), false);
   socket.attach(() => {}, ["workspace.chats", "machine.settings"]);
   assert.equal(socket.offers("machine.settings"), true);
-  assert.equal(socket.offers("chat.send"), false);
+  assert.equal(socket.offers("diff.view"), false);
   socket.attach(undefined);
   assert.equal(socket.offers("machine.settings"), true);
   socket.attach(() => {}, ["workspace.chats"]);

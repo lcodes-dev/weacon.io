@@ -78,7 +78,7 @@ fn pair(
     writeln!(
         out,
         "Enter this code in Weacon to pair this machine: {}\nCheck that Weacon shows this key: {}\nWaiting for you to confirm…",
-        started.code,
+        started.code.expose(),
         key.fingerprint()
     )
     .map_err(|error| not_printed().because(error))?;
@@ -99,7 +99,7 @@ fn pair(
         pinned: asked.pinned.clone(),
         machine,
         owner,
-        token,
+        token: token.into_inner(),
         key,
     };
     machine::write(state_dir, &paired)?;
@@ -202,8 +202,8 @@ mod tests {
     fn started() -> PairStarted {
         PairStarted {
             pairing: PairingId::try_from("p-1".to_owned()).unwrap(),
-            code: "ABCD-EFGH".to_owned(),
-            secret: "s3cret".to_owned(),
+            code: "ABCD-EFGH".into(),
+            secret: "s3cret".into(),
             expires_at: 1,
         }
     }
@@ -212,7 +212,7 @@ mod tests {
         PairClaimed::Paired {
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: AccountId::try_from("a-1".to_owned()).unwrap(),
-            token: "t0ken".to_owned(),
+            token: "t0ken".into(),
         }
     }
 

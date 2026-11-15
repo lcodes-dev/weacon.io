@@ -20,6 +20,7 @@ mod release;
 mod repo;
 mod run;
 mod search;
+mod secret;
 mod sessions;
 mod settings;
 mod task;
@@ -73,6 +74,7 @@ pub use run::{
     RunStatus, RunUpdate,
 };
 pub use search::{Mark, SearchAnswer, SearchHit, SearchQuery, Snippet};
+pub use secret::Secret;
 pub use sessions::{
     OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
@@ -89,8 +91,8 @@ pub use terminal::{
     TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
 pub use workspace::{
-    Asker, MemberId, WorkspaceChange, WorkspaceCreate, WorkspaceId, WorkspaceList, WorkspaceRole,
-    WorkspaceSummary, WorkspaceUpdate,
+    Asker, MemberId, MemberList, MemberSummary, WorkspaceChange, WorkspaceCreate, WorkspaceId,
+    WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
 pub use worktree::{
     WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
@@ -131,6 +133,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<MemberList>();
         generator.subschema_for::<SearchQuery>();
         generator.subschema_for::<SearchAnswer>();
         generator.subschema_for::<ProposalList>();
@@ -156,5 +159,28 @@ mod tests {
             fs::read_to_string(&path).is_ok_and(|committed| committed == current),
             "schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p weacon-protocol"
         );
+        assert!(
+            !current.contains(r#""null""#),
+            "an optional field is left out, never null"
+        );
+    }
+
+    #[test]
+    fn a_value_only_ever_received_is_never_written() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            for line in text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("#[serde(other"))
+            {
+                assert!(
+                    line.contains("#[serde(other, skip_serializing)]"),
+                    "{}: {line}",
+                    path.display()
+                );
+            }
+        }
     }
 }
