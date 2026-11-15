@@ -57,6 +57,10 @@ mod tests {
         assert!(command.get_args().eq(expected));
         assert_eq!(command.get_current_dir(), Some(folder.as_path()));
 
+        let relative = ["weacon", "resume"].map(OsString::from);
+        assert!(terminal_in(&folder, &desktop, &relative).is_none());
+        assert!(terminal_in(Path::new("chat"), &desktop, &run).is_none());
+
         let x11 = env(&[("PATH", path), ("DISPLAY", ":0")]);
         assert!(terminal_in(&folder, &x11, &[]).is_some());
         let no_desktop = env(&[("PATH", path)]);
