@@ -83,9 +83,10 @@ pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
         McpCall::Flow(args) => map.flows(budget(args.budget)),
         _ if map.crates.is_empty() => NO_MAP.to_owned(),
         McpCall::Map(args) => map.start_here(budget(args.budget)),
-        McpCall::Symbol(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
+        McpCall::Symbol(args) | McpCall::DocsFor(args) if args.path.len() > LONGEST_PATH => {
+            NO_ITEM.to_owned()
+        }
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
-        McpCall::DocsFor(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
         McpCall::DocsFor(args) => map.docs_for(&args.path, budget(args.budget)),
         McpCall::Newer => String::new(),
     }
@@ -100,7 +101,7 @@ pub(crate) fn budget(asked: Option<u32>) -> usize {
 #[cfg(test)]
 mod tests {
     use weacon_codemap::{SourceFile, index};
-    use weacon_protocol::{DocsForArgs, FlowArgs, MapArgs, SymbolArgs};
+    use weacon_protocol::{FlowArgs, MapArgs, SymbolArgs};
 
     use super::*;
 
@@ -177,7 +178,7 @@ mod tests {
         ])
         .unwrap();
         let docs_for = |path: &str| {
-            let args = DocsForArgs {
+            let args = SymbolArgs {
                 path: path.to_owned(),
                 budget: None,
             };

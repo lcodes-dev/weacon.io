@@ -1,6 +1,6 @@
 //! The code map each run's MCP calls answer from: the core's stored map of the run's
 //! repository, only when the run's workspace registered that repository, kept current by a
-//! watch of each of its worktrees.
+//! watch of each live run's worktree.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -8,20 +8,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::{OnceCell, OwnedSemaphorePermit};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{McpCall, WorkspaceId, code};
 
-use super::grants::Grant;
+use super::grants::{Grant, Grants};
 use super::tools::{NO_MAP, answer_from};
-use crate::app::{WarnOnce, blocking};
+use crate::app::WarnOnce;
 use crate::chats::Places;
 use crate::codemap::{Repo, Watch, locate, off_runtime, watch, worktree_index};
 use crate::db::Db;
 use crate::git::Git;
-use crate::git::repos::Repos;
+use crate::git::repos::{Repo as Registered, Repos};
 use crate::workspaces::Workspaces;
 
 /// The longest a call waits for its map; a first read of a large repository can take longer.
@@ -29,9 +29,11 @@ const LIMIT: Duration = Duration::from_secs(30);
 const TOO_SLOW: &str = "The code map is still being read: try again shortly.\n";
 /// How often each watched worktree is checked for changes.
 const POLL: Duration = Duration::from_secs(5);
+/// How many calls at once, across every run, may read a worktree no watch has read yet.
+const READS_AT_ONCE: usize = 2;
 
-/// The stores the MCP's answers come from, opened at the first call, once the daemon holds
-/// its state folder, so a second daemon that can't start changes nothing.
+/// The stores the MCP's answers come from, opened when its watches start, once the daemon
+/// holds its state folder, so a second daemon that can't start changes nothing.
 #[derive(Clone, Debug)]
 pub(crate) struct Maps {
     state_dir: PathBuf,
@@ -45,11 +47,12 @@ struct Stores {
     db: Db,
     git: Git,
     workspaces: Workspaces,
-    /// The current index of each watched worktree, by its workspace and path.
+    /// The current index of each watched worktree, by its workspace and paths.
     live: Arc<Mutex<HashMap<Watched, Arc<Index>>>>,
+    reads: Arc<Semaphore>,
 }
 
-/// A worktree of a repository a workspace registered, by its canonical paths.
+/// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
     workspace: WorkspaceId,
@@ -68,6 +71,12 @@ impl Maps {
         }
     }
 
+    /// Maps whose stores can't be opened, which answer that there's no map.
+    #[cfg(test)]
+    pub(crate) fn off() -> Self {
+        Self::new(Path::new("/nonexistent/weacon"), &Places::default())
+    }
+
     /// The answer to `call` from the map of `grant`'s folder, whose repository its workspace
     /// must have registered; "no map" otherwise, or when the map can't be read. `permit` is
     /// held until the read ends, even after the call stops waiting for it.
@@ -81,30 +90,38 @@ impl Maps {
         let Some(stores) = self.stores(log).await else {
             return NO_MAP.to_owned();
         };
-        let (workspace, folder, log) = (grant.workspace.clone(), grant.folder.clone(), log.clone());
+        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
+        let reading_log = log.clone();
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {
             let _permit = permit;
             let index = stores.index(workspace, folder).await;
             index
-                .inspect_err(|fault| log.warn("mcp map failed", &[("err", Field::error(fault))]))
+                .inspect_err(|fault| {
+                    reading_log.warn("mcp map failed", &[("err", Field::error(fault))]);
+                })
                 .ok()
                 .flatten()
         });
         match tokio::time::timeout(self.limit, reading).await {
             Err(_) => TOO_SLOW.to_owned(),
             Ok(Ok(Some(index))) => answer_from(call, &index),
-            Ok(_) => NO_MAP.to_owned(),
+            Ok(Ok(None)) => NO_MAP.to_owned(),
+            Ok(Err(error)) => {
+                let fault = failed().because(error);
+                log.warn("mcp map failed", &[("err", Field::error(&fault))]);
+                NO_MAP.to_owned()
+            }
         }
     }
 
-    /// Keeps the index of every worktree of each registered repository current, checking them
-    /// every [`POLL`]; it runs until dropped.
+    /// Keeps the index of each live run's worktree in `grants` current, checking them every
+    /// [`POLL`]; it runs until dropped.
     #[expect(
         clippy::infinite_loop,
         reason = "it runs until the server's task is dropped"
     )]
-    pub(crate) async fn keep_current(&self, log: &Logger) {
+    pub(crate) async fn keep_current(&self, grants: &Grants, log: &Logger) {
         let Some(stores) = self.stores(log).await else {
             return;
         };
@@ -113,14 +130,13 @@ impl Maps {
         poll.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
             poll.tick().await;
-            let found = stores.watched().await;
-            if let Some(found) = listing.check(found, log, "map list failed") {
-                stores.check(&mut watches, found, log).await;
-            }
+            let (found, failed) = stores.watched(grants.folders()).await;
+            listing.check(failed.map_or(Ok(()), Err), log, "map list failed");
+            stores.check(&mut watches, found, log).await;
         }
     }
 
-    /// The stores, opened at the first call; none, logged once, when either can't be.
+    /// The stores, opened at the first use; none, logged once, when either can't be.
     async fn stores(&self, log: &Logger) -> Option<Stores> {
         let opened = self.stores.get_or_init(|| async {
             open(&self.state_dir, self.path.clone())
@@ -135,13 +151,12 @@ impl Maps {
 async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault> {
     let db = Db::open(state_dir).await?;
     let git = Git::open(state_dir, path.as_deref())?;
-    let workspaces = Workspaces::new(state_dir, path);
-    let live = Arc::default();
     Ok(Stores {
         db,
         git,
-        workspaces,
-        live,
+        workspaces: Workspaces::new(state_dir, path),
+        live: Arc::default(),
+        reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
     })
 }
 
@@ -153,96 +168,65 @@ impl Stores {
         workspace: WorkspaceId,
         folder: PathBuf,
     ) -> Result<Option<Arc<Index>>, Fault> {
-        let (stores, asked) = (self.clone(), workspace.clone());
-        let located = blocking(move || Ok(stores.registered(&asked, &folder)))
-            .await
-            .map_err(|error| failed().because(error))??;
-        let Some((main, worktree)) = located else {
+        let stores = self.clone();
+        let Some(watched) = off_runtime(move || stores.registered(workspace, &folder)).await?
+        else {
             return Ok(None);
-        };
-        let watched = Watched {
-            workspace,
-            main,
-            worktree,
         };
         if let Some(index) = self.live().get(&watched) {
             return Ok(Some(Arc::clone(index)));
         }
-        let Watched {
-            workspace,
-            main,
-            worktree,
-        } = watched;
-        let store = self.db.workspace(&workspace);
-        let index = worktree_index(&store, &self.git, main, &worktree).await?;
+        let _read = self
+            .reads
+            .acquire()
+            .await
+            .map_err(|error| failed().because(error))?;
+        let store = self.db.workspace(&watched.workspace);
+        let index = worktree_index(&store, &self.git, watched.main, &watched.worktree).await?;
         Ok(Some(Arc::new(index)))
     }
 
-    /// The main worktree and the worktree of `folder`'s repository, when it is one `workspace`
-    /// registered; a folder in no repository isn't. It blocks.
-    fn registered(
-        &self,
-        workspace: &WorkspaceId,
-        folder: &Path,
-    ) -> Result<Option<(PathBuf, PathBuf)>, Fault> {
+    /// `folder`'s worktree, when its repository is one `workspace` registered by its main
+    /// worktree or this one; a folder in no repository isn't. It blocks.
+    fn registered(&self, workspace: WorkspaceId, folder: &Path) -> Result<Option<Watched>, Fault> {
         let Ok((main, worktree)) = locate(&self.git, folder) else {
             return Ok(None);
         };
         let repos = Repos::of(&self.workspaces, workspace.clone()).list()?;
-        Ok(repos
-            .iter()
-            .any(|repo| repo.path == main)
-            .then_some((main, worktree)))
+        let listed = |repo: &Registered| repo.path == main || repo.path == worktree;
+        Ok(repos.iter().any(listed).then_some(Watched {
+            workspace,
+            main,
+            worktree,
+        }))
     }
 
-    /// Every worktree of each repository each workspace registered; a repository git can't
-    /// list is left out.
-    async fn watched(&self) -> Result<Vec<Watched>, Fault> {
+    /// The worktrees of `folders`, each a live run's folder in its own workspace, once each,
+    /// and the first failure to find one.
+    async fn watched(&self, folders: Vec<(WorkspaceId, PathBuf)>) -> (Vec<Watched>, Option<Fault>) {
         let stores = self.clone();
-        blocking(move || Ok(stores.list()))
+        let found = off_runtime(move || Ok(stores.found(folders)));
+        found
             .await
-            .map_err(|error| failed().because(error))?
+            .unwrap_or_else(|fault| (Vec::new(), Some(fault)))
     }
 
-    fn list(&self) -> Result<Vec<Watched>, Fault> {
-        let known = self
-            .workspaces
-            .known()
-            .map_err(|error| failed().because(error))?;
-        let mut found = Vec::new();
-        for workspace in known {
-            for repo in Repos::of(&self.workspaces, workspace.clone()).list()? {
-                found.extend(self.worktrees(&workspace, &repo.path));
+    // It blocks.
+    fn found(&self, folders: Vec<(WorkspaceId, PathBuf)>) -> (Vec<Watched>, Option<Fault>) {
+        let mut found: Vec<Watched> = Vec::new();
+        let mut failed = None;
+        for (workspace, folder) in folders {
+            match self.registered(workspace, &folder) {
+                Ok(Some(watched)) if !found.contains(&watched) => found.push(watched),
+                Ok(_) => {}
+                Err(fault) => failed = failed.or(Some(fault)),
             }
         }
-        Ok(found)
-    }
-
-    /// The worktrees of the repository at `repo`, the main one first; none when git can't
-    /// list them.
-    fn worktrees(&self, workspace: &WorkspaceId, repo: &Path) -> Vec<Watched> {
-        let trees: Vec<PathBuf> = self
-            .git
-            .worktrees(repo)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|tree| tree.path.canonicalize().ok())
-            .collect();
-        let Some(main) = trees.first().cloned() else {
-            return Vec::new();
-        };
-        trees
-            .into_iter()
-            .map(|worktree| Watched {
-                workspace: workspace.clone(),
-                main: main.clone(),
-                worktree,
-            })
-            .collect()
+        (found, failed)
     }
 
     /// Checks each of `found`, keeping a watch for each, and forgets the watches and indexes of
-    /// worktrees no longer found.
+    /// worktrees no live run is in.
     async fn check(
         &self,
         watches: &mut HashMap<Watched, Watch<Repo>>,
@@ -252,8 +236,8 @@ impl Stores {
         watches.retain(|watched, _| found.contains(watched));
         self.live().retain(|watched, _| found.contains(watched));
         for watched in found {
-            let workspace = self.db.workspace(&watched.workspace);
             let watch = watches.entry(watched.clone()).or_insert_with(|| {
+                let workspace = self.db.workspace(&watched.workspace);
                 watch(
                     &workspace,
                     &self.git,
@@ -428,7 +412,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn watches_keep_each_registered_worktrees_index_until_it_is_unregistered() {
+    async fn a_live_runs_worktree_is_watched_until_its_run_ends_or_its_repository_goes() {
         let dir = TempDir::new().unwrap();
         let setup = setup(&dir).await;
         let one = workspace("one");
@@ -443,30 +427,59 @@ pub(super) mod tests {
                 .answer(&map(), &grant(&one, &main), permit(), &log)
                 .await
         };
+        let runs = vec![(one.clone(), main.join("src")), (one.clone(), main.clone())];
+        let check = async |watches: &mut HashMap<Watched, Watch<Repo>>, runs: Vec<_>| {
+            let (found, failed) = stores.watched(runs).await;
+            assert!(failed.is_none());
+            stores.check(watches, found, &log).await;
+        };
 
-        let found = stores.watched().await.unwrap();
-        assert_eq!(
-            found
-                .iter()
-                .map(|watched| &watched.worktree)
-                .collect::<Vec<_>>(),
-            [&main]
-        );
-        stores.check(&mut watches, found, &log).await;
+        check(&mut watches, runs.clone()).await;
+        assert_eq!(watches.len(), 1);
         fs::write(main.join("src/lib.rs"), "pub fn walk() {}\n").unwrap();
         // Served from the watch, which hasn't looked again yet.
         assert!(ask().await.contains("fn one::run"));
-        stores
-            .check(&mut watches, stores.watched().await.unwrap(), &log)
-            .await;
+        check(&mut watches, runs.clone()).await;
         assert!(ask().await.contains("fn one::walk"));
 
+        check(&mut watches, Vec::new()).await;
+        assert!(watches.is_empty() && stores.live().is_empty());
+        check(&mut watches, runs.clone()).await;
         fs::remove_file(setup.workspaces.root(&one).join("git/repos.json")).unwrap();
-        stores
-            .check(&mut watches, stores.watched().await.unwrap(), &log)
-            .await;
+        check(&mut watches, runs).await;
         assert!(watches.is_empty() && stores.live().is_empty());
         assert_eq!(ask().await, NO_MAP);
+    }
+
+    #[tokio::test]
+    async fn only_a_runs_own_worktree_is_watched_whoever_shares_its_repository() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let (one, two) = (workspace("one"), workspace("two"));
+        let main = crate_repo(&dir, "one");
+        setup.register(&one, "site", &main);
+        setup.register(&two, "site", &main);
+        let chat = dir.join("two-chat");
+        let chat_arg = chat.to_str().unwrap();
+        fixture(
+            &dir,
+            &main,
+            &["worktree", "add", "--quiet", "-b", "chat", chat_arg],
+        );
+        let chat = chat.canonicalize().unwrap();
+        let (log, _records) = recording_logger();
+        let stores = setup.maps.stores(&log).await.unwrap();
+
+        let (found, _) = stores.watched(vec![(one.clone(), main.clone())]).await;
+        let (linked, _) = stores.watched(vec![(two.clone(), chat.clone())]).await;
+
+        let trees = |found: &[Watched]| -> Vec<(WorkspaceId, PathBuf)> {
+            let tree = |watched: &Watched| (watched.workspace.clone(), watched.worktree.clone());
+            found.iter().map(tree).collect()
+        };
+        assert_eq!(trees(&found), [(one, main.clone())]);
+        assert_eq!(trees(&linked), [(two, chat)]);
+        assert!(linked.iter().all(|watched| watched.main == main));
     }
 
     async fn until_watched(stores: &Stores) {
@@ -476,7 +489,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn keeping_current_watches_from_its_first_check() {
+    async fn keeping_current_watches_a_live_run_from_its_first_check() {
         let dir = TempDir::new().unwrap();
         let setup = setup(&dir).await;
         let one = workspace("one");
@@ -484,8 +497,10 @@ pub(super) mod tests {
         setup.register(&one, "site", &main);
         let (log, _records) = recording_logger();
         let stores = setup.maps.stores(&log).await.unwrap();
+        let grants = Grants::default();
+        let (_token, _revoke) = grants.issue(grant(&one, &main)).unwrap();
         let maps = setup.maps.clone();
-        let keeping = tokio::spawn(async move { maps.keep_current(&log).await });
+        let keeping = tokio::spawn(async move { maps.keep_current(&grants, &log).await });
 
         let watched = tokio::time::timeout(Duration::from_secs(30), until_watched(&stores));
 

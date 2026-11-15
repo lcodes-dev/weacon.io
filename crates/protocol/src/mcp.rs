@@ -16,7 +16,7 @@ pub enum McpCall {
     /// The flows the folder's docs pin, and where each breaks.
     Flow(FlowArgs),
     /// The doc lines that pin one item.
-    DocsFor(DocsForArgs),
+    DocsFor(SymbolArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other)]
     Newer,
@@ -67,18 +67,9 @@ pub struct FlowArgs {
     pub budget: Option<u32>,
 }
 
-/// From a run's agent, under `McpCall::Symbol`: the item it asks about.
+/// From a run's agent, under `McpCall::Symbol` or `McpCall::DocsFor`: the item it asks about.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SymbolArgs {
-    /// The item's path, `weacon_protocol::frame::Envelope`.
-    pub path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u32>,
-}
-
-/// From a run's agent, under `McpCall::DocsFor`: the item whose docs it asks for.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-pub struct DocsForArgs {
     /// The item's path, `weacon_protocol::frame::Envelope`.
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

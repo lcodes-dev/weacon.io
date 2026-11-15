@@ -103,6 +103,15 @@ impl Grants {
         self.held().len()
     }
 
+    /// The workspace and folder of each live run.
+    pub(crate) fn folders(&self) -> Vec<(WorkspaceId, PathBuf)> {
+        let held = self.held();
+        let folders = held
+            .iter()
+            .map(|(_, grant)| (grant.workspace.clone(), grant.folder.clone()));
+        folders.collect()
+    }
+
     fn held(&self) -> MutexGuard<'_, Held> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }

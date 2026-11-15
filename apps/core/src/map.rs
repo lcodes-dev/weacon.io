@@ -6,7 +6,7 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::{DocsForArgs, FlowArgs, MapArgs, McpCall, SymbolArgs, code};
+use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
 use crate::cli::{MapCommand, MapSubcommand};
@@ -33,7 +33,7 @@ pub(crate) fn run(
         }
         Some(MapSubcommand::Flows) => answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
         Some(MapSubcommand::DocsFor { path }) => {
-            answer(&McpCall::DocsFor(DocsForArgs { path, budget }), &root)?
+            answer(&McpCall::DocsFor(SymbolArgs { path, budget }), &root)?
         }
         Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
         Some(MapSubcommand::Contracts) => answered(&root, budget, contracts)?,
@@ -91,17 +91,11 @@ fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
 }
 
 /// What the MCP's tool answers to `call` from the code in `folder`, read now; it blocks.
-///
-/// # Errors
-/// When the folder can't be read.
 fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
     index_folder(folder).map(|(map, _)| tools::answer_from(call, &map))
 }
 
 /// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
-///
-/// # Errors
-/// When the folder can't be read.
 fn answered(
     folder: &Path,
     budget: Option<u32>,

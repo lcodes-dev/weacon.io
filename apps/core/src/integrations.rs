@@ -28,10 +28,8 @@ pub(crate) struct Plugin {
     dir: PathBuf,
     files: [(&'static str, String); 3],
     log: Logger,
-    // Two launches at once would each set the other's fresh folder aside; it holds whether the
-    // folders beside this one were swept, which waits for the first launch, so a second daemon
-    // that can't start removes nothing.
-    checking: Arc<Mutex<bool>>,
+    // Held through each launch, so two never clash; true once the folders beside it are swept.
+    swept: Arc<Mutex<bool>>,
 }
 
 impl Plugin {
@@ -59,14 +57,14 @@ impl Plugin {
             dir,
             files,
             log: log.clone(),
-            checking: Arc::default(),
+            swept: Arc::default(),
         })
     }
 
     /// The plugin's folder, rewritten when anything in it differs; none, logged, when it
     /// can't be. The first call also removes every other folder beside it.
     pub(crate) fn folder(&self) -> Option<PathBuf> {
-        let mut swept = self.checking.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut swept = self.swept.lock().unwrap_or_else(PoisonError::into_inner);
         if !*swept {
             if let Err(error) = sweep(&self.dir) {
                 self.log
