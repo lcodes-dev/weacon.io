@@ -72,7 +72,11 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     input.current?.focus();
-    return () => loader.stop();
+    return () => {
+      loader.stop();
+      // A copy that ends once this palette is gone changes nothing in the next one.
+      copying.current += 1;
+    };
   }, [loader]);
   const asked = text.trim() !== "";
   const answered = asked && found.value?.text === text;

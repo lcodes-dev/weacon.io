@@ -79,4 +79,15 @@ test("⌘K finds the symbols on the person's machine, and choosing one copies wh
   await found.nth(1).waitFor();
   assert.equal(await search.count(), 1);
   assert.equal(await search.getByRole("alert").count(), 0);
+
+  // Nor does one that ends after the palette closed and opened again.
+  await found.first().click();
+  await search.getByRole("combobox", { name: "Search" }).press("Escape");
+  await search.waitFor({ state: "detached" });
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).waitFor();
+  await page.evaluate(() => (window as unknown as { finish: () => void }).finish());
+  await search.getByRole("combobox", { name: "Search" }).fill("bed");
+  await found.nth(1).waitFor();
+  assert.equal(await search.count(), 1);
 });
