@@ -2,7 +2,9 @@
 //! repository, only when the run's workspace registered that repository, kept current by a
 //! watch of each live run's worktree.
 
+mod hook;
 mod moves;
+mod symbols;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -16,7 +18,7 @@ use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{McpCall, RepoId, WorkspaceId, code};
+use weacon_protocol::{McpCall, WorkspaceId, code};
 
 use self::moves::Moves;
 use super::grants::{Grant, Grants};
@@ -24,7 +26,7 @@ use super::tools::{CHURN_COMMITS, NO_MAP, answer_from, budget, found};
 use crate::app::WarnOnce;
 use crate::chats::Places;
 use crate::codemap::{Repo, Watch, locate, off_runtime, repo_map, watch, worktree_index};
-use crate::db::{Db, Hit, Looking};
+use crate::db::{Db, Looking};
 use crate::git::Git;
 use crate::git::repos::Repo as Registered;
 use crate::git::state::Stores as GitStores;
@@ -62,6 +64,10 @@ struct Stores {
     moves: Option<Moves>,
 }
 
+/// A read of a map that didn't end within its limit.
+#[derive(Debug)]
+struct TooSlow;
+
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
@@ -98,10 +104,26 @@ impl Maps {
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
+        let place = (grant.workspace.clone(), grant.folder.clone());
+        match self.stored(call, place, permit, log).await {
+            Ok(Some(answer)) => answer,
+            Ok(None) => NO_MAP.to_owned(),
+            Err(TooSlow) => TOO_SLOW.to_owned(),
+        }
+    }
+
+    /// [`Self::answer`]'s answer from the map of the folder in `place`'s workspace when there
+    /// is one; none when there isn't, and [`TooSlow`] once the limit passes.
+    async fn stored(
+        &self,
+        call: &McpCall,
+        (workspace, folder): (WorkspaceId, PathBuf),
+        permit: OwnedSemaphorePermit,
+        log: &Logger,
+    ) -> Result<Option<String>, TooSlow> {
         let Some(stores) = self.stores(log).await else {
-            return NO_MAP.to_owned();
+            return Ok(None);
         };
-        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
         let (call, reading_log) = (call.clone(), log.clone());
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {
@@ -115,13 +137,12 @@ impl Maps {
                 .flatten()
         });
         match tokio::time::timeout(self.limit, reading).await {
-            Err(_) => TOO_SLOW.to_owned(),
-            Ok(Ok(Some(answer))) => answer,
-            Ok(Ok(None)) => NO_MAP.to_owned(),
+            Err(_) => Err(TooSlow),
+            Ok(Ok(answer)) => Ok(answer),
             Ok(Err(error)) => {
                 let fault = failed().because(error);
                 log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-                NO_MAP.to_owned()
+                Ok(None)
             }
         }
     }
@@ -144,31 +165,6 @@ impl Maps {
             let (found, failed) = stores.watched(grants.folders()).await;
             listing.check(failed.map_or(Ok(()), Err), log, "map list failed");
             stores.check(&mut watches, found, log).await;
-        }
-    }
-
-    /// What search finds for `words` among the items of each repository `workspace`
-    /// registered, at its main worktree's commit, best first in each; one that can't be read is
-    /// left out. A base read past the limit goes on, so the next search finds it stored.
-    pub(crate) async fn symbols(
-        &self,
-        workspace: &WorkspaceId,
-        words: &str,
-        log: &Logger,
-    ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
-        let stores = self.stores(log).await.ok_or_else(failed)?;
-        // One of the reads at once for the whole search, taken here so searches never pile up.
-        let read = Arc::clone(&stores.reads).try_acquire_owned();
-        let read = read.map_err(|_| still_reading())?;
-        let (workspace, words, log) = (workspace.clone(), words.to_owned(), log.clone());
-        let reading = tokio::spawn(async move {
-            let _read = read;
-            stores.symbols(workspace, &words, &log).await
-        });
-        match tokio::time::timeout(self.limit, reading).await {
-            Err(_) => Err(still_reading()),
-            Ok(Ok(found)) => found,
-            Ok(Err(error)) => Err(failed().because(error)),
         }
     }
 
@@ -202,33 +198,6 @@ async fn open(
 }
 
 impl Stores {
-    /// What [`Maps::symbols`] finds, reading a repository's base when it must.
-    async fn symbols(
-        &self,
-        workspace: WorkspaceId,
-        words: &str,
-        log: &Logger,
-    ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
-        let (listing, asked) = (self.clone(), workspace.clone());
-        let repos = off_runtime(move || listing.mains(&asked)).await?;
-        let store = self.db.workspace(&workspace);
-        let mut found = Vec::new();
-        for (repo, main) in repos {
-            let map = repo_map(&store, &self.git, main);
-            match map.search_head(words, Looking::Items).await {
-                Ok(hits) => found.push((repo, hits)),
-                Err(fault) => {
-                    let about = [
-                        ("repo", repo.as_str().into()),
-                        ("err", Field::error(&fault)),
-                    ];
-                    log.warn("symbols repo failed", &about);
-                }
-            }
-        }
-        Ok(found)
-    }
-
     /// The answer to `call` from the map of `folder`, with the churn of its worktree for
     /// `hotspots`; none when [`Self::index`] finds no map. A search looks through the
     /// worktree's stored layer.
@@ -300,22 +269,6 @@ impl Stores {
         }))
     }
 
-    /// The id and main worktree of each repository `workspace` registered that is one here,
-    /// once each; it blocks.
-    fn mains(&self, workspace: &WorkspaceId) -> Result<Vec<(RepoId, PathBuf)>, Fault> {
-        let repos = GitStores::new(&self.workspaces, workspace).repos().list()?;
-        let mut mains: Vec<(RepoId, PathBuf)> = Vec::new();
-        for repo in repos {
-            let Ok((main, _)) = locate(&self.git, &repo.path) else {
-                continue;
-            };
-            if !mains.iter().any(|(_, known)| *known == main) {
-                mains.push((repo.id, main));
-            }
-        }
-        Ok(mains)
-    }
-
     /// The worktrees of `folders`, each a live run's folder in its own workspace, once each,
     /// and the first failure to find one.
     async fn watched(&self, folders: Vec<(WorkspaceId, PathBuf)>) -> (Vec<Watched>, Option<Fault>) {
@@ -381,13 +334,6 @@ impl Stores {
     }
 }
 
-fn still_reading() -> Fault {
-    Fault::new(
-        code!("symbols.still_reading"),
-        "The code map is still being read",
-    )
-}
-
 fn failed() -> Fault {
     Fault::new(code!("mcp.map_failed"), "The code map couldn't be read")
 }
@@ -403,7 +349,10 @@ mod tests {
     use super::test_support::{crate_repo, setup, workspace};
     use weacon_codemap::Facts;
 
+    use weacon_protocol::RepoId;
+
     use crate::codemap::Move;
+    use crate::db::Hit;
 
     use super::*;
     use crate::git::fixture;

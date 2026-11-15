@@ -1,8 +1,10 @@
 //! The tool calls of the MCP the core serves to its own runs. MCP's envelope is the vendor
 //! protocol, which rmcp parses; a call's name and arguments are these types. Neither the web
-//! app nor the extension reads them, so they stay out of `schema.json`.
+//! app nor the extension reads them, so only `MapArgs`, which a `MapQuery` carries, is in
+//! `schema.json`.
 
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::ProposalChange;
@@ -65,11 +67,13 @@ impl McpCall {
     }
 }
 
-/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`: how much of the map it wants.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`, or its hook, under
+/// `MapQueryKind::Map`: how much of the map it wants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
     pub budget: Option<u32>,
 }
 
