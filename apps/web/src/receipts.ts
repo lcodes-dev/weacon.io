@@ -9,11 +9,6 @@ import type { RequestId } from "./protocol.ts";
  */
 export type Settled = "accepted" | "refused" | "offline" | "detached" | "full" | "unsupported" | "lost" | "unsure";
 
-/** Whether a command that ended as `settled` may have run, so sending it again must reuse its request. */
-export function mayHaveRun(settled: Settled): boolean {
-  return settled === "lost" || settled === "unsure";
-}
-
 /**
  * What a command was about, for saying how it ended: its subject, what didn't happen when it was
  * refused or never left, what may not have, and what a chat whose machine is gone no longer does.
@@ -37,8 +32,8 @@ export function settledText(settled: Settled, about: Subject): string | undefine
   return settled === "accepted" ? undefined : SETTLED_TEXT[settled](about);
 }
 
-// How long a command waits for the server's word on it.
-const WAIT_MS = 15_000;
+// How long a command waits for its machine's word on it, longer than the server waits.
+const WAIT_MS = 40_000;
 
 // A state a newer server adds is `unsure`.
 const SETTLED = new Map<string, Settled>([
@@ -56,9 +51,10 @@ const REFUSALS = new Map<string, Settled>([
   ["chat.quota_full", "full"],
   ["store.full", "full"],
   ["message.unsupported", "unsupported"],
+  ["machine.no_answer", "unsure"],
 ]);
 
-type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settled) => void };
+type Waiting = { id: number; resolve: (settled: Settled) => void };
 
 /**
  * Holds each sent command until its first receipt, an error in answer to its envelope, the end
@@ -66,36 +62,18 @@ type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settl
  */
 export class Receipts {
   #waiting = new Map<RequestId, Waiting>();
-  // Commands whose wait ran out before their receipt came, with the envelope each went in.
-  #overdue = new Map<RequestId, number>();
   #later: Later;
-  #late: (request: RequestId, settled: Settled) => void;
 
-  /** `late` hears how a command ended when its receipt comes after its wait ran out. */
-  constructor(later: Later, late: (request: RequestId, settled: Settled) => void = () => {}) {
+  constructor(later: Later) {
     this.#later = later;
-    this.#late = late;
   }
 
   /** How the command sent under `request`, in the envelope `id`, ends. */
   wait(request: RequestId, id: number): Promise<Settled> {
-    const already = this.#waiting.get(request);
-    if (already !== undefined) {
-      return already.settled;
-    }
-    let resolve: (settled: Settled) => void = () => {};
-    const settled = new Promise<Settled>((done) => {
-      resolve = done;
+    const settled = new Promise<Settled>((resolve) => {
+      this.#waiting.set(request, { id, resolve });
     });
-    const waiting = { id, settled, resolve };
-    this.#waiting.set(request, waiting);
-    this.#later(() => {
-      // Only this wait's deadline, not that of an earlier send of the same request.
-      if (this.#waiting.get(request) === waiting) {
-        this.settle(request, "unsure");
-        this.#overdue.set(request, id);
-      }
-    }, WAIT_MS);
+    this.#later(() => this.settle(request, "unsure"), WAIT_MS);
     return settled;
   }
 
@@ -103,29 +81,15 @@ export class Receipts {
   take(envelope: Incoming): void {
     if (envelope.type === "receipt") {
       const failed = envelope.state === "failed" ? REFUSALS.get(envelope.code) : undefined;
-      const settled = failed ?? SETTLED.get(envelope.state) ?? "unsure";
-      if (this.#overdue.delete(envelope.request) && !this.#waiting.has(envelope.request)) {
-        this.#late(envelope.request, settled);
-      }
-      this.settle(envelope.request, settled);
+      this.settle(envelope.request, failed ?? SETTLED.get(envelope.state) ?? "unsure");
       return;
     }
     if (envelope.type !== "error") {
       return;
     }
-    const settled = REFUSALS.get(envelope.code) ?? "refused";
     const refused = [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id);
     if (refused !== undefined) {
-      this.settle(refused[0], settled);
-      return;
-    }
-    const overdue = [...this.#overdue].find(([, id]) => id === envelope.id);
-    // An error about an earlier envelope doesn't decide a retry of the same request that waits.
-    if (overdue !== undefined) {
-      this.#overdue.delete(overdue[0]);
-      if (!this.#waiting.has(overdue[0])) {
-        this.#late(overdue[0], settled);
-      }
+      this.settle(refused[0], REFUSALS.get(envelope.code) ?? "refused");
     }
   }
 

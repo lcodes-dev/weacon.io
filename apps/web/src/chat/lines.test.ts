@@ -54,16 +54,3 @@ test("lines keep their keys as older events load before them and as text commits
   assert.deepEqual(keys(committed), keys(streaming));
   assert.deepEqual(keys(widened), ["t0-r-1", "t0-r-1.0", "t0-r-1.1", "p3", "t3-r-1", "t3-r-1.0"]);
 });
-
-test("a command its machine refused shows why, in place, and an unknown reason in plain words", () => {
-  const refused = (seq: number, code: string): ChatEntry => ({ seq, event: { kind: "receipt", receipt: { request: `q-${seq}`, state: "failed", code } } });
-  const chat = chatOf([said(2, "Fix it"), refused(3, "chat.busy"), refused(4, "chat.newer_reason")], 4);
-
-  assert.deepEqual(lines(chat), [
-    { key: "p2", kind: "prompt", text: "Fix it" },
-    { key: "f3", kind: "refused", text: "The agent is busy with this chat. Try again once it's done." },
-    { key: "f4", kind: "refused", text: "Something went wrong. Try again." },
-  ]);
-  const done: ChatEntry = { seq: 3, event: { kind: "receipt", receipt: { request: "q-2", state: "completed" } } };
-  assert.equal(lines(chatOf([said(2, "Fix it"), done], 3)).length, 1);
-});

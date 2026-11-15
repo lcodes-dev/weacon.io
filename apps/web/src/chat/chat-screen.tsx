@@ -89,12 +89,11 @@ export function ChatScreen({
           hidden={shown !== "changes"}
           mine={acts}
           send={commands.send}
-          lates={commands.lates}
           blocked={why}
           bar={worktree.usable && <ReviewBar bar={worktree} title={title ?? ""} />}
         />
       </div>
-      {mine && <Composer send={commands.send} blocked={why} hidden={shown !== "run"} lates={commands.lates} />}
+      {mine && <Composer send={commands.send} blocked={why} hidden={shown !== "run"} />}
     </div>
   );
 }

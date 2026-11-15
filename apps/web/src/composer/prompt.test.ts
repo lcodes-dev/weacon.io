@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
 import { chatCommand } from "../chat/commands.ts";
-import { type Late, blocked, deliverPrompt, lateFeed, sentProblem } from "./prompt.ts";
+import { blocked, deliverPrompt, sentProblem } from "./prompt.ts";
 
 test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
   const chatRef = { workspace: "w-1", chat: "c-1" };
@@ -39,20 +39,4 @@ test("a send says why it wasn't taken, or may not have been, and nothing once it
   assert.equal(sentProblem("offline"), "The machine is offline, so the message wasn't sent. Try again once it's back.");
   assert.equal(sentProblem("detached"), "This chat's machine is gone, so it can be read but takes no messages.");
   assert.equal(sentProblem("too_long"), "It's too long to send. Shorten it and try again.");
-});
-
-
-test("every late receipt reaches each listener, two at once included, until it stops listening", () => {
-  const { lates, hear } = lateFeed();
-  const heard: Late[] = [];
-  const stop = lates((late) => heard.push(late));
-  hear({ request: "r-1", settled: "accepted" });
-  hear({ request: "r-2", settled: "refused" });
-  stop();
-  hear({ request: "r-3", settled: "accepted" });
-
-  assert.deepEqual(heard, [
-    { request: "r-1", settled: "accepted" },
-    { request: "r-2", settled: "refused" },
-  ]);
 });
