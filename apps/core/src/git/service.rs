@@ -18,7 +18,7 @@ use weacon_protocol::{
 
 use super::branch::{Draft, Gh};
 use super::chats::ChatRepo;
-use super::state::Stores;
+use super::state::{Stores, hold_worktrees};
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
 use crate::runs::ChatKey;
@@ -42,6 +42,7 @@ struct Chat {
     git: Git,
     record: ChatRepo,
     worktree: PathBuf,
+    repo_folder: PathBuf,
 }
 
 struct Inner {
@@ -157,6 +158,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = self.chat(&query.workspace, &query.chat)?;
         let base = git.base(&worktree, &record.start)?;
         let files = git.changes(&worktree, &base)?;
@@ -182,6 +184,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = self.chat(workspace, chat)?;
         if self
             .stores(workspace)
@@ -219,9 +222,12 @@ impl Inner {
         }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
+        let common_dir = found.git.common_dir(&found.repo_folder)?;
         match action {
             WorktreeAction::Remove => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
+                // The Trash locks worktrees, which git can fail at while one is added.
+                let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
                 if journal.removed(chat)?.is_none() {
                     let now = SystemTime::now();
                     let to_trash = |path: &Path| (self.to_trash)(path, now);
@@ -231,6 +237,7 @@ impl Inner {
             }
             WorktreeAction::Restore => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
+                let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
                 if journal.removed(chat)?.is_some() {
                     journal.restore(chat)?;
                 }
@@ -255,6 +262,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = chat;
         let base = record.start.branch.as_deref().ok_or_else(|| {
             Fault::new(code!("pr.no_base"), "The chat's branch began on no branch")
@@ -291,6 +299,7 @@ impl Inner {
             git,
             record,
             worktree,
+            repo_folder: repo.path,
         })
     }
 
@@ -388,7 +397,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::git::tests::{chat, fixture};
+    use crate::git::tests::{block_hold, chat, fixture};
 
     struct Bench {
         dir: TempDir,
@@ -705,6 +714,25 @@ mod tests {
             bench.act(Action::Restore).await.unwrap(),
             state(false, false, false)
         );
+    }
+
+    #[tokio::test]
+    async fn the_trash_moves_a_worktree_only_under_its_repositorys_hold() {
+        let bench = bench();
+        let lock = block_hold(&bench.dir);
+
+        let error = bench.act(Action::Remove).await.unwrap_err();
+
+        assert_eq!(code(&error), "git.hold_failed");
+        assert!(bench.worktree.join("README.md").exists());
+        fs::remove_dir(&lock).unwrap();
+        bench.act(Action::Remove).await.unwrap();
+        block_hold(&bench.dir);
+
+        let error = bench.act(Action::Restore).await.unwrap_err();
+
+        assert_eq!(code(&error), "git.hold_failed");
+        assert!(!bench.worktree.exists());
     }
 
     #[tokio::test]

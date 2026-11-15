@@ -29,13 +29,14 @@ pub(crate) fn chat_tree(
     }
     let found = stores.repo(repo)?;
     let git = Git::open(workspaces.state_dir(), workspaces.path())?;
+    // Held before the Trash is checked, so a removal can't land in between.
+    let _held = hold_worktrees(workspaces.state_dir(), &git.common_dir(&found.path)?)?;
     if stores.removed(git.clone()).removed(&key.chat)?.is_some() {
         return Err(Fault::new(
             code!("worktree.in_trash"),
             "The chat's worktree is in the Trash; restore it to go on",
         ));
     }
-    let _held = hold_worktrees(workspaces.state_dir())?;
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
         let start = match tree.start {
@@ -66,7 +67,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::git::tests::{chat, fixture, git, repo};
+    use crate::git::tests::{block_hold, chat, fixture, git, repo};
     use crate::platform::trash::Trashed;
 
     struct Bench {
@@ -152,15 +153,40 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_is_made_only_under_the_cores_hold() {
+    fn a_worktree_is_made_only_under_its_repositorys_hold() {
         let bench = bench();
-        // A folder where the hold's lock file goes, so the hold can't be taken.
-        fs::create_dir_all(bench.dir.join("state/git/worktrees.lock")).unwrap();
+        block_hold(&bench.dir);
 
         let error = bench.tree(&bench.site).unwrap_err();
 
         assert_eq!(error.code().as_str(), "git.hold_failed");
         assert!(!bench.dir.join("work/w-w-1/c-c-1").exists());
+    }
+
+    #[test]
+    fn a_linked_worktree_registered_as_a_repository_shares_its_repositorys_hold() {
+        let bench = bench();
+        let linked = bench.dir.join("linked");
+        let args = [
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "other",
+            linked.to_str().unwrap(),
+        ];
+        fixture(&bench.dir, &bench.dir.join("repo"), &args);
+        let other = RepoId::try_from("linked".to_owned()).unwrap();
+        bench
+            .stores()
+            .repos()
+            .add(&git(&bench.dir), other.clone(), &linked)
+            .unwrap();
+        block_hold(&bench.dir);
+
+        let error = bench.tree(&other).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "git.hold_failed");
     }
 
     #[test]
