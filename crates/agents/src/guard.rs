@@ -678,6 +678,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "the shell's `${a}` is the text under test"
+    )]
     fn a_braced_quoted_message_that_could_split_or_evaluate_asks() {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
