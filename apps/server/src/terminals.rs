@@ -456,4 +456,29 @@ mod tests {
         let by = close.by.unwrap().account;
         assert_eq!(by.as_str(), session["account"].as_str().unwrap());
     }
+
+    #[tokio::test]
+    async fn a_terminal_its_machine_closed_is_forgotten_without_a_word_back_to_the_machine() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let machine = paired.machine_id();
+        let signs_in = ["machine.connect", "terminal.sign_in"];
+        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut browser = browser(server.address, &paired).await;
+
+        send(&mut browser, opening(&machine, "w1")).await;
+        next_envelope(&mut core).await;
+        send(&mut core, update(TerminalEvent::Closed { code: None })).await;
+        let ended = next_envelope(&mut browser).await;
+        let typed = TerminalAction::Frame {
+            sealed: bytes(TYPED),
+        };
+        send(&mut browser, command(&machine, "w1", typed)).await;
+        let late = next_envelope(&mut browser).await;
+
+        assert_eq!(closed_code(&ended), None);
+        assert_eq!(closed_code(&late), Some("terminal.unknown"));
+        assert!(pongs(&mut core).await, "the machine heard more");
+    }
 }

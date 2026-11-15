@@ -267,11 +267,12 @@ mod tests {
     // command that carries it.
     fn sealed_to(
         remote: &[u8],
-        terminal: &str,
+        (terminal, workspace): (&str, &str),
         payload: &TerminalInput,
     ) -> (HandshakeState, TerminalCommand) {
-        let open = |handshake| {
-            command(
+        let open = |handshake| TerminalCommand {
+            workspace: id(workspace),
+            ..command(
                 terminal,
                 TerminalAction::Open {
                     agent: AgentKind::Claude,
@@ -286,9 +287,17 @@ mod tests {
     }
 
     fn opening(machine: &Machine, terminal: &str) -> (HandshakeState, TerminalCommand) {
+        opening_in(machine, terminal, "w-1")
+    }
+
+    fn opening_in(
+        machine: &Machine,
+        terminal: &str,
+        workspace: &str,
+    ) -> (HandshakeState, TerminalCommand) {
         sealed_to(
             &machine.public,
-            terminal,
+            (terminal, workspace),
             &TerminalInput::Resize { cols: 80, rows: 24 },
         )
     }
@@ -450,6 +459,12 @@ mod tests {
         let (_second, open_two) = opening(&machine, "t-2");
         machine.terminals.handle(open_two).await;
         assert_eq!(next(&mut machine).await, closed("terminal.busy"));
+        let (_elsewhere, elsewhere) = opening_in(&machine, "t-4", "w-2");
+        machine.terminals.handle(elsewhere).await;
+        assert!(matches!(
+            next(&mut machine).await,
+            TerminalEvent::Accepted { .. }
+        ));
 
         machine
             .terminals
@@ -475,7 +490,7 @@ mod tests {
             .as_bytes()
             .to_vec();
         let resize = TerminalInput::Resize { cols: 80, rows: 24 };
-        let (_elsewhere, elsewhere) = sealed_to(&other, "t-1", &resize);
+        let (_elsewhere, elsewhere) = sealed_to(&other, ("t-1", "w-1"), &resize);
         machine.terminals.handle(elsewhere).await;
         assert_eq!(
             next(&mut machine).await,
@@ -491,7 +506,7 @@ mod tests {
                 },
             ),
         ] {
-            let (_browser, open) = sealed_to(&machine.public, terminal, &payload);
+            let (_browser, open) = sealed_to(&machine.public, (terminal, "w-1"), &payload);
             machine.terminals.handle(open).await;
             assert_eq!(next(&mut machine).await, closed("terminal.size_refused"));
         }
