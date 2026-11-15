@@ -60,6 +60,9 @@ export function MachineSettingsView({ machine, socket, later, pins, relays, team
   const stale = shown !== undefined && team !== undefined && shown.team !== team;
   const told = useRef<boolean>(undefined);
   useEffect(() => {
+    if (!stale) {
+      told.current = undefined;
+    }
     if (!stale || changing.busy || told.current === team) {
       return;
     }

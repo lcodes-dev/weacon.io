@@ -128,6 +128,7 @@ function Confirm({ label, question, busy, confirm }: { label: string; question: 
       {question}{" "}
       <button
         type="button"
+        disabled={busy}
         onClick={() => {
           setAsking(false);
           confirm();
