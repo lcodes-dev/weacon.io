@@ -153,7 +153,7 @@ mod tests {
     use weacon_protocol::{AgentKind, ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
-    use super::test_support::{chat, client, key, prompt, query, soon, workspace};
+    use super::test_support::{chat, client, key, prompt, query, someone, soon, workspace};
     use super::*;
     use crate::test_support::VERSION;
 
@@ -333,7 +333,10 @@ mod tests {
         let (watcher, mut pushes) = client(16);
         let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
         chats.query(subscribe, &watcher).await.unwrap();
-        chats.command(prompt("r-1", "Hi")).await.unwrap();
+        chats
+            .command(prompt("r-1", "Hi"), &someone())
+            .await
+            .unwrap();
 
         let failed = ChatEvent::Receipt {
             receipt: Receipt {

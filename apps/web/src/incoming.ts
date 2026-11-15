@@ -5,7 +5,7 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 export type Incoming = Extract<
   Envelope,
   {
-    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "worktree_answer" | "terminal";
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "symbols_answer" | "worktree_answer" | "terminal";
   }
 >;
 
@@ -70,6 +70,7 @@ export function route(message: Incoming, to: Routes): void {
     case "workspace":
     case "machine_settings_answer":
     case "sessions_answer":
+    case "symbols_answer":
     case "terminal":
       return;
   }
@@ -95,6 +96,7 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   machine_settings_answer: (fields) =>
     text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
   sessions_answer: (fields) => text(fields, "request") && text(fields, "machine") && isSessionsAnswer(fields["answer"]),
+  symbols_answer: (fields) => text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isSymbolsAnswer(fields["answer"]),
   terminal: (fields) => text(fields, "terminal") && text(fields, "workspace") && isTerminalEvent(fields["event"]),
 };
 
@@ -355,6 +357,24 @@ function isSessionsAnswer(answer: unknown): boolean {
     default:
       return typeof fields["kind"] === "string";
   }
+}
+
+function isSymbolsAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields?.["kind"] !== "found") {
+    return typeof fields?.["kind"] === "string";
+  }
+  const symbols = fields["symbols"];
+  return Array.isArray(symbols) && symbols.every(isSymbol) && typeof fields["more"] === "boolean";
+}
+
+function isSymbol(symbol: unknown): boolean {
+  const fields = record(symbol);
+  return (
+    fields !== undefined &&
+    ["repo", "kind", "name", "path"].every((key) => text(fields, key)) &&
+    isSeq(fields["line"], 1)
+  );
 }
 
 function isOutsideSession(session: unknown): boolean {

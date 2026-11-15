@@ -87,6 +87,12 @@ export type Envelope = {
   | {
     type: "map_answer";
   } & MapAnswer
+  | {
+    type: "symbols_query";
+  } & SymbolsQuery
+  | {
+    type: "symbols_answer";
+  } & SymbolsAnswer
 );
 
 /**
@@ -809,6 +815,10 @@ export type MachineSettingsQueryKind = (
  * epoch.
  */
 export type MachineSummary = {
+  /**
+   * Whether its core is connected now.
+   */
+  connected?: boolean;
   /**
    * The core's build when it last connected; none until it has.
    */
@@ -1534,6 +1544,84 @@ export type Snippet = {
   marks: Array<Mark>;
   text: string;
 };
+
+/**
+ * An item of a repository's code: where it is, never what it holds.
+ */
+export type Symbol = {
+  kind: SymbolKind;
+  /**
+   * The line it begins at, counting from 1.
+   */
+  line: number;
+  /**
+   * Its path in the code, such as `weacon_protocol::message::Envelope`.
+   */
+  name: string;
+  /**
+   * Its file, from the repository's root, joined with `/`.
+   */
+  path: string;
+  repo: RepoId;
+};
+
+export type SymbolKind = (
+  | (
+    | "const"
+    | "enum"
+    | "fn"
+    | "macro"
+    | "mod"
+    | "static"
+    | "struct"
+    | "trait"
+    | "type"
+    | "union"
+  )
+);
+
+/**
+ * The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has
+ * `symbols.search`.
+ */
+export type SymbolsAnswer = {
+  answer: SymbolsAnswerKind;
+  machine: MachineId;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type SymbolsAnswerKind = (
+  | {
+    kind: "found";
+    more: boolean;
+    symbols: Array<Symbol>;
+  }
+);
+
+/**
+ * A person asks their own machine for the items of the code in the repositories it has for a
+ * workspace, from a client to a core that offers `symbols.search`. Neither the query nor its
+ * answer is stored.
+ */
+export type SymbolsQuery = {
+  /**
+   * Who asked, when the server relays the message to a machine; the core answers only its
+   * owner.
+   */
+  by?: Asker;
+  machine: MachineId;
+  query: SymbolsQueryKind;
+  request: RequestId;
+  workspace: WorkspaceId;
+};
+
+export type SymbolsQueryKind = (
+  | {
+    kind: "search";
+    words: string;
+  }
+);
 
 /**
  * Asks the server to change a task that the client read at `version`; the server refuses

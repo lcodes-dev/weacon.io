@@ -121,8 +121,13 @@ impl Core {
         connection.send(&Envelope { id: 2, message }).await?;
         loop {
             match connection.next().await? {
-                Some(Ok(Message::MapAnswer(answer))) => return Ok(answer.text),
-                Some(Ok(Message::Error(_))) | None => return Ok(None),
+                Some(Ok(Envelope { id: 2, message })) => {
+                    let Message::MapAnswer(answer) = message else {
+                        return Ok(None);
+                    };
+                    return Ok(answer.text);
+                }
+                None => return Ok(None),
                 Some(_) => {}
             }
         }
@@ -164,7 +169,7 @@ mod tests {
     use crate::git::state::Stores;
     use crate::git::{fixture, git, repo};
     use crate::mcp::grants::{Grant, Revoke};
-    use crate::mcp::test_support::workspace;
+    use crate::mcp::maps_support::workspace;
     use crate::test_support::{VERSION, app, messages};
     use crate::workspaces::Workspaces;
 

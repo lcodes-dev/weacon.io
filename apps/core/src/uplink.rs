@@ -257,8 +257,11 @@ impl Uplink {
         if ChatLink::is_for(&envelope.message) {
             return chats.take(envelope);
         }
-        drop(self.to_daemon.try_send(envelope));
-        Step::Nothing
+        let id = envelope.id;
+        match self.to_daemon.try_send(envelope) {
+            Ok(()) => Step::Nothing,
+            Err(_) => reply(for_now(id, code!("uplink.busy"))),
+        }
     }
 }
 
@@ -291,6 +294,8 @@ fn asking(message: &Message) -> Asking<'_> {
         &query.by
     } else if let Message::WorktreeCommand(command) = message {
         &command.by
+    } else if let Message::SymbolsQuery(query) = message {
+        &query.by
     } else if let Message::SessionsQuery(query) = message {
         return Asking::By(query.by.as_ref());
     } else if let Message::Error(_) | Message::ChatQuery(_) = message {
@@ -309,6 +314,17 @@ pub(crate) const fn failure(id: u32, code: Code) -> Envelope {
         message: Message::Error(ErrorBody {
             code,
             retryable: false,
+        }),
+    }
+}
+
+/// An error refusing the ask under the envelope `id` for now, so the server sends it again.
+pub(crate) const fn for_now(id: u32, code: Code) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: true,
         }),
     }
 }
@@ -673,10 +689,19 @@ mod tests {
                 by: by.clone(),
             }),
             Message::SessionsQuery(SessionsQuery {
-                request,
+                request: request.clone(),
                 machine: machine.clone(),
                 query: SessionsQueryKind::List,
                 by: account,
+            }),
+            Message::SymbolsQuery(weacon_protocol::SymbolsQuery {
+                request,
+                machine: machine.clone(),
+                workspace: workspace.clone(),
+                query: weacon_protocol::SymbolsQueryKind::Search {
+                    words: "run".to_owned(),
+                },
+                by: by.clone(),
             }),
             Message::TerminalCommand(TerminalCommand {
                 terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
@@ -770,8 +795,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(owners, vec![None; 7]);
-        assert_eq!(others, vec![not_owner; 14]);
+        assert_eq!(owners, vec![None; 8]);
+        assert_eq!(others, vec![not_owner; 16]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);
@@ -817,6 +842,36 @@ mod tests {
         assert_eq!(ended.unwrap(), Ended::Lost);
         assert_eq!(heard_back, answer.message);
         assert_eq!(taken.try_recv().unwrap(), query);
+    }
+
+    #[tokio::test]
+    async fn an_ask_the_daemon_has_no_room_for_is_refused_for_now() {
+        let dir = TempDir::new().unwrap();
+        let (to_daemon, _taken) = mpsc::channel(1);
+        let link = with_commands(&dir, to_daemon);
+        let ask = || every_ask(Some(&owner())).remove(0);
+        assert_eq!(answered(&link, ask()), None);
+
+        let frame = text(&Envelope {
+            id: 9,
+            message: ask(),
+        });
+        let mut chats = ChatLink::new(link.chats.clone(), false, link.log.clone());
+        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats) else {
+            panic!("not refused");
+        };
+
+        let busy = ErrorBody {
+            code: code!("uplink.busy"),
+            retryable: true,
+        };
+        assert_eq!(
+            *reply,
+            Envelope {
+                id: 9,
+                message: Message::Error(busy)
+            }
+        );
     }
 
     #[tokio::test]

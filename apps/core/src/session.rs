@@ -14,8 +14,10 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("diff.view")),
     Capability::new(code!("worktree.manage")),
     Capability::new(code!("repo.list")),
+    Capability::new(code!("chat.hold")),
     Capability::new(code!("terminal.sign_in")),
     Capability::new(code!("map.read")),
+    Capability::new(code!("symbols.search")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -32,6 +34,11 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
+    pub(crate) const NOTHING: Self = Self {
+        envelope: None,
+        close: false,
+    };
+
     pub(crate) const fn error(id: u32, code: Code, close: bool) -> Self {
         Self {
             envelope: Some(Envelope {
@@ -69,10 +76,7 @@ impl Session {
                 }
             }
             (false, _) => Reply::error(id, code!("handshake.required"), true),
-            (true, Message::Error(_)) => Reply {
-                envelope: None,
-                close: false,
-            },
+            (true, Message::Error(_)) => Reply::NOTHING,
             (true, Message::Hello(_)) => Reply::error(id, code!("handshake.repeated"), false),
             (true, _) => Reply::error(id, code!("message.unsupported"), false),
         }
@@ -117,8 +121,10 @@ mod tests {
                             Capability::new(code!("diff.view")),
                             Capability::new(code!("worktree.manage")),
                             Capability::new(code!("repo.list")),
+                            Capability::new(code!("chat.hold")),
                             Capability::new(code!("terminal.sign_in")),
                             Capability::new(code!("map.read")),
+                            Capability::new(code!("symbols.search")),
                         ],
                     }),
                 }),
@@ -180,13 +186,7 @@ mod tests {
 
         assert_eq!(error_code(&unknown), Some("message.unsupported"));
         assert!(!unknown.close);
-        assert_eq!(
-            error,
-            Reply {
-                envelope: None,
-                close: false
-            }
-        );
+        assert_eq!(error, Reply::NOTHING);
     }
 
     #[test]

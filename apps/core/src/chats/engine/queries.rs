@@ -19,15 +19,15 @@ impl<A: Agent> Engine<A> {
         // A client that hung up is noticed only when told something, so each subscription first
         // closes chats only gone clients watched, before opening one more.
         if matches!(query, ChatQueryKind::Subscribe { .. }) {
-            self.sweep();
+            self.close_unused().await;
         }
         let chat = self.open(key).await?;
         match query {
             ChatQueryKind::Subscribe { after } => {
                 // A client has one subscription to a chat: its latest.
                 chat.subscribers
-                    .retain(|subscriber| !subscriber.is_for(client));
-                let missed = chat.events.since(after).await?;
+                    .retain(|subscriber| !subscriber.client().is(client));
+                let missed = chat.log.since(after).await?;
                 let subscriber = Subscriber::new(client, key);
                 let (Some(missed), Some(subscriber)) = (missed, subscriber) else {
                     return Ok(Some(ChatAnswerKind::EventsLost));
@@ -41,13 +41,13 @@ impl<A: Agent> Engine<A> {
                 Ok(None)
             }
             ChatQueryKind::Snapshot => Ok(Some(ChatAnswerKind::Snapshot {
-                seq: chat.events.seq(),
-                runs: chat.events.runs().run().cloned().into_iter().collect(),
-                waiting: chat.events.runs().waiting_seqs(),
-                events: chat.events.window(u64::MAX, SNAPSHOT_EVENTS).await?,
+                seq: chat.log.seq(),
+                runs: chat.log.runs().run().cloned().into_iter().collect(),
+                waiting: chat.log.runs().waiting_seqs(),
+                events: chat.log.window(u64::MAX, SNAPSHOT_EVENTS).await?,
             })),
             ChatQueryKind::Window { before, limit } => Ok(Some(ChatAnswerKind::Window {
-                events: chat.events.window(before, limit).await?,
+                events: chat.log.window(before, limit).await?,
             })),
             ChatQueryKind::Newer => Err(unsupported()),
         }

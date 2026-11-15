@@ -6,7 +6,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{Outcome, RunId, RunState, RunStatus};
 
 use super::agent::{Agent, Order};
-use super::{ChatKey, Engine, PendingEnd};
+use super::{Chat, ChatKey, Engine, PendingEnd};
 use crate::runs::Queued;
 
 impl<A: Agent> Engine<A> {
@@ -63,19 +63,21 @@ impl<A: Agent> Engine<A> {
 
     // Starts the next queued prompt's turn, in a new run when the chat's agent isn't running.
     pub(super) async fn advance(&mut self, key: &ChatKey) -> Result<(), Fault> {
-        self.save_ended(key).await?;
+        self.catch_up(key).await?;
         let Some(record) = self.runs.of(key) else {
             return Ok(());
         };
-        // A turn whose agent is gone is over, even one `save_ended` couldn't end for want of a run.
+        // A turn whose agent is gone is over, even one `catch_up` couldn't end for want of a run.
         if record.turn.is_some() && self.is_live(key) {
             return Ok(());
         }
         let Some(next) = record.queue.first().cloned() else {
             return Ok(());
         };
-        // A run still starting takes the turn once it is up; a full disk takes none.
-        if self.is_launching(key) || *self.disk.borrow() {
+        // A run still starting takes the turn once it is up; a full disk, an install or a hold
+        // takes none.
+        let starting = self.open_chats.get(key).is_some_and(Chat::is_starting);
+        if starting || *self.disk.borrow() || self.installing || self.is_held(key) {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
@@ -95,8 +97,11 @@ impl<A: Agent> Engine<A> {
                 record.queue.retain(|queued| queued.request != next.request);
                 record.turn = Some(next.request.clone());
                 record.active_at = now;
+                record.state = RunState::Running;
             })
             .await?;
+        self.tell_state(key, run, RunState::Running).await?;
+        // Sent only once the turn is written, so a run a failed write ended is never told it.
         if !self.order(key, Order::Send(next.text.clone())) {
             // It stopped reading while the journal was saved: the prompt waits for the next run.
             return self
@@ -114,47 +119,62 @@ impl<A: Agent> Engine<A> {
         if stops.len() < before {
             self.order(key, Order::Interrupt);
         }
-        self.set_state(key, run, RunState::Running).await
+        Ok(())
     }
 
-    // Saves the ends a failed write or an exit left unsaved: the turn's, and those of queued
-    // prompts, which then never run.
-    pub(super) async fn save_ended(&mut self, key: &ChatKey) -> Result<(), Fault> {
-        let Some(record) = self.runs.of(key) else {
+    // Brings the journal in line with the log after a failed write, an exit or a restart:
+    // queued prompts already ended leave the queue, and a turn that is over ends.
+    pub(super) async fn catch_up(&mut self, key: &ChatKey) -> Result<(), Fault> {
+        self.unqueue_ended(key).await?;
+        let Some(run) = self.run_of(key) else {
             return Ok(());
         };
-        let (turn, queue) = (record.turn.clone(), record.queue.clone());
-        let live = self.is_live(key);
+        if self.turn_is_over(key).await? || self.was_cut_off(key).await? {
+            return self.end_turn(key, &run, Outcome::Unknown).await;
+        }
+        Ok(())
+    }
+
+    async fn unqueue_ended(&mut self, key: &ChatKey) -> Result<(), Fault> {
+        let Some(queue) = self.runs.of(key).map(|record| record.queue.clone()) else {
+            return Ok(());
+        };
+        let log = &self.open(key).await?.log;
+        let ended: Vec<_> = queue
+            .into_iter()
+            .map(|queued| queued.request)
+            .filter(|request| log.has_ended(request))
+            .collect();
+        if ended.is_empty() {
+            return Ok(());
+        }
+        self.runs
+            .update(key, |record| {
+                record
+                    .queue
+                    .retain(|queued| !ended.contains(&queued.request));
+            })
+            .await
+    }
+
+    // A turn whose run is gone, as after a restart, is over too.
+    async fn turn_is_over(&mut self, key: &ChatKey) -> Result<bool, Fault> {
+        let (turn, live) = (self.turn(key), self.is_live(key));
         let chat = self.open(key).await?;
-        // A turn whose run is gone, as after a restart, is over too, and so is that run.
-        let turn_ended = turn.is_some_and(|turn| {
-            !live || chat.pending_end.is_some() || chat.events.has_ended(&turn)
-        });
+        Ok(turn
+            .is_some_and(|turn| !live || chat.pending_end.is_some() || chat.log.has_ended(&turn)))
+    }
+
+    // Whether the log shows the chat's run working though it is gone, as after a restart.
+    async fn was_cut_off(&mut self, key: &ChatKey) -> Result<bool, Fault> {
+        let live = self.is_live(key);
         let working = |status: &RunStatus| {
             matches!(
                 status.state,
                 RunState::Starting | RunState::Running | RunState::Waiting
             )
         };
-        let cut_off = !live && chat.events.runs().run().is_some_and(working);
-        let ended: Vec<_> = queue
-            .into_iter()
-            .map(|queued| queued.request)
-            .filter(|request| chat.events.has_ended(request))
-            .collect();
-        if !ended.is_empty() {
-            self.runs
-                .update(key, |record| {
-                    record
-                        .queue
-                        .retain(|queued| !ended.contains(&queued.request));
-                })
-                .await?;
-        }
-        match self.run_of(key) {
-            Some(run) if turn_ended || cut_off => self.end_turn(key, &run, Outcome::Unknown).await,
-            _ => Ok(()),
-        }
+        Ok(!live && self.open(key).await?.log.runs().run().is_some_and(working))
     }
 
     // Nothing can run them: each queued prompt fails rather than waits for ever.
@@ -169,7 +189,7 @@ impl<A: Agent> Engine<A> {
             self.commit_receipt(key, &queued.request, Outcome::Failed { code })
                 .await?;
         }
-        self.save_ended(key).await
+        self.catch_up(key).await
     }
 }
 
@@ -178,14 +198,14 @@ mod tests {
     use tokio::sync::mpsc;
     use weacon_protocol::{ChatEvent, Receipt, RequestId, RunEvent, code};
 
-    use super::super::agent::Heard;
+    use super::super::agent::Said;
     use super::super::by_hand::{hear, latest, launched, on_ask, on_turn, until_deaf, waiting_in};
     use super::*;
     use crate::chats::test_support::{FakeAgent, Told, key, prompt, run, soon};
 
     // The outcomes of `request`'s receipts in the log, in order.
     async fn outcomes(engine: &mut Engine<FakeAgent>, request: &RequestId) -> Vec<Outcome> {
-        let log = &engine.open(&key()).await.unwrap().events;
+        let log = &engine.open(&key()).await.unwrap().log;
         let window = log.window(u64::MAX, 64).await.unwrap();
         window
             .into_iter()
@@ -205,7 +225,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_turn_ends_even_when_its_last_event_cant_be_committed() {
         let mut on = on_turn().await;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let outcome = Outcome::Completed;
         let lost = hear(&mut on.engine, RunEvent::Finished { outcome }).await;
@@ -266,11 +286,8 @@ mod tests {
             Some(Told::Send("More".to_owned()))
         );
         // The old run's exit, heard late, leaves the new one alone.
-        let exited = Heard::Exited(None);
-        on.engine
-            .heard(&key(), &run("run-1"), exited)
-            .await
-            .unwrap();
+        let exited = Said::Exited(None);
+        on.engine.hear(&key(), &run("run-1"), exited).await.unwrap();
         assert!(on.engine.takes_orders(&key()));
         assert_eq!(on.engine.turn(&key()), Some(prompt("r-2", "More").request));
     }
@@ -313,13 +330,13 @@ mod tests {
         assert_eq!(waiting_in(&mut on.engine).await.len(), 1);
         // As after a restart: the log is all that is left of the chat.
         on.engine.open_chats.remove(&key());
-        let seq = on.engine.open(&key()).await.unwrap().events.seq();
+        let seq = on.engine.open(&key()).await.unwrap().log.seq();
         assert_eq!(
             waiting_in(&mut on.engine).await.len(),
             1,
             "a read changes nothing"
         );
-        assert_eq!(on.engine.open(&key()).await.unwrap().events.seq(), seq);
+        assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), seq);
 
         on.engine.reconcile().await;
         assert!(waiting_in(&mut on.engine).await.is_empty());
@@ -347,7 +364,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let request = prompt("r-1", "Hi").request;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let run_1 = run("run-1");
         let lost = on.engine.end_turn(&key(), &run_1, Outcome::Completed).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -399,13 +416,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
         let mut on = on_turn().await;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         drop(on.agent);
-        let exited = Heard::Exited(None);
-        let lost = on.engine.heard(&key(), &run("run-1"), exited).await;
+        let exited = Said::Exited(None);
+        let lost = on.engine.hear(&key(), &run("run-1"), exited).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
         // Its outcome keeps the chat open, though nothing else does.
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         assert!(on.engine.open_chats.contains_key(&key()));
 
         on.engine

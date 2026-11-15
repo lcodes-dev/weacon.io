@@ -35,7 +35,7 @@ use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
 pub(crate) use maps::Maps;
 #[cfg(test)]
-pub(crate) use maps::test_support;
+pub(crate) use maps::test_support as maps_support;
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::App;
 
@@ -481,9 +481,9 @@ mod tests {
     async fn each_token_reads_only_its_own_runs_registered_repository() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let setup = test_support::setup(&dir).await;
-        let one = test_support::workspace("one");
-        let repo = test_support::crate_repo(&dir, "one");
+        let setup = maps_support::setup(&dir).await;
+        let one = maps_support::workspace("one");
+        let repo = maps_support::crate_repo(&dir, "one");
         setup.register(&one, "one", &repo);
         let build = weacon_appkit::build(&VERSION);
         let (mcp, _server) = start(&build, &log, setup.maps.clone()).unwrap();
@@ -508,7 +508,7 @@ mod tests {
              - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(answer_text(&two), tools::NO_MAP);
-        assert!(!setup.stored(&test_support::workspace("two"), &repo).await);
+        assert!(!setup.stored(&maps_support::workspace("two"), &repo).await);
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ pub struct Entry {
     /// `fn`, `struct` and the other kinds of item, or `doc`.
     pub kind: String,
     pub name: String,
+    /// The line it begins at, counting from 1; a document's first.
+    pub line: usize,
     pub body: String,
 }
 
@@ -40,6 +42,7 @@ impl Index {
             file: found.file.clone(),
             kind: found.symbol.kind.to_string(),
             name: path.clone(),
+            line: found.symbol.line,
             body: declared
                 .get(path.as_str())
                 .map(|all| all.join("\n"))
@@ -49,6 +52,7 @@ impl Index {
             file: file.clone(),
             kind: "doc".to_owned(),
             name: file.clone(),
+            line: 1,
             body: text.clone(),
         });
         items.chain(docs).collect()
@@ -72,18 +76,19 @@ mod tests {
             ("docs/a.md", "# Serving\n"),
         ]))
         .unwrap();
-        let entry = |file: &str, kind: &str, name: &str, body: &str| Entry {
+        let entry = |file: &str, kind: &str, name: &str, line, body: &str| Entry {
             file: file.to_owned(),
             kind: kind.to_owned(),
             name: name.to_owned(),
+            line,
             body: body.to_owned(),
         };
         assert_eq!(
             index.entries(),
             [
-                entry("a/src/lib.rs", "struct", "a::S", ""),
-                entry("a/src/lib.rs", "fn", "a::f", "code a.b"),
-                entry("docs/a.md", "doc", "docs/a.md", "# Serving\n"),
+                entry("a/src/lib.rs", "struct", "a::S", 1, ""),
+                entry("a/src/lib.rs", "fn", "a::f", 2, "code a.b"),
+                entry("docs/a.md", "doc", "docs/a.md", 1, "# Serving\n"),
             ]
         );
     }

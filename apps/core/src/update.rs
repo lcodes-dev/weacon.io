@@ -316,10 +316,16 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
     Some(Watch::new(state_dir.to_owned(), own, hooks))
 }
 
-/// Whether an agent is on a turn; an engine that doesn't answer in time counts as busy.
-pub(crate) async fn agents_busy(chats: &WeakChats) -> bool {
-    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
+/// Whether an agent is on a turn, as [`WeakChats::pause_unless_busy`] says, pausing new turns
+/// when none is; an engine that doesn't answer in time counts as busy.
+pub(crate) async fn pause_unless_busy(chats: &WeakChats) -> bool {
+    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.pause_unless_busy()).await;
     answer.map_or(true, |busy| busy.unwrap_or(true))
+}
+
+/// Lets the engine's turns go on after a check that paused them.
+async fn resume_turns(chats: &WeakChats) {
+    chats.resume_turns().await;
 }
 
 /// Checks for releases on the daemon's schedule while it serves; a build that isn't a
@@ -331,7 +337,10 @@ pub(crate) async fn schedule(
     log: &Logger,
 ) -> ! {
     match watch(state_dir, version) {
-        Some(updates) => updates.run(|| agents_busy(chats), log).await,
+        Some(updates) => {
+            let (pause, resume) = (|| pause_unless_busy(chats), || resume_turns(chats));
+            updates.run(pause, resume, log).await
+        }
         None => std::future::pending().await,
     }
 }
@@ -832,18 +841,33 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn turns_paused_for_an_install_start_again_once_resumed() {
+        use crate::chats::test_support::{bench, prompt, soon};
+
+        let mut running = bench();
+        let chats = running.chats.downgrade();
+        assert!(!pause_unless_busy(&chats).await);
+        running.command(prompt("r-1", "Hi")).await.unwrap();
+        assert!(soon(running.started.recv()).await.is_none());
+
+        resume_turns(&chats).await;
+
+        assert!(soon(running.started.recv()).await.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
         use crate::chats::test_support::{bench, parts};
 
         let running = bench();
-        assert!(!agents_busy(&running.chats.downgrade()).await);
+        assert!(!pause_unless_busy(&running.chats.downgrade()).await);
         let (silent, _engine) = parts();
-        assert!(agents_busy(&silent.chats.downgrade()).await);
+        assert!(pause_unless_busy(&silent.chats.downgrade()).await);
         let (stopped, engine) = parts();
         drop(engine);
-        assert!(agents_busy(&stopped.chats.downgrade()).await);
+        assert!(pause_unless_busy(&stopped.chats.downgrade()).await);
         let gone = bench().chats.downgrade();
-        assert!(agents_busy(&gone).await);
+        assert!(pause_unless_busy(&gone).await);
     }
 
     #[test]

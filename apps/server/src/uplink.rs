@@ -18,7 +18,7 @@ use weacon_protocol::{
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::{self, DIFF, SESSIONS, SETTINGS, WORKTREE};
+use crate::relay::{self, DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
@@ -101,7 +101,7 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
 
 /// What the server offers every core, and needs of it for all its features to reach it.
 pub(crate) fn offers() -> Vec<Capability> {
-    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS]
+    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS]
         .map(Capability::new)
         .into()
 }
@@ -210,7 +210,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS].map(Capability::new)),
+                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, SYMBOLS].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)
@@ -261,6 +261,7 @@ mod tests {
             "diff.view",
             "worktree.manage",
             "sessions.read",
+            "symbols.search",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }

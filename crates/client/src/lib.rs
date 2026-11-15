@@ -66,7 +66,7 @@ impl Connection {
         me: App,
         capabilities: Vec<Capability>,
     ) -> Result<(Welcome, Self), Fault> {
-        let mut stream = platform::connect(socket).await.map_err(not_running)?;
+        let stream = platform::connect(socket).await.map_err(not_running)?;
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
@@ -75,16 +75,15 @@ impl Connection {
                 capabilities,
             }),
         };
-        let line = encode_line(&hello).map_err(no_answer)?;
-        stream.write_all(&line).await.map_err(no_answer)?;
         let mut connection = Self {
             stream,
             decoder: LineDecoder::default(),
             pending: VecDeque::new(),
         };
+        connection.send(&hello).await?;
         loop {
             match connection.next().await? {
-                Some(Ok(reply)) => return Ok((welcomed(reply)?, connection)),
+                Some(Ok(reply)) => return Ok((welcomed(reply.message)?, connection)),
                 Some(Err(_)) => {}
                 None => return Err(no_answer(io::Error::from(io::ErrorKind::UnexpectedEof))),
             }
@@ -100,15 +99,16 @@ impl Connection {
         self.stream.write_all(&line).await.map_err(no_answer)
     }
 
-    /// The next frame from the daemon, a message or why it isn't one; `None` once it hangs up.
+    /// The next frame from the daemon, an envelope or why it isn't one; `None` once it hangs
+    /// up. A reply's envelope id is that of what it answers.
     ///
     /// # Errors
     /// When reading from the daemon fails.
-    pub async fn next(&mut self) -> Result<Option<Result<Message, FrameError>>, Fault> {
+    pub async fn next(&mut self) -> Result<Option<Result<Envelope, FrameError>>, Fault> {
         let mut buf = [0; READ_CHUNK];
         loop {
             if let Some(frame) = self.pending.pop_front() {
-                return Ok(Some(frame.map(|envelope| envelope.message)));
+                return Ok(Some(frame));
             }
             let read = self.stream.read(&mut buf).await.map_err(no_answer)?;
             let Some(bytes) = buf.get(..read).filter(|bytes| !bytes.is_empty()) else {
@@ -253,12 +253,52 @@ mod tests {
 
         assert!(matches!(hello.message, Message::Hello(hello) if hello.capabilities == offered));
         assert_eq!(welcomed, welcome);
-        assert_eq!(connection.next().await.unwrap(), Some(Ok(update("He"))));
+        let pushed = |message| Some(Ok(Envelope { id: 0, message }));
+        assert_eq!(connection.next().await.unwrap(), pushed(update("He")));
         assert_eq!(
             connection.next().await.unwrap(),
             Some(Err(FrameError::Invalid))
         );
-        assert_eq!(connection.next().await.unwrap(), Some(Ok(update("llo"))));
+        assert_eq!(connection.next().await.unwrap(), pushed(update("llo")));
+        assert_eq!(connection.next().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn what_is_sent_after_the_welcome_reaches_the_daemon_and_replies_keep_their_ids() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let server = Server::bind(&socket).unwrap();
+        let welcome = Message::Welcome(Welcome {
+            app: app("weacon-core"),
+            capabilities: Vec::new(),
+        });
+        let daemon = tokio::spawn(async move {
+            let mut stream = BufReader::new(server.accept().await.unwrap());
+            let mut lines = [String::new(), String::new()];
+            stream.read_line(&mut lines[0]).await.unwrap();
+            let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+            stream.write_all(&line(1, welcome)).await.unwrap();
+            stream.read_line(&mut lines[1]).await.unwrap();
+            stream.write_all(&line(7, update("Hi"))).await.unwrap();
+            serde_json::from_str::<Envelope>(&lines[1]).unwrap()
+        });
+        let (_, mut connection) = Connection::open(&socket, app("weacon-cli"), Vec::new())
+            .await
+            .unwrap();
+
+        let sent = Envelope {
+            id: 7,
+            message: update("Hello"),
+        };
+        connection.send(&sent).await.unwrap();
+        let reply = connection.next().await.unwrap();
+
+        assert_eq!(daemon.await.unwrap(), sent);
+        let expected = Envelope {
+            id: 7,
+            message: update("Hi"),
+        };
+        assert_eq!(reply, Some(Ok(expected)));
         assert_eq!(connection.next().await.unwrap(), None);
     }
 

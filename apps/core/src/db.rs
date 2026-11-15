@@ -12,7 +12,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 use weacon_observability::Fault;
 use weacon_protocol::{WorkspaceId, code};
 
-pub(crate) use map::{BASE, Layer, LocalRepo, Map, Stored};
+pub(crate) use map::{BASE, Hit, Layer, LocalRepo, Looking, Map, Stored};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const CONNECTIONS: u32 = 4;
@@ -44,15 +44,24 @@ impl Db {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(BUSY_TIMEOUT)
             .foreign_keys(true);
+        connect(
+            SqlitePoolOptions::new().max_connections(CONNECTIONS),
+            options,
+        )
+        .await
+    }
+
+    /// A database in memory, gone once dropped, with the same schema.
+    pub(crate) async fn memory() -> Result<Self, Fault> {
+        let options = SqliteConnectOptions::new()
+            .in_memory(true)
+            .foreign_keys(true);
+        // Each connection to memory is a database of its own, so there is one, kept open.
         let pool = SqlitePoolOptions::new()
-            .max_connections(CONNECTIONS)
-            .connect_with(options)
-            .await
-            .map_err(|error| {
-                Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
-            })?;
-        schema::migrate(&pool).await?;
-        Ok(Self { pool })
+            .max_connections(1)
+            .idle_timeout(None)
+            .max_lifetime(None);
+        connect(pool, options).await
     }
 
     pub(crate) fn workspace(&self, id: &WorkspaceId) -> Workspace {
@@ -61,6 +70,15 @@ impl Db {
             id: id.clone(),
         }
     }
+}
+
+/// A pool of `pool`'s connections with `options`, its schema brought up to date.
+async fn connect(pool: SqlitePoolOptions, options: SqliteConnectOptions) -> Result<Db, Fault> {
+    let pool = pool.connect_with(options).await.map_err(|error| {
+        Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
+    })?;
+    schema::migrate(&pool).await?;
+    Ok(Db { pool })
 }
 
 fn failed(error: sqlx::Error) -> Fault {

@@ -44,6 +44,10 @@ pub fn is_mapped(path: &str) -> bool {
     name == "Cargo.toml" || extension == Some("md") || (in_src && extension == Some("rs"))
 }
 
+/// The version of what a [`Reader`] takes from a file, raised whenever that changes, so facts a
+/// store kept from an older one are read again.
+pub const FACTS_VERSION: u32 = 1;
+
 /// Reads files into `Facts`, reusing one parser.
 pub struct Reader {
     parser: Parser,
