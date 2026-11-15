@@ -14,6 +14,8 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
     let state_dir = app.state_dir()?;
     let key = ChatKey::new(workspace, chat);
     let runs = Runs::load(state_dir)?;
+    // A newer core ran it last, and carries it on.
+    runs.refuse_newer(&key)?;
     let record = runs.of(&key).ok_or_else(|| {
         Fault::new(
             code!("resume.no_chat"),
@@ -100,6 +102,18 @@ mod tests {
         assert_eq!(code_of(resume(&dir)), "resume.no_chat");
         chat_left(&dir.join("state"), RunState::Sleeping, None);
         assert_eq!(code_of(resume(&dir)), "resume.no_session");
+    }
+
+    #[test]
+    fn a_chat_a_newer_core_ran_is_left_to_it() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let newer = r#"{"workspace":"w-1","chat":"c-1","agent":"gemini","state":"sleeping"}"#;
+        let journal = format!(r#"{{"issued":1,"chats":[{newer}]}}"#);
+        std::fs::write(state.join("runs.json"), journal).unwrap();
+
+        assert_eq!(code_of(resume(&dir)), "runs.newer_record");
     }
 
     #[test]

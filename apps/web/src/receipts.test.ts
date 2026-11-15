@@ -75,6 +75,24 @@ test("an error in answer to a command's envelope refuses it", async () => {
   assert.equal(await other, "lost");
 });
 
+test("a refusal because the machine is offline or the chat detached says so, on time or late", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const offline = all.wait("r-1", 7);
+  const detached = all.wait("r-2", 8);
+  const slow = all.wait("r-3", 9);
+  deadlines[2]?.();
+
+  all.take({ id: 7, type: "error", code: "machine.offline", retryable: true });
+  all.take({ id: 8, type: "error", code: "chat.detached", retryable: false });
+  all.take({ id: 9, type: "error", code: "machine.offline", retryable: true });
+  assert.equal(await offline, "offline");
+  assert.equal(await detached, "detached");
+  assert.equal(await slow, "unsure");
+  assert.deepEqual(late, ["r-3 offline"]);
+});
+
 test("waiting again for a request still waiting shares its end, and its deadline", async () => {
   const { receipts: all, deadlines } = setup();
   const first = all.wait("r-1", 2);

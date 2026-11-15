@@ -168,7 +168,10 @@ impl Daemon {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
+                _ = disk_check.tick() => {
+                    self.disk.check(&self.shared.log).await;
+                    self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
+                }
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
@@ -433,6 +436,8 @@ mod tests {
             Places::default(),
             log,
         )?;
+        // The machine's own disk may be nearly full; a test reads its disk from a fake.
+        daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -502,18 +507,25 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_disk_is_checked_at_start_and_again_each_minute() {
+        use crate::chats::test_support::bench;
+
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("free"), "0").unwrap();
         let watched = dir.to_path_buf();
+        let bench = bench();
+        let chats = bench.chats.clone();
         let running = start_as(&dir, |daemon| {
             daemon.disk = disk::Watch::new(watched, free_in_file);
+            daemon.shared.chats = chats;
         })
         .unwrap();
 
         logs(&running.records, "disk full").await;
+        logs(&bench.records, "turns paused").await;
         fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
         tokio::time::sleep(DISK_CHECK).await;
         logs(&running.records, "disk ok").await;
+        logs(&bench.records, "turns resumed").await;
         let records = running.stop().await;
 
         let disk: Vec<_> = messages(&records)
@@ -874,9 +886,20 @@ mod tests {
         assert_eq!(refused, ["worktree.none"; 3]);
     }
 
+    // A chat's pushed events in brief, and the other replies. The run starts off the engine's
+    // loop, so a snapshot can come before it is up.
+    fn events_and_answers(replies: &[Message]) -> (Vec<String>, Vec<&Message>) {
+        use crate::chats::test_support::brief;
+
+        let (events, answers): (Vec<_>, Vec<_>) = replies
+            .iter()
+            .partition(|reply| matches!(reply, Message::Chat(_)));
+        (events.into_iter().map(brief).collect(), answers)
+    }
+
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
-        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use crate::chats::test_support::{bench, prompt, query, soon};
         use weacon_protocol::ChatQueryKind;
 
         let dir = TempDir::new().unwrap();
@@ -897,26 +920,17 @@ mod tests {
         let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
         let records = running.stop().await;
 
-        let offered = [
-            code!("chat.send"),
-            code!("chat.events"),
-            code!("chat.agent"),
-            code!("run.stream"),
-        ];
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
-        for capability in offered {
-            assert!(welcome.capabilities.contains(&Capability::new(capability)));
-        }
-        // Not until chats are given worktrees.
-        let early = [code!("diff.view"), code!("worktree.manage")].map(Capability::new);
-        assert!(!early.iter().any(|it| welcome.capabilities.contains(it)));
-        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
-        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        // Not diff.view or worktree.manage until chats are given worktrees.
+        assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
+        let (events, answers) = events_and_answers(&replies[1..]);
+        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert!(matches!(answers[1], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
         assert_eq!(
-            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            events,
             [
                 "1 prompt r-1 MARKER-PROMPT",
                 "2 receipt r-1 accepted",

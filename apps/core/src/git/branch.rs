@@ -7,9 +7,8 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 use weacon_observability::Fault;
-use weacon_protocol::{DownloadUrl, code};
+use weacon_protocol::{CommitId, DownloadUrl, code};
 
-use super::diff::CommitId;
 use super::{Git, REDIRECTS, not_run, run, text};
 use crate::platform;
 
@@ -323,7 +322,7 @@ mod tests {
             .unwrap()
             .start
             .unwrap();
-        (git, path, origin, CommitId::parse(&start.commit).unwrap())
+        (git, path, origin, start.commit.parse::<CommitId>().unwrap())
     }
 
     #[test]

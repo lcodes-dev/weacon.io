@@ -17,6 +17,7 @@ pub(crate) mod branch;
 pub(crate) mod chats;
 pub(crate) mod diff;
 mod lock;
+mod reads;
 pub(crate) mod removal;
 pub(crate) mod repos;
 pub(crate) mod service;
@@ -184,29 +185,26 @@ impl Git {
         branch: &str,
         full: &str,
     ) -> Result<Start, Fault> {
-        let on = run(self
+        // In full: `--short` can say `heads/main` when a tag is also called `main`.
+        let on = run(self.command(repo).args(["symbolic-ref", "--quiet", "HEAD"]))
+            .ok()
+            .and_then(|out| text(out).ok())
+            .and_then(|name| Some(name.trim_end().strip_prefix("refs/heads/")?.to_owned()));
+        let head = self.head(repo)?;
+        run(self
             .command(repo)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        .ok()
-        .and_then(|out| text(out).ok())
-        .map(|name| name.trim_end().to_owned());
-        let head = text(run(self.command(repo).args([
-            "rev-parse",
-            "--verify",
-            "HEAD^{commit}",
-        ]))?)?;
-        let head = head.trim_end();
-        run(self.command(repo).args(["update-ref", full, head, ""])).map_err(|_| taken())?;
+            .args(["update-ref", full, head.as_str(), ""]))
+        .map_err(|_| taken())?;
         self.add(repo, path, &[], branch).inspect_err(|_| {
             drop(run(self.command(repo).args([
                 "update-ref",
                 "-d",
                 full,
-                head,
+                head.as_str(),
             ])));
         })?;
         Ok(Start {
-            commit: head.to_owned(),
+            commit: head.as_str().to_owned(),
             branch: on,
         })
     }
@@ -387,6 +385,9 @@ fn absolute(paths: &[&Path]) -> Result<(), Fault> {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{fixture, git, repo};
+
+#[cfg(test)]
 mod tests {
     use std::fs;
 
@@ -398,14 +399,14 @@ mod tests {
         ChatId::try_from(id.to_owned()).unwrap()
     }
 
-    pub(super) fn git(dir: &Path) -> Git {
+    pub(crate) fn git(dir: &Path) -> Git {
         let no_hooks = dir.join("no-hooks");
         fs::create_dir_all(&no_hooks).unwrap();
         Git::find(&std::env::var_os("PATH").unwrap(), no_hooks).unwrap()
     }
 
     // Runs the fixture's own git in `repo`, without the person's configuration or redirects.
-    pub(super) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
+    pub(crate) fn fixture(dir: &Path, repo: &Path, args: &[&str]) {
         let mut command = Command::new("git");
         for name in REDIRECTS {
             command.env_remove(name);
@@ -428,7 +429,7 @@ mod tests {
     }
 
     // A repository with one commit.
-    pub(super) fn repo(dir: &Path) -> PathBuf {
+    pub(crate) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
         fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| fixture(dir, &repo, args);
@@ -443,6 +444,19 @@ mod tests {
 
     fn real(path: &Path) -> PathBuf {
         path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn the_branch_a_chat_began_from_is_its_name_even_beside_a_tag_of_it() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["tag", "main"]);
+
+        let made = git
+            .chat_worktree(&repo, &chat("a-1"), &dir.join("trees/c-a"))
+            .unwrap();
+
+        assert_eq!(made.start.unwrap().branch.as_deref(), Some("main"));
     }
 
     #[test]

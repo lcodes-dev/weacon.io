@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+mod beneath;
 mod chrome;
 mod procs;
 mod programs;
@@ -11,6 +12,7 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub(crate) use beneath::open_beneath;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;

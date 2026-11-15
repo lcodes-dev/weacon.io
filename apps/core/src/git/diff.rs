@@ -5,9 +5,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use weacon_observability::Fault;
-use weacon_protocol::{DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code};
+use weacon_protocol::{
+    CommitId, DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code,
+};
 
-use super::{Git, Start, failed, not_run, run, text};
+use super::{Git, Start, failed, not_run, run, text, tree};
+use crate::platform;
 
 // A file's changes past this many bytes of patch are only said to be too large, so each still
 // fits one frame with room for its JSON.
@@ -43,6 +46,8 @@ impl Git {
         if changed.len().saturating_add(untracked.len()) > MAX_FILES {
             return Err(too_many());
         }
+        // The worktree's own folder is opened without following it too, like its files.
+        let root = tree::place(worktree);
         let mut files = Vec::new();
         for (change, path) in changed {
             let content = self.patch(worktree, base, &change, &path)?;
@@ -56,7 +61,7 @@ impl Git {
             files.push(DiffFile {
                 path: path.to_owned(),
                 change: FileChange::Added,
-                content: added(&worktree.join(path)),
+                content: added(root.as_deref(), path),
             });
         }
         files.sort_by(|one, other| one.path.cmp(&other.path));
@@ -72,7 +77,10 @@ impl Git {
             run(self.command(worktree).args(["merge-base", &full, "HEAD"])).ok()
         });
         let found = merged.or_else(|| {
-            let commit = format!("{}^{{commit}}", CommitId::parse(&start.commit)?.as_str());
+            let commit = format!(
+                "{}^{{commit}}",
+                start.commit.parse::<CommitId>().ok()?.as_str()
+            );
             let verify = ["rev-parse", "--verify", "--quiet", &commit];
             run(self.command(worktree).args(verify)).ok()
         });
@@ -83,7 +91,7 @@ impl Git {
             )
         };
         let out = text(found.ok_or_else(gone)?)?;
-        CommitId::parse(out.trim_end()).ok_or_else(gone)
+        out.trim_end().parse::<CommitId>().map_err(|_| gone())
     }
 
     fn patch(
@@ -140,28 +148,6 @@ fn run_within(command: &mut Command, limit: usize) -> Result<Option<Vec<u8>>, Fa
     }
     let status = child.wait().map_err(not_run)?;
     status.success().then_some(Some(out)).ok_or_else(failed)
-}
-
-/// A full SHA-1 or SHA-256 commit id in lowercase hex, which a command line never reads as an
-/// option.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CommitId(String);
-
-impl CommitId {
-    pub(super) fn parse(id: &str) -> Option<Self> {
-        is_commit_id(id).then(|| Self(id.to_owned()))
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-fn is_commit_id(id: &str) -> bool {
-    matches!(id.len(), 40 | 64)
-        && id
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 // The changes `git diff --name-status -z -M` lists; a type change counts as a change.
@@ -243,21 +229,26 @@ fn hunk_start(header: &str) -> Option<Hunk> {
     })
 }
 
-// An untracked file, read only when it's a plain file: a link's target never is.
-fn added(file: &Path) -> DiffContent {
-    // Opened once, never through a link, and checked on what was opened.
-    let Ok(opened) = weacon_agents::open_plain(file) else {
+// An untracked file at `path` in the worktree `root`, read only when it's a plain file with one
+// link: opened once from `root` without following a link at any step, and checked on what was
+// opened.
+fn added(root: Option<&Path>, path: &str) -> DiffContent {
+    let Some(opened) = root.and_then(|root| platform::open_beneath(root, path).ok()) else {
         return DiffContent::Binary;
     };
-    let Ok(meta) = opened.metadata() else {
+    let plain = opened.metadata().is_ok_and(|meta| meta.is_file());
+    if !plain || weacon_agents::link_count(&opened).map_or(true, |links| links != 1) {
         return DiffContent::Binary;
-    };
-    if usize::try_from(meta.len()).map_or(true, |len| len > MAX_PATCH) {
-        return DiffContent::TooLarge;
     }
     let mut bytes = Vec::new();
-    let limit = u64::try_from(MAX_PATCH).unwrap_or(u64::MAX);
-    let read = opened.take(limit).read_to_end(&mut bytes);
+    // One byte past the most, so a file that grew since it was listed still says so.
+    let most = u64::try_from(MAX_PATCH)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let read = opened.take(most).read_to_end(&mut bytes);
+    if bytes.len() > MAX_PATCH {
+        return DiffContent::TooLarge;
+    }
     let (Ok(_), Ok(text)) = (read, String::from_utf8(bytes)) else {
         return DiffContent::Binary;
     };
@@ -315,7 +306,7 @@ mod tests {
         let path = dir.join("trees/c-d");
         git.chat_worktree(&repo, &chat("d"), &path).unwrap();
         let base = text(run(git.command(&path).args(["rev-parse", "HEAD"])).unwrap()).unwrap();
-        (git, path, CommitId::parse(base.trim_end()).unwrap())
+        (git, path, base.trim_end().parse::<CommitId>().unwrap())
     }
 
     fn line(op: LineOp, text: &str) -> DiffLine {
@@ -524,7 +515,7 @@ mod tests {
         fs::write(path.join("[ab]"), "new\n").unwrap();
         fs::write(path.join("a"), "other\n").unwrap();
 
-        let base = CommitId::parse(base.trim_end()).unwrap();
+        let base = base.trim_end().parse::<CommitId>().unwrap();
         let files = git.changes(&path, &base).unwrap();
 
         let pair = files.iter().find(|file| file.path == "[ab]").unwrap();
@@ -542,7 +533,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (git, path, base) = begun(&dir);
         fs::write(dir.join("secret"), "token\n").unwrap();
-        if !crate::platform::plant_link(&dir.join("secret"), &path.join("key")) {
+        if !platform::plant_link(&dir.join("secret"), &path.join("key")) {
             return;
         }
 
@@ -550,6 +541,42 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, DiffContent::Binary);
+    }
+
+    #[test]
+    fn a_file_behind_a_linked_folder_is_never_read() {
+        let dir = TempDir::new().unwrap();
+        let (_, path, _) = begun(&dir);
+        fs::create_dir_all(dir.join("outside")).unwrap();
+        fs::write(dir.join("outside/secret"), "token\n").unwrap();
+        fs::create_dir_all(path.join("docs")).unwrap();
+        fs::write(path.join("docs/notes.md"), "mine\n").unwrap();
+        let root = tree::place(&path);
+        assert!(matches!(
+            added(root.as_deref(), "docs/notes.md"),
+            DiffContent::Text { .. }
+        ));
+        fs::remove_dir_all(path.join("docs")).unwrap();
+        if !platform::plant_link(&dir.join("outside"), &path.join("docs")) {
+            return;
+        }
+
+        assert_eq!(added(root.as_deref(), "docs/secret"), DiffContent::Binary);
+    }
+
+    #[test]
+    fn an_untracked_file_past_the_most_a_patch_holds_is_too_large() {
+        let dir = TempDir::new().unwrap();
+        let (_, path, _) = begun(&dir);
+        let root = tree::place(&path);
+        fs::write(path.join("most.txt"), "a".repeat(MAX_PATCH)).unwrap();
+        fs::write(path.join("more.txt"), "a".repeat(MAX_PATCH + 1)).unwrap();
+
+        assert!(matches!(
+            added(root.as_deref(), "most.txt"),
+            DiffContent::Text { .. }
+        ));
+        assert_eq!(added(root.as_deref(), "more.txt"), DiffContent::TooLarge);
     }
 
     #[test]
@@ -593,7 +620,7 @@ mod tests {
         fs::write(path.join("lib.rs"), "one\n\nthree\n").unwrap();
 
         let files = git
-            .changes(&path, &CommitId::parse(base.trim_end()).unwrap())
+            .changes(&path, &base.trim_end().parse::<CommitId>().unwrap())
             .unwrap();
 
         let DiffContent::Text { hunks } = &files[0].content else {
@@ -648,22 +675,6 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].change, FileChange::Added);
-    }
-
-    #[test]
-    fn only_a_full_commit_id_is_a_base() {
-        for id in [
-            "HEAD",
-            "--output=x",
-            "abc",
-            &"A".repeat(40),
-            &"a".repeat(41),
-        ] {
-            assert_eq!(CommitId::parse(id), None, "{id}");
-        }
-        for id in ["a1".repeat(20), "f".repeat(64)] {
-            assert_eq!(CommitId::parse(&id).unwrap().as_str(), id);
-        }
     }
 
     #[test]

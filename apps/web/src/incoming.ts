@@ -32,32 +32,32 @@ export function parse(data: unknown): Incoming | undefined {
 
 /** Where incoming messages go: each handler takes only the messages that may be for it. */
 export type Routes = {
-  run(message: RunMessage): void;
-  answers(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
-  changes(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
-  chat(message: ChatMessage | ErrorMessage): void;
+  run?(message: RunMessage): void;
+  answers?(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
+  changes?(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
+  chat?(message: ChatMessage | ErrorMessage): void;
 };
 
 /** Hands `message` to the handlers it may be for; an error may answer a command, a chat query or the diff query. */
 export function route(message: Incoming, to: Routes): void {
   switch (message.type) {
     case "run":
-      to.run(message);
+      to.run?.(message);
       return;
     case "receipt":
-      to.answers(message);
+      to.answers?.(message);
       return;
     case "diff_answer":
-      to.changes(message);
+      to.changes?.(message);
       return;
     case "chat":
     case "chat_answer":
-      to.chat(message);
+      to.chat?.(message);
       return;
     case "error":
-      to.answers(message);
-      to.changes(message);
-      to.chat(message);
+      to.answers?.(message);
+      to.changes?.(message);
+      to.chat?.(message);
       return;
     case "welcome":
     case "workspace":

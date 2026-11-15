@@ -18,7 +18,7 @@ impl Git {
             "--path-format=absolute",
             "--git-common-dir",
         ]))?)?;
-        let ours = resolved(&worktree.join(".git"));
+        let ours = place(worktree);
         let unknown = || {
             Fault::new(
                 code!("worktree.unregistered"),
@@ -30,7 +30,10 @@ impl Git {
         let dir = entries
             .flatten()
             .map(|entry| entry.path())
-            .find(|dir| names(dir).is_some_and(|named| ours.is_some() && resolved(&named) == ours))
+            .find(|dir| {
+                let named = names(dir).and_then(|git_file| place(git_file.parent()?));
+                ours.is_some() && named == ours
+            })
             .ok_or_else(unknown)?;
         Ok(Self {
             folder: Some(dir),
@@ -44,6 +47,12 @@ impl Git {
     }
 }
 
+// Where `folder` is: its parent resolved, but not `folder` itself, which an agent could replace
+// with a link to another worktree, as it could its `.git`.
+pub(super) fn place(folder: &Path) -> Option<PathBuf> {
+    Some(resolved(folder.parent()?)?.join(folder.file_name()?))
+}
+
 // The `.git` file of the worktree a git folder of `worktrees/` belongs to. Git may write it
 // relative to that folder.
 fn names(dir: &Path) -> Option<PathBuf> {
@@ -53,10 +62,39 @@ fn names(dir: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use weacon_testing::TempDir;
 
     use super::*;
     use crate::git::tests::{chat, git, repo};
+
+    #[test]
+    fn a_git_file_linked_to_another_worktrees_never_borrows_its_folder() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        let [linked, other] = ["a", "b"].map(|id| {
+            let path = dir.join(format!("trees/c-{id}"));
+            git.chat_worktree(&repo, &chat(id), &path).unwrap();
+            path
+        });
+        fs::remove_file(linked.join(".git")).unwrap();
+        if !crate::platform::plant_link(&other.join(".git"), &linked.join(".git")) {
+            return;
+        }
+
+        let folder = git
+            .in_tree(&repo, &linked)
+            .unwrap()
+            .folder()
+            .unwrap()
+            .to_owned();
+
+        assert_eq!(
+            place(names(&folder).unwrap().parent().unwrap()),
+            place(&linked)
+        );
+    }
 
     #[test]
     fn each_worktree_gets_its_own_git_folder() {
