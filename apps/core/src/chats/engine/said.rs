@@ -58,8 +58,7 @@ impl<A: Agent> Engine<A> {
                 self.permission_asked(key, run, prompt, committed).await
             }
             RunEvent::PermissionWithdrawn { prompt, .. } => {
-                self.permission_withdrawn(key, run, prompt, committed.map(drop))
-                    .await
+                self.permission_withdrawn(key, run, prompt).await
             }
             // An agent that leaves its turn unknown is exiting; nothing more goes to it.
             RunEvent::Finished {
@@ -83,26 +82,30 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    // The agent no longer asks. An answer still on its way is never given, and a failed write
-    // is tried again, which reopens the log, unless the log has the withdrawal all the same.
+    // The agent no longer asks. An answer still on its way is never given, and a withdrawal
+    // whose write failed is tried again, which reopens the log.
     async fn permission_withdrawn(
         &mut self,
         key: &ChatKey,
         run: &RunId,
         prompt: u32,
-        committed: Result<(), Fault>,
     ) -> Result<(), Fault> {
         let answers = &mut self.open(key).await?.pending_answers;
         answers.retain(|answered| answered.answer.prompt != prompt);
-        let logged = !self.open(key).await?.log.runs().waits(run, prompt);
-        if committed.is_err() && !logged {
-            let event = RunEvent::PermissionWithdrawn {
-                run: run.clone(),
-                prompt,
-            };
-            self.commit_event(key, run, &event).await?;
-        }
+        self.withdraw(key, run, prompt).await?;
         self.running_again(key, run).await
+    }
+
+    // Withdraws `prompt` while the log has it waiting, as after a write reported failed.
+    async fn withdraw(&mut self, key: &ChatKey, run: &RunId, prompt: u32) -> Result<(), Fault> {
+        if !self.open(key).await?.log.runs().waits(run, prompt) {
+            return Ok(());
+        }
+        let event = RunEvent::PermissionWithdrawn {
+            run: run.clone(),
+            prompt,
+        };
+        self.commit_event(key, run, &event).await.map(drop)
     }
 
     // A prompt a person can't be shown in full is refused for them; it never waits unseen.
@@ -124,15 +127,7 @@ impl<A: Agent> Engine<A> {
         self.order(key, Order::Answer(answer));
         self.log
             .warn("permission prompt refused unseen", &about(key, run));
-        // Withdrawn wherever it reached the log, even by a write reported failed.
-        let logged = self.open(key).await?.log.runs().waits(run, prompt);
-        if committed.is_ok() || logged {
-            let event = RunEvent::PermissionWithdrawn {
-                run: run.clone(),
-                prompt,
-            };
-            self.commit_event(key, run, &event).await?;
-        }
+        self.withdraw(key, run, prompt).await?;
         committed.map(drop)
     }
 
@@ -435,13 +430,9 @@ mod tests {
             prompt: 1,
         };
         hear(&mut on.engine, event).await.unwrap();
-        let failed = Fault::new(
-            code!("chat.log_not_written"),
-            "The chat's log can't be written",
-        );
 
         on.engine
-            .permission_withdrawn(&key(), &run("run-1"), 1, Err(failed))
+            .permission_withdrawn(&key(), &run("run-1"), 1)
             .await
             .unwrap();
 
