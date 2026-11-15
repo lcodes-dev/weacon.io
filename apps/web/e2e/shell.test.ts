@@ -25,14 +25,19 @@ type Feed = {
 
 /**
  * Stands in for every workspace's feed: welcomes it offering chats and `also`, then does what
- * `feed` says. Gives the addresses opened and what the page sent after its hellos. Only pages
- * loaded after this have their sockets routed, so it reloads the page.
+ * `feed` says. Gives the addresses opened, what the page sent after its hellos, and a way to
+ * close the latest socket. Only pages loaded after this have their sockets routed, so it reloads the page.
  */
-async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
+async function serveFeed(
+  page: Page,
+  { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {},
+): Promise<{ opened: string[]; sent: Envelope[]; closeLatest(): Promise<void> }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
+  let latest: { close(): Promise<void> } | undefined;
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
     opened.push(new URL(socket.url()).search);
+    latest = socket;
     const nth = opened.length;
     socket.onMessage((text) => {
       const hello = JSON.parse(String(text)) as Envelope;
@@ -62,7 +67,7 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
     });
   });
   await page.reload();
-  return { opened, sent };
+  return { opened, sent, closeLatest: async () => latest?.close() };
 }
 
 // Holds back the next workspace the page makes; the returned function lets it through and waits for the answer.
@@ -839,14 +844,12 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [studio] }) }));
   await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
   const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };
-  await serveFeed(page, {
+  const feed = await serveFeed(page, {
     also: (opened) => ["workspace.search", ...(opened === 1 ? ["symbols.search"] : [])],
     answer: (sent) =>
       sent.type === "symbols_query"
         ? [{ id: sent.id, type: "symbols_answer", request: sent.request, machine: sent.machine, workspace: sent.workspace, answer: { kind: "found", symbols: [symbol], more: false } }]
         : [],
-    // The first feed closes once it answers "plants", and the next one no longer offers symbol search.
-    drop: (sent, opened) => opened === 1 && sent.type === "symbols_query" && sent.query.kind === "search" && sent.query.words === "plants",
   });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
@@ -856,9 +859,8 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   await search.getByRole("combobox", { name: "Search" }).fill("plant");
   const group = search.getByRole("group", { name: "Symbols" });
   await group.getByRole("option").first().waitFor();
-  await search.getByRole("combobox", { name: "Search" }).fill("plants");
-  // Answered just before the feed closes, then taken away by the welcome that no longer offers it.
-  await group.getByRole("option").first().waitFor();
+  // The feed that comes back after this one no longer offers symbol search.
+  await feed.closeLatest();
   await group.waitFor({ state: "detached" });
   assert.equal(await search.count(), 1);
 });
