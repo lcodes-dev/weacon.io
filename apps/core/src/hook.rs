@@ -291,7 +291,7 @@ mod tests {
             let logged = format!("{:?}", self.records.lock().unwrap());
             assert!(logged.contains("hook map answered"), "{logged}");
             assert!(
-                !logged.contains(token) && !logged.contains("item_"),
+                !logged.contains(token) && !logged.contains("item_") && !logged.contains("marker"),
                 "{logged}"
             );
         }
@@ -368,7 +368,7 @@ mod tests {
         fs::create_dir_all(dir.join("docs")).unwrap();
         let release = format!("# Release signing\n\nHow a release is signed.\n\n{pins}");
         fs::write(dir.join("docs/release.md"), release).unwrap();
-        let other = "# Storage\n\nflow:crate_number_2::item_2->crate_number_3::item_3\n";
+        let other = "# Storage\n\nWhere the data is kept, and the fix for it.\n\nflow:crate_number_2::item_2->crate_number_3::item_3\n";
         fs::write(dir.join("docs/storage.md"), other).unwrap();
     }
 
@@ -391,7 +391,7 @@ mod tests {
         };
 
         let plain = start(None);
-        let text = start(Some("Speed up release signing"));
+        let text = start(Some("marker_title_4: speed up release signing"));
 
         sized(&plain);
         assert!(text.len() <= 4000 && text.ends_with('\n'), "{}", text.len());
@@ -404,7 +404,9 @@ mod tests {
         let mut lines = flows.lines();
         assert_eq!(
             lines.next(),
-            Some("This chat is for the task a person titled \"Speed up release signing\".")
+            Some(
+                "This chat is for the task a person titled \"marker_title_4: speed up release signing\"."
+            )
         );
         assert_eq!(
             lines.next(),
@@ -427,6 +429,7 @@ mod tests {
             map.len()
         );
         assert_eq!(start(Some("Zebra")), plain);
+        assert_eq!(start(Some("Fix the zebra crash")), plain);
         assert_eq!(start(Some("")), plain);
         let token = core.token(&one, &main).0;
         core.stop(&token);

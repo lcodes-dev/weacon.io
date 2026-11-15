@@ -19,7 +19,8 @@ const FLOWS_TENTHS: usize = 3;
 const DOCS: usize = 5;
 /// The most bytes of a task's title a session start quotes.
 const TITLE_MAX: usize = 200;
-/// The most words of a task's title its docs are searched by, each of 3 characters or more.
+/// The most words of a task's title its docs are searched by, each of 4 characters or more,
+/// so that short words such as "the" don't match every doc.
 const WORDS: usize = 8;
 
 impl Maps {
@@ -115,12 +116,12 @@ impl Stores {
     }
 }
 
-/// The words of `title` a doc may match: those of 3 characters or more, once each.
+/// The words of `title` a doc may match: those of 4 characters or more, once each.
 fn title_words(title: &str) -> String {
     let mut seen = std::collections::BTreeSet::new();
     let words: Vec<&str> = title
         .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| word.chars().nth(2).is_some() && seen.insert(*word))
+        .filter(|word| word.chars().nth(3).is_some() && seen.insert(*word))
         .take(WORDS)
         .collect();
     words.join(" ")
@@ -165,14 +166,14 @@ mod tests {
 
     #[test]
     fn a_titles_longer_words_are_searched_once_each_and_at_most_eight() {
+        assert_eq!(title_words("Fix the sign-in page: the page"), "sign page");
+        assert_eq!(title_words("a to be and the"), "");
+        let many = "alpha bravo charlie delta echoes foxtrot golfer hotel india";
         assert_eq!(
-            title_words("Fix the sign-in page: the page"),
-            "Fix the sign page"
+            title_words(many),
+            "alpha bravo charlie delta echoes foxtrot golfer hotel"
         );
-        assert_eq!(title_words("a to be"), "");
-        let many = "one two three four five six seven eight nine";
-        assert_eq!(title_words(many), "one two three four five six seven eight");
-        assert_eq!(title_words("née déjà vu"), "née déjà");
+        assert_eq!(title_words("née déjà vu"), "déjà");
     }
 
     #[test]

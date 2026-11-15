@@ -53,19 +53,30 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "Tasks" }).click();
   await page.getByRole("textbox", { name: "New task" }).fill("Turn the compost");
   await page.getByRole("button", { name: "Add" }).click();
+  // The tasks are held back from the chats' view, so the prompt goes before it knows the title.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/workspaces/*/tasks", async (route) => {
+    await held;
+    return route.fallback();
+  });
   await page.getByRole("button", { name: "Start a chat for Turn the compost" }).click();
 
   const form = page.getByRole("region", { name: "New chat" });
-  await form.getByText("Task: Turn the compost").waitFor();
   await form.getByLabel("Repository").waitFor();
   await form.getByRole("combobox", { name: "Message" }).fill("Plan it.");
   await form.getByRole("button", { name: "Send" }).click();
-
   const link = page.getByRole("link", { name: "Turn the compost" });
+  await page.getByRole("heading", { name: "Plan it." }).waitFor();
+  release();
   await link.waitFor();
   const prompt = sent.find((envelope) => envelope.type === "chat_command");
   assert.ok(prompt?.type === "chat_command" && prompt.action.kind === "prompt");
-  assert.equal(prompt.action.task?.title, "Turn the compost");
+  // The server gives it the task's title.
+  assert.equal(prompt.action.task?.title, "");
+  await page.unroute("**/api/workspaces/*/tasks");
   await link.click();
   await page.locator(".tasks li.shown").getByText("Turn the compost").waitFor();
   assert.equal(new URL(page.url()).searchParams.get("task"), prompt.action.task?.id);

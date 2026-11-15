@@ -35,7 +35,7 @@ pub enum ChatAction {
     /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
     /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
     /// `task` links a new chat to a task of its workspace; the server relays it with the
-    /// task's title as it is then, and drops it from a later prompt.
+    /// task's title as it is then, and a later prompt naming a task with the chat's own, or none.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

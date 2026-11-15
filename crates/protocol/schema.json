@@ -774,7 +774,7 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`task` links a new chat to a task of its workspace; the server relays it with the\ntask's title as it is then, and drops it from a later prompt.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`task` links a new chat to a task of its workspace; the server relays it with the\ntask's title as it is then, and a later prompt naming a task with the chat's own, or none.",
           "type": "object",
           "properties": {
             "agent": {
