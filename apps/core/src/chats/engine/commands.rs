@@ -19,9 +19,9 @@ impl<A: Agent> Engine<A> {
     ) -> Result<(), Fault> {
         let request = command.request;
         let action = command.action;
-        let seen = self.open(key).await?.events.seen(&request, &action).await?;
+        let seen = self.open(key).await?.log.seen(&request, &action).await?;
         match seen {
-            Seen::Same => self.resume(key, &request, action).await,
+            Seen::Same => self.finish_repeated(key, &request, action).await,
             Seen::Other => Err(Fault::new(
                 code!("request.conflict"),
                 "That request id was used for another command",
@@ -42,7 +42,7 @@ impl<A: Agent> Engine<A> {
 
     // Whatever cut the first try short, what it began still happens: an answer still waiting
     // reaches its run, and a prompt it queued gets its turn.
-    async fn resume(
+    async fn finish_repeated(
         &mut self,
         key: &ChatKey,
         request: &RequestId,
@@ -105,7 +105,7 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         named: Option<AgentKind>,
     ) -> Result<AgentKind, Fault> {
-        let chosen = self.open(key).await?.events.agent();
+        let chosen = self.open(key).await?.log.agent();
         match (named, chosen) {
             (Some(AgentKind::Newer), _) => Err(unsupported()),
             (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
@@ -144,7 +144,7 @@ impl<A: Agent> Engine<A> {
         let live = self.is_live(key);
         let chat = self.open(key).await?;
         // The log forgets another run's prompts as soon as a newer run reports.
-        if !live || !chat.events.runs().waits(&answer.run, answer.prompt) {
+        if !live || !chat.log.runs().waits(&answer.run, answer.prompt) {
             return Err(Fault::new(
                 code!("agent.no_such_prompt"),
                 "That permission prompt isn't waiting",
@@ -181,7 +181,7 @@ impl<A: Agent> Engine<A> {
         if !chat.pending_answers.iter().any(pending) {
             return self.running_again(key, &answer.run).await;
         }
-        if chat.events.runs().waits(&answer.run, answer.prompt) {
+        if chat.log.runs().waits(&answer.run, answer.prompt) {
             // In the log before the agent is told, so a crash between the two leaves the truth.
             let update = RunUpdate {
                 run: answer.run.clone(),
@@ -300,7 +300,7 @@ mod tests {
             let refused = engine.command(&key(), asked).await;
             assert_eq!(refused.unwrap_err().code().as_str(), "runs.newer_record");
         }
-        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 0);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 0);
 
         let other = ChatKey {
             chat: chat("c-2"),
@@ -328,7 +328,7 @@ mod tests {
         let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
         engine.command(&key(), other).await.unwrap();
         let refused = &crate::chats::test_support::request("r-2");
-        assert!(engine.open(&key()).await.unwrap().events.has_ended(refused));
+        assert!(engine.open(&key()).await.unwrap().log.has_ended(refused));
         engine.command(&key(), first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
@@ -353,10 +353,10 @@ mod tests {
             soon(started.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
         started.told.try_recv().unwrap_err();
-        assert_eq!(engine.open(&key()).await.unwrap().events.seq(), 4);
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 4);
         let outcome = Outcome::Completed;
         hear(&mut engine, RunEvent::Finished { outcome })
             .await
@@ -427,7 +427,7 @@ mod tests {
         };
         let action = ChatAction::Permission { answer };
         let allow = || command("r-2", "c-1", action.clone());
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let refused = on.engine.command(&key(), allow()).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -443,7 +443,7 @@ mod tests {
     async fn an_answer_whose_receipt_was_written_reaches_its_run_when_sent_again() {
         let mut on = on_ask().await;
         let (answers, answer) = allow_one("r-2");
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let failed = on.engine.command(&key(), answers.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
@@ -471,7 +471,7 @@ mod tests {
         on.engine.command(&key(), answers).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let log = &on.engine.open(&key()).await.unwrap().events;
+        let log = &on.engine.open(&key()).await.unwrap().log;
         assert_eq!(
             log.runs().run().map(|status| &status.run),
             Some(&run("run-1"))
@@ -494,7 +494,7 @@ mod tests {
 
         assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)));
         assert_eq!(soon(on.agent.told.recv()).await, None);
-        let log = &on.engine.open(&key()).await.unwrap().events;
+        let log = &on.engine.open(&key()).await.unwrap().log;
         let entries = log.window(u64::MAX, 64).await.unwrap();
         let logged = entries.iter().filter(|entry| {
             matches!(&entry.event, ChatEvent::Run { update } if matches!(update.event, RunEvent::PermissionAnswered { .. }))
@@ -552,7 +552,7 @@ mod tests {
             Some(Told::Send("Hi".to_owned()))
         );
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let failed = on.engine.command(&key(), interrupt.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         // As when its receipt reached the disk all the same.
@@ -576,7 +576,7 @@ mod tests {
             soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         let refused = on.engine.command(&key(), interrupt).await;
@@ -589,7 +589,7 @@ mod tests {
     async fn an_answer_on_its_way_outlasts_another_whose_receipt_fails() {
         let mut on = on_ask().await;
         let (first, answer) = on_its_way(&mut on.engine, 1).await;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let other = allow("r-3", "c-1", "run-1", 1);
         let failed = on.engine.command(&key(), other.clone()).await;
@@ -613,7 +613,7 @@ mod tests {
             soon(on.agent.told.recv()).await,
             Some(Told::Send("Hi".to_owned()))
         );
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         let failed = on.engine.command(&key(), interrupt.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -641,7 +641,7 @@ mod tests {
         let mut on = on_turn().await;
         let told = soon(on.agent.told.recv()).await;
         assert_eq!(told, Some(Told::Send("Hi".to_owned())));
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
         let first = command("r-2", "c-1", ChatAction::Interrupt);
         let failed = on.engine.command(&key(), first.clone()).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
@@ -687,7 +687,7 @@ mod tests {
         let (mut bench, mut engine) = parts();
         let release = bench.hold_next_start();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        engine.open(&key()).await.unwrap().events.jam();
+        engine.open(&key()).await.unwrap().log.jam();
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
 
         let failed = engine.command(&key(), interrupt).await;

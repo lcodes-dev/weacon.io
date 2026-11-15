@@ -14,7 +14,7 @@ impl<A: Agent> Engine<A> {
     // while a write is owed. Its session stays, so the chat's next prompt resumes it.
     pub(super) async fn sleep_idle(&mut self) {
         // The backstop for a connection whose end wasn't reported.
-        self.sweep().await;
+        self.close_unused().await;
         let now = self.now();
         let idle: Vec<ChatKey> = self
             .open_chats
@@ -27,7 +27,7 @@ impl<A: Agent> Engine<A> {
             if let Err(fault) = self.checked(&key, slept).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -38,7 +38,7 @@ impl<A: Agent> Engine<A> {
         chat.orders.is_some()
             && chat.launching.is_none()
             && record.turn.is_none()
-            && chat.events.runs().waiting().is_empty()
+            && chat.log.runs().waiting().is_empty()
             && chat.pending_answers.is_empty()
             && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now
@@ -77,7 +77,7 @@ impl<A: Agent> Engine<A> {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -112,7 +112,7 @@ impl<A: Agent> Engine<A> {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -287,13 +287,7 @@ mod tests {
         assert!(!messages(&on.bench.records).contains(&"runs records kept unread"));
 
         let first = prompt("r-1", "Hi").request;
-        let ended = on
-            .engine
-            .open(&key())
-            .await
-            .unwrap()
-            .events
-            .has_ended(&first);
+        let ended = on.engine.open(&key()).await.unwrap().log.has_ended(&first);
         assert!(ended);
         let mut started = Vec::new();
         while let Ok(next) = on.bench.started.try_recv() {

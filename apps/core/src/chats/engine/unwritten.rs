@@ -100,7 +100,7 @@ mod tests {
 
     // The chat's last `count` events, in brief.
     async fn last(engine: &mut Engine<FakeAgent>, count: u32) -> Vec<String> {
-        let log = &engine.open(&key()).await.unwrap().events;
+        let log = &engine.open(&key()).await.unwrap().log;
         let window = log.window(u64::MAX, count).await.unwrap();
         window
             .into_iter()
@@ -119,7 +119,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_run_whose_event_cant_be_logged_ends_failed_and_other_chats_go_on() {
         let mut on = told().await;
-        on.engine.open(&key()).await.unwrap().events.jam();
+        on.engine.open(&key()).await.unwrap().log.jam();
 
         let said = Said {
             of: RunOf {
@@ -184,7 +184,7 @@ mod tests {
     async fn an_agent_starting_when_its_chats_write_fails_is_let_go() {
         let (mut bench, mut engine) = parts();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        engine.open(&key()).await.unwrap().events.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         let failed = commanded(&mut engine, interrupt).await;
@@ -200,7 +200,7 @@ mod tests {
     async fn a_run_whose_start_cant_be_logged_is_stopped_before_its_turn() {
         let (mut bench, mut engine) = parts();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        engine.open(&key()).await.unwrap().events.jam();
+        engine.open(&key()).await.unwrap().log.jam();
 
         let up = soon(engine.started.recv()).await.unwrap();
         engine.take_launched(up).await;

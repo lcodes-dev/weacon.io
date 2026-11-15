@@ -143,7 +143,7 @@ mod tests {
             .heard(&key(), &run("run-1"), exited)
             .await
             .unwrap();
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         on.engine
             .command(&key(), prompt("r-2", "More"))
             .await
@@ -172,7 +172,7 @@ mod tests {
             .await
             .unwrap();
         launched(&mut on.engine).await;
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
 
         assert!(!on.engine.open_chats.contains_key(&key()));
     }

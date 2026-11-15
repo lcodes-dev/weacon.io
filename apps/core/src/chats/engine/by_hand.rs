@@ -45,7 +45,7 @@ pub(super) async fn hear(engine: &mut Engine<FakeAgent>, event: RunEvent) -> Res
 }
 
 pub(super) async fn latest(engine: &mut Engine<FakeAgent>) -> ChatEvent {
-    let log = &engine.open(&key()).await.unwrap().events;
+    let log = &engine.open(&key()).await.unwrap().log;
     let mut window = log.window(u64::MAX, 1).await.unwrap();
     window.pop().unwrap().event
 }

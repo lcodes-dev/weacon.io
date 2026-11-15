@@ -91,7 +91,7 @@ impl<A: Agent> Engine<A> {
                 Some(key)
             }
             Ask::Left => {
-                self.sweep().await;
+                self.close_unused().await;
                 None
             }
         }

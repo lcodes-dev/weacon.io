@@ -37,7 +37,9 @@ use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
+/// How many clients' asks may wait for the engine.
 const ASKS: usize = 64;
+/// How many events from the chats' runs may wait for the engine.
 const SAYS: usize = 256;
 const IDLE_CHECK: std::time::Duration = std::time::Duration::from_mins(1);
 
@@ -69,7 +71,7 @@ fn unsupported() -> Fault {
 
 /// A chat the engine has open: one with a running agent, a waiting prompt or a subscriber.
 struct Chat {
-    events: ChatLog,
+    log: ChatLog,
     subscribers: Vec<Subscriber>,
     /// The way to the chat's agent: none without one, closed once it stopped reading, until
     /// its exit is reported.
@@ -177,7 +179,7 @@ impl<A: Agent> Engine<A> {
                 }
                 Some(launched) = self.started.recv() => self.take_launched(launched).await,
             };
-            self.settle(&key);
+            self.close_if_unused(&key);
         }
     }
 
@@ -193,7 +195,7 @@ impl<A: Agent> Engine<A> {
 
     // Once nothing of `run`, the chat's own run, waits for a person, its turn is running again.
     async fn running_again(&mut self, key: &ChatKey, run: &RunId) -> Result<(), Fault> {
-        let log = &self.open(key).await?.events;
+        let log = &self.open(key).await?.log;
         let asks = log.runs().asks(run);
         let running = self
             .runs
@@ -228,7 +230,7 @@ impl<A: Agent> Engine<A> {
         outcome: Outcome,
     ) -> Result<(), Fault> {
         // A command's end is told once, whichever path gets there first.
-        if self.open(key).await?.events.has_ended(request) {
+        if self.open(key).await?.log.has_ended(request) {
             return Ok(());
         }
         let receipt = Receipt {
@@ -241,7 +243,7 @@ impl<A: Agent> Engine<A> {
     // Commits `event` to the chat's log, then tells its subscribers.
     async fn commit(&mut self, key: &ChatKey, event: ChatEvent) -> Result<(), Fault> {
         let chat = self.open(key).await?;
-        match chat.events.append(event).await {
+        match chat.log.append(event).await {
             Ok(entry) => {
                 self.publish(key, &update(key, entry));
                 Ok(())
@@ -265,7 +267,7 @@ impl<A: Agent> Engine<A> {
             subscriber.end();
         }
         if let Ok(log) = ChatLog::open(&root, &key.chat).await {
-            chat.events = log;
+            chat.log = log;
         }
     }
 
@@ -318,7 +320,7 @@ impl<A: Agent> Engine<A> {
         match self.open_chats.entry(key.clone()) {
             Entry::Occupied(open) => Ok(open.into_mut()),
             Entry::Vacant(closed) => Ok(closed.insert(Chat {
-                events: ChatLog::open(&root, &key.chat).await?,
+                log: ChatLog::open(&root, &key.chat).await?,
                 subscribers: Vec::new(),
                 orders: None,
                 launching: None,
@@ -332,8 +334,8 @@ impl<A: Agent> Engine<A> {
     }
 
     // Closes a chat nobody is using, so its log doesn't stay open for good. A held one is left
-    // to `sweep`, which takes its prompts on once its holder is gone.
-    fn settle(&mut self, key: &ChatKey) {
+    // to `close_unused`, which takes its prompts on once its holder is gone.
+    fn close_if_unused(&mut self, key: &ChatKey) {
         let Some(chat) = self
             .open_chats
             .get_mut(key)
@@ -786,8 +788,8 @@ mod tests {
 
         // Room for one event beside the place kept for the notice.
         let (slow, mut slowly) = client(2);
-        let resume = query("c-1", ChatQueryKind::Subscribe { after: 4 });
-        assert_eq!(bench.chats.query(resume, &slow).await.unwrap(), None);
+        let again = query("c-1", ChatQueryKind::Subscribe { after: 4 });
+        assert_eq!(bench.chats.query(again, &slow).await.unwrap(), None);
         for said in ["One", "Two", "Three"] {
             agent.say.send(text(said)).unwrap();
         }
@@ -1094,8 +1096,8 @@ mod tests {
             .await
             .unwrap();
 
-        on.engine.settle(&key());
-        on.engine.settle(&other);
+        on.engine.close_if_unused(&key());
+        on.engine.close_if_unused(&other);
         assert!(
             on.engine.open_chats.contains_key(&key()) && on.engine.open_chats.contains_key(&other)
         );
@@ -1106,13 +1108,13 @@ mod tests {
             .heard(&key(), &run("run-1"), Heard::Exited(None))
             .await
             .unwrap();
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         assert!(
             on.engine.open_chats.contains_key(&key()),
             "a client still watches it"
         );
         drop((on.pushes, watching));
-        on.engine.settle(&key());
+        on.engine.close_if_unused(&key());
         assert!(!on.engine.open_chats.contains_key(&key()));
 
         // A hung-up client's chat is let go when anyone subscribes anywhere.

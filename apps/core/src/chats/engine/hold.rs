@@ -83,7 +83,7 @@ impl<A: Agent> Engine<A> {
 
     // Lets go of clients that hung up, and of the chats only they were using; a chat one of
     // them held takes its queued prompts on.
-    pub(super) async fn sweep(&mut self) {
+    pub(super) async fn close_unused(&mut self) {
         let released: Vec<ChatKey> = self
             .open_chats
             .iter_mut()
@@ -213,7 +213,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_holder_that_hung_up_gives_way_before_any_sweep() {
+    async fn a_holder_that_hung_up_gives_way_before_its_chat_is_closed() {
         let (_bench, mut engine) = parts();
         let ((first, gone), (second, _pushes)) = (client(1), client(1));
         engine
@@ -349,11 +349,11 @@ mod tests {
             .await
             .unwrap();
 
-        engine.settle(&key());
-        engine.sweep().await;
+        engine.close_if_unused(&key());
+        engine.close_unused().await;
         assert!(engine.open_chats.contains_key(&key()));
         drop(pushes);
-        engine.sweep().await;
+        engine.close_unused().await;
 
         assert!(!engine.open_chats.contains_key(&key()));
     }
