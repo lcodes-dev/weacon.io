@@ -23,7 +23,7 @@ struct Reanchor {
 
 /// Proposes, for each of `workspace`'s docs that pin code, what moving the code to `now`, at
 /// `commit`, did to its anchors: a re-anchor and a "needs an update" proposal, as one batch.
-/// Each pin moves from the first of the bases `was` it was taken from, else from the first. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
+/// Each pin moves from the first of the bases `was` it was taken from, as `pin_moved` says. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
 /// the first refusal is the error once all are tried.
 pub(crate) async fn moved(
     proposals: &Proposals,
@@ -151,11 +151,7 @@ fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec
         let Ok(pin) = from.as_str().parse::<Pin>() else {
             continue;
         };
-        let taken = |base: &&&Index| base.fingerprint(&pin.anchor) == Some(pin.fingerprint);
-        let Some(base) = was.iter().find(taken).or_else(|| was.first()) else {
-            continue;
-        };
-        let change = match base.after_move(now, &pin) {
+        let change = match pin_moved(&pin, was, now) {
             None => continue,
             // A pin a doc can't hold, such as one past its length, is as good as gone.
             Some(Moved::Reanchored(to)) => match to.to_string().parse() {
@@ -179,6 +175,27 @@ fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec
         });
     }
     (reanchors, stale)
+}
+
+/// What moving to `now` did to `pin`, from the first of `was` it was taken from, else from the
+/// first that holds its anchor, else from the first; when none was taken from, code that
+/// differs from the pin now has changed, though that base may hold the change already.
+fn pin_moved(pin: &Pin, was: &[&Index], now: &Index) -> Option<Moved> {
+    let taken = |base: &&&Index| base.fingerprint(&pin.anchor) == Some(pin.fingerprint);
+    if let Some(base) = was.iter().find(taken) {
+        return base.after_move(now, pin);
+    }
+    let holds = |base: &&&Index| base.fingerprint(&pin.anchor).is_some();
+    let base = was.iter().find(holds).or_else(|| was.first())?;
+    let differs = now
+        .fingerprint(&pin.anchor)
+        .is_some_and(|code| code != pin.fingerprint);
+    base.after_move(now, pin).or_else(|| {
+        differs.then(|| Moved::Changed {
+            was: pin.anchor.to_string(),
+            now: pin.anchor.to_string(),
+        })
+    })
 }
 
 /// `content` with each of `reanchors` made, its links to a renamed anchor relinked, and its
@@ -568,6 +585,44 @@ mod tests {
             .collect();
         let docs = ["d-1", "d-2", "d-3"].map(str::to_owned).to_vec();
         assert_eq!((batches, about), (3, docs));
+    }
+
+    #[tokio::test]
+    async fn a_pin_no_base_was_taken_from_moves_from_one_holding_its_anchor_or_has_changed() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
+        let later = repo("mod m;\npub fn run() { go() }\npub fn go() { run() }\n", "");
+        let elsewhere = repo(
+            "mod m;\npub fn run() { go() }\npub fn go() -> u8 { 1 }\n",
+            "",
+        );
+        let moved =
+            |was: &[&Index], now: &Index| findings(&[pin(&elsewhere, "sym:a_b::go")], was, now).1;
+        let change = |stale: Vec<StaleAnchor>| {
+            stale
+                .into_iter()
+                .map(|stale| stale.change)
+                .collect::<Vec<_>>()
+        };
+
+        // The oldest base has no `go` of the crate's root; the next has it, and it changed.
+        assert_eq!(
+            change(moved(&[&before, &after], &later)),
+            [AnchorChange::Changed {
+                was: "fn a_b::go  src/lib.rs:3".to_owned(),
+                now: "fn a_b::go  src/lib.rs:3".to_owned(),
+            }]
+        );
+        // Its base was let go, and no base kept says when its code changed.
+        let anchor = "sym:a_b::go".to_owned();
+        assert_eq!(
+            change(moved(&[&before, &later], &later)),
+            [AnchorChange::Changed {
+                was: anchor.clone(),
+                now: anchor
+            }]
+        );
+        assert_eq!(moved(&[&before, &elsewhere], &elsewhere), []);
     }
 
     #[tokio::test]
