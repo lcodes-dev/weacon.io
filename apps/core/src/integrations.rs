@@ -89,11 +89,8 @@ impl Plugin {
         // Written aside, then linked into place, which never replaces a file already there: it
         // may be the person's own, a link, or another launch's.
         let staged = aside(&file, "part");
-        let written =
-            fs::write(&staged, &self.codex).and_then(|()| match fs::hard_link(&staged, &file) {
-                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
-                _ => Ok(()),
-            });
+        let written = fs::write(&staged, &self.codex)
+            .and_then(|()| unless_there(fs::hard_link(&staged, &file)));
         drop(fs::remove_file(&staged));
         if let Err(error) = written {
             let fault = failed().because(error);
@@ -114,6 +111,14 @@ impl Plugin {
             write(&self.dir, &self.files)?;
         }
         Ok(self.dir.clone())
+    }
+}
+
+// A file already there is kept, so that is no error.
+fn unless_there(linked: io::Result<()>) -> io::Result<()> {
+    match linked {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(()),
     }
 }
 
@@ -310,6 +315,15 @@ mod tests {
         assert_eq!(skill, SKILL);
         let manifest = dir.join(".claude-plugin/plugin.json");
         assert!(fs::metadata(manifest).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn only_a_file_already_there_is_no_error() {
+        let error = |kind| Err(io::Error::from(kind));
+
+        assert!(unless_there(Ok(())).is_ok());
+        assert!(unless_there(error(io::ErrorKind::AlreadyExists)).is_ok());
+        assert!(unless_there(error(io::ErrorKind::Unsupported)).is_err());
     }
 
     #[test]
