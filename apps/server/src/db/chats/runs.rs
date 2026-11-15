@@ -103,25 +103,28 @@ impl Workspace {
         Ok(ChatRuns::restored(runs, waiting))
     }
 
-    /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there.
+    /// Keeps `runs` as the chat's latest run and waiting prompts, in place of what was there;
+    /// `true` when the latest run or its status changed.
     pub(super) async fn keep_runs(
         &self,
         transaction: &mut SqliteConnection,
         chat: &ChatId,
         runs: &ChatRuns,
-    ) -> Result<(), Fault> {
+    ) -> Result<bool, Fault> {
         let latest = runs.run();
         let status = latest
             .map(serde_json::to_string)
             .transpose()
             .map_err(|_| unreadable())?;
-        sqlx::query(
-            "UPDATE chats SET run_id = ?, run_status = ? WHERE workspace_id = ? AND chat_id = ?",
+        let kept = sqlx::query(
+            "UPDATE chats SET run_id = ?, run_status = ? WHERE workspace_id = ? AND chat_id = ?
+             AND run_status IS NOT ?",
         )
         .bind(latest.map(|status| status.run.as_str()))
-        .bind(status)
+        .bind(&status)
         .bind(self.id.as_str())
         .bind(chat.as_str())
+        .bind(&status)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -145,7 +148,7 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
-        Ok(())
+        Ok(kept.rows_affected() > 0)
     }
 }
 
