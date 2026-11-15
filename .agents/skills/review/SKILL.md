@@ -9,7 +9,7 @@ You review a change someone else wrote. The goal is code that is correct, safe, 
 
 1. Read `AGENTS.md` for the rules, boundaries and code style.
 2. Find the change: `git fetch origin main --quiet` (a failure is fine), then `git diff origin/main...HEAD`, `git diff --cached`, `git diff` and `git status --short`. Read new files in full, with their tests.
-3. Use only read-only commands (`git`, `rg`, `ls`) and focused tests (`cargo test -p <crate> <name>`) to confirm a suspicion. Never edit files, install anything, commit or push.
+3. Use only read-only commands (`git`, `rg`, `ls`) and focused tests (`cargo test --locked -p <crate> <name>`) to confirm a suspicion. Never edit files, install anything, commit or push.
 4. Report each finding as `- **Must fix** · path:line · the problem, in one sentence · the fix` (or **Should fix**, or **Note**), most severe first. End with the count per rating, or "No findings". Don't pad the list.
 
 - **Must fix:** a bug, with the input or state that triggers it; a security hole; a broken rule from `AGENTS.md`; behaviour without a test; a second way to do something the code already does; needless machinery.
