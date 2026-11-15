@@ -460,7 +460,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
+    async fn a_live_run_is_busy_on_a_turn_and_not_before_or_between_turns() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         assert!(
@@ -468,7 +468,7 @@ mod tests {
             "no run"
         );
         // Not busy, it paused new turns for an install that never came.
-        bench.chats.downgrade().installed().await;
+        bench.chats.downgrade().resume_turns().await;
 
         let agent = first_turn(&mut bench, &mut pushes).await;
         assert!(

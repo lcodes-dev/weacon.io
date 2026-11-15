@@ -22,7 +22,7 @@ pub(super) enum Ask {
     Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
     /// An install the engine paused turns for is over.
-    Installed,
+    ResumeTurns,
     Query(
         ChatQuery,
         Client,
@@ -44,7 +44,7 @@ impl WeakChats {
     /// Whether an agent is on a turn, waits on a person, starts or is carried on by hand, or a
     /// session or a turn's end the journal couldn't save yet is only in memory, which a
     /// restart would cut off or lose. When none is, no new turn starts until
-    /// [`WeakChats::installed`], so an install may restart the daemon.
+    /// [`WeakChats::resume_turns`], so an install may restart the daemon.
     pub(crate) async fn pause_unless_busy(&self) -> Result<bool, Fault> {
         let asks = self.0.upgrade().ok_or_else(stopped)?;
         let (answer, answered) = oneshot::channel();
@@ -53,9 +53,9 @@ impl WeakChats {
     }
 
     /// Lets turns go on after an install that left the daemon running, or none at all.
-    pub(crate) async fn installed(&self) {
+    pub(crate) async fn resume_turns(&self) {
         if let Some(asks) = self.0.upgrade() {
-            drop(asks.send(Ask::Installed).await);
+            drop(asks.send(Ask::ResumeTurns).await);
         }
     }
 }
@@ -126,8 +126,8 @@ impl<A: Agent> Engine<A> {
                 self.answer_busy(answer).await;
                 None
             }
-            Ask::Installed => {
-                self.go_on_after_install().await;
+            Ask::ResumeTurns => {
+                self.resume_turns().await;
                 None
             }
             Ask::Left => {

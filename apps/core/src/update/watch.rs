@@ -17,7 +17,9 @@ const WEEK: u64 = 7 * DAY;
 /// How often the daemon asks itself whether a check is due.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_hours(1);
 /// How often the daemon looks whether an install it started is over.
-const INSTALL_LOOK: Duration = Duration::from_secs(10);
+const INSTALL_POLL: Duration = Duration::from_secs(10);
+/// How long an install the daemon started may take to take the update lock.
+const INSTALL_STARTS_WITHIN: Duration = Duration::from_mins(1);
 
 /// The latest release, once its signature checks out.
 pub(crate) type Latest = fn() -> Result<ReleaseManifest, Fault>;
@@ -63,9 +65,9 @@ impl Watch {
         }
     }
 
-    /// Checks every [`CHECK_EVERY`], first at once, asking `busy` each time whether an agent
-    /// is on a turn, which pauses new turns when none is, and telling `over` once the check,
-    /// and any install it started that left the daemon running, is done.
+    /// Checks every [`CHECK_EVERY`], first at once. When a check may install, it first asks
+    /// `busy` whether an agent is on a turn, which pauses new turns when none is, and tells
+    /// `over` once the check, and any install it started that left the daemon running, is done.
     pub(crate) async fn run<F: Future<Output = bool>, G: Future<Output = ()>>(
         mut self,
         busy: impl Fn() -> F,
@@ -75,24 +77,35 @@ impl Watch {
         let mut ticks = tokio::time::interval(CHECK_EVERY);
         loop {
             ticks.tick().await;
-            let joined = self.start(busy().await).await;
+            let (dir, now) = (self.state_dir.clone(), self.hooks.now);
+            let asks = tokio::task::spawn_blocking(move || may_install(&dir, now()));
+            // Unasked, a check counts the agents as busy, so it installs nothing.
+            let asks = asks.await.unwrap_or_default();
+            let busy = if asks { busy().await } else { true };
+            let joined = self.start(busy).await;
             let started = matches!(joined, Ok(Ok(Found::Started(_))));
             self.finished(joined, log);
             if started {
-                self.installed().await;
+                self.wait_for_install().await;
             }
-            over().await;
+            if asks {
+                over().await;
+            }
         }
     }
 
-    // Waits for the install it started to let go of the update lock; one that restarts the
-    // daemon ends this with it.
-    async fn installed(&self) {
+    // Waits for the install it started to take the update lock and let go of it, or never to
+    // take it within `INSTALL_STARTS_WITHIN`; one that restarts the daemon ends this with it.
+    async fn wait_for_install(&self) {
+        let start = tokio::time::Instant::now();
+        let mut seen = false;
         loop {
-            tokio::time::sleep(INSTALL_LOOK).await;
+            tokio::time::sleep(INSTALL_POLL).await;
             let dir = self.state_dir.clone();
             let free = tokio::task::spawn_blocking(move || super::lock(&dir)).await;
-            if !matches!(free, Ok(Err(ref fault)) if fault.code() == &code!("update.busy")) {
+            let held = matches!(free, Ok(Err(ref fault)) if fault.code() == &code!("update.busy"));
+            seen |= held;
+            if !held && (seen || start.elapsed() >= INSTALL_STARTS_WITHIN) {
                 return;
             }
         }
@@ -170,6 +183,12 @@ fn waits(schedule: UpdateSchedule, busy: bool) -> bool {
     installs(schedule) && busy
 }
 
+/// Whether a check at `now` is due and may install, so the engine is asked to pause turns.
+fn may_install(state_dir: &Path, now: u64) -> bool {
+    Settings::read(&settings::file(state_dir))
+        .is_ok_and(|settings| due(settings, now) && installs(settings.schedule))
+}
+
 fn installs(schedule: UpdateSchedule) -> bool {
     matches!(
         schedule.effective(),
@@ -187,7 +206,7 @@ fn record(
 ) -> Result<Found, Fault> {
     let file = settings::file(state_dir);
     let lock = match super::lock(state_dir) {
-        Err(fault) if fault.code().as_str() == "update.busy" => return Ok(Found::Nothing),
+        Err(fault) if fault.code() == &code!("update.busy") => return Ok(Found::Nothing),
         lock => lock?,
     };
     // Read again, so a choice its owner made during the fetch stands.
@@ -579,6 +598,7 @@ mod tests {
     #[tokio::test]
     async fn the_schedule_checks_at_once_asking_whether_an_agent_is_busy() {
         let dir = TempDir::new().unwrap();
+        with(&dir, UpdateSchedule::Daily, 0);
         let (log, records) = recording_logger();
         let (asked, mut was_asked) = tokio::sync::mpsc::unbounded_channel();
         let busy = move || {
@@ -611,16 +631,67 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_install_started_is_over_once_it_lets_go_of_the_update_lock() {
+    async fn an_install_is_over_once_it_lets_go_of_the_update_lock_it_took() {
         let dir = TempDir::new().unwrap();
         let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
         let installing = super::super::lock(&dir).unwrap();
+        let waiting = tokio::spawn(async move { watch.wait_for_install().await });
 
-        let waited = tokio::time::timeout(INSTALL_LOOK * 3, watch.installed()).await;
-        waited.unwrap_err();
+        tokio::time::sleep(INSTALL_POLL * 3).await;
+        assert!(
+            !waiting.is_finished(),
+            "over while the install holds the lock"
+        );
         drop(installing);
 
-        let over = tokio::time::timeout(INSTALL_LOOK * 2, watch.installed());
+        let over = tokio::time::timeout(INSTALL_POLL * 2, waiting);
+        over.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_install_that_never_takes_the_lock_is_over_once_it_had_time_to() {
+        let dir = TempDir::new().unwrap();
+        let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
+
+        let early = INSTALL_STARTS_WITHIN.checked_sub(INSTALL_POLL).unwrap();
+        let starting = tokio::time::timeout(early, watch.wait_for_install()).await;
+        starting.unwrap_err();
+        let late = INSTALL_STARTS_WITHIN + INSTALL_POLL * 2;
+        let over = tokio::time::timeout(late, watch.wait_for_install());
         over.await.unwrap();
+    }
+
+    #[test]
+    fn only_a_due_check_on_a_schedule_that_installs_pauses_turns() {
+        let dir = TempDir::new().unwrap();
+        with(&dir, UpdateSchedule::Daily, 0);
+        assert!(may_install(&dir, NOW));
+        with(&dir, UpdateSchedule::Daily, NOW);
+        assert!(!may_install(&dir, NOW), "not due");
+        with(&dir, UpdateSchedule::Notify, 0);
+        assert!(!may_install(&dir, NOW), "notifies only");
+    }
+
+    #[tokio::test]
+    async fn a_check_that_only_notifies_never_asks_whether_an_agent_is_busy() {
+        let dir = TempDir::new().unwrap();
+        with(&dir, UpdateSchedule::Notify, 0);
+        let (log, records) = recording_logger();
+        let (asked, mut was_asked) = tokio::sync::mpsc::unbounded_channel();
+        let busy = move || {
+            asked.send(()).unwrap_or_default();
+            std::future::ready(false)
+        };
+        let over = || std::future::ready(());
+        let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
+        let running = tokio::spawn(async move { watch.run(busy, over, &log).await });
+
+        let within = Duration::from_secs(10);
+        tokio::time::timeout(within, logged(&records))
+            .await
+            .unwrap();
+        running.abort();
+        assert_eq!(messages(&records), ["update available"]);
+        assert!(was_asked.try_recv().is_err());
     }
 }

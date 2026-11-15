@@ -318,14 +318,14 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
 
 /// Whether an agent is on a turn, as [`WeakChats::pause_unless_busy`] says, pausing new turns
 /// when none is; an engine that doesn't answer in time counts as busy.
-pub(crate) async fn agents_busy(chats: &WeakChats) -> bool {
+pub(crate) async fn pause_unless_busy(chats: &WeakChats) -> bool {
     let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.pause_unless_busy()).await;
     answer.map_or(true, |busy| busy.unwrap_or(true))
 }
 
-/// Lets the engine's turns go on after a check; one that doesn't take it in time is left.
-async fn installed(chats: &WeakChats) {
-    drop(tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.installed()).await);
+/// Lets the engine's turns go on after a check that paused them.
+async fn resume_turns(chats: &WeakChats) {
+    chats.resume_turns().await;
 }
 
 /// Checks for releases on the daemon's schedule while it serves; a build that isn't a
@@ -338,8 +338,8 @@ pub(crate) async fn schedule(
 ) -> ! {
     match watch(state_dir, version) {
         Some(updates) => {
-            let over = || installed(chats);
-            updates.run(|| agents_busy(chats), over, log).await
+            let (pause, resume) = (|| pause_unless_busy(chats), || resume_turns(chats));
+            updates.run(pause, resume, log).await
         }
         None => std::future::pending().await,
     }
@@ -845,14 +845,14 @@ mod tests {
         use crate::chats::test_support::{bench, parts};
 
         let running = bench();
-        assert!(!agents_busy(&running.chats.downgrade()).await);
+        assert!(!pause_unless_busy(&running.chats.downgrade()).await);
         let (silent, _engine) = parts();
-        assert!(agents_busy(&silent.chats.downgrade()).await);
+        assert!(pause_unless_busy(&silent.chats.downgrade()).await);
         let (stopped, engine) = parts();
         drop(engine);
-        assert!(agents_busy(&stopped.chats.downgrade()).await);
+        assert!(pause_unless_busy(&stopped.chats.downgrade()).await);
         let gone = bench().chats.downgrade();
-        assert!(agents_busy(&gone).await);
+        assert!(pause_unless_busy(&gone).await);
     }
 
     #[test]
