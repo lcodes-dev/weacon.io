@@ -21,7 +21,8 @@ pub(crate) struct Chats {
 pub(super) enum Ask {
     Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
-    /// An install the engine paused turns for is over.
+    Leave(oneshot::Sender<bool>),
+    /// An install the engine gave leave to is over.
     ResumeTurns,
     Query(
         ChatQuery,
@@ -43,16 +44,25 @@ pub(crate) struct WeakChats(mpsc::WeakSender<Ask>);
 impl WeakChats {
     /// Whether an agent is on a turn, waits on a person, starts or is carried on by hand, or a
     /// session or a turn's end the journal couldn't save yet is only in memory, which a
-    /// restart would cut off or lose. When none is, no new turn starts until
-    /// [`WeakChats::resume_turns`], so an install may restart the daemon.
-    pub(crate) async fn pause_unless_busy(&self) -> Result<bool, Fault> {
+    /// restart would cut off or lose.
+    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
+        self.ask(Ask::Busy).await
+    }
+
+    /// Leave to install, given when nothing is busy and no other install holds it. Once given,
+    /// no new turn starts and no chat can be held until [`WeakChats::resume_turns`].
+    pub(crate) async fn leave(&self) -> Result<bool, Fault> {
+        self.ask(Ask::Leave).await
+    }
+
+    async fn ask(&self, ask: fn(oneshot::Sender<bool>) -> Ask) -> Result<bool, Fault> {
         let asks = self.0.upgrade().ok_or_else(stopped)?;
         let (answer, answered) = oneshot::channel();
-        asks.send(Ask::Busy(answer)).await.map_err(|_| stopped())?;
+        asks.send(ask(answer)).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())
     }
 
-    /// Lets turns go on after an install that left the daemon running, or none at all.
+    /// Lets turns go on after an install that had leave.
     pub(crate) async fn resume_turns(&self) {
         if let Some(asks) = self.0.upgrade() {
             drop(asks.send(Ask::ResumeTurns).await);
@@ -124,6 +134,10 @@ impl<A: Agent> Engine<A> {
             }
             Ask::Busy(answer) => {
                 self.answer_busy(answer).await;
+                None
+            }
+            Ask::Leave(answer) => {
+                self.answer_leave(answer).await;
                 None
             }
             Ask::ResumeTurns => {

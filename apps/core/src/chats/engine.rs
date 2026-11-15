@@ -130,7 +130,7 @@ pub(crate) struct Engine<A> {
     /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
-    /// Set while an install may be under way: prompts are queued and no new turn starts.
+    /// Set while an install has leave: prompts are queued and no new turn starts.
     installing: bool,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
@@ -463,22 +463,14 @@ mod tests {
     async fn a_live_run_is_busy_on_a_turn_and_not_before_or_between_turns() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
-        assert!(
-            !bench.chats.downgrade().pause_unless_busy().await.unwrap(),
-            "no run"
-        );
-        // Not busy, it paused new turns for an install that never came.
-        bench.chats.downgrade().resume_turns().await;
+        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
 
         let agent = first_turn(&mut bench, &mut pushes).await;
-        assert!(
-            bench.chats.downgrade().pause_unless_busy().await.unwrap(),
-            "on a turn"
-        );
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
         agent.say.send(done(Outcome::Completed)).unwrap();
         pushed(&mut pushes, 3).await;
         assert!(
-            !bench.chats.downgrade().pause_unless_busy().await.unwrap(),
+            !bench.chats.downgrade().busy().await.unwrap(),
             "idle between turns"
         );
     }
@@ -860,10 +852,7 @@ mod tests {
 
         let sent = soon(async { Some(bench.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
-        assert!(
-            bench.chats.downgrade().pause_unless_busy().await.unwrap(),
-            "starting"
-        );
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;

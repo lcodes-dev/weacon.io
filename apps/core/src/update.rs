@@ -1,34 +1,38 @@
 //! `weacon update`: the core replaces its own binary with the latest release's build.
 
+mod binary;
 mod fetch;
 #[cfg(test)]
 mod fixtures;
 mod install;
+mod leave;
 mod settings;
 mod verify;
 mod watch;
 
-use watch::{Hooks, Watch};
+pub(crate) use leave::LEAVE;
+pub(crate) use watch::schedule;
 
 use std::fs::{File, TryLockError};
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use weacon_appkit::Ending;
-use weacon_observability::{Fault, Logger};
+use weacon_observability::Fault;
 use weacon_protocol::{
-    BuildTarget, Commit, PROTOCOL, ReleaseManifest, ReleaseVersion, UpdateSchedule, code,
+    BuildTarget, Commit, InstallAction, PROTOCOL, ReleaseManifest, ReleaseVersion, UpdateSchedule,
+    code,
 };
 
 use crate::app::{App, state_unavailable};
-use crate::chats::WeakChats;
 use crate::cli::{UpdateAction, UpdateCommand};
+use crate::daemon::{build, socket_path};
 use crate::platform::Env;
 use crate::service;
+use binary::{status_names, version_of};
 use install::Paths;
+use leave::Report;
 use settings::Settings;
 
 /// The target this binary was built for, as release manifests name it.
@@ -41,16 +45,6 @@ const HEALTH_PAUSE: Duration = Duration::from_millis(500);
 /// How often, and how far apart, the update lock is tried before it counts as taken: 1 s.
 const LOCK_TRIES: u32 = 50;
 const LOCK_PAUSE: Duration = Duration::from_millis(20);
-/// How often, and how far apart, a program that is busy being written is tried again.
-const BUSY_TRIES: u32 = 50;
-const BUSY_PAUSE: Duration = Duration::from_millis(10);
-
-/// How long the chat engine has to say whether an agent is busy.
-const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
-
-/// How long a binary has to answer `--version` or `status` before it is killed.
-const ANSWER_WITHIN: Duration = Duration::from_secs(10);
-
 /// What an update reaches outside the core; tests pass fakes.
 pub(crate) struct World<'a> {
     /// The latest release, once its signature checks out.
@@ -64,6 +58,8 @@ pub(crate) struct World<'a> {
     pub(crate) restart: Option<&'a dyn Fn() -> Result<(), Fault>>,
     /// Whether the restarted daemon reports `commit` in time.
     pub(crate) healthy: &'a dyn Fn(&Commit) -> bool,
+    /// Leave from the running daemon to restart it; none while a chat is busy.
+    pub(crate) leave: &'a dyn Fn() -> Result<Option<Report>, Fault>,
 }
 
 /// Runs `weacon update` against the real world.
@@ -79,6 +75,7 @@ pub(crate) fn run(
     let restart = || service::restart(&mut service::system);
     let healthy = |commit: &Commit| status_names(&exe, commit, HEALTH_TRIES, HEALTH_PAUSE);
     let restart: &dyn Fn() -> Result<(), Fault> = &restart;
+    let leave = || leave::ask(&socket_path(state_dir), build(&app.version));
     let world = World {
         release: &latest,
         get: &download,
@@ -87,6 +84,7 @@ pub(crate) fn run(
         version_of: &version_of,
         restart: service::installed(&exe, state_dir, env).then_some(restart),
         healthy: &healthy,
+        leave: &leave,
     };
     let own = app.version.version.parse().map_err(|_| {
         Fault::new(
@@ -141,16 +139,46 @@ pub(crate) fn update(
         )?;
         return Ok(Ending::Findings);
     }
-    install_release(&release, world)?;
-    let then = if world.restart.is_some() {
-        "The daemon runs it now."
-    } else {
-        "Restart the daemon to run it."
+    let installed = match install_release(&release, world)? {
+        Installed::Running => "The daemon runs it now.",
+        Installed::Waiting => "Restart the daemon to run it.",
+        Installed::Refused => return refused(&mut settings, &file, version, out),
     };
-    say(out, &format!("Installed weacon {version}. {then}")).map(Ending::from)
+    say(out, &format!("Installed weacon {version}. {installed}")).map(Ending::from)
 }
 
-fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), Fault> {
+// Says nothing was installed for a busy chat. Counted as never checked, so the daemon's
+// schedule tries again within the hour.
+fn refused(
+    settings: &mut Settings,
+    file: &Path,
+    version: ReleaseVersion,
+    out: &mut impl Write,
+) -> Result<Ending, Fault> {
+    settings.last_checked = 0;
+    settings.write(file)?;
+    say(
+        out,
+        &format!(
+            "A chat is busy, so weacon {version} wasn't installed. Run `weacon update` again \
+             once its agent is done."
+        ),
+    )?;
+    Ok(Ending::Findings)
+}
+
+/// Where an install left the daemon.
+#[derive(Debug, PartialEq, Eq)]
+enum Installed {
+    /// Restarted on the new build.
+    Running,
+    /// Still on the old build until it is restarted.
+    Waiting,
+    /// A chat was busy, so nothing was installed.
+    Refused,
+}
+
+fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<Installed, Fault> {
     let build = BuildTarget::try_from(world.target.to_owned())
         .ok()
         .and_then(|target| release.build_for(&target).cloned())
@@ -178,17 +206,46 @@ fn install_release(release: &ReleaseManifest, world: &World<'_>) -> Result<(), F
     }
     install::stage(&paths, &mut (world.get)(build.url.as_str())?, &build)?;
     install::check_version(&paths, &release.commit, (world.version_of)(&paths.new))?;
-    install::swap(&paths)?;
     let Some(restart) = world.restart else {
-        return Ok(());
+        install::swap(&paths)?;
+        return Ok(Installed::Waiting);
     };
+    let mut report = match (world.leave)() {
+        Ok(Some(report)) => report,
+        asked => {
+            install::discard(&paths);
+            return asked.map(|_| Installed::Refused);
+        }
+    };
+    if let Err(fault) = install::swap(&paths) {
+        report(InstallAction::Failed);
+        return Err(fault);
+    }
+    // Leave that ran out may have let a turn start, so the daemon carries on until restarted.
+    if !report(InstallAction::Restarting) {
+        return Ok(Installed::Waiting);
+    }
+    restarted(release, &paths, restart, world, report)
+}
+
+// Restarts the daemon on the build just swapped in, and puts the old one back when it doesn't
+// come up.
+fn restarted(
+    release: &ReleaseManifest,
+    paths: &Paths,
+    restart: &dyn Fn() -> Result<(), Fault>,
+    world: &World<'_>,
+    mut report: Report,
+) -> Result<Installed, Fault> {
     let restarted = restart();
     if restarted.is_ok() && (world.healthy)(&release.commit) {
-        return Ok(());
+        return Ok(Installed::Running);
     }
-    let rolled_back = install::roll_back(&paths);
+    let rolled_back = install::roll_back(paths);
     // Whichever build is in place, starting it again is all that's left to try.
     drop(restart());
+    // A daemon the restarts never reached lets its turns go on.
+    report(InstallAction::Failed);
     rolled_back?;
     let unhealthy = Fault::new(
         code!("update.unhealthy"),
@@ -235,64 +292,6 @@ fn installed_version(world: &World<'_>, exe: &Path) -> Option<ReleaseVersion> {
     said.split_whitespace().nth(1)?.parse().ok()
 }
 
-fn version_of(binary: &Path) -> io::Result<String> {
-    output_within(Command::new(binary).arg("--version"), ANSWER_WITHIN)
-}
-
-/// What `command` prints, up to 64 KiB, once it ends; it is killed if it takes over `within`.
-/// Its output must end within that time too, even when a process it started holds it open.
-fn output_within(command: &mut Command, within: Duration) -> io::Result<String> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    let mut child = when_free(|| command.spawn())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("no stdout"))?;
-    let (sent, printed) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        drop(
-            sent.send(
-                stdout
-                    .take(64 * 1024)
-                    .read_to_end(&mut bytes)
-                    .map(|_| bytes),
-            ),
-        );
-    });
-    let started = Instant::now();
-    while child.try_wait()?.is_none() {
-        if started.elapsed() >= within {
-            drop(child.kill());
-            child.wait()?;
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let left = within.saturating_sub(started.elapsed());
-    let bytes = printed
-        .recv_timeout(left)
-        .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
-}
-
-/// What `spawn` gives once the program isn't busy. A process another thread forked holds a file
-/// just written open until it starts its own program, as when an agent starts beside an update.
-fn when_free<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
-    for _ in 1..BUSY_TRIES {
-        match spawn() {
-            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
-                std::thread::sleep(BUSY_PAUSE);
-            }
-            spawned => return spawned,
-        }
-    }
-    spawn()
-}
-
 /// A line saying which newer release the daemon found, if it found one.
 pub(crate) fn offer(state_dir: &Path, own: &str) -> Option<String> {
     let own: ReleaseVersion = own.parse().ok()?;
@@ -301,70 +300,9 @@ pub(crate) fn offer(state_dir: &Path, own: &str) -> Option<String> {
         .then(|| format!("Update: weacon {offered} is out. Run `weacon update` to install it."))
 }
 
-/// The daemon's update schedule; none for a build whose version isn't a release's
-/// `major.minor.patch`.
-pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
-    let own = version.parse().ok()?;
-    let hooks = Hooks {
-        latest,
-        launch: |dir| {
-            let env = |key: &str| std::env::var_os(key);
-            service::launch_with(dir, &env, &mut service::system)
-        },
-        now: unix_now,
-    };
-    Some(Watch::new(state_dir.to_owned(), own, hooks))
-}
-
-/// Whether an agent is on a turn, as [`WeakChats::pause_unless_busy`] says, pausing new turns
-/// when none is; an engine that doesn't answer in time counts as busy.
-pub(crate) async fn pause_unless_busy(chats: &WeakChats) -> bool {
-    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.pause_unless_busy()).await;
-    answer.map_or(true, |busy| busy.unwrap_or(true))
-}
-
-/// Lets the engine's turns go on after a check that paused them.
-async fn resume_turns(chats: &WeakChats) {
-    chats.resume_turns().await;
-}
-
-/// Checks for releases on the daemon's schedule while it serves; a build that isn't a
-/// release's checks nothing. It doesn't keep the engine running.
-pub(crate) async fn schedule(
-    state_dir: &Path,
-    version: &str,
-    chats: &WeakChats,
-    log: &Logger,
-) -> ! {
-    match watch(state_dir, version) {
-        Some(updates) => {
-            let (pause, resume) = (|| pause_unless_busy(chats), || resume_turns(chats));
-            updates.run(pause, resume, log).await
-        }
-        None => std::future::pending().await,
-    }
-}
-
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs())
-}
-
 /// The latest release, fetched and checked against the keys every build trusts.
 pub(crate) fn latest() -> Result<ReleaseManifest, Fault> {
     fetch::release(&fetch::https(fetch::MANIFEST_WITHIN), &verify::TRUSTED)
-}
-
-/// Asks `status` of the binary at `exe` up to `tries` times, `pause` apart, until it names
-/// `commit`. The new binary asks, so it speaks the restarted daemon's protocol even when new.
-fn status_names(exe: &Path, commit: &Commit, tries: u32, pause: Duration) -> bool {
-    let wanted = format!("({})", commit.as_str());
-    (0..tries).any(|_| {
-        std::thread::sleep(pause);
-        output_within(Command::new(exe).arg("status"), ANSWER_WITHIN)
-            .is_ok_and(|printed| printed.contains(&wanted))
-    })
 }
 
 const fn schedule_name(schedule: UpdateSchedule) -> &'static str {
@@ -398,6 +336,7 @@ mod tests {
     use std::cell::Cell;
     use std::fs;
     use std::io::Cursor;
+    use std::sync::{Arc, Mutex};
 
     use sha2::{Digest, Sha256};
     use weacon_protocol::{DownloadUrl, ReleaseBuild};
@@ -441,6 +380,12 @@ mod tests {
         restart_fails: bool,
         /// The version `bin/weacon` says it is.
         installed: &'static str,
+        /// What the daemon says when asked for leave: given, refused or no answer.
+        leave: Result<bool, ()>,
+        /// Whether the daemon takes a report, as it doesn't once its leave ran out.
+        takes: bool,
+        asked: Cell<u32>,
+        reports: Arc<Mutex<Vec<InstallAction>>>,
     }
 
     impl Machine {
@@ -453,11 +398,32 @@ mod tests {
                 restarts: Cell::new(0),
                 restart_fails: false,
                 installed: "1.0.0",
+                leave: Ok(true),
+                takes: true,
+                asked: Cell::new(0),
+                reports: Arc::default(),
             }
         }
 
         fn binary(&self) -> String {
             fs::read_to_string(self.dir.join("bin/weacon")).unwrap()
+        }
+
+        fn reports(&self) -> Vec<InstallAction> {
+            self.reports.lock().unwrap().clone()
+        }
+
+        fn ask(&self) -> Result<Option<Report>, Fault> {
+            self.asked.set(self.asked.get() + 1);
+            let (reports, takes) = (Arc::clone(&self.reports), self.takes);
+            let report: Report = Box::new(move |action| {
+                reports.lock().unwrap().push(action);
+                takes
+            });
+            match self.leave {
+                Ok(given) => Ok(given.then_some(report)),
+                Err(()) => Err(Fault::new(code!("update.no_leave"), "x")),
+            }
         }
 
         fn settings(&self) -> Settings {
@@ -483,7 +449,9 @@ mod tests {
             };
             let healthy = |_: &Commit| service.unwrap_or(false);
             let restart: &dyn Fn() -> Result<(), Fault> = &restart;
+            let leave = || self.ask();
             let world = World {
+                leave: &leave,
                 release: &release,
                 get: &get,
                 target: LINUX,
@@ -521,6 +489,67 @@ mod tests {
         assert_eq!(machine.binary(), "new");
         assert_eq!(machine.restarts.get(), 1);
         assert_eq!(machine.settings().last_published, 10);
+        assert_eq!(machine.reports(), [InstallAction::Restarting]);
+    }
+
+    #[test]
+    fn while_a_chat_is_busy_nothing_is_installed_and_the_schedule_tries_again() {
+        let mut machine = Machine::new();
+        machine.leave = Ok(false);
+        let checked = Settings {
+            last_checked: 99,
+            ..Settings::default()
+        };
+        checked.write(&settings::file(&machine.dir)).unwrap();
+        let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        assert_eq!(result.unwrap(), Ending::Findings);
+        assert_eq!(
+            out,
+            "A chat is busy, so weacon 1.2.3 wasn't installed. Run `weacon update` again once \
+             its agent is done.\n"
+        );
+        assert_eq!(machine.binary(), "old");
+        assert_eq!(machine.restarts.get(), 0);
+        assert!(!machine.dir.join("bin/weacon.new").exists());
+        let settings = machine.settings();
+        assert_eq!((settings.last_checked, settings.last_published), (0, 10));
+        assert!(machine.reports().is_empty());
+    }
+
+    #[test]
+    fn a_daemon_that_gives_no_answer_gets_no_install() {
+        let mut machine = Machine::new();
+        machine.leave = Err(());
+        let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        assert_eq!(code(result), "update.no_leave");
+        assert_eq!(machine.binary(), "old");
+        assert_eq!(machine.restarts.get(), 0);
+        assert!(!machine.dir.join("bin/weacon.new").exists());
+    }
+
+    #[test]
+    fn leave_that_ran_out_leaves_the_daemon_running_on_the_old_build() {
+        let mut machine = Machine::new();
+        machine.takes = false;
+        let (result, out) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        assert_eq!(result.unwrap(), Ending::Done);
+        assert_eq!(
+            out,
+            "Installed weacon 1.2.3. Restart the daemon to run it.\n"
+        );
+        assert_eq!(machine.binary(), "new");
+        assert_eq!(machine.restarts.get(), 0);
+    }
+
+    #[test]
+    fn a_swap_that_fails_reports_the_failure() {
+        let machine = Machine::new();
+        fs::create_dir_all(machine.dir.join("bin/weacon.old/in")).unwrap();
+        let (result, _) = machine.update(NOW, Ok(release("1.2.3", 10, PROTOCOL)), Some(true));
+        assert_eq!(code(result), "update.swap_failed");
+        assert_eq!(machine.binary(), "old");
+        assert_eq!(machine.reports(), [InstallAction::Failed]);
+        assert_eq!(machine.restarts.get(), 0);
     }
 
     #[test]
@@ -543,6 +572,11 @@ mod tests {
             "Installed weacon 1.2.3. Restart the daemon to run it.\n"
         );
         assert_eq!(machine.binary(), "new");
+        assert_eq!(
+            machine.asked.get(),
+            0,
+            "a daemon left running needs no leave"
+        );
     }
 
     #[test]
@@ -553,6 +587,8 @@ mod tests {
         assert_eq!(out, "");
         assert_eq!(machine.binary(), "old");
         assert_eq!(machine.restarts.get(), 2);
+        let reports = [InstallAction::Restarting, InstallAction::Failed];
+        assert_eq!(machine.reports(), reports);
     }
 
     #[test]
@@ -674,120 +710,6 @@ mod tests {
         assert_eq!(machine.settings().schedule, UpdateSchedule::Weekly);
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_binary_is_asked_for_its_version() {
-        let dir = TempDir::new().unwrap();
-        let binary = dir.join("weacon");
-        fs::write(&binary, "#!/bin/sh\necho \"asked $1\"\n").unwrap();
-        crate::platform::make_runnable(&binary).unwrap();
-        assert_eq!(version_of(&binary).unwrap(), "asked --version\n");
-        version_of(&dir.join("missing")).unwrap_err();
-    }
-
-    /// A binary in `dir` that answers every command with `line`.
-    #[cfg(unix)]
-    fn answering(dir: &Path, line: &str) -> PathBuf {
-        let binary = dir.join("weacon");
-        fs::write(&binary, format!("#!/bin/sh\necho \"{line}\"\n")).unwrap();
-        crate::platform::make_runnable(&binary).unwrap();
-        binary
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_restarted_daemon_counts_once_its_status_names_the_new_commit() {
-        let dir = TempDir::new().unwrap();
-        let commit = Commit::try_from(COMMIT.to_owned()).unwrap();
-        let new = answering(&dir, &format!("Daemon: running, weacon 1.2.3 ({COMMIT})"));
-        assert!(status_names(&new, &commit, 1, Duration::ZERO));
-        assert!(!status_names(&new, &commit, 0, Duration::ZERO));
-        let old = answering(&dir, "Daemon: running, weacon 1.0.0 (1a2b3c4)");
-        assert!(!status_names(&old, &commit, 3, Duration::ZERO));
-        assert!(!status_names(
-            &dir.join("missing"),
-            &commit,
-            1,
-            Duration::ZERO
-        ));
-    }
-
-    #[test]
-    fn a_program_busy_being_written_is_started_once_it_is_free() {
-        let busy = || io::Error::from(io::ErrorKind::ExecutableFileBusy);
-        let mut tries = 0;
-        let started = when_free(|| {
-            tries += 1;
-            if tries < 3 { Err(busy()) } else { Ok(tries) }
-        });
-        assert_eq!(started.unwrap(), 3);
-
-        let mut tries = 0;
-        let never = when_free(|| -> io::Result<()> {
-            tries += 1;
-            Err(busy())
-        });
-        assert_eq!(never.unwrap_err().kind(), io::ErrorKind::ExecutableFileBusy);
-        assert_eq!(tries, BUSY_TRIES);
-        let mut tries = 0;
-        let other = when_free(|| -> io::Result<()> {
-            tries += 1;
-            Err(io::ErrorKind::NotFound.into())
-        });
-        assert_eq!(
-            (other.unwrap_err().kind(), tries),
-            (io::ErrorKind::NotFound, 1)
-        );
-    }
-
-    // `answer`'s result, failing the test rather than hanging it when it doesn't come in time.
-    #[cfg(unix)]
-    fn soon<T: Send + 'static>(answer: impl FnOnce() -> T + Send + 'static) -> T {
-        let (sent, answered) = mpsc::channel();
-        std::thread::spawn(move || drop(sent.send(answer())));
-        answered.recv_timeout(Duration::from_secs(10)).unwrap()
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_binary_that_hangs_is_killed() {
-        let dir = TempDir::new().unwrap();
-        let hangs = dir.join("hangs");
-        // Far longer than the test waits, so only the deadline can end it in time.
-        fs::write(&hangs, "#!/bin/sh\nexec sleep 60\n").unwrap();
-        crate::platform::make_runnable(&hangs).unwrap();
-        let error = soon(move || output_within(&mut Command::new(&hangs), Duration::ZERO));
-        let error = error.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        let fast = answering(&dir, "quick");
-        let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
-        assert_eq!(printed, "quick\n");
-        let long = answering(&dir, &"x".repeat(5000));
-        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
-        assert_eq!(printed.len(), 5001);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_process_left_holding_the_output_doesnt_hold_the_answer_past_its_time() {
-        let dir = TempDir::new().unwrap();
-        let leaves = dir.join("leaves");
-        let left = dir.join("left");
-        let script = format!(
-            "#!/bin/sh\necho started\nsleep 60 &\necho $! > '{}'\n",
-            left.display()
-        );
-        fs::write(&leaves, script).unwrap();
-        crate::platform::make_runnable(&leaves).unwrap();
-        let answer =
-            soon(move || output_within(&mut Command::new(&leaves), Duration::from_millis(500)));
-        let error = answer.unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        let pid = fs::read_to_string(&left).unwrap();
-        let killed = Command::new("kill").arg(pid.trim()).status().unwrap();
-        assert!(killed.success());
-    }
-
     #[test]
     fn an_update_of_the_same_binary_from_another_state_folder_is_busy() {
         let machine = Machine::new();
@@ -838,48 +760,6 @@ mod tests {
         assert_eq!(offer(&machine.dir, "1.0.0").as_deref(), Some(line));
         assert_eq!(offer(&machine.dir, "1.2.3"), None);
         assert_eq!(offer(&machine.dir, "dev"), None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn turns_paused_for_an_install_start_again_once_resumed() {
-        use crate::chats::test_support::{bench, prompt, soon};
-
-        let mut running = bench();
-        let chats = running.chats.downgrade();
-        assert!(!pause_unless_busy(&chats).await);
-        running.command(prompt("r-1", "Hi")).await.unwrap();
-        assert!(soon(running.started.recv()).await.is_none());
-
-        resume_turns(&chats).await;
-
-        assert!(soon(running.started.recv()).await.is_some());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
-        use crate::chats::test_support::{bench, parts};
-
-        let running = bench();
-        assert!(!pause_unless_busy(&running.chats.downgrade()).await);
-        let (silent, _engine) = parts();
-        assert!(pause_unless_busy(&silent.chats.downgrade()).await);
-        let (stopped, engine) = parts();
-        drop(engine);
-        assert!(pause_unless_busy(&stopped.chats.downgrade()).await);
-        let gone = bench().chats.downgrade();
-        assert!(pause_unless_busy(&gone).await);
-    }
-
-    #[test]
-    fn only_a_build_numbered_like_a_release_watches_for_updates() {
-        let dir = TempDir::new().unwrap();
-        assert!(watch(&dir, "1.2.3").is_some());
-        assert!(watch(&dir, "dev").is_none());
-    }
-
-    #[test]
-    fn the_clock_reads_seconds_since_the_epoch() {
-        assert!((1_700_000_000..4_000_000_000).contains(&unix_now()));
     }
 
     #[test]

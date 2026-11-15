@@ -1,5 +1,5 @@
 //! Whether the daemon may restart now, without cutting an agent off or losing what only
-//! memory holds, and the pause in new turns while an install may restart it.
+//! memory holds, and the pause in new turns while an install that may restart it has leave.
 
 use tokio::sync::oneshot;
 use weacon_protocol::RunState;
@@ -7,15 +7,19 @@ use weacon_protocol::RunState;
 use super::{Agent, Engine};
 
 impl<A: Agent> Engine<A> {
-    // Saves what it can first, so a failed write doesn't keep it busy for good. When nothing
-    // is busy and the asker is there to install, no new turn starts until `resume_turns`.
+    // Saves what it can first, so a failed write doesn't keep it busy for good.
     pub(super) async fn answer_busy(&mut self, answer: oneshot::Sender<bool>) {
         self.save_pending().await;
-        let busy = self.busy();
-        if answer.send(busy).is_err() || busy {
-            return self.resume_turns().await;
-        }
-        if !std::mem::replace(&mut self.installing, true) {
+        answer.send(self.busy()).unwrap_or_default();
+    }
+
+    // Gives leave to install when nothing is busy and no other install holds it; from then on
+    // no new turn starts until `resume_turns`.
+    pub(super) async fn answer_leave(&mut self, answer: oneshot::Sender<bool>) {
+        self.save_pending().await;
+        let given = !self.installing && !self.busy();
+        if answer.send(given).is_ok() && given {
+            self.installing = true;
             self.log.info("turns paused for install", &[]);
         }
     }
@@ -61,7 +65,8 @@ mod tests {
         let (holder, _pushes) = client(1);
         let hold = command("h-1", "c-1", ChatAction::Hold);
         by_hand.chats.command(hold, &holder).await.unwrap();
-        assert!(by_hand.chats.downgrade().pause_unless_busy().await.unwrap());
+        assert!(by_hand.chats.downgrade().busy().await.unwrap());
+        assert!(!by_hand.chats.downgrade().leave().await.unwrap());
 
         let (_bench, mut engine) = parts();
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
@@ -76,10 +81,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn while_an_install_may_run_prompts_queue_holds_are_refused_and_turns_go_on_after() {
+    async fn with_leave_to_install_prompts_queue_holds_are_refused_and_turns_go_on_after() {
         let mut bench = bench();
         let installs = bench.chats.downgrade();
-        assert!(!installs.pause_unless_busy().await.unwrap());
+        assert!(installs.leave().await.unwrap());
+        assert!(!installs.leave().await.unwrap(), "one install at a time");
+        assert!(!installs.busy().await.unwrap(), "leave alone isn't busy");
 
         bench.command(prompt("r-1", "Hi")).await.unwrap();
         let (holder, _pushes) = client(1);
@@ -98,17 +105,17 @@ mod tests {
         );
     }
 
-    // Asks the engine whether it is busy, as an asker that is gone already when `gone`.
+    // Asks the engine for leave, as an asker that is gone already when `gone`.
     async fn asked(engine: &mut Engine<FakeAgent>, gone: bool) {
         let (answer, answered) = oneshot::channel();
         if gone {
             drop(answered);
         }
-        engine.answer_busy(answer).await;
+        engine.answer_leave(answer).await;
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_busy_engine_or_an_asker_gone_pauses_no_turn() {
+    async fn a_busy_engine_or_an_asker_gone_gives_no_leave() {
         let (_bench, mut engine) = parts();
         let other = ChatKey {
             chat: chat("c-2"),
@@ -129,14 +136,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_pause_whose_resume_was_lost_ends_at_the_next_answer_that_starts_no_install() {
+    async fn asking_whether_it_is_busy_pauses_nothing() {
         let (_bench, mut engine) = parts();
-        asked(&mut engine, false).await;
+        let (answer, answered) = oneshot::channel();
+        engine.answer_busy(answer).await;
+        assert!(!answered.await.unwrap());
         engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        assert!(!engine.is_launching(&key()));
-
-        asked(&mut engine, true).await;
-
         assert!(engine.is_launching(&key()));
     }
 }

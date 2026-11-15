@@ -26,6 +26,7 @@ use crate::picks::Picks;
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
 
+mod leave;
 mod route;
 mod worktrees;
 
@@ -240,6 +241,7 @@ struct Connection {
     decoder: LineDecoder,
     client: Client,
     late: worktrees::Late,
+    leave: leave::Leave,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -253,6 +255,7 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
         decoder: LineDecoder::default(),
         client: Client { push },
         late,
+        leave: leave::Leave::default(),
     };
     loop {
         // Until the hello, reading counts against the deadline, as `answer`'s replies do.
@@ -307,6 +310,7 @@ async fn answer(
         decoder,
         client,
         late,
+        leave,
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
@@ -321,7 +325,13 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = route::route(shared, session, received, client, late).await;
+        let reply = match received {
+            Ok(Envelope {
+                id,
+                message: Message::InstallCommand(command),
+            }) if session.greeted() => leave.answer(&shared.chats.downgrade(), id, command).await,
+            received => route::route(shared, session, received, client, late).await,
+        };
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {

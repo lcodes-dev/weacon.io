@@ -87,6 +87,9 @@ export type Envelope = {
   | {
     type: "symbols_answer";
   } & SymbolsAnswer
+  | {
+    type: "install_command";
+  } & InstallCommand
 );
 
 /**
@@ -649,6 +652,29 @@ export type Hunk = {
   lines: Array<DiffLine>;
   new_start: number;
   old_start: number;
+};
+
+export type InstallAction = (
+  | {
+    kind: "leave";
+  }
+  | {
+    kind: "restarting";
+  }
+  | {
+    kind: "failed";
+  }
+);
+
+/**
+ * From `weacon update` to its own core's daemon that offers `update.leave`, over the daemon's
+ * local socket: leave to install a build that restarts the daemon, then how the install went.
+ * The daemon answers each with a [`crate::Receipt`] that echoes `request`, or with the error
+ * `update.chat_busy` when it refuses leave, or `update.no_leave` for a report without leave.
+ */
+export type InstallCommand = {
+  action: InstallAction;
+  request: RequestId;
 };
 
 export type Level = (

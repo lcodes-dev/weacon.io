@@ -9,6 +9,7 @@ mod diff;
 mod doc;
 mod frame;
 mod hex;
+mod install;
 mod log;
 mod machine;
 mod mcp;
@@ -53,6 +54,7 @@ pub use doc::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use hex::to_hex;
+pub use install::{InstallAction, InstallCommand};
 pub use log::{ClientLog, Level, LogEvent};
 pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,

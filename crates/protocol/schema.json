@@ -361,6 +361,19 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "install_command"
+        }
+      },
+      "$ref": "#/$defs/InstallCommand",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -1677,6 +1690,65 @@
         "old_start",
         "new_start",
         "lines"
+      ]
+    },
+    "InstallAction": {
+      "oneOf": [
+        {
+          "description": "Given only while no chat is busy. From then on no turn starts and no chat can be held\nuntil `failed`, until the asker hangs up, or until the leave runs out.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "leave"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The new build is in place and the daemon is about to be restarted; turns stay paused.\nRefused once the leave has run out, so the daemon is then left running.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "restarting"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "The install failed and the build before it is back; turns go on.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "InstallCommand": {
+      "description": "From `weacon update` to its own core's daemon that offers `update.leave`, over the daemon's\nlocal socket: leave to install a build that restarts the daemon, then how the install went.\nThe daemon answers each with a [`crate::Receipt`] that echoes `request`, or with the error\n`update.chat_busy` when it refuses leave, or `update.no_leave` for a report without leave.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/InstallAction"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "action"
       ]
     },
     "Level": {

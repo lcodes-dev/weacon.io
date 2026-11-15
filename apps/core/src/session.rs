@@ -17,6 +17,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("chat.hold")),
     Capability::new(code!("terminal.sign_in")),
     Capability::new(code!("symbols.search")),
+    crate::update::LEAVE,
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -123,6 +124,7 @@ mod tests {
                             Capability::new(code!("chat.hold")),
                             Capability::new(code!("terminal.sign_in")),
                             Capability::new(code!("symbols.search")),
+                            Capability::new(code!("update.leave")),
                         ],
                     }),
                 }),

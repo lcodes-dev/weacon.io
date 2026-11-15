@@ -10,16 +10,16 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{PROTOCOL, ReleaseManifest, ReleaseVersion, UpdateSchedule, code};
 
 use super::settings::{self, Settings};
+use crate::chats::WeakChats;
+use crate::service;
 
 const DAY: u64 = 24 * 60 * 60;
 const WEEK: u64 = 7 * DAY;
 
 /// How often the daemon asks itself whether a check is due.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_hours(1);
-/// How often the daemon looks whether an install it started is over.
-const INSTALL_POLL: Duration = Duration::from_secs(10);
-/// How long an install the daemon started may take to take the update lock.
-const INSTALL_STARTS_WITHIN: Duration = Duration::from_mins(1);
+/// How long the chat engine has to say whether an agent is busy.
+const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
 
 /// The latest release, once its signature checks out.
 pub(crate) type Latest = fn() -> Result<ReleaseManifest, Fault>;
@@ -66,12 +66,11 @@ impl Watch {
     }
 
     /// Checks every [`CHECK_EVERY`], first at once. When a check may install, it first asks
-    /// `busy` whether an agent is on a turn, which pauses new turns when none is, and tells
-    /// `over` once the check, and any install it started that left the daemon running, is done.
-    pub(crate) async fn run<F: Future<Output = bool>, G: Future<Output = ()>>(
+    /// `busy` whether an agent is on a turn; the install it starts asks the daemon for leave
+    /// again before it restarts it.
+    pub(crate) async fn run<F: Future<Output = bool>>(
         mut self,
         busy: impl Fn() -> F,
-        over: impl Fn() -> G,
         log: &Logger,
     ) -> ! {
         let mut ticks = tokio::time::interval(CHECK_EVERY);
@@ -83,31 +82,7 @@ impl Watch {
             let asks = asks.await.unwrap_or_default();
             let busy = if asks { busy().await } else { true };
             let joined = self.start(busy).await;
-            let started = matches!(joined, Ok(Ok(Found::Started(_))));
             self.finished(joined, log);
-            if started {
-                self.wait_for_install().await;
-            }
-            if asks {
-                over().await;
-            }
-        }
-    }
-
-    // Waits for the install it started to take the update lock and let go of it, or never to
-    // take it within `INSTALL_STARTS_WITHIN`; one that restarts the daemon ends this with it.
-    async fn wait_for_install(&self) {
-        let start = tokio::time::Instant::now();
-        let mut seen = false;
-        loop {
-            tokio::time::sleep(INSTALL_POLL).await;
-            let dir = self.state_dir.clone();
-            let free = tokio::task::spawn_blocking(move || super::lock(&dir)).await;
-            let held = matches!(free, Ok(Err(ref fault)) if fault.code() == &code!("update.busy"));
-            seen |= held;
-            if !held && (seen || start.elapsed() >= INSTALL_STARTS_WITHIN) {
-                return;
-            }
         }
     }
 
@@ -277,6 +252,48 @@ fn launched(launch: Launch, state_dir: &Path) -> Result<bool, Fault> {
         )
         .because(error)
     })
+}
+
+/// Whether an agent is on a turn, as [`WeakChats::busy`] says; an engine that doesn't answer
+/// in time counts as busy.
+async fn busy(chats: &WeakChats) -> bool {
+    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
+    answer.map_or(true, |busy| busy.unwrap_or(true))
+}
+
+/// Checks for releases on the daemon's schedule while it serves; a build that isn't a
+/// release's checks nothing. It doesn't keep the engine running.
+pub(crate) async fn schedule(
+    state_dir: &Path,
+    version: &str,
+    chats: &WeakChats,
+    log: &Logger,
+) -> ! {
+    match watch(state_dir, version) {
+        Some(updates) => updates.run(|| busy(chats), log).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The daemon's update schedule; none for a build whose version isn't a release's
+/// `major.minor.patch`.
+fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
+    let own = version.parse().ok()?;
+    let hooks = Hooks {
+        latest: super::latest,
+        launch: |dir| {
+            let env = |key: &str| std::env::var_os(key);
+            service::launch_with(dir, &env, &mut service::system)
+        },
+        now: unix_now,
+    };
+    Some(Watch::new(state_dir.to_owned(), own, hooks))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 #[cfg(test)]
@@ -610,12 +627,7 @@ mod tests {
             version("1.0.0"),
             hooks(UNREACHABLE, STARTS),
         );
-        let (done, mut was_done) = tokio::sync::mpsc::unbounded_channel();
-        let over = move || {
-            done.send(()).unwrap_or_default();
-            std::future::ready(())
-        };
-        let running = tokio::spawn(async move { watch.run(busy, over, &log).await });
+        let running = tokio::spawn(async move { watch.run(busy, &log).await });
 
         // Bounded, so a check that never runs fails the test instead of hanging it.
         let within = Duration::from_secs(10);
@@ -624,45 +636,12 @@ mod tests {
             .unwrap();
         let logged = tokio::time::timeout(within, logged(&records));
         logged.await.unwrap();
-        // A check that started no install lets turns go on at once.
-        tokio::time::timeout(within, was_done.recv()).await.unwrap();
         running.abort();
         assert_eq!(messages(&records), ["update check failed"]);
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn an_install_is_over_once_it_lets_go_of_the_update_lock_it_took() {
-        let dir = TempDir::new().unwrap();
-        let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
-        let installing = super::super::lock(&dir).unwrap();
-        let waiting = tokio::spawn(async move { watch.wait_for_install().await });
-
-        tokio::time::sleep(INSTALL_POLL * 3).await;
-        assert!(
-            !waiting.is_finished(),
-            "over while the install holds the lock"
-        );
-        drop(installing);
-
-        let over = tokio::time::timeout(INSTALL_POLL * 2, waiting);
-        over.await.unwrap().unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_install_that_never_takes_the_lock_is_over_once_it_had_time_to() {
-        let dir = TempDir::new().unwrap();
-        let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
-
-        let early = INSTALL_STARTS_WITHIN.checked_sub(INSTALL_POLL).unwrap();
-        let starting = tokio::time::timeout(early, watch.wait_for_install()).await;
-        starting.unwrap_err();
-        let late = INSTALL_STARTS_WITHIN + INSTALL_POLL * 2;
-        let over = tokio::time::timeout(late, watch.wait_for_install());
-        over.await.unwrap();
-    }
-
     #[test]
-    fn only_a_due_check_on_a_schedule_that_installs_pauses_turns() {
+    fn only_a_due_check_on_a_schedule_that_installs_asks_whether_an_agent_is_busy() {
         let dir = TempDir::new().unwrap();
         with(&dir, UpdateSchedule::Daily, 0);
         assert!(may_install(&dir, NOW));
@@ -682,9 +661,8 @@ mod tests {
             asked.send(()).unwrap_or_default();
             std::future::ready(false)
         };
-        let over = || std::future::ready(());
         let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
-        let running = tokio::spawn(async move { watch.run(busy, over, &log).await });
+        let running = tokio::spawn(async move { watch.run(busy, &log).await });
 
         let within = Duration::from_secs(10);
         tokio::time::timeout(within, logged(&records))
@@ -693,5 +671,38 @@ mod tests {
         running.abort();
         assert_eq!(messages(&records), ["update available"]);
         assert!(was_asked.try_recv().is_err());
+    }
+
+    #[test]
+    fn only_a_build_numbered_like_a_release_watches_for_updates() {
+        let dir = TempDir::new().unwrap();
+        assert!(watch(&dir, "1.2.3").is_some());
+        assert!(watch(&dir, "dev").is_none());
+    }
+
+    #[test]
+    fn the_clock_reads_seconds_since_the_epoch() {
+        assert!((1_700_000_000..4_000_000_000).contains(&unix_now()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
+        use crate::chats::test_support::{bench, parts, prompt, soon};
+
+        let mut running = bench();
+        assert!(!busy(&running.chats.downgrade()).await);
+        running.command(prompt("r-1", "Hi")).await.unwrap();
+        assert!(
+            soon(running.started.recv()).await.is_some(),
+            "paused nothing"
+        );
+        assert!(busy(&running.chats.downgrade()).await);
+        let (silent, _engine) = parts();
+        assert!(busy(&silent.chats.downgrade()).await);
+        let (stopped, engine) = parts();
+        drop(engine);
+        assert!(busy(&stopped.chats.downgrade()).await);
+        let gone = bench().chats.downgrade();
+        assert!(busy(&gone).await);
     }
 }
