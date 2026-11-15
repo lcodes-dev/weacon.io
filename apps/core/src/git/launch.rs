@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use weacon_observability::Fault;
 use weacon_protocol::{RepoId, code};
 
-use super::state::Stores;
+use super::state::{Stores, hold_worktrees};
 use super::{Git, Start, branch, run, text};
 use crate::chats::chat_folder;
 use crate::runs::ChatKey;
@@ -35,7 +35,7 @@ pub(crate) fn chat_tree(
             "The chat's worktree is in the Trash; restore it to go on",
         ));
     }
-    let _held = stores.hold_worktrees()?;
+    let _held = hold_worktrees(workspaces.state_dir())?;
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
         let start = match tree.start {
@@ -152,10 +152,10 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_is_made_only_under_the_workspaces_hold() {
+    fn a_worktree_is_made_only_under_the_cores_hold() {
         let bench = bench();
         // A folder where the hold's lock file goes, so the hold can't be taken.
-        fs::create_dir_all(bench.dir.join("state/workspaces/w-w-1/git/worktrees.lock")).unwrap();
+        fs::create_dir_all(bench.dir.join("state/git/worktrees.lock")).unwrap();
 
         let error = bench.tree(&bench.site).unwrap_err();
 

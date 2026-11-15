@@ -640,7 +640,7 @@ mod tests {
         let (log, _records) = recording_logger();
         // Long enough that the open connection never stalls out before the server is dropped.
         let limits = Limits {
-            stall: Duration::from_secs(600),
+            stall: Duration::from_mins(10),
             connections: 1,
         };
         let (mcp, server) =
