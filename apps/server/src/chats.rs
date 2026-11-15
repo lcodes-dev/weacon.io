@@ -1,6 +1,7 @@
 //! A workspace's chats, which its members' machines run.
 
 mod admit;
+pub(crate) mod answers;
 mod command;
 #[cfg(test)]
 mod end_to_end;
@@ -44,6 +45,8 @@ const LIVE_UPDATES: usize = 4096;
 pub(crate) struct Hub {
     stored: broadcast::Sender<(WorkspaceId, ChatId)>,
     live: broadcast::Sender<ChatLive>,
+    /// The chat commands sent lately, for the refusals their machines answer.
+    pub(crate) sent: std::sync::Arc<answers::Sent>,
 }
 
 impl Default for Hub {
@@ -51,6 +54,7 @@ impl Default for Hub {
         Self {
             stored: broadcast::channel(NOTICES).0,
             live: broadcast::channel(LIVE_UPDATES).0,
+            sent: std::sync::Arc::default(),
         }
     }
 }

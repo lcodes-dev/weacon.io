@@ -5,8 +5,8 @@ mod runs;
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
-    code,
+    ChatEvent, ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState,
+    RunStatus, code,
 };
 
 pub(super) use events::Row;
@@ -219,6 +219,22 @@ impl Workspace {
             return Err(chat_not_found());
         }
         self.append(transaction, chat, events).await
+    }
+
+    /// Stores `event`, which the server writes for a chat's machine, after the chat's last.
+    pub(crate) async fn add_receipt(
+        &self,
+        chat: &ChatId,
+        event: &ChatEvent,
+        at: i64,
+    ) -> Result<(), Fault> {
+        let transaction = self.db.write().await?;
+        let incoming = Incoming {
+            core_seq: None,
+            event,
+            at,
+        };
+        self.append(transaction, chat, &[incoming]).await.map(drop)
     }
 
     /// The workspace's chats, the latest updated first.
