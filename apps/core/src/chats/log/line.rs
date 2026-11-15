@@ -42,8 +42,9 @@ mod tests {
         let line = entry_line(&entry(accepted)).unwrap();
         let newer = entry_line(&entry(ChatEvent::Newer)).unwrap_err();
 
-        assert_eq!(line.iter().filter(|byte| **byte == b'\n').count(), 1);
-        assert!(line.ends_with(b"\n"));
+        let (last, json) = line.split_last().unwrap();
+        assert_eq!(*last, b'\n');
+        assert!(!json.contains(&b'\n'));
         assert_eq!(newer.code().as_str(), "chat.event_unwritable");
     }
 }
