@@ -130,7 +130,7 @@ impl Daemon {
         {
             return Err(failed(error));
         }
-        let (mcp, mcp_server) = mcp::start(&app, &log)?;
+        let (mcp, mcp_server) = mcp::start(&app, &log, mcp::Maps::new(state_dir, &places))?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;

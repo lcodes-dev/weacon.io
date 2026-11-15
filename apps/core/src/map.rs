@@ -29,12 +29,15 @@ pub(crate) fn run(
     let text = match command {
         Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
         Some(MapSubcommand::Symbol { path }) => {
-            tools::answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
+            answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
         }
-        Some(MapSubcommand::Flows) => tools::answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
-        Some(MapSubcommand::Architecture) => tools::answered(&root, budget, Index::architecture)?,
-        Some(MapSubcommand::Contracts) => tools::answered(&root, budget, contracts)?,
-        None => tools::answer(&McpCall::Map(MapArgs { budget }), &root)?,
+        Some(MapSubcommand::Flows) => answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
+        Some(MapSubcommand::DocsFor { path }) => {
+            answer(&McpCall::DocsFor(SymbolArgs { path, budget }), &root)?
+        }
+        Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
+        Some(MapSubcommand::Contracts) => answered(&root, budget, contracts)?,
+        None => answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
     print(out, &text)?;
     Ok(Ending::Done)
@@ -84,6 +87,38 @@ fn check_anchors(
 fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
     out.write_all(text.as_bytes()).map_err(|error| {
         Fault::new(code!("map.output_failed"), "The answer couldn't be printed").because(error)
+    })
+}
+
+/// What the MCP's tool answers to `call` from the code in `folder`, read now; it blocks.
+fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
+    index_folder(folder).map(|(map, _)| tools::answer_from(call, &map))
+}
+
+/// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
+fn answered(
+    folder: &Path,
+    budget: Option<u32>,
+    answer: impl FnOnce(&Index, usize) -> String,
+) -> Result<String, Fault> {
+    let (map, _) = index_folder(folder)?;
+    Ok(if map.crates.is_empty() {
+        tools::NO_MAP.to_owned()
+    } else {
+        answer(&map, tools::budget(budget))
+    })
+}
+
+/// [`answer`], or nothing when the folder has no code map.
+///
+/// # Errors
+/// When the folder can't be read.
+pub(crate) fn map_or_empty(call: &McpCall, folder: &Path) -> Result<String, Fault> {
+    let (map, _) = index_folder(folder)?;
+    Ok(if map.crates.is_empty() {
+        String::new()
+    } else {
+        tools::answer_from(call, &map)
     })
 }
 
@@ -272,7 +307,7 @@ mod tests {
         let root = repo(CRATE);
         let empty = TempDir::new().unwrap();
         let (index, _) = index_folder(&root).unwrap();
-        let tool = |call: McpCall| tools::answer(&call, &root).unwrap();
+        let tool = |call: McpCall| answer(&call, &root).unwrap();
         let view = |root: &Path, view| printed(root, Some(view), None);
 
         let flows = tool(McpCall::Flow(FlowArgs::default()));
@@ -306,7 +341,7 @@ mod tests {
         ));
         let root = repo(&files);
 
-        let flows = tools::answer(&McpCall::Flow(FlowArgs::default()), &root).unwrap();
+        let flows = answer(&McpCall::Flow(FlowArgs::default()), &root).unwrap();
 
         assert_eq!(
             flows,
@@ -314,6 +349,14 @@ mod tests {
              - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
         );
         assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+        let docs_for = MapSubcommand::DocsFor {
+            path: "a::run".to_owned(),
+        };
+        assert_eq!(
+            printed(&root, Some(docs_for), None),
+            "Docs that pin a::run: 1.\n\
+             - docs/run.md:1  Runs flow:a::run->a::m::go, then flow:a::run->a::gone.\n"
+        );
         let docs_only = repo(&[("docs/run.md", "Runs flow:a::run->a::gone.\n")]);
         assert_eq!(
             printed(&docs_only, Some(MapSubcommand::Flows), None),
@@ -330,7 +373,7 @@ mod tests {
     fn map_and_symbol_print_exactly_what_the_tools_answer() {
         let root = repo(CRATE);
         let empty = TempDir::new().unwrap();
-        let tool = |call: McpCall, root: &Path| tools::answer(&call, root).unwrap();
+        let tool = |call: McpCall, root: &Path| answer(&call, root).unwrap();
         let go = || SymbolArgs {
             path: "a::m::go".into(),
             budget: None,
@@ -365,10 +408,7 @@ mod tests {
         let cut = printed(&root, None, Some(1000));
 
         assert_ne!(cut, whole);
-        assert_eq!(
-            cut,
-            tools::answer(&McpCall::Map(cut_by_tool), &root).unwrap()
-        );
+        assert_eq!(cut, answer(&McpCall::Map(cut_by_tool), &root).unwrap());
     }
 
     #[test]
