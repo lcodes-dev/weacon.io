@@ -284,7 +284,7 @@ function WorkspaceChats({
     <div className="workspace">
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
-        <ChatsNav loaded={listed} chosen={place.chat} choose={(chat) => go({ view: "chats", chat })} />
+        <ChatsNav loaded={listed} names={names} chosen={place.chat} choose={(chat) => go({ view: "chats", chat })} />
       </div>
       <section>
         <Heading title={open?.title ?? workspace.name} status={status} />
