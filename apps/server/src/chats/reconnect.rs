@@ -609,7 +609,7 @@ mod tests {
             .unwrap_err();
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        assert!(request.refused && request.attempt == 1, "{request:?}");
+        assert!(request.refused && request.attempt == 0, "{request:?}");
         // Sent again by a member since the pick-up read it: that send's answer counts.
         workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
         let receipt = Receipt {
@@ -650,11 +650,12 @@ mod tests {
         again(shared, workspace, &gone, &chat, stale)
             .await
             .unwrap_err();
-        workspace.forget_request(&id("r-c-1"), 2).await.unwrap();
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
         assert!(request.sent, "{request:?}");
         assert_eq!(sent(&mut newer), [resent("c-1")]);
+        // The send that went out is still the one its core's answers count for.
+        assert!(workspace.mark_refused(&id("r-c-1"), 1).await.unwrap());
     }
 
     #[tokio::test]

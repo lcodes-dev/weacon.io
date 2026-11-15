@@ -100,7 +100,12 @@ async fn start(
         link::follow(workspace.id(), &command.chat, 0),
     ];
     if let Err(fault) = link::send_all(shared, chat.machine_id, sent.into(), attempt.number) {
-        workspace.forget_chat(&command.chat, attempt.number).await?;
+        // A pick-up that began sending it first makes the chat, or takes it back.
+        if attempt.number == 1 {
+            workspace.forget_chat(&command.chat, attempt.number).await?;
+        } else {
+            workspace.abandon(&command.request, attempt).await?;
+        }
         return Err(fault);
     }
     workspace.queued(&command.request, attempt).await?;
@@ -175,10 +180,13 @@ async fn go_on(
         link::follow(workspace.id(), &command.chat, chat.core_seq),
     ];
     if let Err(fault) = link::send_all(shared, &chat.machine, sent.into(), attempt.number) {
-        if recorded == Recorded::New {
+        // Forgotten only if no other attempt was ever made, by a pick-up or a retry.
+        if recorded == Recorded::New && attempt.number == 1 {
             workspace
                 .forget_request(&command.request, attempt.number)
                 .await?;
+        } else {
+            workspace.abandon(&command.request, attempt).await?;
         }
         return Err(fault);
     }
@@ -331,6 +339,28 @@ mod tests {
         assert_eq!(sent(&mut serving).len(), 2);
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
         assert!(open.iter().all(|request| !request.refused), "{open:?}");
+    }
+
+    #[tokio::test]
+    async fn a_retry_that_cant_be_sent_leaves_the_send_that_went_out_answerable() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let ask = |command| take(&ada.member, &ada.asker, shared, command);
+        let serving = attach(shared, &ada, &["chat.serve"]);
+        assert_eq!(
+            ask(prompt("r-2", "c-1", "Go", None)).await.unwrap(),
+            accepted("r-2")
+        );
+        drop(serving);
+
+        let retried = ask(prompt("r-2", "c-1", "Go", None)).await;
+
+        assert_eq!(retried.unwrap_err().code().as_str(), "machine.offline");
+        assert!(workspace.mark_refused(&id("r-2"), 1).await.unwrap());
     }
 
     #[tokio::test]

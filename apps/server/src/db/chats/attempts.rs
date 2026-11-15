@@ -62,10 +62,11 @@ impl Workspace {
         Ok(())
     }
 
-    /// Marks `attempt` of `request`, which failed to go out, no longer in flight.
+    /// Gives up `attempt` of `request`, which never went out: unless another began since, the
+    /// one before it is current again, so its answers still count.
     pub(crate) async fn abandon(&self, request: &RequestId, attempt: Attempt) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET attempt_at = 0
+            "UPDATE chat_requests SET attempt = attempt - 1, attempt_at = 0
              WHERE workspace_id = ? AND request_id = ? AND attempt = ?",
         )
         .bind(self.id.as_str())
