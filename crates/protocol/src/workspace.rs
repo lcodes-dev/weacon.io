@@ -34,7 +34,7 @@ pub enum WorkspaceRole {
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
     /// nothing.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -98,7 +98,7 @@ pub enum WorkspaceChange {
     /// `workspace.proposals`, which read the proposals again.
     ProposalChanged { proposal: ProposalId },
     /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

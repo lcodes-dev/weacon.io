@@ -13,7 +13,7 @@ pub enum AgentKind {
     Claude,
     Codex,
     /// An agent this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -95,21 +95,9 @@ pub enum RunEvent {
         outcome: Outcome,
     },
     /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
-}
-
-impl RunEvent {
-    pub(crate) const fn is_newer(&self) -> bool {
-        matches!(
-            self,
-            Self::Newer
-                | Self::Finished {
-                    outcome: Outcome::Newer
-                }
-        )
-    }
 }
 
 /// One event of the run `run`, in the order the run reported it, from the core to clients that
@@ -160,17 +148,9 @@ pub enum AgentOwner {
     /// The workspace's shared agent, under the workspace's own credential.
     Shared,
     /// An owner this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
-}
-
-impl AgentRef {
-    /// Whether its kind or owner is one this build doesn't know.
-    #[must_use]
-    pub const fn is_newer(&self) -> bool {
-        matches!(self.kind, AgentKind::Newer) || matches!(self.owner, AgentOwner::Newer)
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -189,16 +169,9 @@ pub enum RunState {
     /// Over for good.
     Ended,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
-}
-
-impl RunStatus {
-    pub(crate) const fn is_newer(&self) -> bool {
-        matches!(self.state, RunState::Newer)
-            || matches!(&self.agent, Some(agent) if agent.is_newer())
-    }
 }
 
 #[cfg(test)]
@@ -309,7 +282,6 @@ mod tests {
 
         for (status, wire) in cases {
             round_trips(&status, wire);
-            assert!(!status.is_newer());
         }
         let newer = |agent: Value| {
             serde_json::from_value::<RunStatus>(
@@ -319,7 +291,8 @@ mod tests {
         let robot = newer(json!({ "kind": "robot", "owner": { "kind": "shared" } })).unwrap();
         let team =
             newer(json!({ "kind": "claude", "owner": { "kind": "team", "id": 1 } })).unwrap();
-        assert!(robot.is_newer() && team.is_newer());
+        serde_json::to_value(&robot).unwrap_err();
+        serde_json::to_value(&team).unwrap_err();
         assert_eq!(team.agent.map(|agent| agent.owner), Some(AgentOwner::Newer));
         newer(json!({ "kind": "claude" })).unwrap_err();
         newer(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();

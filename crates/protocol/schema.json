@@ -371,7 +371,7 @@
       "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "AccountSignInFinish": {
       "description": "Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,\nfor an [`AccountSignedIn`].",
@@ -592,7 +592,7 @@
       "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "Bytes": {
       "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
@@ -608,7 +608,7 @@
       "description": "One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,\ndigits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatAction": {
       "oneOf": [
@@ -941,7 +941,7 @@
       "description": "A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatList": {
       "description": "A workspace's chats, from the server, to clients that have the capability\n`workspace.chats`.",
@@ -1411,7 +1411,7 @@
       "description": "A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "DocList": {
       "description": "A workspace's docs, from the server.",
@@ -1709,7 +1709,7 @@
       "description": "A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MachineKey": {
       "description": "A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex\ndigits. A browser pins it when the person confirms the pairing.",
@@ -2000,7 +2000,7 @@
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MemberList": {
       "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`.",
@@ -2334,7 +2334,7 @@
       "description": "One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`\nor `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "PermissionAnswer": {
       "description": "A person's answer to a [`RunEvent::PermissionAsked`].",
@@ -2371,10 +2371,7 @@
         },
         "screenshot_png": {
           "description": "What the element looked like: a PNG, base64-encoded. None when the page couldn't be\ncaptured.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "selector": {
           "description": "A CSS selector that finds the element on the page.",
@@ -2642,7 +2639,7 @@
       "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects: sending it again with the same change is the same proposal, while the same\nid with another change, or from another machine, is refused with `proposal.conflict`.\n1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ProposalList": {
       "description": "A workspace's proposals, newest first, from the server.",
@@ -3009,13 +3006,13 @@
       "description": "A git repository the owner registered for a workspace on their machine, 1–64 ASCII\nletters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RequestId": {
       "description": "A command's id, chosen by the client and kept across reconnects and retries. Sending the\nsame id again returns the first receipt instead of repeating the work; the same id with\ndifferent content is refused with the error `request.conflict`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RunEvent": {
       "description": "What an agent's run reports, in order. Each turn ends with `finished`.",
@@ -3204,7 +3201,7 @@
       "description": "The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.\nPrompts carry it, so an answer only ever reaches the run that asked.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RunState": {
       "oneOf": [
@@ -3604,7 +3601,7 @@
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "TaskList": {
       "description": "A workspace's tasks in their order, from the server.",
@@ -3805,7 +3802,7 @@
       "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "TerminalInput": {
       "description": "From the browser to the core, only inside the seal.",
@@ -4049,7 +4046,7 @@
       "description": "A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "WorkspaceList": {
       "description": "The workspaces the signed-in account is a member of.",

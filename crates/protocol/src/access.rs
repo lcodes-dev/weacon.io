@@ -13,7 +13,7 @@ pub enum AccessLevel {
     /// Agents change things without asking; destructive operations still ask.
     Full,
     /// A level this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

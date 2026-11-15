@@ -55,7 +55,7 @@ pub(crate) fn header<'a>(head: &'a [String], name: &str) -> Option<&'a str> {
 /// Starts a sign-in for `email`: the answer's status line, and its challenge.
 pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, ChallengeId) {
     let start = body(&AccountSignInStart {
-        email: email.to_owned(),
+        email: email.into(),
     });
     let (head, body) = request(address, "POST /api/sign-in", &start).await;
     let started: SignInStarted = serde_json::from_str(&body).unwrap();
@@ -65,8 +65,8 @@ pub(crate) async fn start_sign_in(address: SocketAddr, email: &str) -> (String, 
 /// A `POST /api/sign-in/finish` body.
 pub(crate) fn finish_body(email: &str, challenge: &ChallengeId, code: &str) -> String {
     body(&AccountSignInFinish {
-        email: email.to_owned(),
-        code: code.to_owned(),
+        email: email.into(),
+        code: code.into(),
         challenge: challenge.clone(),
     })
 }
@@ -154,9 +154,7 @@ pub(crate) async fn start_pairing(address: SocketAddr, os: MachineOs) -> (String
 
 /// A `POST /api/machines/pair/lookup` body.
 pub(crate) fn lookup_body(code: &str) -> String {
-    body(&PairLookup {
-        code: code.to_owned(),
-    })
+    body(&PairLookup { code: code.into() })
 }
 
 /// A `POST /api/machines/pair/confirm` body for `started`, with its code.

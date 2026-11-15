@@ -990,10 +990,7 @@ export type Pick = {
    * What the element looked like: a PNG, base64-encoded. None when the page couldn't be
    * captured.
    */
-  screenshot_png?: (
-    | string
-    | null
-  );
+  screenshot_png?: string;
   /**
    * A CSS selector that finds the element on the page.
    */
