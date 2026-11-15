@@ -19,9 +19,9 @@ test("hits list in the server's order, each opening its place, and a newer kind 
     listed(hits).map(({ key, kind, title, place }) => [key, kind, title, place]),
     [
       ["doc:d-1", "Doc", "Plan", { view: "docs", doc: "d-1" }],
-      ["chat:c-1:3", "Chat", "Fix the build", { view: "chats", chat: "c-1" }],
+      ["chat:c-1:3", "Chat", "Fix the build", { view: "chats", chat: "c-1", at: 3 }],
       ["chat:c-1:", "Chat", "Fix the build", { view: "chats", chat: "c-1" }],
-      ["task:t-1", "Task", "Ship", { view: "tasks" }],
+      ["task:t-1", "Task", "Ship", { view: "tasks", task: "t-1" }],
     ],
   );
 });

@@ -197,6 +197,7 @@ mod tests {
             run: "run-1".parse().unwrap(),
             session: None,
             repo: Some("site".parse().unwrap()),
+            task: None,
         };
 
         let repo = run_as.repo.as_ref();
@@ -266,6 +267,7 @@ mod tests {
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
             repo: None,
+            task: None,
         };
         let run = |bin: &str| {
             let places = places(bin);
@@ -305,6 +307,7 @@ mod tests {
             run: weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap(),
             session: None,
             repo: None,
+            task: None,
         };
 
         let codex = RunAs {

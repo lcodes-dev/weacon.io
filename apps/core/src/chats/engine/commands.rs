@@ -76,6 +76,7 @@ impl<A: Agent> Engine<A> {
                 text,
                 repo,
                 agent: named,
+                task,
                 ..
             } => {
                 let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
@@ -95,6 +96,7 @@ impl<A: Agent> Engine<A> {
                         text: text.clone(),
                         repo,
                         agent: named,
+                        task,
                     };
                     self.commit(key, prompt).await?;
                 }
@@ -366,6 +368,38 @@ mod tests {
             .await
             .unwrap();
         engine.command(&key(), prompt("r-4", "Go")).await.unwrap();
+    }
+
+    fn with_task(mut asked: ChatCommand, task: weacon_protocol::ChatTask) -> ChatCommand {
+        if let ChatAction::Prompt { task: named, .. } = &mut asked.action {
+            *named = Some(task);
+        }
+        asked
+    }
+
+    #[tokio::test]
+    async fn a_run_starts_with_the_task_its_chats_first_prompt_named() {
+        let (mut bench, mut engine) = parts();
+        let task = |id: &str| weacon_protocol::ChatTask {
+            id: id.parse().unwrap(),
+            title: "Speed up the build".to_owned(),
+        };
+        let for_task = |request: &str, id: &str| with_task(prompt(request, "Hi"), task(id));
+
+        engine
+            .command(&key(), for_task("r-1", "t-1"))
+            .await
+            .unwrap();
+        launched(&mut engine).await;
+        engine
+            .command(&key(), for_task("r-2", "t-2"))
+            .await
+            .unwrap();
+
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.run_as.task, Some(task("t-1")));
+        let log = &engine.open(&key()).await.unwrap().log;
+        assert_eq!(log.task(), Some(&task("t-1")));
     }
 
     #[tokio::test]

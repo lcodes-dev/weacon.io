@@ -30,12 +30,12 @@ test("the open chat's machine is asked when it offers symbols, else the first ma
     machine("mc-5", "Quiet", { silent: true }),
   ];
 
-  assert.equal(searcher(machines, "Server"), "mc-3");
-  assert.equal(searcher(machines, "Laptop"), "mc-2");
-  assert.equal(searcher(machines, "Old"), "mc-2");
-  assert.equal(searcher(machines, "Quiet"), "mc-2");
+  assert.equal(searcher(machines, "mc-3"), "mc-3");
+  assert.equal(searcher(machines, "mc-1"), "mc-2");
+  assert.equal(searcher(machines, "mc-4"), "mc-2");
+  assert.equal(searcher(machines, "mc-5"), "mc-2");
   assert.equal(searcher(machines, undefined), "mc-2");
-  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], "Laptop"), undefined);
+  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], "mc-1"), undefined);
   assert.equal(searcher([], undefined), undefined);
 });
 
