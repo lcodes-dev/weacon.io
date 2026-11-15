@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, code};
+use weacon_protocol::{
+    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, code,
+};
 
 use super::worktrees::{self, Late};
 use super::{Shared, command_chat, query_chat};
@@ -199,15 +201,26 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
         }
         Message::SessionsQuery(query) => sessions(host, query).await,
         Message::DiffQuery(query) => {
-            let files = worktrees.diff(query).await;
+            let files = async {
+                owners(host, query.by.as_ref()).await?;
+                worktrees.diff(query).await
+            };
+            let files = files.await;
             let files = files.map(|files| files.into_iter().map(Message::DiffAnswer).collect());
             return replies(host, id, files);
         }
-        Message::WorktreeQuery(query) => worktrees.query(query).await.map(Message::WorktreeAnswer),
-        Message::WorktreeCommand(command) => worktrees
-            .command(command)
-            .await
-            .map(Message::WorktreeAnswer),
+        Message::WorktreeQuery(query) => async {
+            owners(host, query.by.as_ref()).await?;
+            worktrees.query(query).await
+        }
+        .await
+        .map(Message::WorktreeAnswer),
+        Message::WorktreeCommand(command) => async {
+            owners(host, command.by.as_ref()).await?;
+            worktrees.command(command).await
+        }
+        .await
+        .map(Message::WorktreeAnswer),
         _ => Err(Fault::new(
             code!("request.unknown"),
             "This core doesn't answer that request",
@@ -244,6 +257,18 @@ async fn sessions(host: &Host, query: SessionsQuery) -> Result<Message, Fault> {
     }
     let answer = host.outside.answer(query, &host.log).await?;
     Ok(Message::SessionsAnswer(answer))
+}
+
+// The uplink checks the owner it connected with; a re-pairing since is caught here.
+async fn owners(host: &Host, by: Option<&Asker>) -> Result<(), Fault> {
+    let owner = owner(host).await?;
+    if by.is_none_or(|by| by.account != owner.account) {
+        return Err(Fault::new(
+            code!("machine.not_owner"),
+            "Only this machine's owner can ask that",
+        ));
+    }
+    Ok(())
 }
 
 /// The machine and its owner, as the pairing kept now says.
@@ -312,11 +337,15 @@ mod tests {
     }
 
     fn pair(dir: &TempDir) {
+        pair_to(dir, "a-1");
+    }
+
+    fn pair_to(dir: &TempDir, owner: &str) {
         let paired = Paired {
             server: "https://weacon.example.com".to_owned(),
             pinned: None,
             machine: id("mc-1"),
-            owner: id("a-1"),
+            owner: id(owner),
             token: "t0ken".to_owned(),
             key: Key::from_random([7; 32]),
         };
@@ -419,6 +448,7 @@ mod tests {
         use weacon_protocol::{DiffQuery, DiffQueryKind};
 
         let dir = TempDir::new().unwrap();
+        pair(&dir);
         let (mut asked, _) = host(&dir);
         let (worktrees, workspace, chat, worktree) = crate::git::service::with_chat(&dir);
         asked.worktrees = worktrees;
@@ -459,34 +489,63 @@ mod tests {
         (reply.id, files, file.path)
     }
 
+    // Each reaches the worktrees, which find no worktree, until the pairing names another owner.
     #[tokio::test]
-    async fn a_relayed_worktree_ask_for_a_chat_without_one_is_refused_under_its_id() {
+    async fn relayed_worktree_asks_reach_the_worktrees_only_from_the_current_owner() {
         let dir = TempDir::new().unwrap();
+        pair(&dir);
         let (mut asked, _) = host(&dir);
         let (worktrees, workspace, _, _) = crate::git::service::with_chat(&dir);
         asked.worktrees = worktrees;
-        let none = Message::WorktreeQuery(weacon_protocol::WorktreeQuery {
-            request: id("r-2"),
-            workspace,
-            chat: id("c-2"),
-            query: weacon_protocol::WorktreeQueryKind::State,
-            by: Some(by("a-1")),
-        });
 
-        let refused = one(
-            &asked,
-            Envelope {
-                id: 9,
-                message: none,
-            },
-        )
-        .await;
+        let owners = codes(&asked, worktree_asks(&workspace)).await;
+        pair_to(&dir, "a-2");
+        let former = codes(&asked, worktree_asks(&workspace)).await;
 
-        assert_eq!(refused.id, 9);
-        assert_eq!(
-            test_support::error_code(&refused.message),
-            Some("worktree.none")
-        );
+        assert_eq!(owners, vec![Some("worktree.none".to_owned()); 3]);
+        assert_eq!(former, vec![Some("machine.not_owner".to_owned()); 3]);
+    }
+
+    fn worktree_asks(workspace: &weacon_protocol::WorkspaceId) -> [Message; 3] {
+        use weacon_protocol::{ChatId, RequestId, WorktreeQuery, WorktreeQueryKind};
+        use weacon_protocol::{DiffQuery, DiffQueryKind, WorktreeAction, WorktreeCommand};
+
+        let (request, chat): (RequestId, ChatId) = (id("r-2"), id("c-2"));
+        let by = Some(by("a-1"));
+        [
+            Message::DiffQuery(DiffQuery {
+                request: request.clone(),
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                query: DiffQueryKind::Changes,
+                by: by.clone(),
+            }),
+            Message::WorktreeQuery(WorktreeQuery {
+                request: request.clone(),
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                query: WorktreeQueryKind::State,
+                by: by.clone(),
+            }),
+            Message::WorktreeCommand(WorktreeCommand {
+                request,
+                workspace: workspace.clone(),
+                chat,
+                action: WorktreeAction::Remove,
+                by,
+            }),
+        ]
+    }
+
+    // The error code of each ask's one reply, which comes back under its envelope id.
+    async fn codes(asked: &Asked, asks: [Message; 3]) -> Vec<Option<String>> {
+        let mut codes = Vec::new();
+        for message in asks {
+            let reply = one(asked, Envelope { id: 9, message }).await;
+            assert_eq!(reply.id, 9);
+            codes.push(test_support::error_code(&reply.message).map(str::to_owned));
+        }
+        codes
     }
 
     fn sessions(by: Option<&str>, query: SessionsQueryKind) -> Envelope {
