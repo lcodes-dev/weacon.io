@@ -62,10 +62,12 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             },
             app.log.clone(),
         )?;
+        // One for both, so a relayed removal and a local one share their journal's lock.
+        let worktrees = daemon.shared.worktrees.clone();
         let serve = async {
             tokio::select! {
                 () = daemon.serve(signals.wait()) => {}
-                never = Box::pin(route::server(app, state_dir)) => match never {},
+                never = Box::pin(route::server(app, state_dir, worktrees)) => match never {},
             }
         };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;

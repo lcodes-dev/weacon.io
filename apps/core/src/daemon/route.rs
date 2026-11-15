@@ -10,6 +10,7 @@ use weacon_protocol::{Envelope, FrameError, Message, code};
 use super::worktrees::{self, Late};
 use super::{Shared, command_chat, keep, query_chat};
 use crate::chats::feed::Client;
+use crate::git::service::Worktrees;
 use crate::machine_settings::{self, Host, Identity};
 use crate::session::{Reply, Session};
 use crate::uplink::{self, failure, refusal};
@@ -47,7 +48,7 @@ pub(super) async fn route(
 
 /// Keeps the machine connected to its server, and answers what the server asks, for as long
 /// as the daemon runs.
-pub(super) async fn server(app: &app::App, state_dir: &Path) -> ! {
+pub(super) async fn server(app: &app::App, state_dir: &Path, worktrees: Worktrees) -> ! {
     let (to_daemon, asks) = mpsc::channel(uplink::QUEUE);
     let (replies, from_daemon) = mpsc::channel(uplink::QUEUE);
     let host = Host {
@@ -58,33 +59,41 @@ pub(super) async fn server(app: &app::App, state_dir: &Path) -> ! {
     };
     tokio::select! {
         never = Box::pin(uplink::new(app, state_dir, to_daemon).run(from_daemon)) => match never {},
-        never = uplink(host, asks, replies) => match never {},
+        never = uplink(Asked { host, worktrees }, asks, replies) => match never {},
     }
+}
+
+/// What answers the server's asks: the machine's settings and its chats' worktrees.
+#[derive(Clone)]
+pub(super) struct Asked {
+    pub(super) host: Host,
+    pub(super) worktrees: Worktrees,
 }
 
 /// Answers each ask the uplink hands over, under its envelope id: queries on tasks of their
 /// own, a few at once, and commands one after another in the order they came.
 pub(super) async fn uplink(
-    host: Host,
+    asked: Asked,
     mut asks: mpsc::Receiver<Envelope>,
     replies: mpsc::Sender<Envelope>,
 ) -> ! {
     let (commands, in_order) = mpsc::channel(uplink::QUEUE);
-    tokio::spawn(one_by_one(host.clone(), in_order, replies.clone()));
+    tokio::spawn(one_by_one(asked.clone(), in_order, replies.clone()));
     let room = Arc::new(Semaphore::new(QUERIES_AT_ONCE));
     while let Some(ask) = asks.recv().await {
-        if matches!(ask.message, Message::MachineSettingsCommand(_)) {
+        if matches!(
+            ask.message,
+            Message::MachineSettingsCommand(_) | Message::WorktreeCommand(_)
+        ) {
             drop(commands.send(ask).await);
             continue;
         }
-        let (host, replies, room) = (host.clone(), replies.clone(), Arc::clone(&room));
+        let (asked, replies, room) = (asked.clone(), replies.clone(), Arc::clone(&room));
         tokio::spawn(async move {
             let Ok(_turn) = room.acquire().await else {
                 return;
             };
-            if let Some(reply) = relayed(&host, ask).await {
-                drop(replies.send(reply).await);
-            }
+            send_all(&replies, relayed(&asked, ask).await).await;
         });
     }
     // The uplink holds the other end for as long as the daemon runs.
@@ -92,46 +101,71 @@ pub(super) async fn uplink(
 }
 
 async fn one_by_one(
-    host: Host,
+    asked: Asked,
     mut commands: mpsc::Receiver<Envelope>,
     replies: mpsc::Sender<Envelope>,
 ) {
     while let Some(command) = commands.recv().await {
-        if let Some(reply) = relayed(&host, command).await {
-            drop(replies.send(reply).await);
+        send_all(&replies, relayed(&asked, command).await).await;
+    }
+}
+
+async fn send_all(replies: &mpsc::Sender<Envelope>, answers: Vec<Envelope>) {
+    for answer in answers {
+        if replies.send(answer).await.is_err() {
+            return;
         }
     }
 }
 
-/// The reply to an ask the server relays; none to an error it sends of its own, which a reply
-/// would only echo.
-async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
+/// The replies to an ask the server relays, in order: a chat's changes are one a file. None to
+/// an error it sends of its own, which a reply would only echo. The uplink lets through only
+/// the owner's asks.
+async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
     let Envelope { id, message } = ask;
-    let answered = if let Message::Error(_) = message {
-        return None;
+    let Asked { host, worktrees } = asked;
+    let answered: Result<Vec<Message>, Fault> = if let Message::Error(_) = message {
+        return Vec::new();
     } else if let Message::ChatCommand(command) = message {
-        return Some(refusal(id, &command, code!("chat.unavailable")));
+        return vec![refusal(id, &command, code!("chat.unavailable"))];
     } else if let Message::MachineSettingsQuery(query) = message {
-        async { machine_settings::query(host, &owner(host).await?, query).await }.await
+        async { machine_settings::query(host, &owner(host).await?, query).await }
+            .await
+            .map(|answer| vec![Message::MachineSettingsAnswer(answer)])
     } else if let Message::MachineSettingsCommand(command) = message {
-        async { machine_settings::command(host, &owner(host).await?, command).await }.await
+        async { machine_settings::command(host, &owner(host).await?, command).await }
+            .await
+            .map(|answer| vec![Message::MachineSettingsAnswer(answer)])
+    } else if let Message::DiffQuery(query) = message {
+        let answers = worktrees.diff(query).await;
+        answers.map(|answers| answers.into_iter().map(Message::DiffAnswer).collect())
+    } else if let Message::WorktreeQuery(query) = message {
+        worktrees
+            .query(query)
+            .await
+            .map(|answer| vec![Message::WorktreeAnswer(answer)])
+    } else if let Message::WorktreeCommand(command) = message {
+        worktrees
+            .command(command)
+            .await
+            .map(|answer| vec![Message::WorktreeAnswer(answer)])
     } else {
         Err(Fault::new(
             code!("request.unknown"),
             "This core doesn't answer that request",
         ))
     };
-    Some(answered.map_or_else(
-        |fault| {
+    match answered {
+        Ok(messages) => messages
+            .into_iter()
+            .map(|message| Envelope { id, message })
+            .collect(),
+        Err(fault) => {
             host.log
                 .warn("ask failed", &[("err", Field::error(&fault))]);
-            failure(id, fault.code().clone())
-        },
-        |answer| Envelope {
-            id,
-            message: Message::MachineSettingsAnswer(answer),
-        },
-    ))
+            vec![failure(id, fault.code().clone())]
+        }
+    }
 }
 
 /// The machine and its owner, as the pairing kept now says.
@@ -170,7 +204,7 @@ mod tests {
         T::try_from(id.to_owned()).unwrap()
     }
 
-    fn host(dir: &TempDir) -> (Host, weacon_testing::Records) {
+    fn host(dir: &TempDir) -> (Asked, weacon_testing::Records) {
         let app = test_support::app(Some(dir), None);
         let (log, records) = test_support::recording_logger();
         let host = Host {
@@ -179,7 +213,16 @@ mod tests {
             reporter: Arc::clone(&app.reporter),
             log,
         };
-        (host, records)
+        let no_trash = |_: &Path, _| Err(std::io::ErrorKind::Unsupported.into());
+        let worktrees = Worktrees::new(dir, None, None, no_trash);
+        (Asked { host, worktrees }, records)
+    }
+
+    // The one reply to `ask`.
+    async fn one(asked: &Asked, ask: Envelope) -> Envelope {
+        let mut replies = relayed(asked, ask).await;
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        replies.remove(0)
     }
 
     fn pair(dir: &TempDir) {
@@ -220,7 +263,7 @@ mod tests {
         pair(&dir);
         let (host, records) = host(&dir);
 
-        let reply = relayed(&host, settings("a-1")).await.unwrap();
+        let reply = one(&host, settings("a-1")).await;
 
         assert_eq!(reply.id, 7);
         let Message::MachineSettingsAnswer(answer) = reply.message else {
@@ -239,9 +282,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (host, records) = host(&dir);
 
-        let unpaired = relayed(&host, settings("a-1")).await.unwrap();
+        let unpaired = one(&host, settings("a-1")).await;
         pair(&dir);
-        let stranger = relayed(&host, settings("a-2")).await.unwrap();
+        let stranger = one(&host, settings("a-2")).await;
 
         assert_eq!(unpaired.id, 7);
         assert_eq!(
@@ -289,8 +332,8 @@ mod tests {
             }),
         };
 
-        let refused = relayed(&host, command).await.unwrap();
-        let unknown = relayed(&host, other).await.unwrap();
+        let refused = one(&host, command).await;
+        let unknown = one(&host, other).await;
         let echoed = relayed(&host, error).await;
 
         let Message::Receipt(receipt) = refused.message else {
@@ -308,7 +351,82 @@ mod tests {
             test_support::error_code(&unknown.message),
             Some("request.unknown")
         );
-        assert_eq!(echoed, None);
+        assert_eq!(echoed, []);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_diff_comes_back_a_file_to_a_reply_under_its_envelope_id() {
+        use weacon_protocol::{DiffQuery, DiffQueryKind};
+
+        let dir = TempDir::new().unwrap();
+        let (mut asked, _) = host(&dir);
+        let (worktrees, workspace, chat, worktree) = crate::git::service::with_chat(&dir);
+        asked.worktrees = worktrees;
+        for name in ["a.md", "b.md"] {
+            std::fs::write(worktree.join(name), "mine\n").unwrap();
+        }
+        let diff = Message::DiffQuery(DiffQuery {
+            request: id("r-1"),
+            workspace,
+            chat,
+            query: DiffQueryKind::Changes,
+            by: Some(by("a-1")),
+        });
+
+        let files = relayed(
+            &asked,
+            Envelope {
+                id: 8,
+                message: diff,
+            },
+        )
+        .await;
+
+        let paths: Vec<(u32, u32, String)> = files.into_iter().map(file_of).collect();
+        assert_eq!(
+            paths,
+            [(8, 2, "a.md".to_owned()), (8, 2, "b.md".to_owned())]
+        );
+    }
+
+    fn file_of(reply: Envelope) -> (u32, u32, String) {
+        let Message::DiffAnswer(answer) = reply.message else {
+            panic!("not a diff answer");
+        };
+        let weacon_protocol::DiffAnswerKind::File { files, file } = answer.answer else {
+            panic!("not a file");
+        };
+        (reply.id, files, file.path)
+    }
+
+    #[tokio::test]
+    async fn a_relayed_worktree_ask_for_a_chat_without_one_is_refused_under_its_id() {
+        let dir = TempDir::new().unwrap();
+        let (mut asked, _) = host(&dir);
+        let (worktrees, workspace, _, _) = crate::git::service::with_chat(&dir);
+        asked.worktrees = worktrees;
+        let none = Message::WorktreeQuery(weacon_protocol::WorktreeQuery {
+            request: id("r-2"),
+            workspace,
+            chat: id("c-2"),
+            query: weacon_protocol::WorktreeQueryKind::State,
+            by: Some(by("a-1")),
+        });
+
+        let refused = one(
+            &asked,
+            Envelope {
+                id: 9,
+                message: none,
+            },
+        )
+        .await;
+
+        assert_eq!(refused.id, 9);
+        assert_eq!(
+            test_support::error_code(&refused.message),
+            Some("worktree.none")
+        );
     }
 
     fn reports(envelope: u32, send: bool) -> Envelope {

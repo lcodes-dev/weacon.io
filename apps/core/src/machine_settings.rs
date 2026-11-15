@@ -9,10 +9,11 @@ use weacon_observability::{Fault, Logger, Reporter};
 use weacon_protocol::{
     AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
     MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
-    MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, RequestId, WorkspaceId,
-    code,
+    MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, RepoId, RequestId,
+    WorkspaceId, code,
 };
 
+use crate::git::state::Stores;
 use crate::workspaces::{Settings, Workspaces, sign_ins, states, store_access};
 use crate::{app, reports};
 
@@ -40,16 +41,28 @@ pub(crate) async fn query(
     allowed(owner, &query.machine, query.by.as_ref())?;
     match query.query {
         MachineSettingsQueryKind::Current => {}
-        // Answered once this core offers `repo.list`.
-        MachineSettingsQueryKind::Repos => {
-            return Err(Fault::new(
-                code!("request.unknown"),
-                "This core doesn't answer that question yet",
-            ));
-        }
+        MachineSettingsQueryKind::Repos => return repos(host, query).await,
         MachineSettingsQueryKind::Newer => return Err(unknown()),
     }
     answer(host, query.request, query.machine, query.workspace).await
+}
+
+// The ids of the repositories the owner registered for the workspace, sorted; never where they
+// are on the machine.
+async fn repos(host: &Host, query: MachineSettingsQuery) -> Result<MachineSettingsAnswer, Fault> {
+    let workspaces = Workspaces::new(&host.state_dir, host.path.clone());
+    let workspace = query.workspace.clone();
+    let listed = app::blocking(move || Ok(Stores::new(&workspaces, &workspace).repos().list()))
+        .await
+        .map_err(|error| unknown().because(error))??;
+    let mut repos: Vec<RepoId> = listed.into_iter().map(|repo| repo.id).collect();
+    repos.sort_by(|one, other| one.as_str().cmp(other.as_str()));
+    Ok(MachineSettingsAnswer {
+        request: query.request,
+        machine: query.machine,
+        workspace: query.workspace,
+        answer: MachineSettingsAnswerKind::Repos { repos },
+    })
 }
 
 /// Changes what `command` says, for this machine's owner only, and answers with the settings
@@ -382,17 +395,54 @@ mod tests {
         };
         let level = command(&host, &owner, told(level, "mc-1", Some(by("a-1")))).await;
 
-        let repos = query(
-            &host,
-            &owner,
-            asked(MachineSettingsQueryKind::Repos, "mc-1", Some(by("a-1"))),
-        )
-        .await;
-        assert_eq!(repos.unwrap_err().code().as_str(), "request.unknown");
         for result in [read, newer, level] {
             assert_eq!(result.unwrap_err().code().as_str(), "settings.unknown");
         }
         assert!(!dir.join("settings").exists());
+    }
+
+    #[tokio::test]
+    async fn the_repositories_a_workspace_has_are_its_ids_alone_sorted() {
+        let dir = TempDir::new().unwrap();
+        let host = host(&dir, None);
+        let owner = owner();
+        let workspaces = Workspaces::new(&host.state_dir, None);
+        let git = crate::git::Git::open(&dir, std::env::var_os("PATH").as_deref()).unwrap();
+        for id in ["web", "api"] {
+            let folder = dir.join("repos").join(id);
+            fs::create_dir_all(&folder).unwrap();
+            let init = std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(&folder)
+                .status()
+                .unwrap();
+            assert!(init.success());
+            let repo = RepoId::try_from(id.to_owned()).unwrap();
+            Stores::new(&workspaces, &"w1".parse().unwrap())
+                .repos()
+                .add(&git, repo, &folder)
+                .unwrap();
+        }
+        let ask = |workspace: &str| {
+            let mut ask = asked(MachineSettingsQueryKind::Repos, "mc-1", Some(by("a-1")));
+            ask.workspace = workspace.parse().unwrap();
+            ask
+        };
+
+        let ours = query(&host, &owner, ask("w1")).await.unwrap();
+        let theirs = query(&host, &owner, ask("w2")).await.unwrap();
+
+        let ids = ["api", "web"].map(|id| RepoId::try_from(id.to_owned()).unwrap());
+        assert_eq!(
+            ours.answer,
+            MachineSettingsAnswerKind::Repos {
+                repos: ids.to_vec()
+            }
+        );
+        assert_eq!(
+            theirs.answer,
+            MachineSettingsAnswerKind::Repos { repos: Vec::new() }
+        );
     }
 
     fn set_reports() -> MachineSettingsCommand {
