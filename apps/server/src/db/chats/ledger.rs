@@ -109,6 +109,21 @@ impl Workspace {
         Ok(())
     }
 
+    /// Marks `request` sent, before it is sent again, so no failed send of it forgets it
+    /// meanwhile; whether it is still there to send.
+    pub(crate) async fn claim(&self, request: &RequestId) -> Result<bool, Fault> {
+        let claimed = sqlx::query(
+            "UPDATE chat_requests SET sent = 1
+             WHERE workspace_id = ? AND request_id = ? AND open = 1",
+        )
+        .bind(self.id.as_str())
+        .bind(request.as_str())
+        .execute(&self.db.writer)
+        .await
+        .map_err(failed)?;
+        Ok(claimed.rows_affected() > 0)
+    }
+
     /// Marks `request` sent to its machine, or not sent after all.
     pub(crate) async fn mark_sent(&self, request: &RequestId, sent: bool) -> Result<(), Fault> {
         sqlx::query("UPDATE chat_requests SET sent = ? WHERE workspace_id = ? AND request_id = ?")

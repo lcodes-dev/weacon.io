@@ -25,14 +25,17 @@ pub(crate) struct Sent {
 struct Kept {
     order: VecDeque<(MachineId, u32)>,
     asked: HashMap<(MachineId, u32), Asked>,
+    /// The envelope each request went in last.
+    latest: HashMap<(WorkspaceId, RequestId), u32>,
 }
 
-/// The command an envelope carried.
+/// The command an envelope carried, and whether it was the last envelope its request went in.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Asked {
     workspace: WorkspaceId,
     chat: ChatId,
     request: RequestId,
+    current: bool,
 }
 
 impl Sent {
@@ -44,15 +47,22 @@ impl Sent {
             workspace: command.workspace.clone(),
             chat: command.chat.clone(),
             request: command.request.clone(),
+            current: false,
         };
+        let request = (asked.workspace.clone(), asked.request.clone());
+        kept.latest.insert(request, id);
         if kept.asked.insert(key.clone(), asked).is_none() {
             kept.order.push_back(key);
         }
         // One is added at a time, so letting go of the oldest keeps at most `KEPT`.
         if kept.order.len() > KEPT
             && let Some(oldest) = kept.order.pop_front()
+            && let Some(gone) = kept.asked.remove(&oldest)
         {
-            kept.asked.remove(&oldest);
+            let request = (gone.workspace, gone.request);
+            if kept.latest.get(&request) == Some(&oldest.1) {
+                kept.latest.remove(&request);
+            }
         }
     }
 
@@ -60,8 +70,10 @@ impl Sent {
     pub(crate) fn answered(&self, machine: &MachineId, id: u32) -> Option<Asked> {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (machine.clone(), id);
-        let asked = kept.asked.remove(&key)?;
+        let mut asked = kept.asked.remove(&key)?;
         kept.order.retain(|each| *each != key);
+        let request = (asked.workspace.clone(), asked.request.clone());
+        asked.current = kept.latest.get(&request) == Some(&id);
         Some(asked)
     }
 }
@@ -75,6 +87,10 @@ pub(crate) async fn take(
     asked: Asked,
     answer: Message,
 ) -> Result<(), Closed> {
+    // Its request went again since, and the answer to that send is the one that counts.
+    if !asked.current {
+        return Ok(());
+    }
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "a core answers a command only with an error or a receipt"
@@ -155,6 +171,35 @@ mod tests {
     use super::*;
     use crate::db::test_support::{NOW, command, id, make};
     use crate::test_support::Fixture;
+
+    #[tokio::test]
+    async fn a_refusal_of_an_envelope_its_request_has_gone_out_again_since_is_let_be() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let workspace = shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        let asked = command("r-c-1", "c-1", "Fix the build");
+        sent.sent(&machine, 7, &asked);
+        sent.sent(&machine, 8, &asked);
+        let for_now = || {
+            Message::Error(ErrorBody {
+                code: weacon_protocol::code!("chat.unavailable"),
+                retryable: true,
+            })
+        };
+
+        let older = sent.answered(&machine, 7).unwrap();
+        assert!(!older.current);
+        take(shared, &machine, older, for_now()).await.unwrap();
+
+        let open = workspace.open_requests(&id("c-1")).await.unwrap();
+        assert!(open.iter().all(|request| !request.refused), "{open:?}");
+        let newer = sent.answered(&machine, 8).unwrap();
+        assert!(newer.current);
+        take(shared, &machine, newer, for_now()).await.unwrap_err();
+    }
 
     #[tokio::test]
     async fn a_refusal_that_cant_be_kept_is_logged_and_keeps_the_link() {

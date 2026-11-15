@@ -110,10 +110,17 @@ async fn again(
 ) -> Result<(), Fault> {
     let id = request.command.request.clone();
     if recent(shared, request.sent_at) {
+        if !workspace.claim(&id).await? {
+            return Ok(());
+        }
         // Still refused until it is queued, so no later prompt goes before it.
-        route
+        let sent = route
             .deliver(shared, Message::ChatCommand(request.command))
-            .await?;
+            .await;
+        if sent.is_err() && !request.sent {
+            workspace.mark_sent(&id, false).await?;
+        }
+        sent?;
         return workspace.resent(&id, request.refusals).await;
     }
     if !request.refused {
@@ -632,6 +639,41 @@ mod tests {
 
         resent.unwrap();
         assert!(!workspace.refused_before(&chat, &later).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_command_forgotten_while_it_was_picked_up_is_never_sent() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let route = Route::open_now(shared, &ada.machine).unwrap();
+        let chat = id::<ChatId>("c-1");
+        let read = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+
+        // Its first sender's send failed and forgot it after the pick-up read it.
+        workspace.forget_request(&id("r-c-1")).await.unwrap();
+        again(shared, workspace, &route, &chat, read).await.unwrap();
+
+        assert!(sent(&mut attached).is_empty());
+        // Claimed first, a failed send of it no longer forgets it.
+        make(workspace, "c-2", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let other = workspace
+            .open_requests(&id("c-2"))
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        again(shared, workspace, &route, &id("c-2"), other)
+            .await
+            .unwrap();
+        workspace.forget_request(&id("r-c-2")).await.unwrap();
+        assert!(workspace.has_request(&id("r-c-2")).await.unwrap());
+        assert_eq!(sent(&mut attached), [resent("c-2")]);
     }
 
     #[tokio::test]
