@@ -100,9 +100,16 @@ test("a machine paired with a workspace open shows its settings at once, to ask 
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
   await page.getByRole("button", { name: "Settings" }).click();
+  // The page learns of the machine only once its core is connected, so it never asks before.
+  const connected = Promise.withResolvers<void>();
+  await page.route("**/api/machines", async (route) => {
+    await connected.promise;
+    await route.continue();
+  });
   const { token } = await pair(page);
   const machine = await core(page, token, START);
   t.after(() => machine.close());
+  connected.resolve();
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
 
   // Nobody opened them; they ask until the person answers, and nothing is sent meanwhile.

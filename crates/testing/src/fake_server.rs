@@ -87,7 +87,8 @@ async fn send_all(
         let texts = tokio::select! {
             line = run_lines.next_line(), if playing => {
                 if let Ok(Some(line)) = line {
-                    commit_played(chat, committed, line).into_iter().collect()
+                    commit_played(chat, committed, line);
+                    Vec::new()
                 } else {
                     playing = false;
                     ended(chat, committed)
@@ -127,19 +128,21 @@ async fn keep(
     Ok(())
 }
 
-// A played line to send at once, unless its run was stopped; what tells the client the chat
-// committed it goes to `replies` under the chat's lock, so the chat's messages keep their order.
-fn commit_played(
-    chat: &Mutex<FakeChat>,
-    replies: &UnboundedSender<String>,
-    line: String,
-) -> Option<String> {
-    if let Ok(envelope) = Envelope::from_json(line.as_bytes())
-        && let Ok(mut chat) = chat.lock()
-    {
-        send_texts(replies, &chat.played(&envelope)?);
+// Sends a played line, unless its run was stopped, after what tells the client the chat committed
+// with it, such as the status that its run is running again. Both go to `replies` under the
+// chat's lock, so the chat's messages keep their order.
+fn commit_played(chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>, line: String) {
+    let Ok(envelope) = Envelope::from_json(line.as_bytes()) else {
+        drop(replies.send(line));
+        return;
+    };
+    let Ok(mut chat) = chat.lock() else {
+        return;
+    };
+    if let Some(told) = chat.played(&envelope) {
+        send_texts(replies, &told);
+        drop(replies.send(line));
     }
-    Some(line)
 }
 
 // Once the recording has played, its run asks to use Bash; nothing to send at once.
@@ -220,7 +223,7 @@ mod tests {
     use super::*;
     use weacon_protocol::{
         ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind, DiffQuery, DiffQueryKind,
-        PROTOCOL, PermissionAnswer, RequestId, RunId, WorkspaceId,
+        Outcome, PROTOCOL, PermissionAnswer, RequestId, RunEvent, RunId, RunUpdate, WorkspaceId,
     };
 
     use crate::TempDir;
@@ -325,6 +328,47 @@ mod tests {
             .or_else(|| event["kind"].as_str())
             .unwrap_or_default()
             .to_owned()
+    }
+
+    #[test]
+    fn a_played_line_goes_out_after_what_the_chat_committed_with_it() {
+        let chat = Mutex::new(FakeChat::new().unwrap());
+        let (replies, mut sent) = unbounded_channel();
+        let subscribe = Envelope::from_json(subscription(7, 0).as_bytes()).unwrap();
+        // What a subscription missed goes back as its answer, not to `replies`.
+        chat.lock().unwrap().answer(&subscribe);
+        let played = |event| {
+            let run = RunId::try_from("r-1".to_owned()).unwrap();
+            let update = Message::Run(RunUpdate { run, event });
+            envelope_text(&Envelope {
+                id: 0,
+                message: update,
+            })
+            .unwrap()
+        };
+
+        let finished = RunEvent::Finished {
+            outcome: Outcome::Completed,
+        };
+        commit_played(&chat, &replies, played(finished));
+        let text = "I'll start".to_owned();
+        commit_played(&chat, &replies, played(RunEvent::TextDelta { text }));
+        drop(replies);
+
+        let mut order = Vec::new();
+        while let Ok(text) = sent.try_recv() {
+            let text: Value = serde_json::from_str(&text).unwrap();
+            order.push(format!(
+                "{} {}",
+                text["type"].as_str().unwrap(),
+                kind(&text)
+            ));
+        }
+        // The next pass's first delta comes after its run is running again, so it is shown.
+        assert_eq!(
+            order,
+            ["chat finished", "chat idle", "run ", "chat running", "run "]
+        );
     }
 
     #[tokio::test]
