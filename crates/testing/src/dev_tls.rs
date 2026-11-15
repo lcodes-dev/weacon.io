@@ -3,8 +3,8 @@
 //! certificate it made, which the core pins, and passes each connection on to the server.
 
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr};
-use std::path::{Path, PathBuf};
+use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
@@ -14,19 +14,19 @@ use tokio_rustls::rustls::pki_types::pem::PemObject;
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
 
 use crate::Failure;
-use crate::platform::create_private_dir;
+use crate::platform::{create_private_dir, write_private};
 
 /// The certificate's file in the front's folder, which the core pins.
 pub const CERTIFICATE: &str = "cert.pem";
 const KEY: &str = "key.pem";
 
-/// The front's certificate for `localhost` and its key, from `dir`; made there first, in a
-/// folder only this user can read, when `dir` doesn't exist.
+/// The TLS setup for the front's certificate for `localhost`, from `dir`; the certificate and
+/// its key are made there first, in a folder only this user can read, when it has none.
 ///
 /// # Errors
-/// When the folder can't be made or read, or holds no certificate and key.
-pub fn certificate(dir: &Path) -> Result<ServerConfig, Failure> {
-    if !dir.exists() {
+/// When the folder can't be made or read, or holds a certificate without its key.
+pub fn server_config(dir: &Path) -> Result<ServerConfig, Failure> {
+    if !dir.join(CERTIFICATE).exists() {
         make(dir)?;
     }
     let cert = CertificateDer::from_pem_slice(&std::fs::read(dir.join(CERTIFICATE))?)?;
@@ -36,25 +36,23 @@ pub fn certificate(dir: &Path) -> Result<ServerConfig, Failure> {
         .with_single_cert(vec![cert], key)?)
 }
 
+/// Writes the key first, so a certificate always has its key beside it.
 fn make(dir: &Path) -> Result<(), Failure> {
     let made = rcgen::generate_simple_self_signed(vec!["localhost".to_owned()])?;
-    // Made beside its place and renamed into it, so a failure leaves no half-made folder.
-    let mut building = dir.as_os_str().to_owned();
-    building.push(".new");
-    let building = PathBuf::from(building);
-    create_private_dir(&building)?;
-    std::fs::write(building.join(KEY), made.signing_key.serialize_pem())?;
-    std::fs::write(building.join(CERTIFICATE), made.cert.pem())?;
-    std::fs::rename(&building, dir)?;
+    if let Err(error) = create_private_dir(dir)
+        && error.kind() != io::ErrorKind::AlreadyExists
+    {
+        return Err(error.into());
+    }
+    // A key left by a run that stopped before its certificate is replaced.
+    if let Err(error) = std::fs::remove_file(dir.join(KEY))
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        return Err(error.into());
+    }
+    write_private(&dir.join(KEY), made.signing_key.serialize_pem().as_bytes())?;
+    std::fs::write(dir.join(CERTIFICATE), made.cert.pem())?;
     Ok(())
-}
-
-/// Listens on `port` of 127.0.0.1.
-///
-/// # Errors
-/// When the port is taken.
-pub async fn listen(port: u16) -> io::Result<TcpListener> {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await
 }
 
 /// Answers TLS on each connection to `listener` and passes it on to `server`, until stopped.
@@ -90,19 +88,39 @@ mod tests {
     fn makes_its_certificate_once_in_a_folder_of_its_own() {
         let temp = TempDir::new().unwrap();
         let dir = temp.join("tls");
-        certificate(&dir).unwrap();
+        server_config(&dir).unwrap();
         let first = std::fs::read(dir.join(CERTIFICATE)).unwrap();
 
-        certificate(&dir).unwrap();
+        server_config(&dir).unwrap();
 
         assert_eq!(std::fs::read(dir.join(CERTIFICATE)).unwrap(), first);
-        assert!(!temp.join("tls.new").exists());
     }
 
     #[test]
-    fn a_folder_without_a_certificate_fails() {
+    fn a_folder_left_without_a_certificate_gets_one() {
         let temp = TempDir::new().unwrap();
 
-        certificate(&temp).unwrap_err();
+        server_config(&temp).unwrap();
+
+        assert!(temp.join(CERTIFICATE).exists());
+    }
+
+    #[test]
+    fn a_key_left_without_its_certificate_is_replaced() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.join(KEY), "left").unwrap();
+
+        server_config(&temp).unwrap();
+
+        assert_ne!(std::fs::read_to_string(temp.join(KEY)).unwrap(), "left");
+    }
+
+    #[test]
+    fn a_certificate_without_its_key_fails() {
+        let temp = TempDir::new().unwrap();
+        server_config(&temp).unwrap();
+        std::fs::remove_file(temp.join(KEY)).unwrap();
+
+        server_config(&temp).unwrap_err();
     }
 }

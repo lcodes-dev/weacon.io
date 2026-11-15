@@ -1,6 +1,6 @@
 # Weacon
 
-Weacon is a web harness for coding agents, with tasks, docs and team chats built in. It is open source, under the MIT licence.
+Weacon is a web harness for coding agents, with tasks, docs and team chats built in.
 
 ## What it does
 
@@ -14,6 +14,8 @@ With Weacon you can:
 - pair your machines and choose what each workspace's agents may do on them;
 - sign your agents in from the web app, in a terminal sealed end to end, or with the vendor's own command line;
 - ask the code map where things are in a repository, from the command line or from an agent.
+
+Weacon is open source, under the MIT licence.
 
 ## How it fits together
 
@@ -47,7 +49,7 @@ With Weacon you can:
 
 ## Status
 
-Weacon is in early development. This is what works on `main` today, checked by walking through the steps below against a real server and a real core:
+Weacon is in early development. This is what works on `main` today:
 
 | Area | Works today | Not yet |
 | --- | --- | --- |
@@ -55,7 +57,7 @@ Weacon is in early development. This is what works on `main` today, checked by w
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | The chat list and chat screen show chats the server has | Starting a chat from the web app: there is no button for it, and the server doesn't yet relay a prompt to your machine or keep its chat events. The list stays empty and says "No chats yet. Connect a machine to start one.", even with a machine connected |
+| Chats | The chat list and chat screen show chats the server has | Starting a chat from the web app, and the server relaying it to your machine |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
 | Proposals | Listing, accepting and rejecting | Nothing makes proposals yet: they will come from agents through the core |
 | Search | ⌘K finds docs and tasks | |
@@ -82,15 +84,14 @@ Install Rust with rustup from [rustup.rs](https://rustup.rs). The project pins i
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
-Install the Node version in `.node-version`, 22.23.4, with the version manager you prefer. With [fnm](https://github.com/Schniz/fnm):
+Install a Node version manager, such as [fnm](https://github.com/Schniz/fnm), with [Homebrew](https://brew.sh), and let your shell use it. Then open a new terminal. Step 2 installs the Node version the project pins in `.node-version`.
 
 ```bash
 brew install fnm
-fnm install 22.23.4
-fnm use 22.23.4
+echo 'eval "$(fnm env --use-on-cd --shell zsh)"' >> ~/.zshrc
 ```
 
-On Linux (Debian or Ubuntu), install git, a C compiler and curl, then rustup and Node as above:
+On Linux (Debian or Ubuntu), install git, a C compiler and curl, then rustup as above, and fnm with its own install script:
 
 ```bash
 sudo apt-get install -y git build-essential curl
@@ -105,6 +106,13 @@ Clone into a short path, such as `~/code/weacon.io`: the core's socket lives und
 ```bash
 git clone https://github.com/lcodes-dev/weacon.io.git ~/code/weacon.io
 cd ~/code/weacon.io
+```
+
+Install and use the pinned Node. fnm reads `.node-version` itself:
+
+```bash
+fnm install
+fnm use
 ```
 
 ```bash
@@ -133,11 +141,7 @@ Weacon is running. Ctrl-C stops it.
 
 Leave it running, and open a second terminal in the same folder for the next steps. Later runs need no email: `scripts/dev.sh`.
 
-What runs:
-
-- the server on `http://localhost:8080`, with its database, sign-in codes and key in `.dev/server/`;
-- `dev-tls`, a TLS front on `https://localhost:8443`, because the core only dials a server over TLS it can verify. It makes a certificate for `localhost` once, in `.dev/tls/`, and the core pins it. It is for development only: a real deployment puts a reverse proxy with a real certificate in front of `weacon-server`;
-- the core's daemon, with its state in `.dev/state/`.
+`dev-tls` is there because the core only dials a server over TLS it can verify, and the server speaks plain HTTP. It makes a certificate for `localhost` once, in `.dev/tls/`, and the core pins it. It is for development only: a real deployment puts a reverse proxy with a real certificate in front of `weacon-server`.
 
 ### 4. Sign in
 
@@ -160,7 +164,7 @@ target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "
 
 It prints a code and a key fingerprint, then waits. In the web app, open **Settings**, enter the code under **Pair a machine** and choose **Look up**. Check that the fingerprint matches the terminal's, then choose **Confirm**. The terminal says `Paired.`
 
-Within 30 seconds the daemon connects, and the machine's row shows `weacon 0.0.0`. Check from the terminal:
+Within 30 seconds the daemon connects, and the machine's row shows its version. Check from the terminal:
 
 ```bash
 target/debug/weacon doctor
@@ -196,7 +200,7 @@ Not yet: starting a chat from the web app, and the server relaying it to your ma
 - **Tasks**: type a title under **New task** and choose **Add**. Change its status from the list.
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
 - **Proposals**: changes agents propose wait here. Nothing makes them yet.
-- **Search**: press ⌘K (Ctrl+K on Linux), then type.
+- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
 
 ```bash
@@ -309,7 +313,6 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 - **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `/tmp/weacon-dev`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
-- **`weacon-server add-account` says there is no database.** The server makes the database when it first starts; `scripts/dev.sh` adds the account after that.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.
 - **The sign-in page never accepts the code.** Use the newest file in `.dev/server/outbox`, and request a new code if it expired.

@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use weacon_testing::Failure;
-use weacon_testing::dev_tls::{certificate, front, listen};
+use weacon_testing::dev_tls::{front, server_config};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -28,8 +29,8 @@ async fn main() -> ExitCode {
 }
 
 async fn run(dir: PathBuf, port: u16, server: u16) -> Result<(), Failure> {
-    let config = certificate(&dir)?;
-    let listener = listen(port).await?;
+    let config = server_config(&dir)?;
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let address = format!("https://localhost:{}\n", listener.local_addr()?.port());
     let mut stdout = tokio::io::stdout();
     stdout.write_all(address.as_bytes()).await?;

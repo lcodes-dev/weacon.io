@@ -40,29 +40,29 @@ npm --prefix apps/web run --silent build
 cargo build --locked --quiet -p weacon-server -p weacon-core
 cargo build --locked --quiet -p weacon-testing --bin dev-tls
 
-pids=()
-trap 'kill ${pids[@]+"${pids[@]}"} 2>/dev/null || true' EXIT
+server='' tls='' core=''
+trap 'kill $server $tls $core 2>/dev/null || true' EXIT
 trap 'exit 130' INT TERM
 
 "$bin/weacon-server" serve --db "$data/weacon.db" --outbox "$data/outbox" --secret "$data/secret" \
   >>.dev/server.log 2>&1 &
-pids+=("$!")
+server=$!
 "$bin/dev-tls" .dev/tls >>.dev/tls.log 2>&1 &
-pids+=("$!")
+tls=$!
 WEACON_STATE_DIR="$state" "$bin/weacon" daemon >>.dev/core.log 2>&1 &
-pids+=("$!")
+core=$!
 
 tries=0
 until curl -fsS -o /dev/null http://localhost:8080/version 2>/dev/null; do
   tries=$((tries + 1))
-  if [ "$tries" -ge 30 ] || ! kill -0 "${pids[0]}" 2>/dev/null; then
+  if [ "$tries" -ge 30 ] || ! kill -0 "$server" 2>/dev/null; then
     tail -n 5 .dev/server.log >&2
     die "the server didn't start; the end of .dev/server.log is above"
   fi
   sleep 1
 done
-kill -0 "${pids[1]}" 2>/dev/null || die "the TLS front didn't start; see .dev/tls.log"
-kill -0 "${pids[2]}" 2>/dev/null || die "the core's daemon didn't start; see .dev/core.log"
+kill -0 "$tls" 2>/dev/null || die "the TLS front didn't start; see .dev/tls.log"
+kill -0 "$core" 2>/dev/null || die "the core's daemon didn't start; see .dev/core.log"
 if [ "$new" = true ]; then
   "$bin/weacon-server" add-account --db "$data/weacon.db" --email "$email" >/dev/null 2>>.dev/server.log \
     || die "couldn't make the account for $email; see .dev/server.log"
@@ -77,4 +77,4 @@ Weacon is running. Ctrl-C stops it.
   Pair the core:  WEACON_STATE_DIR=$state $bin/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
   Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and $state/logs/
 EOF
-wait "${pids[0]}"
+wait "$server"
