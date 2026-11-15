@@ -108,12 +108,15 @@ other_checks() {
   npm --prefix apps/web run --silent check
 
   step "Links"
-  local link
-  git ls-files -s | awk '$1 == "120000" { print $4 }' | while read -r link; do
-    case $(readlink "$link") in
-      /*) die "$link is a link to an absolute path; a tracked link stays inside the repository" ;;
+  local entry mode blob target
+  while IFS= read -r -d '' entry; do
+    read -r mode blob _ <<<"${entry%%$'\t'*}"
+    [ "$mode" = 120000 ] || continue
+    target=$(git cat-file blob "$blob")
+    case $target in
+      /*) die "${entry#*$'\t'} is a link to an absolute path; a tracked link stays inside the repository" ;;
     esac
-  done
+  done < <(git ls-files -s -z)
 
   step "Shell scripts"
   if command -v shellcheck >/dev/null; then
