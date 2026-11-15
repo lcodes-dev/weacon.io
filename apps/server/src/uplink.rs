@@ -11,7 +11,9 @@ use axum::routing::get;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
+use weacon_protocol::{
+    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineId, MachineName, Message, code,
+};
 
 use crate::auth::Machine;
 use crate::connections::Place;
@@ -98,14 +100,35 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     }
 }
 
+/// What the server offers every core, and needs of it for all its features to reach it.
+pub(crate) fn offers() -> Vec<Capability> {
+    [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, PROPOSALS]
+        .map(Capability::new)
+        .into()
+}
+
+/// The most capabilities of a core's hello that the machines list keeps.
+const MOST_KEPT_OFFERS: usize = 64;
+
+/// What of `hello` the machines list keeps: its build if every part reads as a machine name, and
+/// all its capabilities or none.
+fn kept(hello: &Hello) -> (Option<&App>, Option<&[Capability]>) {
+    let build = &hello.app;
+    let plain = [&build.name, &build.version, &build.commit]
+        .into_iter()
+        .all(|part| MachineName::try_from(part.clone()).is_ok());
+    let offers = &hello.capabilities;
+    let whole = offers.len() <= MOST_KEPT_OFFERS;
+    (plain.then_some(build), whole.then_some(offers.as_slice()))
+}
+
 async fn run(
     socket: &mut WebSocket,
     shared: &Shared,
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
     let offer = Capability::new(CONNECT);
-    let offers = [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, PROPOSALS].map(Capability::new);
-    let heard = hear(socket, shared, offers.to_vec(), &offer);
+    let heard = hear(socket, shared, offers(), &offer);
     let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
         .await
         .map_err(|_| Closed)??;
@@ -113,6 +136,12 @@ async fn run(
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
+    let (build, offered) = kept(&hello);
+    if let Err(fault) = shared.db.saw_core(&link.machine.id, build, offered).await {
+        // The machines list shows it as it last was; the connection goes on.
+        link.log
+            .warn("core build not kept", &[("err", Field::error(&fault))]);
+    }
     let connected = Connected {
         machine: link.machine.id.clone(),
         owner: link.machine.owner.clone(),
@@ -185,7 +214,7 @@ mod tests {
 
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, Message, Welcome};
+    use weacon_protocol::{AccountId, Message, PROTOCOL, Welcome};
 
     use super::*;
     use crate::test_support::socket::{
@@ -208,6 +237,56 @@ mod tests {
             "{welcome:?}"
         );
         (paired, client)
+    }
+
+    #[test]
+    fn only_a_plain_build_and_every_offer_up_to_the_most_kept_are_kept() {
+        let hello = |version: &str, offered: Vec<String>| Hello {
+            protocol: PROTOCOL,
+            app: App {
+                name: "weacon-core".to_owned(),
+                version: version.to_owned(),
+                commit: "abc".to_owned(),
+            },
+            capabilities: serde_json::from_value(serde_json::json!(offered)).unwrap(),
+        };
+        let named = |count: usize| (0..count).map(|n| format!("future.thing{n}")).collect();
+        let most = hello("1.2.3", named(MOST_KEPT_OFFERS));
+        let (build, offers) = kept(&most);
+        assert_eq!(build, Some(&most.app));
+        assert_eq!(offers, Some(most.capabilities.as_slice()));
+        let more = hello("1.2.3", named(MOST_KEPT_OFFERS + 1));
+        assert_eq!(kept(&more), (Some(&more.app), None));
+        for version in ["1.2.3\u{202e}", "1.2.3\n", &"9".repeat(65), ""] {
+            assert_eq!(
+                kept(&hello(version, Vec::new())),
+                (None, Some(&[][..])),
+                "{version:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_machines_list_shows_a_cores_build_and_what_it_doesnt_offer() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        // Welcomed once its build is kept.
+        let (paired, _client) = connected(server.address, &fixture).await;
+
+        let (_, list) = ask(server.address, "GET /api/machines", &paired.proof, "").await;
+
+        let machine = &list["machines"][0];
+        let build = weacon_appkit::build(&crate::test_support::VERSION);
+        assert_eq!(machine["core"]["version"], build.version.as_str());
+        assert_eq!(machine["core"]["commit"], build.commit.as_str());
+        let missing = [
+            "machine.settings",
+            "diff.view",
+            "worktree.manage",
+            "sessions.read",
+            "workspace.proposals",
+        ];
+        assert_eq!(machine["missing"], serde_json::json!(missing));
     }
 
     #[tokio::test]

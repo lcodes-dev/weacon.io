@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
-use crate::{AccountId, Secret};
+use crate::{AccountId, App, Capability, Secret};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -142,6 +142,14 @@ pub struct MachineSummary {
     pub os: MachineOs,
     pub key: MachineKey,
     pub paired_at: i64,
+    /// The core's build when it last connected; none until it has.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "App")]
+    pub core: Option<App>,
+    /// What the server offers cores that this one didn't offer back when it last connected:
+    /// it is older than the server supports, and those features don't reach it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<Capability>,
 }
 
 /// The machines paired with the signed-in account.

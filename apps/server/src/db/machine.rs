@@ -11,6 +11,8 @@ use weacon_protocol::{
 
 use super::{Db, failed, stored, unreadable};
 
+mod list;
+
 /// How many pairings may be under way at once, server-wide, as anyone may start one.
 const MAX_UNDER_WAY: i64 = 1000;
 
@@ -54,9 +56,6 @@ pub(crate) enum Claim {
         owner: AccountId,
     },
 }
-
-/// A machine's id, name, system, key and when it was paired, as stored.
-type Row = (String, String, String, String, i64);
 
 /// A pairing's secret hash, and once it is confirmed its account, machine, when it was
 /// confirmed and whether it was claimed, as stored.
@@ -173,7 +172,7 @@ impl Db {
         .await
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
-        stored_machine((machine.as_str().to_owned(), name, os, key, now)).map(Some)
+        paired(machine.as_str().to_owned(), name, &os, key, now).map(Some)
     }
 
     /// A core's claim. Once the person has confirmed, the first claim pairs the machine with
@@ -217,24 +216,6 @@ impl Db {
             machine: stored(machine)?,
             owner: stored(owner)?,
         })
-    }
-
-    /// The machines paired with `account`, oldest first.
-    pub(crate) async fn machines_of(
-        &self,
-        account: &AccountId,
-    ) -> Result<Vec<MachineSummary>, Fault> {
-        sqlx::query_as::<_, Row>(
-            "SELECT machine_id, name, os, machine_key, paired_at FROM machines
-             WHERE account_id = ? ORDER BY paired_at, machine_id",
-        )
-        .bind(account.as_str())
-        .fetch_all(&self.readers)
-        .await
-        .map_err(failed)?
-        .into_iter()
-        .map(stored_machine)
-        .collect()
     }
 
     /// The paired machine whose token is hashed as `token_hash`, and its owner.
@@ -320,13 +301,22 @@ async fn add_machine(
     Ok(())
 }
 
-fn stored_machine((id, name, os, key, paired_at): Row) -> Result<MachineSummary, Fault> {
+/// A machine as stored, before its core has connected.
+pub(super) fn paired(
+    id: String,
+    name: String,
+    os: &str,
+    key: String,
+    paired_at: i64,
+) -> Result<MachineSummary, Fault> {
     Ok(MachineSummary {
         id: stored(id)?,
         name: stored(name)?,
-        os: stored_os(&os)?,
+        os: stored_os(os)?,
         key: stored(key)?,
         paired_at,
+        core: None,
+        missing: Vec::new(),
     })
 }
 
@@ -363,14 +353,14 @@ mod tests {
     use crate::db::test_support::{NOW, code, id};
     use crate::test_support::{email, fresh_account};
 
-    struct Setup {
-        _dir: TempDir,
-        db: Db,
-        ada: AccountId,
-        bo: AccountId,
+    pub(super) struct Setup {
+        pub(super) _dir: TempDir,
+        pub(super) db: Db,
+        pub(super) ada: AccountId,
+        pub(super) bo: AccountId,
     }
 
-    async fn setup() -> Setup {
+    pub(super) async fn setup() -> Setup {
         let dir = TempDir::new().unwrap();
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         let (ada, bo) = (fresh_account(), fresh_account());
@@ -390,7 +380,7 @@ mod tests {
     }
 
     // Starts pairing `pairing`, whose code hash is its id and whose secret hash is "secret".
-    async fn start(db: &Db, pairing: &str, now: i64) -> bool {
+    pub(super) async fn start(db: &Db, pairing: &str, now: i64) -> bool {
         let new = NewPairing {
             id: &id(pairing),
             code_hash: pairing.as_bytes(),
@@ -403,7 +393,7 @@ mod tests {
         db.start_pairing(&new, now).await.unwrap()
     }
 
-    async fn confirm(db: &Db, account: &AccountId, pairing: &str, code: &str) -> bool {
+    pub(super) async fn confirm(db: &Db, account: &AccountId, pairing: &str, code: &str) -> bool {
         let confirmation = Confirmation {
             account,
             pairing: &id(pairing),
@@ -417,7 +407,7 @@ mod tests {
             .is_some()
     }
 
-    async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
+    pub(super) async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
         let claiming = Claiming {
             pairing: &id(pairing),
             secret_hash: secret,
@@ -461,7 +451,7 @@ mod tests {
             }
         );
         assert_eq!(twice, claimed);
-        let machines = db.machines_of(&ada).await.unwrap();
+        let machines = db.machines_of(&ada, &[]).await.unwrap();
         assert_eq!(
             machines,
             [MachineSummary {
@@ -470,6 +460,8 @@ mod tests {
                 os: MachineOs::Linux,
                 key: key(),
                 paired_at: NOW + 1,
+                core: None,
+                missing: Vec::new(),
             }]
         );
     }
@@ -495,7 +487,7 @@ mod tests {
         assert!(start(&db, "p3", NOW + 600).await);
         assert!(start(&db, "p1", NOW + 600).await);
         assert!(start(&db, "p2", NOW + 600).await);
-        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
     }
 
     #[tokio::test]
@@ -515,18 +507,18 @@ mod tests {
         let Setup { _dir, db, ada, bo } = setup().await;
         assert!(start(&db, "p1", NOW).await);
         assert!(confirm(&db, &ada, "p1", "p1").await);
-        let unclaimed = db.machines_of(&ada).await.unwrap();
+        let unclaimed = db.machines_of(&ada, &[]).await.unwrap();
         claim(&db, "p1", b"secret", NOW + 2).await;
         let machine = id("mc-p1");
 
         assert_eq!(unclaimed, []);
         assert!(db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.has_machine(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&bo).await.unwrap(), []);
+        assert_eq!(db.machines_of(&bo, &[]).await.unwrap(), []);
         assert!(!db.unpair(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada).await.unwrap().len(), 1);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap().len(), 1);
         assert!(db.unpair(&ada, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
         assert!(!db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.unpair(&ada, &machine).await.unwrap());
         assert_eq!(claim(&db, "p1", b"secret", NOW + 3).await, Claim::Unknown);
