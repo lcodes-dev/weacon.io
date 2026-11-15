@@ -53,6 +53,9 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
     input.current?.focus();
     return () => loader.stop();
   }, [loader]);
+  useEffect(() => {
+    document.getElementById(`palette-${at}`)?.scrollIntoView({ block: "nearest" });
+  }, [at, found]);
   const asked = text.trim() !== "";
   const answered = asked && found.value?.text === text;
   const hits = answered ? listed(found.value?.hits ?? []) : [];
@@ -63,7 +66,7 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
   };
   return (
     <div className="palette-backdrop" onClick={close}>
-      <div role="dialog" aria-label="Search" className="palette" onClick={(event) => event.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label="Search" className="palette" onClick={(event) => event.stopPropagation()}>
         <input
           ref={input}
           aria-label="Search"
@@ -83,6 +86,11 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
           }}
           onKeyDown={(event) => {
             if (composing(event.nativeEvent)) {
+              return;
+            }
+            // The input is the palette's only stop, so Tab stays on it.
+            if (event.key === "Tab") {
+              event.preventDefault();
               return;
             }
             const action = picker(event.nativeEvent, hits.length, at);

@@ -252,22 +252,23 @@ const isChat = (value: unknown): value is ChatSummary =>
 const isChats = listOf<ChatList>("chats", isChat);
 const isMark = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);
+const isCount = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
 const isSnippet = (value: unknown): boolean => fields(value, ["text"]) && listOf("marks", isMark)(value);
 // A hit of a kind this build doesn't know only needs its kind; the palette leaves it out.
 const isHit = (value: unknown): boolean => {
   if (!fields(value, ["kind"])) {
     return false;
   }
-  const hit = value as { kind: string; snippet: unknown; doc: string; chat: string };
+  const hit = value as { kind: string; snippet: unknown; task: string; doc: string; chat: string; seq: unknown };
   const known = fields(value, ["title"]) && isSnippet(hit.snippet);
-  // A doc's or a chat's id goes into the address, so it must be one.
+  // A hit's ids go into its key and the address, so each must be one.
   switch (hit.kind) {
     case "task":
-      return known;
+      return known && fields(value, ["task"]) && isId(hit.task);
     case "doc":
       return known && fields(value, ["doc"]) && isId(hit.doc);
     case "chat":
-      return known && fields(value, ["chat"]) && isId(hit.chat);
+      return known && fields(value, ["chat"]) && isId(hit.chat) && (hit.seq === undefined || isCount(hit.seq));
     default:
       return true;
   }
