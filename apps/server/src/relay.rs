@@ -39,6 +39,8 @@ pub(crate) const SESSIONS: Code = code!("sessions.read");
 pub(crate) const DIFF: Code = code!("diff.view");
 /// What a client and a core offer to have a chat's worktree questions and commands relayed.
 pub(crate) const WORKTREE: Code = code!("worktree.manage");
+/// What a client and a core offer to have a person's search of their own machine's code relayed.
+pub(crate) const SYMBOLS: Code = code!("symbols.search");
 /// What a core offers once its owner lets it open terminals.
 const TERMINAL: Code = code!("worktree.open_terminal");
 
@@ -180,8 +182,12 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
         .as_ref()
         .is_some_and(|named| named != ask.workspace.id());
     let machine = match &asked.about {
-        About::Machine(_) if elsewhere => return Err(refused(code!("machine.not_found"), false)),
-        About::Machine(machine) | About::Sessions(machine) => machine.clone(),
+        About::Machine(_) | About::Symbols(_) if elsewhere => {
+            return Err(refused(code!("machine.not_found"), false));
+        }
+        About::Machine(machine) | About::Sessions(machine) | About::Symbols(machine) => {
+            machine.clone()
+        }
         About::Diff(_) | About::Worktree(_) if elsewhere => {
             return Err(refused(code!("chat.not_found"), false));
         }
@@ -366,7 +372,8 @@ mod tests {
         MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
         MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
         OutsideSession, RequestId, SessionsAnswer, SessionsAnswerKind, SessionsQuery,
-        SessionsQueryKind, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand,
+        SessionsQueryKind, Symbol, SymbolKind, SymbolsAnswer, SymbolsAnswerKind, SymbolsQuery,
+        SymbolsQueryKind, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand,
         WorktreeQuery, WorktreeQueryKind,
     };
 
@@ -746,6 +753,85 @@ mod tests {
 
         assert_eq!(error_of(&unread), (52, "machine.offline", true));
         assert_eq!(error_of(&elsewhere), (53, "machine.not_found", false));
+    }
+
+    // A search of `machine`'s code in `workspace`, claiming to be from someone else.
+    fn symbols_query(machine: &MachineId, workspace: &str) -> Message {
+        let Message::MachineSettingsQuery(settings) = query(machine, workspace) else {
+            panic!();
+        };
+        Message::SymbolsQuery(SymbolsQuery {
+            request: settings.request,
+            machine: settings.machine,
+            workspace: settings.workspace,
+            query: SymbolsQueryKind::Search {
+                words: "MARKER-WORDS".to_owned(),
+            },
+            by: settings.by,
+        })
+    }
+
+    fn symbols_answer(machine: &MachineId, workspace: &str) -> Message {
+        Message::SymbolsAnswer(SymbolsAnswer {
+            request: RequestId::try_from("r-1".to_owned()).unwrap(),
+            machine: machine.clone(),
+            workspace: workspace_id(workspace),
+            answer: SymbolsAnswerKind::Found {
+                symbols: vec![Symbol {
+                    repo: "site".parse().unwrap(),
+                    kind: SymbolKind::Fn,
+                    name: "MARKER::run".to_owned(),
+                    path: "src/MARKER.rs".to_owned(),
+                    line: 3,
+                }],
+                more: false,
+            },
+        })
+    }
+
+    #[tokio::test]
+    async fn a_search_of_the_askers_own_code_reaches_their_machine_and_nothing_of_it_is_logged() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let offers = ["machine.connect", "symbols.search"];
+        let mut core = connected(server.address, &paired, &offers).await;
+        let mut browser = open(server.address, "/api/workspaces/w1/feed", &paired.session)
+            .await
+            .unwrap();
+        say(&mut browser, &["workspace.feed", "symbols.search"]).await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
+        let machine = paired.machine_id();
+
+        let elsewhere = asked(&mut browser, 50, symbols_query(&machine, "w2")).await;
+        send(&mut browser, envelope(51, symbols_query(&machine, "w1"))).await;
+        let relayed = next_envelope(&mut core).await;
+        let other_workspace = symbols_answer(&machine, "w2");
+        send(&mut core, envelope(relayed.id, other_workspace)).await;
+        let answer = symbols_answer(&machine, "w1");
+        send(&mut core, envelope(relayed.id, answer.clone())).await;
+        let answered = next_envelope(&mut browser).await;
+
+        assert_eq!(error_of(&elsewhere), (50, "machine.not_found", false));
+        let Message::SymbolsQuery(query) = relayed.message else {
+            panic!("{relayed:?}");
+        };
+        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+        let by = query.by.unwrap();
+        assert_eq!(by.account.as_str(), session["account"].as_str().unwrap());
+        assert_eq!(by.member.as_str(), "m1");
+        assert_eq!(answered, envelope(51, answer));
+        let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[test]
+    fn a_search_needs_symbols_search_and_its_answer_is_taken_back() {
+        let machine = MachineId::try_from("mc-1".to_owned()).unwrap();
+        assert_eq!(needs(&symbols_query(&machine, "w1")), Some(SYMBOLS));
+        assert_eq!(needs(&symbols_answer(&machine, "w1")), None);
+        assert!(takes(&symbols_answer(&machine, "w1")));
     }
 
     // A relay where `machine`'s own sessions were asked under 41, relayed as 7.

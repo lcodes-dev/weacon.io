@@ -222,6 +222,11 @@ pub(crate) enum MapSubcommand {
     Flows,
     /// Print the text the MCP's `docs_for` tool answers: the doc lines that pin an item.
     DocsFor { path: String },
+    /// Print the text the MCP's `search` tool answers: the items and docs matching the words.
+    Search {
+        #[arg(required = true)]
+        words: Vec<String>,
+    },
     /// Print the text the MCP's `hotspots` tool answers: the files that change often and that
     /// much depends on.
     Hotspots,

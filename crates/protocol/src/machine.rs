@@ -150,6 +150,9 @@ pub struct MachineSummary {
     /// it is older than the server supports, and those features don't reach it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<Capability>,
+    /// Whether its core is connected now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub connected: bool,
 }
 
 /// The machines paired with the signed-in account.

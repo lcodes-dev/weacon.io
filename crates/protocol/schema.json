@@ -335,6 +335,32 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "symbols_query"
+        }
+      },
+      "$ref": "#/$defs/SymbolsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "symbols_answer"
+        }
+      },
+      "$ref": "#/$defs/SymbolsAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -1971,6 +1997,10 @@
       "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
       "type": "object",
       "properties": {
+        "connected": {
+          "description": "Whether its core is connected now.",
+          "type": "boolean"
+        },
         "core": {
           "description": "The core's build when it last connected; none until it has.",
           "$ref": "#/$defs/App"
@@ -3674,6 +3704,159 @@
       "required": [
         "text",
         "marks"
+      ]
+    },
+    "Symbol": {
+      "description": "An item of a repository's code: where it is, never what it holds.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SymbolKind"
+        },
+        "line": {
+          "description": "The line it begins at, counting from 1.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "name": {
+          "description": "Its path in the code, such as `weacon_protocol::message::Envelope`.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Its file, from the repository's root, joined with `/`.",
+          "type": "string"
+        },
+        "repo": {
+          "$ref": "#/$defs/RepoId"
+        }
+      },
+      "required": [
+        "repo",
+        "kind",
+        "name",
+        "path",
+        "line"
+      ]
+    },
+    "SymbolKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "const",
+            "enum",
+            "fn",
+            "macro",
+            "mod",
+            "static",
+            "struct",
+            "trait",
+            "type",
+            "union"
+          ]
+        }
+      ]
+    },
+    "SymbolsAnswer": {
+      "description": "The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has\n`symbols.search`.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/SymbolsAnswerKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "answer"
+      ]
+    },
+    "SymbolsAnswerKind": {
+      "oneOf": [
+        {
+          "description": "The best of each repository in turn; `more` when some were left out.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "found"
+            },
+            "more": {
+              "type": "boolean"
+            },
+            "symbols": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Symbol"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "symbols",
+            "more"
+          ]
+        }
+      ]
+    },
+    "SymbolsQuery": {
+      "description": "A person asks their own machine for the items of the code in the repositories it has for a\nworkspace, from a client to a core that offers `symbols.search`. Neither the query nor its\nanswer is stored.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Who asked, when the server relays the message to a machine; the core answers only its\nowner.",
+          "$ref": "#/$defs/Asker"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "query": {
+          "$ref": "#/$defs/SymbolsQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "machine",
+        "workspace",
+        "query"
+      ]
+    },
+    "SymbolsQueryKind": {
+      "oneOf": [
+        {
+          "description": "The items whose path, or a contract they declare, holds every word, or a word's start,\nbest first.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "search"
+            },
+            "words": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "words"
+          ]
+        }
       ]
     },
     "TaskChange": {

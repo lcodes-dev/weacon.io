@@ -17,6 +17,7 @@ export type WebCapability =
   | "log.forward"
   | "machine.settings"
   | "sessions.read"
+  | "symbols.search"
   | "worktree.manage"
   | "worktree.open_terminal"
   | "terminal.relay";

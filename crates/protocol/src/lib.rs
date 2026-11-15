@@ -23,6 +23,7 @@ mod search;
 mod secret;
 mod sessions;
 mod settings;
+mod symbols;
 mod task;
 mod terminal;
 #[cfg(test)]
@@ -57,7 +58,7 @@ pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
 };
-pub use mcp::{FlowArgs, MapArgs, McpCall, SymbolArgs};
+pub use mcp::{FlowArgs, MapArgs, McpCall, SearchArgs, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
 pub use pick::Pick;
 pub use proposal::{
@@ -83,6 +84,9 @@ pub use settings::{
     AgentSignIn, MachineSettings, MachineSettingsAction, MachineSettingsAnswer,
     MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
     MachineSettingsQueryKind, SignInState,
+};
+pub use symbols::{
+    Symbol, SymbolKind, SymbolsAnswer, SymbolsAnswerKind, SymbolsQuery, SymbolsQueryKind,
 };
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,

@@ -209,18 +209,13 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const names = useNames(api, workspace.id, socket);
   const served = useSections(socket);
   const searches = useOffers(socket, "workspace.search");
-  const palette = <Palette api={api} workspace={workspace.id} enabled={searches && !open.away} go={open.go} />;
+  const palette = (chatMachine?: string) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
   if (place.view === "chats") {
-    return (
-      <>
-        <WorkspaceChats {...open} place={place} status={status} read={read} names={names} />
-        {palette}
-      </>
-    );
+    return <WorkspaceChats {...open} place={place} status={status} read={read} names={names} palette={palette} />;
   }
   return (
     <div className="workspace">
-      {palette}
+      {palette()}
       <div className="side">
         <Sections {...open} />
       </div>
@@ -292,13 +287,15 @@ function WorkspaceChats({
   go,
   read,
   names,
-}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; names: Names }) {
+  palette,
+}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; names: Names; palette(chatMachine?: string): ReactNode }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const open = chats.value?.chats.find(({ id }) => id === place.chat);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
+      {palette(open?.machine)}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
         <ChatsNav loaded={listed} names={names} chosen={place.chat} choose={(chat) => go({ view: "chats", chat })} />

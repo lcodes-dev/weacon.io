@@ -291,6 +291,8 @@ fn asking(message: &Message) -> Asking<'_> {
         &query.by
     } else if let Message::WorktreeCommand(command) = message {
         &command.by
+    } else if let Message::SymbolsQuery(query) = message {
+        &query.by
     } else if let Message::SessionsQuery(query) = message {
         return Asking::By(query.by.as_ref());
     } else if let Message::Error(_) | Message::ChatQuery(_) = message {
@@ -673,10 +675,19 @@ mod tests {
                 by: by.clone(),
             }),
             Message::SessionsQuery(SessionsQuery {
-                request,
+                request: request.clone(),
                 machine: machine.clone(),
                 query: SessionsQueryKind::List,
                 by: account,
+            }),
+            Message::SymbolsQuery(weacon_protocol::SymbolsQuery {
+                request,
+                machine: machine.clone(),
+                workspace: workspace.clone(),
+                query: weacon_protocol::SymbolsQueryKind::Search {
+                    words: "run".to_owned(),
+                },
+                by: by.clone(),
             }),
             Message::TerminalCommand(TerminalCommand {
                 terminal: TerminalId::try_from("t-1".to_owned()).unwrap(),
@@ -770,8 +781,8 @@ mod tests {
             }),
         );
 
-        assert_eq!(owners, vec![None; 7]);
-        assert_eq!(others, vec![not_owner; 14]);
+        assert_eq!(owners, vec![None; 8]);
+        assert_eq!(others, vec![not_owner; 16]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);

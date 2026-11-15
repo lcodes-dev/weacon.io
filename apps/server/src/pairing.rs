@@ -208,7 +208,12 @@ pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> 
         .machines_of(&session.account, &uplink::offers())
         .await
     {
-        Ok(machines) => Json(MachineList { machines }).into_response(),
+        Ok(mut machines) => {
+            for machine in &mut machines {
+                machine.connected = shared.links.is_open(&machine.id);
+            }
+            Json(MachineList { machines }).into_response()
+        }
         Err(fault) => failure(fault),
     }
 }
@@ -302,6 +307,30 @@ mod tests {
         assert_eq!(paired["token"].as_str().unwrap().len(), 64);
         assert_eq!(again, paired);
         assert_eq!(list, json!({ "machines": [machine] }));
+    }
+
+    #[tokio::test]
+    async fn the_list_says_whether_a_machines_core_is_connected_now() {
+        use crate::test_support::socket::{next, open, say};
+
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let list = async || {
+            ask(server.address, "GET /api/machines", &paired.proof, "")
+                .await
+                .1
+        };
+        let offline = list().await;
+        let mut core = open(server.address, "/api/machines/connect", &paired.token)
+            .await
+            .unwrap();
+        say(&mut core, &["machine.connect", "symbols.search"]).await;
+        // Welcomed only once its connection is open.
+        next(&mut core).await;
+
+        assert_eq!(offline["machines"][0].get("connected"), None);
+        assert_eq!(list().await["machines"][0]["connected"], json!(true));
     }
 
     #[tokio::test]

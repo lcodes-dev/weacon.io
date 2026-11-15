@@ -38,6 +38,7 @@ mod server;
 mod service;
 mod session;
 mod status;
+mod symbols;
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "the sign-in terminal, which uses it, comes next")
