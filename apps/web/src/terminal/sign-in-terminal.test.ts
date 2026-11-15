@@ -37,6 +37,7 @@ function store(pinned?: string, failing = false): PinStore {
 }
 
 function terminal(pins: Pins, online = true) {
+  const beats = { run: undefined as (() => void) | undefined, ms: 0, stopped: false };
   const sent: TerminalCommand[] = [];
   const written: string[] = [];
   const states: TerminalState[] = [];
@@ -56,9 +57,15 @@ function terminal(pins: Pins, online = true) {
     size: { cols: 80, rows: 24 },
     terminal: "t-1",
     ephemeral: fixed(vector.init_ephemeral),
+    every: (run, ms) => {
+      Object.assign(beats, { run, ms });
+      return () => {
+        beats.stopped = true;
+      };
+    },
   });
   const receive = (event: TerminalEvent) => session.receive({ terminal: "t-1", workspace: "w-1", event });
-  return { session, sent, written, states, receive };
+  return { session, sent, written, states, receive, beats };
 }
 
 function sealed(command: TerminalCommand | undefined): string {
@@ -140,6 +147,25 @@ test("a connection lost while the handshake finishes leaves the terminal closed"
 
   assert.deepEqual(states.at(-1), { kind: "closed", problem: "offline" });
   assert.ok(!states.some((state) => state.kind === "open"));
+});
+
+test("an open terminal seals a frame every 20 seconds until it closes, so the core knows it is there", async () => {
+  const { session, sent, receive, beats } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  assert.equal(beats.ms, 0);
+  await receive({ kind: "accepted", handshake: message(1).ciphertext });
+  const before = sent.length;
+
+  beats.run?.();
+  // Sealed after the beat's own frame, so both are out once this is.
+  await session.resize({ cols: 80, rows: 24 });
+
+  assert.equal(beats.ms, 20_000);
+  assert.equal(sent.length - before, 2);
+  assert.equal(sent.at(-1)?.action.kind, "frame");
+  assert.equal(beats.stopped, false);
+  session.close();
+  assert.equal(beats.stopped, true);
 });
 
 test("a changed key, or a pin that can't be read, sends nothing", async () => {

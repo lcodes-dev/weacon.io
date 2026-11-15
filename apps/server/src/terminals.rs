@@ -562,9 +562,14 @@ mod tests {
 
         delivered(shared, &machine, frame_update(SHOWN));
         delivered(shared, &machine, frame_update(TYPED));
-        let first = answers.recv().await.unwrap();
-        let then = tokio::time::timeout(crate::test_support::PATIENCE, answers.recv());
-        let then = then.await.unwrap().unwrap();
+        let patience = crate::test_support::PATIENCE;
+        let first = tokio::time::timeout(patience, answers.recv())
+            .await
+            .unwrap();
+        let then = tokio::time::timeout(patience, answers.recv())
+            .await
+            .unwrap();
+        let (first, then) = (first.unwrap(), then.unwrap());
 
         assert_eq!(first, frame(SHOWN));
         assert_eq!(closed_code(&then), Some("terminal.lagged"));

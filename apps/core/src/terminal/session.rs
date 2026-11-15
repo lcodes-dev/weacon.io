@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio::time::timeout;
+use tokio::task::JoinSet;
+use tokio::time::{Instant, sleep_until, timeout};
 use weacon_agents::{Event, Launch, SignIn, Size, Terminal};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
@@ -25,8 +25,9 @@ pub(super) struct Session {
     pub(super) reply: Bytes,
 }
 
-// A browser that goes quiet, or a sign-in left open, doesn't hold its workspace's slot for good.
-const FIRST_FRAME: Duration = Duration::from_mins(1);
+// A browser that goes quiet, or a sign-in left open, doesn't hold its workspace's slot for good;
+// an open page seals a frame more often than this, even while nothing is typed.
+const QUIET: Duration = Duration::from_mins(1);
 const SIGN_IN_LIMIT: Duration = Duration::from_mins(15);
 
 /// Runs the terminal until its login ends, the browser closes it or the frames it sends stop,
@@ -66,7 +67,7 @@ async fn serve(
     send(updates, update(session, accepted)).await?;
     // Only the browser that made the handshake can seal a frame, so a handshake played again
     // by anyone else starts nothing.
-    let first = timeout(FIRST_FRAME, frames.recv()).await;
+    let first = timeout(QUIET, frames.recv()).await;
     let Some(first) = first.map_err(|_| timed_out())? else {
         return Ok(());
     };
@@ -74,8 +75,12 @@ async fn serve(
     let (launch, size) = (session.launch.clone(), session.size);
     let (terminal, mut events) = off_runtime(move || launch.open_login(size)).await?;
     let (typed, to_write) = mpsc::channel(WAITING);
-    let mut writer = Writer(tokio::spawn(write(terminal, to_write)));
+    // Dropped however the session ends, which ends the writes and the terminal they hold, as
+    // a write the sign-in doesn't take waits for good.
+    let mut writer = JoinSet::new();
+    writer.spawn(write(terminal, to_write));
     pass(&typed, &first)?;
+    let mut heard = Instant::now();
     loop {
         tokio::select! {
             event = events.next() => {
@@ -90,9 +95,11 @@ async fn serve(
                 let Some(sealed) = sealed else {
                     return Ok(());
                 };
+                heard = Instant::now();
                 pass(&typed, &session.channel.open(sealed.as_slice())?)?;
             }
-            written = &mut writer.0 => {
+            () = sleep_until(heard + QUIET) => return Err(timed_out()),
+            Some(written) = writer.join_next() => {
                 return written.map_err(|error| input_failed().because(error))?;
             }
         }
@@ -101,16 +108,6 @@ async fn serve(
 
 // Inputs waiting for the terminal to take them.
 const WAITING: usize = 64;
-
-// Ends the writes, and the terminal they hold, however the session ends, as a write the
-// sign-in doesn't take waits for good.
-struct Writer(JoinHandle<Result<(), Fault>>);
-
-impl Drop for Writer {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
 
 // Queues one opened frame for the terminal; a frame that finds the queue full fails it.
 fn pass(typed: &mpsc::Sender<TerminalInput>, plaintext: &[u8]) -> Result<(), Fault> {

@@ -41,6 +41,17 @@ export type Size = { cols: number; rows: number };
 // Twice this as hex, in its JSON, stays within one sealed frame.
 const INPUT_PIECE = 16_384;
 
+// How often an open terminal tells the core it is still there; the core closes one quiet for a minute.
+const BEAT_MS = 20_000;
+
+/** Calls `run` every `ms` until the returned function is called. */
+export type Every = (run: () => void, ms: number) => () => void;
+
+const every: Every = (run, ms) => {
+  const timer = setInterval(run, ms);
+  return () => clearInterval(timer);
+};
+
 export type Options = {
   machine: MachineSummary;
   workspace: WorkspaceId;
@@ -52,6 +63,7 @@ export type Options = {
   size: Size;
   terminal?: TerminalId;
   ephemeral?: Promise<Ephemeral>;
+  every?: Every;
 };
 
 /**
@@ -70,6 +82,7 @@ export class SignInTerminal {
   #sent = false;
   #received: Promise<void> = Promise.resolve();
   #typed: Promise<void> = Promise.resolve();
+  #stopBeating = () => {};
 
   constructor(options: Options) {
     this.#options = options;
@@ -191,6 +204,8 @@ export class SignInTerminal {
     }
     this.#channel = channel;
     this.#options.screen.state({ kind: "open" });
+    // The same size again changes nothing on the machine.
+    this.#stopBeating = (this.#options.every ?? every)(() => void this.resize(this.#options.size), BEAT_MS);
     // The core starts the login only once a frame shows this end holds the keys.
     await this.resize(this.#options.size);
   }
@@ -255,6 +270,7 @@ export class SignInTerminal {
       return;
     }
     this.#done = true;
+    this.#stopBeating();
     this.#channel?.close();
     this.#options.screen.state({ kind: "closed", ...(problem === undefined ? {} : { problem }) });
   }

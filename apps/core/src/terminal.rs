@@ -242,7 +242,8 @@ mod tests {
         let public = PublicKey::from(&paired.key.secret()).as_bytes().to_vec();
         let workspaces = Workspaces::new(&state, Some(bin.into_os_string()));
         let (log, records) = test_support::recording_logger();
-        let (sender, updates) = mpsc::channel(64);
+        // Room for every refusal a test makes before it reads any.
+        let (sender, updates) = mpsc::channel(4 * WAITING);
         let terminals = Terminals::new(state, workspaces, log, sender);
         Machine {
             dir,
@@ -314,7 +315,7 @@ mod tests {
     }
 
     async fn next_update(machine: &mut Machine) -> TerminalUpdate {
-        let envelope = timeout(Duration::from_secs(30), machine.updates.recv());
+        let envelope = timeout(Duration::from_secs(10), machine.updates.recv());
         update_of(envelope.await.unwrap().unwrap())
     }
 
@@ -573,8 +574,9 @@ mod tests {
         let accepted = next(&mut machine).await;
         assert!(matches!(accepted, TerminalEvent::Accepted { .. }));
         let started = tokio::time::Instant::now();
-        // Unbounded, as the paused clock would run out any bound first.
-        let ended = update_of(machine.updates.recv().await.unwrap()).event;
+        // On the paused clock, past the minute the terminal has.
+        let ended = timeout(Duration::from_mins(2), machine.updates.recv()).await;
+        let ended = update_of(ended.unwrap().unwrap()).event;
         assert_eq!(ended, closed("terminal.timed_out"));
         assert_eq!(started.elapsed(), Duration::from_mins(1));
         assert!(!machine.dir.join("ran").exists());
@@ -590,13 +592,23 @@ mod tests {
         finish(handshaking, handshake.as_slice())
     }
 
-    // The code the terminal closed with, whatever it showed first.
-    async fn closed_after_output(machine: &mut Machine) -> Option<Code> {
+    // The code the terminal closed with, whatever it showed first, within `patience`.
+    async fn closed_within(machine: &mut Machine, patience: Duration) -> Option<Code> {
+        timeout(patience, closed_on(&mut machine.updates))
+            .await
+            .unwrap()
+    }
+
+    async fn closed_on(updates: &mut mpsc::Receiver<Envelope>) -> Option<Code> {
         loop {
-            if let TerminalEvent::Closed { code } = next(machine).await {
+            if let TerminalEvent::Closed { code } = update_of(updates.recv().await.unwrap()).event {
                 return code;
             }
         }
+    }
+
+    async fn closed_after_output(machine: &mut Machine) -> Option<Code> {
+        closed_within(machine, Duration::from_secs(10)).await
     }
 
     #[tokio::test]
@@ -639,5 +651,26 @@ mod tests {
         machine.terminals.handle(close).await;
 
         assert_eq!(closed_after_output(&mut machine).await, None);
+    }
+
+    // Time is paused, so each wait ends as soon as nothing else can happen.
+    #[tokio::test(start_paused = true)]
+    async fn a_terminal_closes_a_minute_after_its_browser_last_sealed_a_frame() {
+        let mut machine = machine();
+        let mut browser = opened_terminal(&mut machine).await;
+        let started = tokio::time::Instant::now();
+        let typed = TerminalInput::Input {
+            data: bytes(b"x".to_vec()),
+        };
+
+        let first = command("t-1", frame(&mut browser, &typed));
+        machine.terminals.handle(first).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        let later = command("t-1", frame(&mut browser, &typed));
+        machine.terminals.handle(later).await;
+        let closed = closed_within(&mut machine, Duration::from_mins(5)).await;
+
+        assert_eq!(closed, Some(Code::new("terminal.timed_out")));
+        assert_eq!(started.elapsed(), Duration::from_secs(90));
     }
 }
