@@ -17,6 +17,7 @@ import type {
   MachineId,
   MachineList,
   MachineSummary,
+  Mark,
   MemberList,
   PairConfirm,
   PairLookup,
@@ -26,6 +27,8 @@ import type {
   ProposalList,
   ProposalOutcome,
   ProposalVerdict,
+  SearchAnswer,
+  SearchQuery,
   SignInStarted,
   TaskChange,
   TaskCreate,
@@ -105,6 +108,11 @@ export class Api {
   /** The chats of `workspace` the signed-in member can see. */
   chats(workspace: WorkspaceId): Promise<Answer<ChatList>> {
     return this.#ask("GET", `/api/workspaces/${workspace}/chats`, undefined, isChats);
+  }
+
+  /** What in `workspace` holds every word of `query`'s text, best first. */
+  search(workspace: WorkspaceId, query: SearchQuery): Promise<Answer<SearchAnswer>> {
+    return this.#ask("POST", `${base(workspace)}/search`, query, isSearchAnswer);
   }
 
   /** Who is or was a member of `workspace`, with the name each is shown by. */
@@ -242,6 +250,30 @@ const isChat = (value: unknown): value is ChatSummary =>
   Number.isSafeInteger((value as ChatSummary).updated_at) &&
   ["undefined", "string"].includes(typeof (value as ChatSummary).run);
 const isChats = listOf<ChatList>("chats", isChat);
+const isMark = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);
+const isCount = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
+const isSnippet = (value: unknown): boolean => fields(value, ["text"]) && listOf("marks", isMark)(value);
+// A hit of a kind this build doesn't know only needs its kind; the palette leaves it out.
+const isHit = (value: unknown): boolean => {
+  if (!fields(value, ["kind"])) {
+    return false;
+  }
+  const hit = value as { kind: string; snippet: unknown; task: string; doc: string; chat: string; seq: unknown };
+  const known = fields(value, ["title"]) && isSnippet(hit.snippet);
+  // A hit's ids go into its key and the address, so each must be one.
+  switch (hit.kind) {
+    case "task":
+      return known && fields(value, ["task"]) && isId(hit.task);
+    case "doc":
+      return known && fields(value, ["doc"]) && isId(hit.doc);
+    case "chat":
+      return known && fields(value, ["chat"]) && isId(hit.chat) && (hit.seq === undefined || isCount(hit.seq));
+    default:
+      return true;
+  }
+};
+const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
 const isPending = (value: unknown): value is PairPending =>
   fields(value, ["pairing", "name", "os", "key"]) &&

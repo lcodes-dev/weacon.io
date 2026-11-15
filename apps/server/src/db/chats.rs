@@ -10,6 +10,7 @@ use weacon_protocol::{
 
 #[cfg(test)]
 pub(crate) use events::Incoming;
+pub(super) use events::Row;
 pub(crate) use ledger::NewRequest;
 pub(crate) use runs::Snapshot;
 
@@ -84,6 +85,8 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        self.index_chat(&mut transaction, chat.id, chat.title, chat.at)
+            .await?;
         self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }

@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
+use weacon_codemap::Churn;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
@@ -106,6 +107,39 @@ impl Git {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+
+    /// How many of the last `commits` commits up to the head, merges left out, changed each
+    /// file under `folder`, by its path from `folder`; none before the first commit, and paths
+    /// that aren't UTF-8 are left out.
+    pub(crate) fn churn(&self, folder: &Path, commits: u32) -> Result<Vec<Churn>, Fault> {
+        let head = self
+            .command(folder)
+            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .output()
+            .map_err(not_run)?;
+        // `--quiet` makes git exit 1, not 128, only for a head with no commit yet.
+        if head.status.code() == Some(1) {
+            return Ok(Vec::new());
+        }
+        let out = run(self
+            .command(folder)
+            .args(["log", "--format=", "--name-only", "-z", "--relative"])
+            .args(["--no-renames", "--no-merges", "--no-show-signature"])
+            .arg(format!("--max-count={commits}"))
+            .args(["HEAD", "--"]))?;
+        let mut churn: BTreeMap<String, u32> = BTreeMap::new();
+        let files = out
+            .split(|byte| *byte == 0)
+            .filter_map(|path| std::str::from_utf8(path).ok())
+            .filter(|path| !path.is_empty());
+        for file in files {
+            *churn.entry(file.to_owned()).or_default() += 1;
+        }
+        Ok(churn
+            .into_iter()
+            .map(|(file, commits)| Churn { file, commits })
+            .collect())
     }
 }
 
@@ -215,10 +249,60 @@ mod tests {
     }
 
     #[test]
+    fn counts_the_commits_that_changed_each_file_under_a_folder() {
+        let dir = TempDir::new().unwrap();
+        let repo = repo(&dir);
+        let git = git(&dir);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        let commit = |files: &[(&str, &str)]| {
+            for (path, text) in files {
+                fs::write(repo.join(path), text).unwrap();
+            }
+            fixture(&dir, &repo, &["add", "--all"]);
+            fixture(&dir, &repo, &["commit", "--quiet", "-m", "Change"]);
+        };
+        commit(&[("src/a.rs", "1"), ("-n", "1")]);
+        commit(&[("src/a.rs", "2"), ("src/b.rs", "1")]);
+        commit(&[("src/a.rs", "3"), ("README.md", "# More\n")]);
+        let counted = |folder: &Path, commits| git.churn(folder, commits).unwrap();
+        let pair = |file: &str, commits| Churn {
+            file: file.to_owned(),
+            commits,
+        };
+
+        assert_eq!(
+            counted(&repo, 10),
+            [
+                pair("-n", 1),
+                pair(".gitattributes", 1),
+                pair("README.md", 2),
+                pair("src/a.rs", 3),
+                pair("src/b.rs", 1)
+            ]
+        );
+        assert_eq!(
+            counted(&repo.join("src"), 2),
+            [pair("a.rs", 2), pair("b.rs", 1)]
+        );
+    }
+
+    #[test]
     fn a_folder_that_isnt_a_repository_fails() {
         let dir = TempDir::new().unwrap();
         let git = git(&dir);
         assert_eq!(git.head(&dir).unwrap_err().code().as_str(), "git.failed");
+        let churn = git.churn(&dir, 10).unwrap_err();
+        assert_eq!(churn.code().as_str(), "git.failed");
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_yet_has_no_churn() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.join("new");
+        fs::create_dir_all(&repo).unwrap();
+        fixture(&dir, &repo, &["init", "--quiet"]);
+        fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+        assert_eq!(git(&dir).churn(&repo, 10).unwrap(), []);
     }
 
     #[test]

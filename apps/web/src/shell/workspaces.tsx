@@ -9,6 +9,7 @@ import { useChatAccess } from "../chat/access.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
+import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
@@ -207,11 +208,19 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const { read } = useChatAccess(socket);
   const names = useNames(api, workspace.id, socket);
   const served = useSections(socket);
+  const searches = useOffers(socket, "workspace.search");
+  const palette = <Palette api={api} workspace={workspace.id} enabled={searches && !open.away} go={open.go} />;
   if (place.view === "chats") {
-    return <WorkspaceChats {...open} place={place} status={status} read={read} names={names} />;
+    return (
+      <>
+        <WorkspaceChats {...open} place={place} status={status} read={read} names={names} />
+        {palette}
+      </>
+    );
   }
   return (
     <div className="workspace">
+      {palette}
       <div className="side">
         <Sections {...open} />
       </div>

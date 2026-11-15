@@ -2,6 +2,7 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 pub(crate) mod agent;
+mod busy;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -29,7 +30,7 @@ use weacon_protocol::{
 
 use self::agent::{Agent, FromRun, Order};
 use self::handle::Ask;
-pub(crate) use self::handle::Chats;
+pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
 use super::feed::{Client, Subscriber};
@@ -456,6 +457,22 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
+
+        let agent = first_turn(&mut bench, &mut pushes).await;
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
+        agent.say.send(done(Outcome::Completed)).unwrap();
+        pushed(&mut pushes, 3).await;
+        assert!(
+            !bench.chats.downgrade().busy().await.unwrap(),
+            "idle between turns"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_prompt_starts_a_run_and_its_turn_is_committed_then_published_in_order() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
@@ -832,6 +849,7 @@ mod tests {
 
         let sent = soon(async { Some(bench.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;
