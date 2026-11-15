@@ -49,7 +49,7 @@ impl Git {
 
 // Where `folder` is: its parent resolved, but not `folder` itself, which an agent could replace
 // with a link to another worktree, as it could its `.git`.
-fn place(folder: &Path) -> Option<PathBuf> {
+pub(super) fn place(folder: &Path) -> Option<PathBuf> {
     Some(resolved(folder.parent()?)?.join(folder.file_name()?))
 }
 

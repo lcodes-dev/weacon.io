@@ -9,7 +9,8 @@ use weacon_protocol::{
     CommitId, DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code,
 };
 
-use super::{Git, Start, failed, not_run, run, text};
+use super::{Git, Start, failed, not_run, run, text, tree};
+use crate::platform;
 
 // A file's changes past this many bytes of patch are only said to be too large, so each still
 // fits one frame with room for its JSON.
@@ -45,6 +46,8 @@ impl Git {
         if changed.len().saturating_add(untracked.len()) > MAX_FILES {
             return Err(too_many());
         }
+        // The worktree's own folder is opened without following it too, like its files.
+        let root = tree::place(worktree);
         let mut files = Vec::new();
         for (change, path) in changed {
             let content = self.patch(worktree, base, &change, &path)?;
@@ -58,7 +61,7 @@ impl Git {
             files.push(DiffFile {
                 path: path.to_owned(),
                 change: FileChange::Added,
-                content: added(&worktree.join(path)),
+                content: added(root.as_deref(), path),
             });
         }
         files.sort_by(|one, other| one.path.cmp(&other.path));
@@ -226,21 +229,26 @@ fn hunk_start(header: &str) -> Option<Hunk> {
     })
 }
 
-// An untracked file, read only when it's a plain file: a link's target never is.
-fn added(file: &Path) -> DiffContent {
-    // Opened once, never through a link, and checked on what was opened.
-    let Ok(opened) = weacon_agents::open_plain(file) else {
+// An untracked file at `path` in the worktree `root`, read only when it's a plain file with one
+// link: opened once from `root` without following a link at any step, and checked on what was
+// opened.
+fn added(root: Option<&Path>, path: &str) -> DiffContent {
+    let Some(opened) = root.and_then(|root| platform::open_beneath(root, path).ok()) else {
         return DiffContent::Binary;
     };
-    let Ok(meta) = opened.metadata() else {
+    let plain = opened.metadata().is_ok_and(|meta| meta.is_file());
+    if !plain || weacon_agents::link_count(&opened).map_or(true, |links| links != 1) {
         return DiffContent::Binary;
-    };
-    if usize::try_from(meta.len()).map_or(true, |len| len > MAX_PATCH) {
-        return DiffContent::TooLarge;
     }
     let mut bytes = Vec::new();
-    let limit = u64::try_from(MAX_PATCH).unwrap_or(u64::MAX);
-    let read = opened.take(limit).read_to_end(&mut bytes);
+    // One byte past the most, so a file that grew since it was listed still says so.
+    let most = u64::try_from(MAX_PATCH)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    let read = opened.take(most).read_to_end(&mut bytes);
+    if bytes.len() > MAX_PATCH {
+        return DiffContent::TooLarge;
+    }
     let (Ok(_), Ok(text)) = (read, String::from_utf8(bytes)) else {
         return DiffContent::Binary;
     };
@@ -525,7 +533,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (git, path, base) = begun(&dir);
         fs::write(dir.join("secret"), "token\n").unwrap();
-        if !crate::platform::plant_link(&dir.join("secret"), &path.join("key")) {
+        if !platform::plant_link(&dir.join("secret"), &path.join("key")) {
             return;
         }
 
@@ -533,6 +541,42 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, DiffContent::Binary);
+    }
+
+    #[test]
+    fn a_file_behind_a_linked_folder_is_never_read() {
+        let dir = TempDir::new().unwrap();
+        let (_, path, _) = begun(&dir);
+        fs::create_dir_all(dir.join("outside")).unwrap();
+        fs::write(dir.join("outside/secret"), "token\n").unwrap();
+        fs::create_dir_all(path.join("docs")).unwrap();
+        fs::write(path.join("docs/notes.md"), "mine\n").unwrap();
+        let root = tree::place(&path);
+        assert!(matches!(
+            added(root.as_deref(), "docs/notes.md"),
+            DiffContent::Text { .. }
+        ));
+        fs::remove_dir_all(path.join("docs")).unwrap();
+        if !platform::plant_link(&dir.join("outside"), &path.join("docs")) {
+            return;
+        }
+
+        assert_eq!(added(root.as_deref(), "docs/secret"), DiffContent::Binary);
+    }
+
+    #[test]
+    fn an_untracked_file_past_the_most_a_patch_holds_is_too_large() {
+        let dir = TempDir::new().unwrap();
+        let (_, path, _) = begun(&dir);
+        let root = tree::place(&path);
+        fs::write(path.join("most.txt"), "a".repeat(MAX_PATCH)).unwrap();
+        fs::write(path.join("more.txt"), "a".repeat(MAX_PATCH + 1)).unwrap();
+
+        assert!(matches!(
+            added(root.as_deref(), "most.txt"),
+            DiffContent::Text { .. }
+        ));
+        assert_eq!(added(root.as_deref(), "more.txt"), DiffContent::TooLarge);
     }
 
     #[test]

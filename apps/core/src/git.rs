@@ -207,12 +207,11 @@ impl Git {
         branch: &str,
         full: &str,
     ) -> Result<Start, Fault> {
-        let on = run(self
-            .command(repo)
-            .args(["symbolic-ref", "--quiet", "--short", "HEAD"]))
-        .ok()
-        .and_then(|out| text(out).ok())
-        .map(|name| name.trim_end().to_owned());
+        // In full: `--short` can say `heads/main` when a tag is also called `main`.
+        let on = run(self.command(repo).args(["symbolic-ref", "--quiet", "HEAD"]))
+            .ok()
+            .and_then(|out| text(out).ok())
+            .and_then(|name| Some(name.trim_end().strip_prefix("refs/heads/")?.to_owned()));
         let head = self.head(repo)?;
         run(self
             .command(repo)
@@ -434,6 +433,19 @@ mod tests {
 
     fn real(path: &Path) -> PathBuf {
         path.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn the_branch_a_chat_began_from_is_its_name_even_beside_a_tag_of_it() {
+        let dir = TempDir::new().unwrap();
+        let (git, repo) = (git(&dir), repo(&dir));
+        fixture(&dir, &repo, &["tag", "main"]);
+
+        let made = git
+            .chat_worktree(&repo, &chat("a-1"), &dir.join("trees/c-a"))
+            .unwrap();
+
+        assert_eq!(made.start.unwrap().branch.as_deref(), Some("main"));
     }
 
     #[test]

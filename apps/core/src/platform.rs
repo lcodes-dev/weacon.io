@@ -1,13 +1,6 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the code map reads worktrees through it once wired in"
-    )
-)]
 mod beneath;
 mod chrome;
 mod procs;
