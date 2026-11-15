@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::token::token_id;
 use crate::{
     AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
-    RequestId, RunState, RunStatus, RunUpdate, WorkspaceId,
+    RequestId, RunState, RunStatus, RunUpdate, TaskId, WorkspaceId,
 };
 
 token_id!(
@@ -34,6 +34,8 @@ pub enum ChatAction {
     /// sender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on
     /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
     /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
+    /// `task` links a new chat to a task of its workspace; the server relays it with the
+    /// task's title as it is then, and a later prompt naming a task with the chat's own, or none.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +47,9 @@ pub enum ChatAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "AgentKind")]
         agent: Option<AgentKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "ChatTask")]
+        task: Option<ChatTask>,
     },
     /// Answers a permission prompt of one of the chat's runs.
     Permission { answer: PermissionAnswer },
@@ -60,6 +65,14 @@ pub enum ChatAction {
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
+}
+
+/// The task a chat works on: its id, and its title as the chat's first prompt found it, a
+/// person's words.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatTask {
+    pub id: TaskId,
+    pub title: String,
 }
 
 /// A committed event of a chat, from the core to a client that subscribed under `chat.events`.
@@ -96,8 +109,8 @@ pub struct ChatEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatEvent {
-    /// A person's prompt, accepted under `request`, with the repository and the agent it
-    /// named, if any.
+    /// A person's prompt, accepted under `request`, with the repository, the agent and the
+    /// task it named, if any.
     Prompt {
         request: RequestId,
         text: String,
@@ -107,6 +120,9 @@ pub enum ChatEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "AgentKind")]
         agent: Option<AgentKind>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "ChatTask")]
+        task: Option<ChatTask>,
     },
     /// Where a chat command stands; written once per state.
     Receipt {
@@ -190,8 +206,8 @@ pub enum ChatAnswerKind {
     Newer,
 }
 
-/// A chat in a [`ChatList`]: `machine` is a name, never an id, and `updated_at` is when its
-/// latest turn began or ended, in seconds since the Unix epoch.
+/// A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and
+/// `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatSummary {
     pub id: ChatId,
@@ -204,6 +220,11 @@ pub struct ChatSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunState")]
     pub run: Option<RunState>,
+    pub machine_id: MachineId,
+    /// The task it was made for, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "TaskId")]
+    pub task: Option<TaskId>,
 }
 
 /// What can still happen to a chat.
@@ -239,6 +260,13 @@ mod tests {
 
     fn repo() -> RepoId {
         "site".parse().unwrap()
+    }
+
+    fn task() -> ChatTask {
+        ChatTask {
+            id: "t-1".parse().unwrap(),
+            title: "Speed up the build".to_owned(),
+        }
     }
 
     fn command(action: ChatAction) -> Envelope {
@@ -319,6 +347,7 @@ mod tests {
                     repo: None,
                     machine: None,
                     agent: None,
+                    task: None,
                 },
                 json!({ "kind": "prompt", "text": "Run the tests" }),
             ),
@@ -328,9 +357,11 @@ mod tests {
                     repo: Some(repo()),
                     machine: Some("mc-1".parse().unwrap()),
                     agent: Some(AgentKind::Codex),
+                    task: Some(task()),
                 },
                 json!({ "kind": "prompt", "text": "Fix the build", "repo": "site",
-                        "machine": "mc-1", "agent": "codex" }),
+                        "machine": "mc-1", "agent": "codex",
+                        "task": { "id": "t-1", "title": "Speed up the build" } }),
             ),
             (
                 ChatAction::Permission { answer },
@@ -386,6 +417,7 @@ mod tests {
                     text: "Run the tests".to_owned(),
                     repo: None,
                     agent: None,
+                    task: None,
                 },
                 json!({ "kind": "prompt", "request": "r-1", "text": "Run the tests" }),
             ),
@@ -428,18 +460,20 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_event_keeps_the_repo_and_the_agent_it_fixed() {
+    fn a_prompt_event_keeps_the_repo_the_agent_and_the_task_it_fixed() {
         let event = ChatEvent::Prompt {
             request: request(),
             text: "Fix the build".to_owned(),
             repo: Some(repo()),
             agent: Some(AgentKind::Codex),
+            task: Some(task()),
         };
         travels(
             &update(event),
             entry_wire(
                 &json!({ "kind": "prompt", "request": "r-1", "text": "Fix the build",
-                                "repo": "site", "agent": "codex" }),
+                                "repo": "site", "agent": "codex",
+                                "task": { "id": "t-1", "title": "Speed up the build" } }),
             ),
         );
     }
@@ -558,12 +592,21 @@ mod tests {
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
                 run: Some(RunState::Waiting),
+                machine_id: "mc-1".parse().unwrap(),
+                task: Some("t-1".parse().unwrap()),
             }],
         };
         let wire = json!({ "chats": [{
             "id": "c-1", "title": "Fix the build", "owner": "m-1", "machine": "Ada's laptop",
             "state": "full", "updated_at": 1_700_000_000, "run": "waiting",
+            "machine_id": "mc-1", "task": "t-1",
         }] });
+        let untasked = json!({ "chats": [{
+            "id": "c-1", "title": "Fix the build", "owner": "m-1", "machine": "Ada's laptop",
+            "machine_id": "mc-1", "state": "open", "updated_at": 1,
+        }] });
+        let untasked: ChatList = serde_json::from_value(untasked).unwrap();
+        assert_eq!(untasked.chats[0].task, None);
 
         assert_eq!(serde_json::to_value(&list).unwrap(), wire);
         assert_eq!(serde_json::from_value::<ChatList>(wire).unwrap(), list);

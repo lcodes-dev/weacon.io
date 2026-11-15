@@ -1,10 +1,12 @@
 mod events;
+mod list;
 mod runs;
+mod task;
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatId, ChatState, ChatSummary, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
+    ChatId, ChatState, ChatTask, MachineId, MachineName, MemberId, RepoId, RunState, RunStatus,
     code,
 };
 
@@ -25,6 +27,8 @@ pub(crate) struct NewChat<'a> {
     /// Kept without a reference: an unpaired machine leaves its chats readable.
     pub(crate) machine_id: &'a MachineId,
     pub(crate) machine: &'a MachineName,
+    /// The task of this workspace it is for, with its title as it is now.
+    pub(crate) task: Option<&'a ChatTask>,
     pub(crate) at: i64,
 }
 
@@ -39,10 +43,20 @@ pub(crate) struct Chat {
     pub(crate) core_seq: u64,
     /// Whether its first prompt reached its machine, which is when the feed heard of it.
     pub(crate) made: bool,
+    /// The task it was made for, with its title as it then was.
+    pub(crate) task: Option<ChatTask>,
 }
 
-type ChatRow = (String, String, String, i64, i64, bool);
-type SummaryRow = (String, String, String, String, String, i64, Option<String>);
+type ChatRow = (
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    bool,
+    Option<String>,
+    Option<String>,
+);
 
 impl Workspace {
     /// Makes the chat `chat` before its first prompt is sent: feeds hear of it once
@@ -71,6 +85,9 @@ impl Workspace {
         let owned = self.runs_on_in(&mut transaction, chat.id, chat.machine_id);
         if !owned.await? {
             return Err(machine_not_found());
+        }
+        if let Some(task) = chat.task {
+            self.link_task(&mut transaction, chat.id, task).await?;
         }
         transaction.commit().await.map_err(failed)
     }
@@ -104,6 +121,7 @@ impl Workspace {
         if self.made(&mut transaction, chat).await? {
             return Ok(());
         }
+        self.unlink_task(&mut transaction, chat).await?;
         sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
             .bind(chat.as_str())
@@ -128,24 +146,29 @@ impl Workspace {
     pub(crate) async fn chat(&self, id: &ChatId) -> Result<Option<Chat>, Fault> {
         sqlx::query_as::<_, ChatRow>(
             "SELECT owner_member, machine_id, state, seq, core_seq, EXISTS (SELECT 1 FROM changes
-                 AS h WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id)
-             FROM chats AS c WHERE workspace_id = ? AND chat_id = ?",
+                 AS h WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id),
+                 t.task_id, t.title
+             FROM chats AS c LEFT JOIN chat_tasks AS t USING (workspace_id, chat_id)
+             WHERE workspace_id = ? AND chat_id = ?",
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
         .fetch_optional(&self.db.readers)
         .await
         .map_err(failed)?
-        .map(|(owner, machine, state, seq, core_seq, made)| {
-            Ok(Chat {
-                owner: stored(owner)?,
-                machine: stored(machine)?,
-                state: stored_state(&state)?,
-                seq: count(seq)?,
-                core_seq: count(core_seq)?,
-                made,
-            })
-        })
+        .map(
+            |(owner, machine, state, seq, core_seq, made, task, title)| {
+                Ok(Chat {
+                    owner: stored(owner)?,
+                    machine: stored(machine)?,
+                    state: stored_state(&state)?,
+                    seq: count(seq)?,
+                    core_seq: count(core_seq)?,
+                    made,
+                    task: task::stored_task(task, title)?,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -203,33 +226,6 @@ impl Workspace {
             return Err(chat_not_found());
         }
         self.append(transaction, chat, events).await
-    }
-
-    /// The workspace's chats, the latest updated first.
-    pub(crate) async fn chats(&self) -> Result<Vec<ChatSummary>, Fault> {
-        sqlx::query_as::<_, SummaryRow>(
-            "SELECT chat_id, title, owner_member, machine_name, state, updated_at, run_status
-             FROM chats AS c WHERE workspace_id = ? AND EXISTS (SELECT 1 FROM changes AS h
-                 WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id)
-             ORDER BY updated_at DESC, chat_id",
-        )
-        .bind(self.id.as_str())
-        .fetch_all(&self.db.readers)
-        .await
-        .map_err(failed)?
-        .into_iter()
-        .map(|(id, title, owner, machine, state, updated_at, run)| {
-            Ok(ChatSummary {
-                id: stored(id)?,
-                title,
-                owner: stored(owner)?,
-                machine: stored(machine)?,
-                state: stored_state(&state)?,
-                updated_at,
-                run: run.as_deref().map(stored_run_state).transpose()?.flatten(),
-            })
-        })
-        .collect()
     }
 
     /// Detaches `chat`, whose machine is no longer its owner's, and tells the feed, as `by`.
@@ -337,7 +333,7 @@ fn stored_state(text: &str) -> Result<ChatState, Fault> {
 mod tests {
     use weacon_testing::TempDir;
 
-    use weacon_protocol::RunState;
+    use weacon_protocol::{ChatSummary, RunState};
 
     use super::*;
     use crate::db::test_support::{NOW, append, begin, code, id, make, status};
@@ -360,6 +356,8 @@ mod tests {
             state: ChatState::Open,
             updated_at: NOW + 5,
             run: None,
+            machine_id: id("mc-1"),
+            task: None,
         };
         assert_eq!(listed.first(), Some(&summary));
         assert_eq!(ids(&listed), ["c-2", "c-1"]);
@@ -375,6 +373,7 @@ mod tests {
             seq: 0,
             core_seq: 0,
             made: true,
+            task: None,
         };
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), Some(chat));
         assert_eq!(two.chat(&id("c-2")).await.unwrap(), None);
@@ -460,6 +459,7 @@ mod tests {
             machine_id,
             machine: &name,
             at: NOW,
+            task: None,
         };
         // Unpaired since its owner chose it.
         let (theirs, ours) = (id::<MachineId>("mc-2"), id::<MachineId>("mc-1"));

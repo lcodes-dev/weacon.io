@@ -199,21 +199,39 @@ impl Index {
         let mut text = Text::new(budget);
         text.line(&format!("Flows pinned in the docs: {}.", self.flows.len()));
         for flow in &self.flows {
-            let state = match &flow.breaks {
-                None => "holds".to_owned(),
-                Some(Break::Missing(step)) => format!("breaks: no item {step}"),
-                Some(Break::Unreached(from, to)) => {
-                    format!("breaks: {from} doesn't reach {to} through calls")
-                }
-            };
-            text.line(&format!(
-                "- {}:{}  {}: {state}",
-                flow.file,
-                flow.line,
-                flow.steps.join(" -> ")
-            ));
+            text.line(&flow_line(flow));
         }
         text.finish()
+    }
+
+    /// The flows pinned by the `docs` docs that hold the most of `words` as whole words, whatever
+    /// their case, best first, each doc's in its order, as [`Self::flows`] lists them without its
+    /// heading.
+    #[must_use]
+    pub fn flows_matching(&self, words: &[impl AsRef<str>], docs: usize) -> Vec<String> {
+        let words: BTreeSet<String> = words
+            .iter()
+            .map(|word| word.as_ref().to_lowercase())
+            .collect();
+        let pinning: BTreeSet<&str> = self.flows.iter().map(|flow| flow.file.as_str()).collect();
+        let mut ranked: Vec<(usize, &str)> = pinning
+            .into_iter()
+            .filter_map(|file| {
+                let text = self.docs.get(file)?.to_lowercase();
+                let held: BTreeSet<&str> = text
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .filter(|word| words.contains(*word))
+                    .collect();
+                (!held.is_empty()).then_some((held.len(), file))
+            })
+            .collect();
+        ranked.sort_by_key(|(held, _)| Reverse(*held));
+        ranked
+            .into_iter()
+            .take(docs)
+            .flat_map(|(_, doc)| self.flows.iter().filter(move |flow| flow.file == doc))
+            .map(flow_line)
+            .collect()
     }
 
     /// The contracts of one kind, or of every kind, in order.
@@ -286,6 +304,18 @@ fn folder(folder: &str) -> &str {
     if folder.is_empty() { "." } else { folder }
 }
 
+fn flow_line(flow: &crate::flows::Flow) -> String {
+    let state = match &flow.breaks {
+        None => "holds".to_owned(),
+        Some(Break::Missing(step)) => format!("breaks: no item {step}"),
+        Some(Break::Unreached(from, to)) => {
+            format!("breaks: {from} doesn't reach {to} through calls")
+        }
+    };
+    let steps = flow.steps.join(" -> ");
+    format!("- {}:{}  {steps}: {state}", flow.file, flow.line)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +341,45 @@ mod tests {
             ),
         ]))
         .unwrap()
+    }
+
+    #[test]
+    fn the_flows_of_the_docs_that_hold_the_most_words_come_first() {
+        let index = index(&files(&[
+            ("lib/Cargo.toml", "[package]\nname = \"lib\"\n"),
+            (
+                "lib/src/lib.rs",
+                "pub fn run() { keep(); }\npub fn keep() {}\n",
+            ),
+            (
+                "docs/a.md",
+                "# Keeping\nflow:lib::run->lib::keep\n\nflow:lib::keep->lib::run\n",
+            ),
+            (
+                "docs/b.md",
+                "Keeping RUNS here: flow:lib::run->lib::gone.\n",
+            ),
+            ("docs/c.md", "Runs: flow:lib::keep->lib::keep\n"),
+            ("docs/d.md", "Keeping runs, with no flow.\n"),
+            ("docs/e.md", "Safekeeping reruns: flow:lib::run->lib::run\n"),
+        ]))
+        .unwrap();
+
+        let listed = index.flows_matching(&["keeping", "Runs"], 2);
+
+        assert_eq!(
+            listed,
+            [
+                "- docs/b.md:1  lib::run -> lib::gone: breaks: no item lib::gone",
+                "- docs/a.md:2  lib::run -> lib::keep: holds",
+                "- docs/a.md:4  lib::keep -> lib::run: breaks: lib::keep doesn't reach lib::run \
+                 through calls",
+            ]
+        );
+        assert_eq!(index.flows_matching(&["runs"], 5).len(), 2);
+        assert!(index.flows_matching(&["zebra"], 5).is_empty());
+        let none: [&str; 0] = [];
+        assert!(index.flows_matching(&none, 5).is_empty());
     }
 
     #[test]

@@ -16,8 +16,8 @@ type Props = {
   api: Api;
   workspace: WorkspaceId;
   socket: WorkspaceSocket;
-  /** The open chat's machine, by name, whose code the palette searches first. */
-  chatMachine?: string | undefined;
+  /** The open chat's machine, whose code the palette searches first. */
+  chatMachine?: MachineId | undefined;
   enabled: boolean;
   go(place: Place): void;
 };
@@ -213,7 +213,7 @@ const symbolKey = (symbol: CodeSymbol) => `symbol:${symbol.repo}:${symbol.name}:
  * The symbols on the person's machine that match `text`, once its answer is for that text; none
  * while no machine of theirs offers them. `settled` once nothing is left to wait for.
  */
-function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | undefined, text: string) {
+function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: MachineId | undefined, text: string) {
   const offered = useOffers(socket, SYMBOLS);
   // Undefined until the machines are listed, null when none of them offers symbols.
   const [machine, setMachine] = useState<MachineId | null | undefined>(undefined);

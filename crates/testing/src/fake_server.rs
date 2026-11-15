@@ -685,6 +685,7 @@ mod tests {
             repo: None,
             machine: None,
             agent: None,
+            task: None,
         };
         let prompt = command(3, request("q-2"), prompt);
         let log = r#"{"id":0,"type":"log","level":"info","msg":"sent"}"#;

@@ -2,12 +2,12 @@
 //! answer is the command's receipt.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatCommand};
+use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatTask};
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
 use crate::auth::Member;
-use crate::db::{Chat, NewChat};
+use crate::db::{Chat, NewChat, Workspace};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
@@ -26,8 +26,9 @@ pub(crate) async fn take(
             title,
             machine,
             repo,
-            command,
+            mut command,
         } => {
+            let task = stamp(&member.workspace, &mut command).await?;
             let owned = shared.db.machines_of(&asker.account, &[]).await?;
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
                 return Err(crate::db::machine_not_found());
@@ -41,6 +42,7 @@ pub(crate) async fn take(
                 machine_id: &summary.id,
                 machine: &summary.name,
                 at: shared.now(),
+                task: task.as_ref(),
             };
             start(shared, member, &chat, command, back).await
         }
@@ -92,6 +94,26 @@ async fn existing(
     }
     let follow = link::follow(workspace.id(), &command.chat, chat.core_seq);
     relay::command(shared, &chat.machine, command, follow, back)
+}
+
+/// Gives the task a chat's first prompt names the title it has now in `workspace`.
+async fn stamp(
+    workspace: &Workspace,
+    command: &mut ChatCommand,
+) -> Result<Option<ChatTask>, Fault> {
+    let ChatAction::Prompt {
+        task: Some(named), ..
+    } = &mut command.action
+    else {
+        return Ok(None);
+    };
+    workspace
+        .task(&named.id)
+        .await?
+        .title
+        .as_str()
+        .clone_into(&mut named.title);
+    Ok(Some(named.clone()))
 }
 
 #[cfg(test)]
@@ -188,6 +210,96 @@ mod tests {
                 message: busy
             }
         );
+    }
+
+    // `command`, a prompt, naming the task `task` as the client last read its title.
+    fn for_task(mut command: ChatCommand, task: &str) -> ChatCommand {
+        if let ChatAction::Prompt { task: named, .. } = &mut command.action {
+            *named = Some(ChatTask {
+                id: id(task),
+                title: "As the client read it".to_owned(),
+            });
+        }
+        command
+    }
+
+    fn task_of(message: &Message) -> Option<&ChatTask> {
+        let Message::ChatCommand(ChatCommand {
+            action: ChatAction::Prompt { task, .. },
+            ..
+        }) = message
+        else {
+            return None;
+        };
+        task.as_ref()
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_for_a_task_relays_its_title_now_and_later_prompts_keep_it() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        let by = weacon_model::Attribution::by(ada.member.id.clone(), NOW);
+        let task = crate::test_support::new_task("t-1", "Speed up the build", "a");
+        workspace.add_task(&task, &by).await.unwrap();
+        let mut attached = attach(
+            shared,
+            &ada,
+            &["machine.connect", "chat.serve", "chat.answers"],
+        );
+        let first = || for_task(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)), "t-1");
+
+        asked(&ada, shared, first()).await.0.unwrap();
+        let stamped = ChatTask {
+            id: id("t-1"),
+            title: "Speed up the build".to_owned(),
+        };
+        assert_eq!(task_of(&sent(&mut attached)[0]), Some(&stamped));
+        let listed = workspace.chats().await.unwrap();
+        assert_eq!(listed[0].task, Some(id("t-1")));
+        // Sent again, it goes again to its chat, for the chat's own task.
+        asked(&ada, shared, first()).await.0.unwrap();
+        let later = for_task(prompt("r-2", "c-1", "And this", None), "t-9");
+        asked(&ada, shared, later).await.0.unwrap();
+        let plain = prompt("r-3", "c-1", "Then that", None);
+        asked(&ada, shared, plain).await.0.unwrap();
+        let relayed = sent(&mut attached);
+        let tasks: Vec<_> = relayed.iter().map(task_of).collect();
+        assert_eq!(
+            tasks,
+            [Some(&stamped), None, Some(&stamped), None, None, None]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_for_a_task_of_another_workspace_makes_no_chat() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let other = shared
+            .db
+            .create_workspace(&id("w9"), "Other")
+            .await
+            .unwrap();
+        let bo = crate::test_support::email("bo@example.com");
+        let account = crate::test_support::fresh_account();
+        other.add_member(&id("m9"), &account, &bo).await.unwrap();
+        let elsewhere = crate::test_support::new_task("t-1", "Plan the trip", "a");
+        let by = weacon_model::Attribution::by(id("m9"), NOW);
+        other.add_task(&elsewhere, &by).await.unwrap();
+        let mut attached = attach(
+            shared,
+            &ada,
+            &["machine.connect", "chat.serve", "chat.answers"],
+        );
+
+        let foreign = for_task(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)), "t-1");
+        let (refused, _answers) = asked(&ada, shared, foreign).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "task.not_found");
+        assert!(sent(&mut attached).is_empty());
+        assert_eq!(ada.member.workspace.chat(&id("c-1")).await.unwrap(), None);
     }
 
     #[tokio::test]
