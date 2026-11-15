@@ -67,7 +67,10 @@ struct Stores {
 #[derive(Debug)]
 struct Checked {
     commit: CommitId,
-    failed: Option<Vec<Facts>>,
+    /// How many moves of this repository came before this one.
+    seq: u64,
+    /// The base the oldest failed check started from, and that check's `seq`.
+    failed: Option<(u64, Vec<Facts>)>,
 }
 
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
@@ -329,17 +332,25 @@ impl Stores {
         if earlier.is_some_and(|earlier| earlier.commit == moved.commit) {
             return;
         }
-        if let Some(was) = earlier.and_then(|earlier| earlier.failed.clone()) {
+        if let Some((_, was)) = earlier.and_then(|earlier| earlier.failed.clone()) {
             moved.was = was;
         }
+        let seq = earlier.map_or(0, |earlier| earlier.seq.saturating_add(1));
         let checked = Checked {
             commit: moved.commit.clone(),
+            seq,
             failed: None,
         };
         seen.insert(key.clone(), checked);
         drop(seen);
         let checks = Arc::clone(&self.moves);
-        tokio::spawn(check_move(proposals, key, moved, checks, log.clone()));
+        tokio::spawn(check_move(
+            proposals,
+            (key, seq),
+            moved,
+            checks,
+            log.clone(),
+        ));
     }
 
     // Only the map is guarded, so a poisoned lock still holds a usable one.
@@ -348,16 +359,16 @@ impl Stores {
     }
 }
 
-/// Proposes what `moved` did to the docs of the workspace in `key`, and when that fails keeps
-/// the base it started from in `checks`, for the next move.
+/// Proposes what `moved`, the move numbered `seq`, did to the docs of the workspace in `key`,
+/// and when that fails keeps the base it started from in `checks`, for the next move.
 async fn check_move(
     proposals: Proposals,
-    key: (WorkspaceId, PathBuf),
+    (key, seq): ((WorkspaceId, PathBuf), u64),
     moved: Move,
     checks: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), Checked>>>,
     log: Logger,
 ) {
-    let (was, commit) = (moved.was.clone(), moved.commit.clone());
+    let was = moved.was.clone();
     let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
     let checked = async {
         let (was, now, commit) = off_runtime(assembled).await?;
@@ -368,13 +379,13 @@ async fn check_move(
         Err(fault) => fault,
     };
     log.warn("anchors check failed", &[("err", Field::error(&fault))]);
-    // A newer move may have started from this one's base meanwhile; the oldest base failed
-    // from is kept, so the next move covers what this one missed.
+    // Checks of later moves may fail first; the oldest base failed from is kept, so the next
+    // move covers what each missed.
     let mut seen = checks.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(checked) = seen.get_mut(&key)
-        && (checked.commit != commit || checked.failed.is_none())
+        && checked.failed.as_ref().is_none_or(|(kept, _)| seq < *kept)
     {
-        checked.failed = Some(was);
+        checked.failed = Some((seq, was));
     }
 }
 
@@ -806,34 +817,36 @@ mod tests {
         let commit = |digit: char| -> CommitId { digit.to_string().repeat(40).parse().unwrap() };
         let checks: Arc<Mutex<HashMap<_, Checked>>> = Arc::default();
         let (log, _) = recording_logger();
-        let check = |moved_to: char, was: &str, failed: Option<Vec<Facts>>| {
+        // The check of move 1, from base `go`, fails with `failed` kept so far.
+        let check = |failed: Option<(u64, Vec<Facts>)>| {
             let checked = Checked {
-                commit: commit(moved_to),
+                commit: commit('d'),
+                seq: 3,
                 failed,
             };
             checks.lock().unwrap().insert(key.clone(), checked);
             let moved = Move {
-                was: base(was),
+                was: base("pub fn go() {}\n"),
                 now: base("pub fn go() { let x = 1; }\n"),
                 commit: commit('b'),
             };
-            check_move(
-                fake.connect(),
-                key.clone(),
-                moved,
-                Arc::clone(&checks),
-                log.clone(),
-            )
+            let at = (key.clone(), 1);
+            check_move(fake.connect(), at, moved, Arc::clone(&checks), log.clone())
         };
         let failed = || checks.lock().unwrap().get(&key).unwrap().failed.clone();
+        let (go, older, newer) = (
+            base("pub fn go() {}\n"),
+            base("pub fn older() {}\n"),
+            base("pub fn newer() {}\n"),
+        );
 
-        // Superseded by a move to c that started from b, so b's own base is kept.
-        check('c', "pub fn go() {}\n", None).await;
-        assert_eq!(failed(), Some(base("pub fn go() {}\n")));
-        // An older base kept for b stays.
-        check('b', "pub fn go() {}\n", Some(base("pub fn older() {}\n"))).await;
-        assert_eq!(failed(), Some(base("pub fn older() {}\n")));
-        check('b', "pub fn go() {}\n", None).await;
-        assert_eq!(failed(), Some(base("pub fn go() {}\n")));
+        check(None).await;
+        assert_eq!(failed(), Some((1, go.clone())));
+        // A base kept by an older move's failed check stays.
+        check(Some((0, older.clone()))).await;
+        assert_eq!(failed(), Some((0, older)));
+        // A later move's check that failed first gives way to this older one.
+        check(Some((2, newer))).await;
+        assert_eq!(failed(), Some((1, go)));
     }
 }
