@@ -24,6 +24,7 @@ use crate::search;
 use crate::shared::Shared;
 use crate::sign_in;
 use crate::tasks;
+use crate::team;
 use crate::uplink;
 use crate::web;
 use crate::workspaces;
@@ -92,6 +93,7 @@ fn router(shared: Shared) -> Router {
         .route("/version", get(version))
         .merge(sign_in::routes())
         .merge(workspaces::routes())
+        .merge(team::routes())
         .merge(pairing::routes())
         .merge(uplink::routes())
         .merge(feed::routes())

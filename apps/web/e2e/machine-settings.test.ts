@@ -6,9 +6,10 @@ import { core, pair } from "./pairing.ts";
 import { waitFor } from "./harness.ts";
 import { serve, signIn } from "./server.ts";
 
+// Marked as a team's from before, though the workspace is the person's alone.
 const START: MachineSettings = {
   access: "ask_first",
-  team: false,
+  team: true,
   sign_ins: [
     { agent: "claude", state: "signed_in" },
     { agent: "codex", state: "not_installed" },
@@ -61,7 +62,6 @@ test("a person reads and changes a machine's settings for the open workspace, th
   machine.set({ ...machine.settings, sign_ins: START.sign_ins });
 
   const warning = settings.getByText("Full access is on in a team workspace. Its agents change files on this machine without asking.");
-  const team = settings.getByLabel("Other people are in this workspace");
   const level = settings.getByLabel("What this workspace's agents may do on this machine");
 
   await settings.getByRole("button", { name: "Keep off" }).click();
@@ -71,25 +71,22 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await settings.getByText("On.", { exact: true }).waitFor();
   assert.equal(await settings.getByRole("button", { name: "Turn on" }).count(), 0);
 
-  // The warning is for full access in a team workspace only.
+  // The machine's mark follows the workspace's members, and the warning is for full access in a team workspace only.
+  await waitFor(() => !machine.settings.team);
   await level.selectOption("full");
   await waitFor(() => machine.settings.access === "full");
   // The page shows the core's answer before the next change is built from it.
   await page.waitForFunction((select) => (select as HTMLSelectElement | null)?.value === "full", await level.elementHandle());
   assert.equal(await warning.count(), 0);
-  // The box shows what the core holds, so it ticks once the core has answered.
-  await team.click();
-  await warning.waitFor();
-  assert.ok(await team.isChecked());
+  assert.equal(machine.settings.team, false);
   await level.selectOption("ask_first");
-  await warning.waitFor({ state: "detached" });
-  assert.equal(machine.settings.team, true);
+  await waitFor(() => machine.settings.access === "ask_first");
 
   machine.refuse();
   await settings.getByRole("button", { name: "Turn off" }).click();
   await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
   await settings.getByText("On.", { exact: true }).waitFor();
-  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, reports: true, sign_ins: [] });
+  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: false, reports: true, sign_ins: [] });
 });
 
 test("a machine paired with a workspace open shows its settings at once, to ask about error reports", { timeout: 600_000 }, async (t) => {

@@ -80,11 +80,12 @@ async fn add_member(
     account: &AccountId,
     email: &Email,
 ) -> Result<String, Fault> {
-    db.workspace(workspace)
+    let member = db
+        .workspace(workspace)
         .await?
         .add_member(id, account, email)
         .await?;
-    Ok(line(id.as_str()))
+    Ok(line(member.as_str()))
 }
 
 async fn members(db: &Db, workspace: &WorkspaceId) -> Result<String, Fault> {

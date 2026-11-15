@@ -32,9 +32,11 @@ pub(crate) struct Attempt<'a> {
     pub(crate) token_expires_at: i64,
     /// The account's Personal workspace, made with the session unless it has had one.
     pub(crate) personal: &'a NewWorkspace,
-    /// The id of the account a right code makes, for an address that has none; `None` when
-    /// the address may not sign up.
-    pub(crate) new_account: Option<&'a AccountId>,
+    /// The id of the account a right code makes, for an address that has none, if it may sign
+    /// up or is invited.
+    pub(crate) new_account: &'a AccountId,
+    /// Whether the server's sign-up rule lets the address make an account.
+    pub(crate) sign_up: bool,
 }
 
 impl Db {
@@ -58,6 +60,12 @@ impl Db {
             .map_err(failed)?
             .map(stored)
             .transpose()
+    }
+
+    /// Whether `email` has a live invitation at `now`, which lets it make an account.
+    pub(crate) async fn invited(&self, email: &Email, now: i64) -> Result<bool, Fault> {
+        let mut reader = self.readers.acquire().await.map_err(failed)?;
+        invited(&mut reader, email, now).await
     }
 
     /// Records `new`, and says whether its code may be mailed: not while the address has
@@ -133,7 +141,7 @@ impl Db {
         };
         if let Some(account) = &account {
             start_session(&mut transaction, account, attempt).await?;
-            ensure_personal(&mut transaction, account, attempt.personal).await?;
+            ensure_personal(&mut transaction, account, attempt.personal, attempt.now).await?;
         }
         transaction.commit().await.map_err(failed)?;
         Ok(account)
@@ -173,6 +181,24 @@ impl Db {
     }
 }
 
+/// Whether `email` has a live invitation to any workspace at `now`.
+async fn invited(
+    connection: &mut SqliteConnection,
+    email: &Email,
+    now: i64,
+) -> Result<bool, Fault> {
+    let found = sqlx::query(
+        "SELECT 1 FROM members AS m JOIN invitations AS i USING (workspace_id, member_id)
+         WHERE m.email = ? AND m.account_id IS NULL AND i.expires_at > ? LIMIT 1",
+    )
+    .bind(email.as_str())
+    .bind(now)
+    .fetch_optional(connection)
+    .await
+    .map_err(failed)?;
+    Ok(found.is_some())
+}
+
 /// Makes the account `id` for `email` unless the address has one, and says whether it did;
 /// the first account on the server is its owner.
 pub(super) async fn insert_account(
@@ -193,13 +219,19 @@ pub(super) async fn insert_account(
     Ok(made.rows_affected() == 1)
 }
 
-/// The account a right code signs in to: the address's own, or a new one if it may sign up.
+/// The account a right code signs in to: the address's own, or a new one if it may sign up
+/// or is invited.
 async fn account_for(
     connection: &mut SqliteConnection,
     attempt: &Attempt<'_>,
 ) -> Result<Option<AccountId>, Fault> {
-    if let Some(new) = attempt.new_account {
-        insert_account(&mut *connection, new.as_str(), attempt.email).await?;
+    if attempt.sign_up || invited(&mut *connection, attempt.email, attempt.now).await? {
+        insert_account(
+            &mut *connection,
+            attempt.new_account.as_str(),
+            attempt.email,
+        )
+        .await?;
     }
     sqlx::query_scalar("SELECT account_id FROM accounts WHERE email = ?")
         .bind(attempt.email.as_str())
@@ -329,7 +361,8 @@ mod tests {
                 now,
                 token_expires_at: now + 100,
                 personal: &personal(name),
-                new_account: None,
+                new_account: &id("unused"),
+                sign_up: false,
             },
         )
         .await
@@ -348,7 +381,8 @@ mod tests {
                 now: NOW,
                 token_expires_at: NOW + 100,
                 personal: &personal(name),
-                new_account: Some(&new),
+                new_account: &new,
+                sign_up: true,
             },
         )
         .await
@@ -387,6 +421,79 @@ mod tests {
         ] {
             assert_eq!(db.account_with(&email(address)).await.unwrap(), account);
         }
+    }
+
+    // `people`, where ada owns w1 as o-w1, bo is a member there, cy is invited, and di was
+    // invited a week ago; each of them and ed has a live challenge with the code `code`.
+    async fn invited(dir: &TempDir) -> Db {
+        let db = people(dir).await;
+        let new = NewWorkspace {
+            id: workspace_id("w1"),
+            ..personal("w1")
+        };
+        db.account(id("a1")).create_workspace(new).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+        w1.add_member(
+            &member_id("m2"),
+            &id("unused-too"),
+            &email("bo@example.com"),
+        )
+        .await
+        .unwrap();
+        for (member, address, at) in [
+            ("i1", "cy@example.com", NOW),
+            (
+                "i2",
+                "di@example.com",
+                NOW - crate::db::team::INVITATION_LIFETIME,
+            ),
+        ] {
+            let invitation = crate::db::NewInvitation {
+                member: &member_id(member),
+                by: &member_id("o-w1"),
+                email: &email(address),
+                role: weacon_protocol::WorkspaceRole::Member,
+                now: at,
+            };
+            w1.invite(&invitation).await.unwrap();
+        }
+        let addresses = [
+            "cy@example.com",
+            "di@example.com",
+            "bo@example.com",
+            "ed@example.com",
+        ];
+        for (address, name) in addresses.into_iter().zip(["c1", "c2", "c3", "c4"]) {
+            challenge(&db, address, name, b"code", NOW).await;
+        }
+        db
+    }
+
+    #[tokio::test]
+    async fn an_invitation_lets_its_address_make_an_account_but_no_personal_workspace() {
+        let dir = TempDir::new().unwrap();
+        let db = invited(&dir).await;
+
+        assert!(db.invited(&email("cy@example.com"), NOW).await.unwrap());
+        assert!(!db.invited(&email("di@example.com"), NOW).await.unwrap());
+        assert!(!db.invited(&email("bo@example.com"), NOW).await.unwrap());
+        let cy = try_as(&db, "cy@example.com", "c1", b"code", NOW).await;
+        assert_eq!(cy.as_deref(), Some("unused"));
+        assert_eq!(
+            try_as(&db, "di@example.com", "c2", b"code", NOW).await,
+            None
+        );
+        assert_eq!(
+            try_as(&db, "ed@example.com", "c4", b"code", NOW).await,
+            None
+        );
+        let bo = try_as(&db, "bo@example.com", "c3", b"code", NOW).await;
+        assert_eq!(bo.as_deref(), Some("a2"));
+        // Neither the invited address nor the member gets a Personal workspace.
+        let cy = db.account(id("unused"));
+        assert!(cy.workspaces().await.unwrap().is_empty());
+        assert_eq!(cy.invitations(NOW).await.unwrap().len(), 1);
+        assert_eq!(db.account(id("a2")).workspaces().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -96,8 +96,7 @@ async fn send_code(
     let Ok(email) = Email::parse(body.email.expose()) else {
         return Ok(());
     };
-    if !sign_up::allows(&shared.sign_up, &email) && shared.db.account_with(&email).await?.is_none()
-    {
+    if !may_sign_in(shared, &email).await? {
         return Ok(());
     }
     let code = new_code()?;
@@ -123,6 +122,13 @@ async fn send_code(
         shared.db.unmail(challenge).await?;
     }
     sent
+}
+
+/// Whether `email` may get a code: it has an account, may sign up, or is invited.
+async fn may_sign_in(shared: &Shared, email: &Email) -> Result<bool, Fault> {
+    Ok(sign_up::allows(&shared.sign_up, email)
+        || shared.db.account_with(email).await?.is_some()
+        || shared.db.invited(email, shared.now()).await?)
 }
 
 /// `POST /api/sign-in/finish`: trades a challenge's code for a session, in the same time
@@ -200,9 +206,7 @@ async fn signed_in(
     };
     let token = random_token()?;
     let now = shared.now();
-    let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
-        .then(|| fresh(&new_id))
-        .transpose()?;
+    let new_account: AccountId = fresh(&new_id)?;
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
@@ -213,7 +217,8 @@ async fn signed_in(
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
         personal: &workspaces::personal()?,
-        new_account: new_account.as_ref(),
+        new_account: &new_account,
+        sign_up: sign_up::allows(&shared.sign_up, &email),
     };
     let account = shared.db.finish_sign_in(&attempt).await?;
     Ok(account.map(|account| {

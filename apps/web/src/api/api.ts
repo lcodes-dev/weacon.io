@@ -14,10 +14,15 @@ import type {
   DocList,
   DocRecord,
   DocRevise,
+  InvitationAction,
+  InvitationCommand,
+  InvitationOffer,
   MachineId,
   MachineList,
   MachineSummary,
   Mark,
+  MemberAction,
+  MemberCommand,
   MemberList,
   PairConfirm,
   PairLookup,
@@ -63,12 +68,17 @@ const SIGNED_OUT: Code = "sign_in.required";
 export class Api {
   #fetch: Fetch;
   #signedOut: () => void;
+  #left: (workspace: WorkspaceId) => void;
   #signIns = 0;
 
-  /** `signedOut` is told when the server answers that the current session is over. */
-  constructor(fetch: Fetch, signedOut: () => void) {
+  /**
+   * `signedOut` is told when the server answers that the current session is over, and `left` when
+   * it refuses a workspace to a session that still is one, as once its member was removed.
+   */
+  constructor(fetch: Fetch, signedOut: () => void, left: (workspace: WorkspaceId) => void = () => {}) {
     this.#fetch = fetch;
     this.#signedOut = signedOut;
+    this.#left = left;
   }
 
   /** Who is signed in, or `undefined` when nobody is. */
@@ -97,6 +107,30 @@ export class Api {
 
   workspaces(): Promise<Answer<WorkspaceList>> {
     return this.#ask("GET", "/api/workspaces", undefined, isList);
+  }
+
+  /** One workspace, as the signed-in member sees it. */
+  workspace(workspace: WorkspaceId): Promise<Answer<WorkspaceSummary>> {
+    return this.#ask("GET", base(workspace), undefined, isWorkspace);
+  }
+
+  /** Changes who is in `workspace`: invites, revokes, removes, sets a role or leaves. */
+  changeMembers(workspace: WorkspaceId, action: MemberAction): Promise<Answer<undefined>> {
+    const body: MemberCommand = { action };
+    return this.#ask("POST", `${base(workspace)}/members`, body, isEmpty);
+  }
+
+  /** Takes up an invitation to the signed-in address, answering with the workspace joined. */
+  acceptInvitation(workspace: WorkspaceId): Promise<Answer<WorkspaceSummary>> {
+    const body: InvitationCommand = { workspace, action: { kind: "accept" } };
+    return this.#ask("POST", "/api/invitations", body, isWorkspace);
+  }
+
+  /** Stops showing an invitation to the signed-in address. */
+  hideInvitation(workspace: WorkspaceId): Promise<Answer<undefined>> {
+    const action: InvitationAction = { kind: "hide" };
+    const body: InvitationCommand = { workspace, action };
+    return this.#ask("POST", "/api/invitations", body, isEmpty);
   }
 
   /** Makes a workspace the signed-in account owns. */
@@ -212,10 +246,25 @@ export class Api {
     }
     const code = isError(value) ? value.code : MALFORMED;
     if (code === SIGNED_OUT && signIns === this.#signIns) {
-      this.#signedOut();
+      const workspace = workspaceIn(path);
+      if (workspace === undefined) {
+        this.#signedOut();
+      } else {
+        // Either `session` finds the session over and signs out, or the workspace is what was refused.
+        const still = await this.session();
+        if (still.ok && still.value !== undefined && signIns === this.#signIns) {
+          this.#left(workspace);
+        }
+      }
     }
     return { ok: false, code };
   }
+}
+
+// The workspace a path of the API is about, if it is one's.
+function workspaceIn(path: string): WorkspaceId | undefined {
+  const named = /^\/api\/workspaces\/([^/?]+)/.exec(path)?.[1];
+  return named === undefined ? undefined : decodeURIComponent(named);
 }
 
 const base = (workspace: WorkspaceId) => `/api/workspaces/${encodeURIComponent(workspace)}`;
@@ -243,7 +292,10 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
   };
 }
 
-const isList = listOf<WorkspaceList>("workspaces", isWorkspace);
+const isOffer = (value: unknown): value is InvitationOffer =>
+  fields(value, ["workspace", "name", "invited_by", "role"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
+const isList = (value: unknown): value is WorkspaceList =>
+  listOf("workspaces", isWorkspace)(value) && (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isOffer)(value));
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
@@ -290,7 +342,10 @@ const isOffers = (offers: unknown): boolean => offers === undefined || (Array.is
 const isMachineList = listOf<MachineList>("machines", isMachine);
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
-const isMembers = listOf<MemberList>("members", (value) => fields(value, ["id", "name"]));
+const isInvitation = (value: unknown): boolean => fields(value, ["member", "email", "role"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
+const isMembers = (value: unknown): value is MemberList =>
+  listOf("members", (member) => fields(member, ["id", "name"]))(value) &&
+  (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isInvitation)(value));
 const isTask = (value: unknown): value is TaskRecord => versioned(value, ["title", "status", "order"]);
 const isTasks = listOf<TaskList>("tasks", isTask);
 const isDocs = listOf<DocList>("docs", (value) => versioned(value, ["title"]));

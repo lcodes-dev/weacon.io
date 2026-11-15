@@ -12,6 +12,7 @@ mod schema;
 mod search;
 mod sign_in;
 mod tasks;
+mod team;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod workspace;
@@ -36,7 +37,8 @@ pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
 pub(crate) use proposals::Proposed;
 pub(crate) use sign_in::{Attempt, NewChallenge};
-pub(crate) use workspace::Workspace;
+pub(crate) use team::{InvitationRow, NewInvitation};
+pub(crate) use workspace::{MemberRow, Workspace};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const READERS: u32 = 8;

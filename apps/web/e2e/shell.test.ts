@@ -27,6 +27,22 @@ async function holdCreate(page: Page): Promise<() => Promise<void>> {
   };
 }
 
+// Opens the selector at the sidebar's foot.
+async function menu(page: Page) {
+  await page.getByRole("button", { name: /^Workspace: / }).click();
+  return page.getByLabel("Workspaces");
+}
+
+// Leaves the open workspace for the list of them all, through the selector's New workspace.
+async function allWorkspaces(page: Page): Promise<void> {
+  await (await menu(page)).getByRole("button", { name: "New workspace" }).click();
+}
+
+// Opens the workspace called `name` from the selector.
+async function switchTo(page: Page, name: string): Promise<void> {
+  await (await menu(page)).getByRole("button", { name, exact: true }).click();
+}
+
 // Lists `list(n)` as every workspace's chats the nth time they are asked for; gives how often they were.
 async function listChats(page: Page, list: (asked: number) => ChatList): Promise<() => number> {
   let asked = 0;
@@ -86,7 +102,7 @@ test("a signed-in person makes a workspace, opens its feed, finds it again after
   await page.reload();
   await page.getByRole("heading", { name: "Made-up team" }).waitFor();
   await page.getByText("Connected").waitFor();
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   const names = await page.locator(".workspaces li button").allInnerTexts();
   assert.deepEqual(names.toSorted(), ["Made-up team", "Personal"]);
   await page.getByRole("button", { name: "Personal" }).click();
@@ -109,7 +125,7 @@ test("the list takes a workspace made after the person moved on, and copes with 
   await page.getByRole("heading", { name: "Made-up team" }).waitFor();
 
   // A workspace made after the person moved on joins the list without taking them away.
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   const release = await holdCreate(page);
   await page.getByLabel("Name").fill("Late team");
   await page.getByRole("button", { name: "Create" }).click();
@@ -120,17 +136,17 @@ test("the list takes a workspace made after the person moved on, and copes with 
   await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
   assert.equal(await page.getByRole("heading", { name: "Personal" }).count(), 1);
   // One made before the person came back to the list opens once it arrives.
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   const releaseBack = await holdCreate(page);
   await page.getByLabel("Name").fill("Back team");
   await page.getByRole("button", { name: "Create" }).click();
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
   await releaseBack();
   await page.getByRole("heading", { name: "Back team" }).waitFor();
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   await page.getByRole("button", { name: "Late team" }).waitFor();
   await page.goto(new URL("/?workspace=not-mine", page.url()).href);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
@@ -151,7 +167,7 @@ test("the list takes a workspace made after the person moved on, and copes with 
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
 });
 
-test("the header switches workspaces, and the page reopens the last one", { timeout: 600_000 }, async (t) => {
+test("the selector switches workspaces, and the page reopens the last one", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -165,9 +181,9 @@ test("the header switches workspaces, and the page reopens the last one", { time
   // The server offers chats, so the workspace asks it for them.
   assert.ok(listed() > 0);
 
-  const selector = page.getByLabel("Workspace");
-  assert.deepEqual((await selector.locator("option").allInnerTexts()).toSorted(), ["Made-up team", "Personal"]);
-  await selector.selectOption({ label: "Personal" });
+  const workspaces = await menu(page);
+  assert.deepEqual((await workspaces.getByRole("listitem").allInnerTexts()).toSorted(), ["Made-up team", "Personal"]);
+  await workspaces.getByRole("button", { name: "Personal", exact: true }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
   await page.getByText("Connected").waitFor();
   assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+$/);
@@ -181,12 +197,12 @@ test("the header switches workspaces, and the page reopens the last one", { time
   await page.getByRole("heading", { name: "Personal" }).waitFor();
   await page.getByText("Connected").waitFor();
   assert.match(page.url(), /\?workspace=/);
-  await selector.selectOption({ label: "Made-up team" });
+  await switchTo(page, "Made-up team");
   await page.getByRole("heading", { name: "Made-up team" }).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
 
-  await page.getByRole("button", { name: "All workspaces" }).click();
+  await allWorkspaces(page);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
   await page.goto(home);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
@@ -209,12 +225,12 @@ test("signing out, or a session that ends, forgets the last workspace for the ne
   await signInAgain(served);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 
-  // A feed refused for want of a session sends the page back to sign-in, forgetting it too.
+  // A refusal for want of a session, here of the list the selector fetches again, sends the page back to sign-in, forgetting it too.
   await page.getByLabel("Name").fill("Made-up team");
   await page.getByRole("button", { name: "Create" }).click();
   await page.getByText("Connected").waitFor();
   await page.context().clearCookies();
-  await page.getByLabel("Workspace").selectOption({ label: "Personal" });
+  await page.getByRole("button", { name: /^Workspace: / }).click();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
   await signInAgain(served);
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();

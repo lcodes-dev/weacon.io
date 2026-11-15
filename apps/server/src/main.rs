@@ -27,6 +27,7 @@ mod sign_in;
 mod sign_up;
 mod socket;
 mod tasks;
+mod team;
 mod terminals;
 #[cfg(test)]
 mod test_support;

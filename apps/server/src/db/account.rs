@@ -2,10 +2,9 @@ use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary, code};
 
+use super::team::{OWNER, stored_role};
 use super::{Db, failed, stored, unreadable};
 
-const OWNER: &str = "owner";
-const MEMBER: &str = "member";
 /// How many workspaces one account may own: enough for anyone, too few to fill the disk.
 const MAX_OWNED: i64 = 100;
 
@@ -70,11 +69,13 @@ impl Account {
     }
 }
 
-/// Makes `account`'s Personal workspace as `new`, unless it has had one.
+/// Makes `account`'s Personal workspace as `new`, unless it has had one, or it is a member
+/// somewhere or invited at `now` when it first needs one.
 pub(super) async fn ensure_personal(
     transaction: &mut SqliteConnection,
     account: &AccountId,
     new: &NewWorkspace,
+    now: i64,
 ) -> Result<(), Fault> {
     let unmade = sqlx::query(
         "UPDATE accounts SET personal_made = 1 WHERE account_id = ? AND personal_made = 0",
@@ -84,6 +85,21 @@ pub(super) async fn ensure_personal(
     .await
     .map_err(failed)?;
     if unmade.rows_affected() == 0 {
+        return Ok(());
+    }
+    let placed = sqlx::query(
+        "SELECT 1 FROM accounts AS a JOIN members AS m
+             ON m.account_id = a.account_id OR (m.email = a.email AND m.account_id IS NULL
+                 AND EXISTS (SELECT 1 FROM invitations AS i WHERE i.workspace_id = m.workspace_id
+                     AND i.member_id = m.member_id AND i.expires_at > ?2))
+         WHERE a.account_id = ?1 LIMIT 1",
+    )
+    .bind(account.as_str())
+    .bind(now)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(failed)?;
+    if placed.is_some() {
         return Ok(());
     }
     insert_owned(transaction, account, new).await
@@ -119,16 +135,10 @@ pub(super) fn summary(
     role: &str,
     member: MemberId,
 ) -> Result<WorkspaceSummary, Fault> {
-    let role = match role {
-        OWNER => WorkspaceRole::Owner,
-        MEMBER => WorkspaceRole::Member,
-        // This server writes every role it stores, so another is damage, not news.
-        _ => return Err(unreadable()),
-    };
     Ok(WorkspaceSummary {
         id,
         name,
-        role,
+        role: stored_role(role)?,
         member: Some(member),
     })
 }
@@ -262,11 +272,11 @@ mod tests {
         let mut connection = db.writer.acquire().await.unwrap();
 
         for id in ["p1", "p2"] {
-            ensure_personal(&mut connection, &account("a2"), &new(id, "Personal"))
+            ensure_personal(&mut connection, &account("a2"), &new(id, "Personal"), 0)
                 .await
                 .unwrap();
         }
-        ensure_personal(&mut connection, &account("a9"), &new("p3", "Personal"))
+        ensure_personal(&mut connection, &account("a9"), &new("p3", "Personal"), 0)
             .await
             .unwrap();
         drop(connection);

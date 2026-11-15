@@ -1899,6 +1899,124 @@
         "action"
       ]
     },
+    "Invitation": {
+      "description": "A live invitation as the workspace's owner and admins see it: the member it makes, and when\nit ends, in seconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "member": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "role": {
+          "$ref": "#/$defs/WorkspaceRole"
+        }
+      },
+      "required": [
+        "member",
+        "email",
+        "role",
+        "expires_at"
+      ]
+    },
+    "InvitationAction": {
+      "oneOf": [
+        {
+          "description": "Joins the workspace.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "accept"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Stops showing the invitation to its address; the workspace still sees it as live.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "hide"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "InvitationCommand": {
+      "description": "Answers, as `POST /api/invitations`, an invitation to the signed-in account's address; for\nservers that offer `workspace.team`. Accepting answers with the [`crate::WorkspaceSummary`].",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/InvitationAction"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "action"
+      ]
+    },
+    "InvitationOffer": {
+      "description": "A live invitation as the person it is addressed to sees it once signed in: the workspace,\nwhat the one who invited them is called there, and the role it gives.",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "invited_by": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/WorkspaceRole"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "name",
+        "invited_by",
+        "role",
+        "expires_at"
+      ]
+    },
+    "Letter": {
+      "description": "One letter the server leaves in its outbox, as a JSON file, for a mail relay to send. A\nsign-in code's letter has `code`; any other has `notice` and no `code`, so a relay that\nknows only codes refuses it.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "notice": {
+          "$ref": "#/$defs/Notice"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "to"
+      ]
+    },
     "Level": {
       "oneOf": [
         {
@@ -2338,6 +2456,111 @@
         "end"
       ]
     },
+    "MemberAction": {
+      "oneOf": [
+        {
+          "description": "Invites `email` for seven days, as a member or, by the owner, an admin. The answer is\nthe same whether or not the address has an account.",
+          "type": "object",
+          "properties": {
+            "email": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "invite"
+            },
+            "role": {
+              "$ref": "#/$defs/WorkspaceRole"
+            }
+          },
+          "required": [
+            "kind",
+            "email",
+            "role"
+          ]
+        },
+        {
+          "description": "Ends a live invitation.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "revoke"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        },
+        {
+          "description": "Ends someone else's membership; an admin may remove only members.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        },
+        {
+          "description": "Makes a member an admin or an admin a member; only the owner may.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_role"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "role": {
+              "$ref": "#/$defs/WorkspaceRole"
+            }
+          },
+          "required": [
+            "kind",
+            "member",
+            "role"
+          ]
+        },
+        {
+          "description": "Ends the asker's own membership; the owner can't.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "leave"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "MemberCommand": {
+      "description": "Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the\nworkspace; for servers that offer `workspace.team`.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MemberAction"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -2345,9 +2568,15 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MemberList": {
-      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`.",
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`. Its owner and admins also get the live\ninvitations, from servers that offer `workspace.team`.",
       "type": "object",
       "properties": {
+        "invitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Invitation"
+          }
+        },
         "members": {
           "type": "array",
           "items": {
@@ -2368,6 +2597,10 @@
         },
         "name": {
           "type": "string"
+        },
+        "role": {
+          "description": "Their role, from servers that offer `workspace.team`; left out for a past member.",
+          "$ref": "#/$defs/WorkspaceRole"
         }
       },
       "required": [
@@ -2418,6 +2651,24 @@
             "base",
             "current",
             "proposed"
+          ]
+        }
+      ]
+    },
+    "Notice": {
+      "description": "What a letter without a code tells its address. It carries nothing anyone wrote.",
+      "oneOf": [
+        {
+          "description": "The address was invited to a workspace on this server, and signs in to see it.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "invited"
+            }
+          },
+          "required": [
+            "kind"
           ]
         }
       ]
@@ -4826,6 +5077,19 @@
           ]
         },
         {
+          "description": "Someone was invited, joined, left, was removed or got another role, or an invitation\nended. Only for clients that have the capability `workspace.team`, which read the members\nagain.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "members_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
           "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
           "type": "object",
           "properties": {
@@ -4926,9 +5190,15 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "WorkspaceList": {
-      "description": "The workspaces the signed-in account is a member of.",
+      "description": "The workspaces the signed-in account is a member of, and, from servers that offer\n`workspace.team`, the live invitations to its address it hasn't hidden.",
       "type": "object",
       "properties": {
+        "invitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InvitationOffer"
+          }
+        },
         "workspaces": {
           "type": "array",
           "items": {
@@ -4944,9 +5214,14 @@
       "description": "What a member may do in a workspace.",
       "oneOf": [
         {
-          "description": "Made the workspace.",
+          "description": "Made the workspace; there is one.",
           "type": "string",
           "const": "owner"
+        },
+        {
+          "description": "Was made one by the owner: invites, and removes members.",
+          "type": "string",
+          "const": "admin"
         },
         {
           "description": "Was added to it.",

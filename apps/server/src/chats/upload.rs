@@ -168,7 +168,7 @@ mod tests {
         store(shared, ours, update("w-9", "c-1", 7, said("MARKER-TEXT")))
             .await
             .unwrap();
-        workspace.unlink(&member_id("m1")).await;
+        workspace.leave(&member_id("m1")).await.unwrap();
         store(shared, ours, update("w1", "c-1", 8, said("MARKER-TEXT")))
             .await
             .unwrap();

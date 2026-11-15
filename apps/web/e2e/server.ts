@@ -19,6 +19,10 @@ export type Served = {
   code(email: string): Promise<string>;
   /** How many letters wait in the outbox. */
   letters(): number;
+  /** The notices waiting, each as its file holds it, which it takes out of the outbox. */
+  notices(): unknown[];
+  /** The server's address, for another browser's pages. */
+  url: string;
   close(): Promise<void>;
 };
 
@@ -36,22 +40,33 @@ export async function serve(): Promise<Served> {
   });
   const { page, stop } = await open(dir, child, (child) => firstLine(child, undefined, listening), (address) => `http://${address}/`);
   const letters = () => readdirSync(outbox).filter((name) => name.endsWith(".json"));
+  const read = (name: string) => JSON.parse(readFileSync(join(outbox, name), "utf8")) as { to: string; code?: string; notice?: unknown };
+  const codes = () => letters().filter((name) => read(name).code !== undefined);
   return {
     page,
     admin: async (command, ...args) => {
       await promisify(execFile)("cargo", cargo(command, "--db", db, ...args), { cwd: REPO });
     },
     code: async (email) => {
-      await waitFor(() => letters().length > 0);
-      const path = join(outbox, letters()[0] ?? "");
-      const letter = JSON.parse(readFileSync(path, "utf8")) as { to: string; code: string };
-      rmSync(path);
-      if (letter.to !== email) {
+      await waitFor(() => codes().length > 0);
+      const name = codes()[0] ?? "";
+      const letter = read(name);
+      rmSync(join(outbox, name));
+      if (letter.to !== email || letter.code === undefined) {
         throw new Error("the letter is for someone else");
       }
       return letter.code;
     },
     letters: () => letters().length,
+    notices: () =>
+      letters()
+        .filter((name) => read(name).code === undefined)
+        .map((name) => {
+          const letter = read(name);
+          rmSync(join(outbox, name));
+          return letter;
+        }),
+    url: page.url(),
     close: stop,
   };
 }
@@ -76,9 +91,13 @@ export async function signIn(served: Served): Promise<void> {
 
 /** Signs in as the account `signIn` added, from the sign-in page. */
 export async function signInAgain(served: Served): Promise<void> {
-  const { page } = served;
-  await page.getByLabel("Email").fill(EMAIL);
+  await signInAs(served, served.page, EMAIL);
+}
+
+/** Signs `page` in as `email`, from the sign-in page. */
+export async function signInAs(served: Served, page: Page, email: string): Promise<void> {
+  await page.getByLabel("Email").fill(email);
   await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByLabel("Code").fill(await served.code(EMAIL));
+  await page.getByLabel("Code").fill(await served.code(email));
   await page.getByRole("button", { name: "Sign in" }).click();
 }

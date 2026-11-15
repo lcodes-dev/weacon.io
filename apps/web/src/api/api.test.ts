@@ -118,6 +118,56 @@ test("whenever the server says the session is over, the page is told", async () 
   assert.equal(ended(), 2);
 });
 
+test("a workspace refused to a session that still is one is left, and one refused after the session ended signs out", async () => {
+  const over = { status: 401, body: { code: "sign_in.required", retryable: false } };
+  const sent: string[] = [];
+  const answers = [over, { status: 200, body: ADA }, over, over];
+  const fetch: Fetch = (path) => {
+    sent.push(path);
+    const answer = answers.shift() ?? over;
+    return Promise.resolve({ status: answer.status, json: () => Promise.resolve(answer.body) });
+  };
+  let ends = 0;
+  const left: string[] = [];
+  const api = new Api(fetch, () => ends++, (workspace) => left.push(workspace));
+
+  assert.deepEqual(await api.members("w 1"), { ok: false, code: "sign_in.required" });
+  assert.deepEqual([left, ends], [["w 1"], 0]);
+  assert.deepEqual(await api.workspace("w-2"), { ok: false, code: "sign_in.required" });
+  assert.deepEqual([left, ends], [["w 1"], 1]);
+  assert.deepEqual(sent, ["/api/workspaces/w%201/members", "/api/session", "/api/workspaces/w-2", "/api/session"]);
+});
+
+test("members are changed, invitations answered, and lists with invitations of the wrong shape refused", async () => {
+  const offer = { workspace: "w-1", name: "Crew", invited_by: "ada", role: "member", expires_at: 9 };
+  const invitation = { member: "m-2", email: "bo@example.com", role: "admin", expires_at: 9 };
+  const { api, sent } = serve(
+    { status: 204 },
+    { status: 200, body: { id: "w-1", name: "Crew", role: "member" } },
+    { status: 204 },
+    { status: 200, body: { workspaces: [], invitations: [offer] } },
+    { status: 200, body: { workspaces: [], invitations: [{ ...offer, workspace: "a/b" }] } },
+    { status: 200, body: { workspaces: [], invitations: [{ ...offer, expires_at: "soon" }] } },
+    { status: 200, body: { members: [{ id: "m-1", name: "ada", role: "owner" }], invitations: [invitation] } },
+    { status: 200, body: { members: [], invitations: [{ ...invitation, expires_at: undefined }] } },
+  );
+
+  assert.deepEqual(await api.changeMembers("w-1", { kind: "invite", email: "bo@example.com", role: "admin" }), { ok: true, value: undefined });
+  assert.deepEqual(await api.acceptInvitation("w-1"), { ok: true, value: { id: "w-1", name: "Crew", role: "member" } });
+  assert.deepEqual(await api.hideInvitation("w-1"), { ok: true, value: undefined });
+  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [], invitations: [offer] } });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.equal((await api.members("w-1")).ok, true);
+  assert.deepEqual(await api.members("w-1"), { ok: false, code: MALFORMED });
+  const json = { "content-type": "application/json" };
+  assert.deepEqual(sent.slice(0, 3), [
+    { path: "/api/workspaces/w-1/members", method: "POST", headers: json, body: '{"action":{"kind":"invite","email":"bo@example.com","role":"admin"}}' },
+    { path: "/api/invitations", method: "POST", headers: json, body: '{"workspace":"w-1","action":{"kind":"accept"}}' },
+    { path: "/api/invitations", method: "POST", headers: json, body: '{"workspace":"w-1","action":{"kind":"hide"}}' },
+  ]);
+});
+
 test("a request sent before a newer sign-in can't end it, but one before a failed sign-in can", async () => {
   type Response = Awaited<ReturnType<Fetch>>;
   const answer = (status: number, body: unknown): Response => ({ status, json: () => Promise.resolve(body) });

@@ -9,14 +9,15 @@ import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { Pins, browserStore } from "../machines/pins.ts";
 import { ME } from "../me.ts";
-import type { AccountSignedIn, Code, MachineId } from "../protocol.ts";
+import { MembersSection, isTeam } from "../members/members-section.tsx";
+import { useMembers } from "../members/use-names.ts";
+import type { AccountSignedIn, Code, MachineId, WorkspaceId } from "../protocol.ts";
 import { Settings } from "../settings/settings.tsx";
 import { Frame } from "./frame.tsx";
 import { STORE, remember } from "./last-workspace.ts";
 import "./shell.css";
 import { SignIn } from "./sign-in.tsx";
-import type { WorkspaceSocket } from "./workspace-socket.ts";
-import { Workspaces } from "./workspaces.tsx";
+import { type OpenWorkspace, Workspaces } from "./workspaces.tsx";
 
 type Screen =
   | { name: "loading" }
@@ -36,7 +37,9 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
     window.history.replaceState(null, "", window.location.pathname);
     setScreen({ name: "signed out" });
   }, []);
-  const api = useMemo(() => new Api(fetch, signedOut), [fetch, signedOut]);
+  // Each refusal of a workspace is news, even of the same one twice.
+  const [left, setLeft] = useState<{ workspace: WorkspaceId }>();
+  const api = useMemo(() => new Api(fetch, signedOut, (workspace) => setLeft({ workspace })), [fetch, signedOut]);
   useEffect(() => {
     // An answer that comes after the page moved on must not take it back.
     let current = true;
@@ -57,7 +60,7 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
     };
   }, [api, signedOut]);
   if (screen.name === "signed in") {
-    return <SignedIn api={api} log={log} account={screen.account} signedOut={signedOut} />;
+    return <SignedIn api={api} log={log} account={screen.account} left={left} signedOut={signedOut} />;
   }
   return (
     <Frame>
@@ -67,7 +70,19 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
 }
 
 // The signed-in person's workspaces, or their settings, with who they are and Sign out.
-function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; account: AccountSignedIn; signedOut(): void }) {
+function SignedIn({
+  api,
+  log,
+  account,
+  left,
+  signedOut,
+}: {
+  api: Api;
+  log: Log;
+  account: AccountSignedIn;
+  left: { workspace: WorkspaceId } | undefined;
+  signedOut(): void;
+}) {
   const [settings, setSettings] = useState(false);
   const [opened, setOpened] = useState<MachineId>();
   const signingOut = useAsk();
@@ -96,9 +111,10 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
     </span>
   );
   const page = settings
-    ? (socket: WorkspaceSocket | undefined) => (
+    ? (open: OpenWorkspace | undefined) => (
         <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
-          <Machines api={api} pins={PINS} later={later} socket={socket} opened={opened} />
+          {open !== undefined && <WorkspaceSettings api={api} open={open} opened={opened} />}
+          {open === undefined && <Machines api={api} pins={PINS} later={later} socket={undefined} opened={opened} team={undefined} />}
         </Settings>
       )
     : undefined;
@@ -107,7 +123,20 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
     setOpened(machine);
     setSettings(true);
   };
-  return <Workspaces api={api} log={log} who={who} page={page} openSettings={openSettings} />;
+  return <Workspaces api={api} log={log} who={who} email={account.email} left={left} page={page} openSettings={openSettings} />;
+}
+
+// The open workspace's members, and what each of the person's machines keeps for it, which is
+// told whether other people are in it.
+function WorkspaceSettings({ api, open, opened }: { api: Api; open: OpenWorkspace; opened: MachineId | undefined }) {
+  const members = useMembers(api, open.workspace.id, open.socket);
+  const team = members.value === undefined ? undefined : isTeam(members.value);
+  return (
+    <>
+      <MembersSection api={api} open={open} members={members} />
+      <Machines api={api} pins={PINS} later={later} socket={open.socket} opened={opened} team={team} />
+    </>
+  );
 }
 
 function Body({

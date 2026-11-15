@@ -11,9 +11,9 @@ import { vendorName } from "../chat/label.ts";
 import { current, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Readiness, Starts, missingText, startBlocked, startProblem } from "./start.ts";
+import { type Readiness, Starts, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
 
-const KINDS: AgentKind[] = ["claude", "codex"];
+
 
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
@@ -70,14 +70,17 @@ export function NewChat({
   );
   const shownRepos = listed.value;
   const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
-  const signIn = settings.value?.sign_ins.find((one) => one.agent === agent)?.state;
-  const agentName = vendorName(agent);
+  // Once the machine answers, only the agents signed in there for this workspace are offered.
+  const offered = signedIn(settings.value);
+  const chosenAgent = offered.find((kind) => kind === agent) ?? offered[0];
+  const signIn = chosenAgent === undefined ? "signed_out" : settings.value?.sign_ins.find((one) => one.agent === chosenAgent)?.state;
+  const agentName = chosenAgent === undefined ? "No agent" : vendorName(chosenAgent);
   const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: agentName, signIn });
   const send: Send = async (text, request) => {
-    if (machine === undefined || chosenRepo === undefined) {
+    if (machine === undefined || chosenRepo === undefined || chosenAgent === undefined) {
       return "refused";
     }
-    const start = starts.begin(request, socket.workspace, text, { machine: machine.id, repo: chosenRepo, agent }, newId);
+    const start = starts.begin(request, socket.workspace, text, { machine: machine.id, repo: chosenRepo, agent: chosenAgent }, newId);
     const sent = await commands.start(start.chatRef, start.action, request);
     const chat = starts.end(request, sent);
     if (chat !== undefined) {
@@ -119,18 +122,21 @@ export function NewChat({
         </p>
       )}
       {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
-      <label>
-        Agent
-        <select value={agent} onChange={(event) => setAgent(KINDS.find((kind) => kind === event.target.value) ?? agent)}>
-          {KINDS.map((kind) => (
-            <option key={kind} value={kind}>
-              {vendorName(kind)}
-            </option>
-          ))}
-        </select>
-      </label>
-      {signIn === "signed_out" && (
+      {offered.length > 0 && (
+        <label>
+          Agent
+          <select value={chosenAgent} onChange={(event) => setAgent(offered.find((kind) => kind === event.target.value) ?? agent)}>
+            {offered.map((kind) => (
+              <option key={kind} value={kind}>
+                {vendorName(kind)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {settings.value !== undefined && offered.length < 2 && (
         <p>
+          {offered.length === 0 && "No agent is signed in for this workspace on this machine. "}
           <button type="button" onClick={() => openSettings(machine?.id)}>
             Sign in from Settings
           </button>

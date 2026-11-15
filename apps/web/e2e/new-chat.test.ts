@@ -107,15 +107,17 @@ test("from an empty workspace, a person starts a chat on their connected machine
 
   const form = page.getByRole("region", { name: "New chat" });
   await form.getByLabel("Repository").selectOption("garden");
-  await form.getByLabel("Agent").selectOption("codex");
-  await form.getByText("Codex isn't signed in on this machine.").waitFor();
+  // Only the agents signed in for this workspace on the machine are offered.
+  await form.getByRole("button", { name: "Sign in from Settings" }).waitFor();
+  assert.deepEqual(await form.getByLabel("Agent").locator("option").allTextContents(), ["Claude Code"]);
   // Signed in from Settings, the agent can be picked once the person is back.
-  chats.settings = { ...SETTINGS, sign_ins: [{ agent: "codex", state: "signed_in" }] };
+  chats.settings = { ...SETTINGS, sign_ins: [{ agent: "claude", state: "signed_in" }, { agent: "codex", state: "signed_in" }] };
   await form.getByRole("button", { name: "Sign in from Settings" }).click();
   await page.getByRole("heading", { name: "Machines" }).waitFor();
   await page.getByRole("button", { name: `${STUDIO.name} settings`, expanded: true }).waitFor();
   await page.getByRole("button", { name: "Back" }).click();
-  await form.getByText("Codex isn't signed in on this machine.").waitFor({ state: "detached" });
+  await form.getByLabel("Agent").selectOption("codex");
+  await form.getByRole("button", { name: "Sign in from Settings" }).waitFor({ state: "detached" });
   await form.getByLabel("Agent").selectOption("claude");
   assert.equal(await form.getByLabel("Machine").inputValue(), STUDIO.id);
   await form.getByRole("combobox", { name: "Message" }).fill("Sort the pantry.");

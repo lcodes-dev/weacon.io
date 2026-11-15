@@ -1,9 +1,10 @@
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceSummary};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
 
 use super::account::summary;
 use super::sign_in::insert_account;
-use super::{Db, failed, stored, unreadable};
+use super::team::stored_role;
+use super::{Db, exists, failed, stored, unreadable};
 use crate::email::Email;
 
 /// One workspace's view of the database: every query it runs is limited to that workspace.
@@ -18,6 +19,8 @@ pub(crate) struct Workspace {
 pub(crate) struct MemberRow {
     pub(crate) id: MemberId,
     pub(crate) email: Email,
+    /// `None` for a past member.
+    pub(crate) role: Option<WorkspaceRole>,
 }
 
 impl Workspace {
@@ -30,26 +33,41 @@ impl Workspace {
     }
 
     /// Adds the person with `email` as member `id`, with the account their address has, or
-    /// else `new_account`. An id or email already in this workspace is `db.exists`.
+    /// else `new_account`, and gives the member they are. An address that was invited or a
+    /// member before keeps its member, and ends its invitation; an id taken or an address that
+    /// is a member now is `db.exists`.
     pub(crate) async fn add_member(
         &self,
         id: &MemberId,
         new_account: &AccountId,
         email: &Email,
-    ) -> Result<(), Fault> {
-        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+    ) -> Result<MemberId, Fault> {
+        let mut transaction = self.db.write().await?;
         insert_account(&mut transaction, new_account.as_str(), email).await?;
-        sqlx::query(
+        let added = sqlx::query_scalar::<_, String>(
             "INSERT INTO members (workspace_id, member_id, email, account_id)
-             SELECT ?, ?, email, account_id FROM accounts WHERE email = ?",
+             SELECT ?, ?, email, account_id FROM accounts WHERE email = ?
+             ON CONFLICT (workspace_id, email) DO UPDATE
+                 SET account_id = excluded.account_id, joined = 1 WHERE account_id IS NULL
+             RETURNING member_id",
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
         .bind(email.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        let member: MemberId = stored(added.ok_or_else(exists)?)?;
+        sqlx::query(
+            "UPDATE invitations SET expires_at = 0 WHERE workspace_id = ? AND member_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        transaction.commit().await.map_err(failed)
+        transaction.commit().await.map_err(failed)?;
+        Ok(member)
     }
 
     /// The member whose account has the live session with the token hashed as `token_hash`.
@@ -72,33 +90,23 @@ impl Workspace {
         .transpose()
     }
 
-    /// Ends `member`'s membership for whoever has it, keeping what they did here.
-    #[cfg(test)]
-    pub(crate) async fn unlink(&self, member: &MemberId) {
-        sqlx::query(
-            "UPDATE members SET account_id = NULL WHERE workspace_id = ? AND member_id = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(member.as_str())
-        .execute(&self.db.writer)
-        .await
-        .unwrap();
-    }
-
-    /// The members, in the order they were added.
+    /// The members, past ones too, in the order they were added; never an invitation never
+    /// taken up.
     pub(crate) async fn members(&self) -> Result<Vec<MemberRow>, Fault> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT member_id, email FROM members WHERE workspace_id = ? ORDER BY rowid",
+        sqlx::query_as::<_, (String, String, String, bool)>(
+            "SELECT member_id, email, role, account_id IS NOT NULL FROM members
+             WHERE workspace_id = ? AND joined ORDER BY rowid",
         )
         .bind(self.id.as_str())
         .fetch_all(&self.db.readers)
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(id, email)| {
+        .map(|(id, email, role, current)| {
             Ok(MemberRow {
                 id: stored(id)?,
                 email: Email::parse(&email).map_err(|_| unreadable())?,
+                role: current.then(|| stored_role(&role)).transpose()?,
             })
         })
         .collect()
@@ -225,7 +233,8 @@ mod tests {
                 name: "Personal".to_owned(),
                 owner: member_id("owner"),
             },
-            new_account: None,
+            new_account: &fresh_account(),
+            sign_up: false,
         };
         db.finish_sign_in(&attempt).await.unwrap().unwrap();
     }
@@ -244,7 +253,7 @@ mod tests {
         assert_eq!(two.session_member(b"bo", 100).await.unwrap(), None);
         assert_eq!(one.session_member(b"other", 100).await.unwrap(), None);
         assert_eq!(one.session_member(b"ada", 200).await.unwrap(), None);
-        one.unlink(&member_id("m1")).await;
+        one.leave(&member_id("m1")).await.unwrap();
         assert_eq!(one.session_member(b"ada", 100).await.unwrap(), None);
         assert_eq!(two.session_member(b"ada", 100).await.unwrap(), member("m2"));
     }
@@ -298,11 +307,7 @@ mod tests {
         // Members from before may do what any member may.
         let ada_id = AccountId::try_from(ada.clone()).unwrap();
         let roles = db.account(ada_id).workspaces().await.unwrap();
-        assert!(
-            roles
-                .iter()
-                .all(|seen| seen.role == weacon_protocol::WorkspaceRole::Member)
-        );
+        assert!(roles.iter().all(|seen| seen.role == WorkspaceRole::Member));
         assert_eq!(owners(&db).await, [ada.as_str()]);
         // Sign-ins from before were to one workspace, and don't carry over.
         assert_eq!(rows(&db, "sessions").await, 0);
@@ -345,6 +350,7 @@ mod tests {
         let member = |id: &str, address: &str| MemberRow {
             id: member_id(id),
             email: email(address),
+            role: Some(WorkspaceRole::Member),
         };
 
         assert_eq!(
@@ -373,6 +379,56 @@ mod tests {
             [
                 member("m2", "ada@example.com"),
                 member("m3", "bo@example.com")
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn adding_an_invited_or_past_member_keeps_their_member_and_ends_the_invitation() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        one.set_role(&member_id("m1"), &member_id("m3"), WorkspaceRole::Admin)
+            .await
+            .unwrap_err();
+        sqlx::query("UPDATE members SET role = 'owner' WHERE member_id = 'm1'")
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+        let invitation = crate::db::NewInvitation {
+            member: &member_id("i1"),
+            by: &member_id("m1"),
+            email: &email("cy@example.com"),
+            role: WorkspaceRole::Admin,
+            now: 100,
+        };
+        one.invite(&invitation).await.unwrap();
+        one.leave(&member_id("m3")).await.unwrap();
+
+        let cy = email("cy@example.com");
+        let cy = one
+            .add_member(&member_id("m8"), &fresh_account(), &cy)
+            .await;
+        let bo = email("bo@example.com");
+        let bo = one
+            .add_member(&member_id("m9"), &fresh_account(), &bo)
+            .await;
+
+        assert_eq!(cy.unwrap(), member_id("i1"));
+        assert_eq!(bo.unwrap(), member_id("m3"));
+        assert!(one.invitations(100).await.unwrap().is_empty());
+        let roles: Vec<_> = one
+            .members()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.id, row.role))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                (member_id("m1"), Some(WorkspaceRole::Owner)),
+                (member_id("m3"), Some(WorkspaceRole::Member)),
+                (member_id("i1"), Some(WorkspaceRole::Admin))
             ]
         );
     }

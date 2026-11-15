@@ -25,6 +25,7 @@ use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, SYMBOLS, WORKTR
 use crate::search::SEARCH;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
+use crate::team::TEAM;
 use crate::terminals::{self, TERMINALS};
 use crate::workspaces::MEMBERS;
 
@@ -39,7 +40,7 @@ const CHATS: Code = code!("workspace.chats");
 /// What the server offers to clients that ask chats' agents.
 const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 16] = [
+const OFFERED: [Code; 17] = [
     FEED,
     TASKS,
     DOCS,
@@ -49,6 +50,7 @@ const OFFERED: [Code; 16] = [
     CHAT_COMMANDS,
     chats::LIVE,
     MEMBERS,
+    TEAM,
     DIFF,
     WORKTREE,
     SESSIONS,
@@ -317,6 +319,8 @@ async fn relay(
 
 /// Sends every change after the last one sent, a page at a time, while its member still is one.
 async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> Result<(), Closed> {
+    // A member just removed ends here, whatever the change that woke the feed.
+    feed.allowed(shared).await?;
     loop {
         let workspace = &feed.member.workspace;
         let page = workspace
@@ -331,6 +335,7 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
                 WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
                 WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
                 WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
+                WorkspaceChange::MembersChanged => feed.hears(TEAM),
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
@@ -461,6 +466,7 @@ mod tests {
                 CHAT_COMMANDS,
                 chats::LIVE,
                 MEMBERS,
+                TEAM,
                 DIFF,
                 WORKTREE,
                 SESSIONS,
@@ -722,7 +728,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
-        w1(&fixture).await.unlink(&member_id("m1")).await;
+        w1(&fixture).await.leave(&member_id("m1")).await.unwrap();
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
@@ -752,8 +758,9 @@ mod tests {
         let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
-        // A page of two changes, m2's and m1's: the session lasts through the first's check.
-        checks.store(1, Ordering::SeqCst);
+        // A page of two changes, m2's and m1's: the session lasts through the check before the
+        // page and the first change's.
+        checks.store(2, Ordering::SeqCst);
         say(&mut client, &["workspace.feed"]).await;
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
@@ -768,7 +775,7 @@ mod tests {
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
-        let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
+        let unlink = async { w1(&fixture).await.leave(&member_id("m1")).await.unwrap() };
 
         let ((), ended) = tokio::join!(unlink, ends(&mut client));
         assert!(ended);

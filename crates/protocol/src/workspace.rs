@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{AccountId, ChatId, DocId, ProposalId, TaskId};
+use crate::{AccountId, ChatId, DocId, Invitation, InvitationOffer, ProposalId, TaskId};
 
 token_id!(
     /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -28,8 +28,10 @@ pub struct Asker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceRole {
-    /// Made the workspace.
+    /// Made the workspace; there is one.
     Owner,
+    /// Was made one by the owner: invites, and removes members.
+    Admin,
     /// Was added to it.
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
@@ -58,10 +60,14 @@ pub struct WorkspaceSummary {
     pub member: Option<MemberId>,
 }
 
-/// The workspaces the signed-in account is a member of.
+/// The workspaces the signed-in account is a member of, and, from servers that offer
+/// `workspace.team`, the live invitations to its address it hasn't hidden.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<InvitationOffer>")]
+    pub invitations: Option<Vec<InvitationOffer>>,
 }
 
 /// A member as the workspace's other members see them, under the name the server shows for
@@ -70,13 +76,21 @@ pub struct WorkspaceList {
 pub struct MemberSummary {
     pub id: MemberId,
     pub name: String,
+    /// Their role, from servers that offer `workspace.team`; left out for a past member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "WorkspaceRole")]
+    pub role: Option<WorkspaceRole>,
 }
 
 /// A workspace's members, past ones included, in the order they were added, from the server to
-/// clients that have the capability `workspace.members`.
+/// clients that have the capability `workspace.members`. Its owner and admins also get the live
+/// invitations, from servers that offer `workspace.team`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberList {
     pub members: Vec<MemberSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<Invitation>")]
+    pub invitations: Option<Vec<Invitation>>,
 }
 
 /// What changed in a workspace.
@@ -85,6 +99,10 @@ pub struct MemberList {
 pub enum WorkspaceChange {
     /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
+    /// Someone was invited, joined, left, was removed or got another role, or an invitation
+    /// ended. Only for clients that have the capability `workspace.team`, which read the members
+    /// again.
+    MembersChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
     TaskChanged { task: TaskId, version: u64 },
@@ -125,13 +143,21 @@ mod tests {
             members: vec![MemberSummary {
                 id: "m-1".parse().unwrap(),
                 name: "Ada".to_owned(),
+                role: Some(WorkspaceRole::Admin),
             }],
+            invitations: None,
+        };
+        let past = MemberSummary {
+            id: "m-2".parse().unwrap(),
+            name: "Bo".to_owned(),
+            role: None,
         };
 
         round_trips(
             &list,
-            json!({ "members": [{ "id": "m-1", "name": "Ada" }] }),
+            json!({ "members": [{ "id": "m-1", "name": "Ada", "role": "admin" }] }),
         );
+        round_trips(&past, json!({ "id": "m-2", "name": "Bo" }));
     }
 
     #[test]
@@ -158,6 +184,10 @@ mod tests {
                     member: "m-1".parse().unwrap(),
                 },
                 json!({ "kind": "member_joined", "member": "m-1" }),
+            ),
+            (
+                WorkspaceChange::MembersChanged,
+                json!({ "kind": "members_changed" }),
             ),
             (
                 WorkspaceChange::TaskChanged {
@@ -204,6 +234,7 @@ mod tests {
         let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner", "member": "m-1" });
         let list = WorkspaceList {
             workspaces: vec![summary.clone()],
+            invitations: None,
         };
         let create = WorkspaceCreate {
             name: "Team".to_owned(),
@@ -213,6 +244,7 @@ mod tests {
         round_trips(&list, json!({ "workspaces": [wire] }));
         round_trips(&create, json!({ "name": "Team" }));
         round_trips(&WorkspaceRole::Owner, json!("owner"));
+        round_trips(&WorkspaceRole::Admin, json!("admin"));
         round_trips(&WorkspaceRole::Member, json!("member"));
         assert_eq!(
             serde_json::from_value::<WorkspaceRole>(json!("auditor")).unwrap(),

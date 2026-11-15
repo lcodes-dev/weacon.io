@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { Later } from "../connection.ts";
 import type { AccessLevel, AgentKind, MachineOs, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
@@ -37,13 +37,15 @@ type Props = {
   pins: Pins;
   /** Whether the server relays sign-in terminals. */
   relays: boolean;
+  /** Whether other people are in the workspace, once its members are known. */
+  team: boolean | undefined;
 };
 
 /**
  * What one of the person's machines keeps for the open workspace, asked of its core: error
  * reports, what the workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, socket, later, pins, relays }: Props) {
+export function MachineSettingsView({ machine, socket, later, pins, relays, team }: Props) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
   const [signingIn, setSigningIn] = useState<AgentKind>();
   const changing = useAsk();
@@ -53,6 +55,13 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
       (after) => settings.change(() => after),
     );
   const shown = settings.value;
+  // The machine keeps whether others are in the workspace; it is told when its mark is out of date.
+  const stale = shown !== undefined && team !== undefined && shown.team !== team;
+  useEffect(() => {
+    if (stale && !changing.busy) {
+      set({ kind: "set_access", level: shown.access, team });
+    }
+  }, [stale]);
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
@@ -65,6 +74,7 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
           os={machine.os}
           busy={changing.busy}
           set={set}
+          team={team ?? shown.team}
           signIn={relays && signingIn === undefined ? setSigningIn : undefined}
         />
       )}
@@ -99,12 +109,14 @@ type ShownProps = {
   os: MachineOs;
   busy: boolean;
   set(action: MachineSettingsAction): void;
+  /** Whether other people are in the workspace. */
+  team: boolean;
   /** Opens a sign-in terminal for an agent; none while one is open or none can be. */
   signIn: ((agent: AgentKind) => void) | undefined;
 };
 
-function Shown({ settings, os, busy, set, signIn }: ShownProps) {
-  const { reports, access, team } = settings;
+function Shown({ settings, os, busy, set, team, signIn }: ShownProps) {
+  const { reports, access } = settings;
   return (
     <>
       <h4>Error reports</h4>
@@ -131,7 +143,7 @@ function Shown({ settings, os, busy, set, signIn }: ShownProps) {
           onChange={(event) => {
             const level = LEVELS.find(([value]) => value === event.target.value)?.[0];
             if (level !== undefined) {
-              set({ kind: "set_access", level });
+              set({ kind: "set_access", level, team });
             }
           }}
         >
@@ -141,15 +153,6 @@ function Shown({ settings, os, busy, set, signIn }: ShownProps) {
             </option>
           ))}
         </select>
-      </label>
-      <label>
-        <input
-          type="checkbox"
-          checked={team}
-          disabled={busy}
-          onChange={(event) => set({ kind: "set_access", level: access, team: event.target.checked })}
-        />
-        Other people are in this workspace
       </label>
       {team && access === "full" && (
         <p role="alert">Full access is on in a team workspace. Its agents change files on this machine without asking.</p>

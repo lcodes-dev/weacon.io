@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { MachineSummary } from "../protocol.ts";
-import { Starts, missingText, readiness, startBlocked, startProblem } from "./start.ts";
+import type { MachineSettings, MachineSummary } from "../protocol.ts";
+import { Starts, missingText, readiness, signedIn, startBlocked, startProblem } from "./start.ts";
 
 const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary => ({
   id,
@@ -85,4 +85,17 @@ test("the box says what the machine picked still needs before a chat can start t
   assert.equal(startBlocked({ ...ready, repos: [] }), "Add a repository on this machine to start a chat.");
   assert.equal(startBlocked({ ...ready, signIn: "signed_out" }), "Codex isn't signed in on this machine.");
   assert.equal(startBlocked({ ...ready, signIn: "not_installed" }), "Codex isn't installed on this machine.");
+});
+
+test("New chat offers every agent until the machine answers, then only those signed in for the workspace", () => {
+  const settings = (states: Array<[string, string]>) => ({
+    access: "ask_first" as const,
+    team: false,
+    sign_ins: states.map(([agent, state]) => ({ agent, state })) as MachineSettings["sign_ins"],
+  });
+
+  assert.deepEqual(signedIn(undefined), ["claude", "codex"]);
+  assert.deepEqual(signedIn(settings([["claude", "signed_out"], ["codex", "signed_in"]])), ["codex"]);
+  assert.deepEqual(signedIn(settings([["codex", "signed_in"], ["claude", "signed_in"], ["aider", "signed_in"]])), ["claude", "codex"]);
+  assert.deepEqual(signedIn(settings([["claude", "not_installed"]])), []);
 });

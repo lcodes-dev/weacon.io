@@ -7,14 +7,16 @@ use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceSummary, code,
+    Code, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
+    WorkspaceSummary, code,
 };
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
-use crate::db::NewWorkspace;
+use crate::db::{MemberRow, NewWorkspace};
 use crate::http::{Body, failure, invalid, unauthorized};
 use crate::shared::Shared;
+use crate::team;
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What the server offers to clients that read a workspace's members.
@@ -26,7 +28,10 @@ pub(crate) fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/workspaces", get(list).post(create))
         .route("/api/workspaces/{workspace}", get(read))
-        .route("/api/workspaces/{workspace}/members", get(members))
+        .route(
+            "/api/workspaces/{workspace}/members",
+            get(members).post(team::command),
+        )
 }
 
 /// `POST /api/workspaces`: makes a workspace that the signed-in account owns.
@@ -56,10 +61,19 @@ fn created(made: Result<WorkspaceSummary, Fault>) -> Response {
     }
 }
 
-/// `GET /api/workspaces`: the signed-in account's workspaces.
+/// `GET /api/workspaces`: the signed-in account's workspaces, and the invitations it may take.
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.account(session.account).workspaces().await {
-        Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
+    let account = shared.db.account(session.account);
+    let listed = async {
+        let workspaces = account.workspaces().await?;
+        let invitations = team::offers(&shared, &account).await?;
+        Ok::<_, Fault>(WorkspaceList {
+            workspaces,
+            invitations: Some(invitations),
+        })
+    };
+    match listed.await {
+        Ok(list) => Json(list).into_response(),
         Err(fault) => failure(fault),
     }
 }
@@ -75,33 +89,52 @@ pub(crate) async fn read(member: Member) -> Response {
 }
 
 /// `GET /api/workspaces/{workspace}/members`: the workspace's members, past ones too, each named
-/// by their address's part before the `@`, since accounts hold no other name, or by their whole
-/// address where another member's has the same part, so no one can pass as another.
-pub(crate) async fn members(member: Member) -> Response {
-    match member.workspace.members().await {
-        Ok(rows) => Json(MemberList {
-            members: rows
-                .iter()
-                .map(|row| {
-                    let local = row.email.local();
-                    let shared = rows
-                        .iter()
-                        .filter(|other| other.email.local() == local)
-                        .count();
-                    let name = if shared > 1 {
-                        row.email.as_str()
-                    } else {
-                        local
-                    };
-                    MemberSummary {
-                        id: row.id.clone(),
-                        name: name.to_owned(),
-                    }
-                })
-                .collect(),
+/// as [`name_of`] says, and for its owner and admins the live invitations.
+pub(crate) async fn members(State(shared): State<Shared>, member: Member) -> Response {
+    let listed = async {
+        let rows = member.workspace.members().await?;
+        let manages = rows.iter().any(|row| {
+            row.id == member.id
+                && matches!(row.role, Some(WorkspaceRole::Owner | WorkspaceRole::Admin))
+        });
+        let invitations = if manages {
+            let live = member.workspace.invitations(shared.now()).await?;
+            Some(live.into_iter().map(team::invitation).collect())
+        } else {
+            None
+        };
+        let members = rows
+            .iter()
+            .map(|row| MemberSummary {
+                id: row.id.clone(),
+                name: name_of(&rows, row).to_owned(),
+                role: row.role,
+            })
+            .collect();
+        Ok::<_, Fault>(MemberList {
+            members,
+            invitations,
         })
-        .into_response(),
+    };
+    match listed.await {
+        Ok(list) => Json(list).into_response(),
         Err(fault) => failure(fault),
+    }
+}
+
+/// What `row` is called among `rows`: their address's part before the `@`, since accounts hold
+/// no other name, or their whole address where another member's has the same part, so no one
+/// can pass as another.
+pub(crate) fn name_of<'a>(rows: &[MemberRow], row: &'a MemberRow) -> &'a str {
+    let local = row.email.local();
+    let shared = rows
+        .iter()
+        .filter(|other| other.email.local() == local)
+        .count();
+    if shared > 1 {
+        row.email.as_str()
+    } else {
+        local
     }
 }
 
@@ -166,9 +199,10 @@ mod tests {
         assert_eq!(read, ("http/1.1 200 ok".to_owned(), made.clone()));
         let names: Vec<_> = workspaces.iter().map(|seen| seen["name"].clone()).collect();
         let roles: Vec<_> = workspaces.iter().map(|seen| seen["role"].clone()).collect();
-        assert_eq!(names, [json!("Team"), json!("Personal"), json!("Team two")]);
-        assert_eq!(roles, [json!("member"), json!("owner"), json!("owner")]);
-        assert_eq!(workspaces[2]["member"], made["member"]);
+        // A member of a workspace when they first sign in gets no Personal one.
+        assert_eq!(names, [json!("Team"), json!("Team two")]);
+        assert_eq!(roles, [json!("member"), json!("owner")]);
+        assert_eq!(workspaces[1]["member"], made["member"]);
     }
 
     #[tokio::test]
@@ -191,7 +225,7 @@ mod tests {
         let (_, ada_reads) = ask(ada.address, "GET /api/workspaces/w1", &ada.proof(), "").await;
         let (_, bo_reads) = ask(bo.address, "GET /api/workspaces/w1", &bo.proof(), "").await;
 
-        assert_eq!((ada_sees.len(), bo_sees.len()), (2, 2));
+        assert_eq!((ada_sees.len(), bo_sees.len()), (1, 1));
         assert_eq!(
             (&ada_sees[0]["member"], &bo_sees[0]["member"]),
             (&json!("m1"), &json!("m3"))
@@ -200,8 +234,6 @@ mod tests {
             (&ada_reads["member"], &bo_reads["member"]),
             (&json!("m1"), &json!("m3"))
         );
-        assert!(ada_sees[1]["member"].is_string());
-        assert_ne!(ada_sees[1]["member"], bo_sees[1]["member"]);
     }
 
     #[tokio::test]
@@ -226,7 +258,7 @@ mod tests {
         w2.add_member(&member_id("m4"), &fresh_account(), &email("cy@example.com"))
             .await
             .unwrap();
-        w1.unlink(&member_id("m3")).await;
+        w1.leave(&member_id("m3")).await.unwrap();
         let (_server, ada) = fixture.client("ada@example.com").await;
 
         let (listed, members) = ask(
@@ -248,9 +280,9 @@ mod tests {
         assert_eq!(
             members,
             json!({ "members": [
-                { "id": "m1", "name": "ada" },
+                { "id": "m1", "name": "ada", "role": "member" },
                 { "id": "m3", "name": "bo@example.com" },
-                { "id": "m5", "name": "bo@other.example" },
+                { "id": "m5", "name": "bo@other.example", "role": "member" },
             ] })
         );
         assert_eq!(refused, "http/1.1 401 unauthorized");
@@ -260,10 +292,13 @@ mod tests {
     #[tokio::test]
     async fn signing_in_again_makes_no_second_personal_workspace() {
         let fixture = Fixture::new().await;
-        drop(fixture.client("ada@example.com").await);
-        let (_server, ada) = fixture.client("ada@example.com").await;
+        let cy = email("cy@example.com");
+        let db = &fixture.shared.db;
+        db.add_account(&fresh_account(), &cy).await.unwrap();
+        drop(fixture.client("cy@example.com").await);
+        let (_server, cy) = fixture.client("cy@example.com").await;
 
-        let personal = listed(&ada)
+        let personal = listed(&cy)
             .await
             .into_iter()
             .filter(|seen| seen["name"] == "Personal")
@@ -319,11 +354,11 @@ mod tests {
         let bad_id = ask(ada.address, "GET /api/workspaces/w.1", &ada.proof(), "").await;
         let (nobody, _) = ask(ada.address, "GET /api/workspaces", "", "").await;
 
-        assert_eq!(theirs.len(), 2);
+        assert_eq!(theirs.len(), 1);
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0]["name"], "Personal");
         assert!(!theirs.contains(&mine[0]));
-        assert_eq!(refusals.len(), 6);
+        assert_eq!(refusals.len(), 4);
         for refusal in refusals {
             assert_eq!(
                 refusal,
@@ -345,8 +380,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
         let create = json!({ "name": "Team" }).to_string();
-        // The Personal workspace is one of them.
-        for _ in 1..100 {
+        for _ in 0..100 {
             let (made, _) = ada.send("POST /api/workspaces", &create).await;
             assert_eq!(made, "http/1.1 201 created");
         }
@@ -395,7 +429,7 @@ mod tests {
         let page = "cookie: __Host-weacon_session=x\r\norigin: https://other.example\r\n";
         let (crossed, _) = ask(ada.address, "POST /api/workspaces", page, &create).await;
 
-        assert_eq!(listed(&ada).await.len(), 2);
+        assert_eq!(listed(&ada).await.len(), 1);
         assert_eq!(nobody, "http/1.1 401 unauthorized");
         assert_eq!(crossed, "http/1.1 403 forbidden");
         Title::try_from(long.clone()).unwrap();

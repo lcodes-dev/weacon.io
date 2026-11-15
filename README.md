@@ -54,7 +54,7 @@ Weacon is in early development. This is what works on `main` today:
 | Area | Works today | Not yet |
 | --- | --- | --- |
 | Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: they wait in a folder for a mail relay |
-| Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
+| Workspaces | A personal workspace for each account that wasn't added or invited to one; new workspaces; inviting people by email from the web app, as members or admins; removing them; members the operator adds with `weacon-server add-member` | Sending invitation notices by email: they wait in the same folder as the codes |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
 | Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | |
@@ -226,7 +226,9 @@ target/debug/weacon terminals on
 ```
 
 - **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine.
-- **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
+- **Teammates**: open a workspace you own, then **Settings**. Under **Members**, type an address and choose **Invite**. The invitation lasts 7 days. Its address gets a notice in the outbox folder, with no code, saying to sign in. Once they sign in with that address, they see the invitation at the foot of the sidebar, or on the page they land on, and choose **Accept** or **Hide**. An invitation lets its address make an account on this server, whatever `--sign-up` says. The owner makes members admins, and admins invite and remove members too. Anyone but the owner can **Leave**. Someone removed loses the workspace at once, and their chats stay in it. Each person signs in with their own email and pairs their own machine.
+
+The operator can still add a member from the command line, with the server running:
 
 ```bash
 target/debug/weacon-server create-workspace --db .dev/server/weacon.db --name "Team"
@@ -234,7 +236,7 @@ target/debug/weacon-server add-member --db .dev/server/weacon.db --workspace <wo
 target/debug/weacon-server members --db .dev/server/weacon.db --workspace <workspace id>
 ```
 
-`create-workspace` prints the new workspace's id. Add yourself too, to see it in the web app.
+`create-workspace` prints the new workspace's id. Add yourself too, to see it in the web app. Someone added this way before their first sign-in gets no Personal workspace.
 
 - **Code map**: what the core's agents get through its local MCP. From the clone, about this repository or, with `--root`, any other:
 

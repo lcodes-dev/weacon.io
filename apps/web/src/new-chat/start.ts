@@ -1,6 +1,6 @@
 import type { ChatRef } from "../chat-ref.ts";
 import { type Sent, sentProblem } from "../composer/prompt.ts";
-import type { AgentKind, ChatAction, ChatId, MachineId, MachineSummary, RepoId, RequestId, SignInState, WorkspaceId } from "../protocol.ts";
+import type { AgentKind, ChatAction, ChatId, MachineId, MachineSettings, MachineSummary, RepoId, RequestId, SignInState, WorkspaceId } from "../protocol.ts";
 import { lacks } from "../machines/core.ts";
 import { type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
@@ -103,4 +103,11 @@ export function startBlocked({ live, repos, agent, signIn }: Picked): string | u
     return `${agent} isn't signed in on this machine.`;
   }
   return signIn === "not_installed" ? `${agent} isn't installed on this machine.` : undefined;
+}
+
+const KINDS: AgentKind[] = ["claude", "codex"];
+
+/** The agents New chat offers: every one until the machine answers, then those signed in there for the workspace. */
+export function signedIn(settings: MachineSettings | undefined): AgentKind[] {
+  return settings === undefined ? KINDS : KINDS.filter((kind) => settings.sign_ins.some(({ agent, state }) => agent === kind && state === "signed_in"));
 }
