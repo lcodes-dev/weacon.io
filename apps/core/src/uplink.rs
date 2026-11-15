@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use tokio::task::JoinSet;
 use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
@@ -344,9 +345,17 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
+/// Keeps the machine connected to its server, for as long as the set is kept.
+pub(crate) fn start(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> JoinSet<()> {
+    let (link, from_daemon) = new(app, log, state_dir, chats);
+    let mut uplink = JoinSet::new();
+    uplink.spawn(async move { match link.run(from_daemon).await {} });
+    uplink
+}
+
 /// The daemon's uplink, which takes the server's chat messages to `chats`; the daemon sends
 /// nothing else up it.
-pub(crate) fn new(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> (Uplink, FromDaemon) {
+fn new(app: &App, log: &Logger, state_dir: &Path, chats: Chats) -> (Uplink, FromDaemon) {
     let (to_daemon, _) = mpsc::channel(QUEUE);
     let (_, from_daemon) = mpsc::channel(QUEUE);
     let uplink = Uplink {

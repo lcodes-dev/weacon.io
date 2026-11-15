@@ -28,7 +28,20 @@ pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
     tokio::signal::windows::ctrl_c()
 }
 
+/// How many hard links the file `opened` has.
+///
+/// # Errors
+///
+/// When the system can't say.
+pub fn link_count(opened: &File) -> io::Result<u64> {
+    links_of(opened)
+}
+
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
+///
+/// # Errors
+///
+/// When `file` can't be opened, or is anything else.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
     let opened = open_unfollowed(file)?;
     if opened.metadata()?.is_file() && links_of(&opened)? == 1 {
@@ -120,8 +133,10 @@ mod tests {
         fs::write(&file, "").unwrap();
 
         assert_eq!(links(&file).unwrap(), 1);
+        assert_eq!(link_count(&File::open(&file).unwrap()).unwrap(), 1);
         fs::hard_link(&file, dir.join("two.md")).unwrap();
         assert_eq!(links(&file).unwrap(), 2);
+        assert_eq!(link_count(&File::open(&file).unwrap()).unwrap(), 2);
         links(&dir.join("missing.md")).unwrap_err();
     }
 

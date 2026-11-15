@@ -1,7 +1,7 @@
 //! The server's way to this machine's chats: it relays the owner's commands and subscribes to
 //! the chats it stores, whose events go up as they are committed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
@@ -19,6 +19,9 @@ use crate::runs::ChatKey;
 pub(super) const UPLOAD: Code = code!("chat.upload");
 /// The most events asked for at once to catch up a chat too far behind to replay.
 const PAGE: u32 = 256;
+/// The most chats one connection follows. Each keeps a place in the link's queue, so the
+/// queue holds this many more than it ever waits on.
+const FOLLOWS_MAX: usize = 512;
 
 /// What the server asked of the chats, taken up in order.
 #[derive(Debug, PartialEq)]
@@ -34,9 +37,9 @@ pub(super) struct ChatLink {
     asks: mpsc::Sender<Ask>,
     pushes: mpsc::Receiver<Message>,
     uploads: bool,
-    /// The chats to follow once `asks` has room, each after the seq given; never dropped, so
-    /// a chat is never left unfollowed.
-    follows: HashMap<ChatKey, u64>,
+    /// Asks waiting for room in `asks`, in the order asked; a follow is never dropped, so a
+    /// chat is never left unfollowed.
+    waiting: VecDeque<Ask>,
     /// The seq of the last event of each followed chat that came, to follow again after.
     came: HashMap<ChatKey, u64>,
 }
@@ -45,13 +48,13 @@ impl ChatLink {
     /// Takes up asks for `chats` in order; `uploads` when the server offered [`UPLOAD`].
     pub(super) fn new(chats: Chats, uploads: bool, log: Logger) -> Self {
         let (asks, asked) = mpsc::channel(QUEUE);
-        let (push, pushes) = mpsc::channel(feed::QUEUE);
+        let (push, pushes) = mpsc::channel(feed::QUEUE + FOLLOWS_MAX);
         tokio::spawn(take_up(chats, Client { push }, asked, log));
         Self {
             asks,
             pushes,
             uploads,
-            follows: HashMap::new(),
+            waiting: VecDeque::new(),
             came: HashMap::new(),
         }
     }
@@ -68,12 +71,11 @@ impl ChatLink {
             if matches!(command.action, ChatAction::Hold | ChatAction::Release) {
                 return refusal(id, &command, code!("message.unsupported"));
             }
-            return match self.asks.try_send(Ask::Command(command)) {
-                Err(mpsc::error::TrySendError::Full(Ask::Command(command))) => {
-                    refusal(id, &command, code!("chat.unavailable"))
-                }
-                _ => Step::Nothing,
-            };
+            if self.waiting.len() >= QUEUE {
+                return refusal(id, &command, code!("chat.unavailable"));
+            }
+            self.queue(Ask::Command(command));
+            return Step::Nothing;
         }
         if let Message::ChatQuery(ChatQuery {
             workspace,
@@ -83,15 +85,41 @@ impl ChatLink {
             && self.uploads
         {
             let key = ChatKey { workspace, chat };
+            if !self.came.contains_key(&key) && self.came.len() >= FOLLOWS_MAX {
+                return failure(id, code!("chat.follows_full"));
+            }
             self.came.insert(key.clone(), after);
-            self.follows.insert(key, after);
+            self.queue(Ask::Follow(key, after));
             return Step::Nothing;
         }
         failure(id, code!("message.unsupported"))
     }
 
-    /// The next event to send up, passing on waiting follows as room frees meanwhile; safe to
-    /// cancel, since a follow leaves `follows` only as it is sent.
+    // Passes `ask` on in the order asked: at once when nothing waits and there is room, else
+    // after what waits. A chat followed again while its follow waits keeps that one's place.
+    fn queue(&mut self, ask: Ask) {
+        if let Ask::Follow(key, after) = &ask
+            && let Some(Ask::Follow(_, waiting)) = self
+                .waiting
+                .iter_mut()
+                .find(|waiting| matches!(waiting, Ask::Follow(other, _) if other == key))
+        {
+            *waiting = *after;
+            return;
+        }
+        let ask = if self.waiting.is_empty() {
+            let Err(full) = self.asks.try_send(ask) else {
+                return;
+            };
+            full.into_inner()
+        } else {
+            ask
+        };
+        self.waiting.push_back(ask);
+    }
+
+    /// The next event to send up, passing on waiting asks as room frees meanwhile; safe to
+    /// cancel, since an ask leaves `waiting` only as it is sent.
     pub(super) async fn next(&mut self) -> Option<Envelope> {
         loop {
             tokio::select! {
@@ -100,17 +128,14 @@ impl ChatLink {
                         return Some(up);
                     }
                 }
-                room = self.asks.clone().reserve_owned(), if !self.follows.is_empty() => {
+                room = self.asks.clone().reserve_owned(), if !self.waiting.is_empty() => {
                     let Ok(room) = room else {
-                        // Nothing takes asks any more, so no follow can wait for room.
-                        self.follows.clear();
+                        // Nothing takes asks any more, so none can wait for room.
+                        self.waiting.clear();
                         continue;
                     };
-                    let next = self.follows.keys().next().cloned();
-                    if let Some(key) = next
-                        && let Some(after) = self.follows.remove(&key)
-                    {
-                        room.send(Ask::Follow(key, after));
+                    if let Some(ask) = self.waiting.pop_front() {
+                        room.send(ask);
                     }
                 }
             }
@@ -134,7 +159,7 @@ impl ChatLink {
         {
             let key = ChatKey { workspace, chat };
             let after = *self.came.get(&key)?;
-            self.follows.insert(key, after);
+            self.queue(Ask::Follow(key, after));
         }
         None
     }
@@ -298,7 +323,7 @@ mod tests {
             asks,
             pushes,
             uploads,
-            follows: HashMap::new(),
+            waiting: VecDeque::new(),
             came: HashMap::new(),
         };
         (link, asked, Client { push })
@@ -402,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn a_servers_follow_waits_for_room_and_its_commands_pass_in_order() {
+    fn a_servers_follows_and_commands_pass_in_the_order_asked() {
         let (mut link, mut asked, _push) = link(true, 4);
 
         let followed = link.take(subscribe(7));
@@ -410,10 +435,58 @@ mod tests {
 
         assert!(matches!(followed, Step::Nothing));
         assert!(matches!(commanded, Step::Nothing));
+        assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 7));
         assert_eq!(asked.try_recv().unwrap(), Ask::Command(prompt("r-1", "Hi")));
-        asked.try_recv().unwrap_err();
-        assert_eq!(link.follows.get(&key()), Some(&7));
         assert_eq!(link.came.get(&key()), Some(&7));
+    }
+
+    // Takes from `asked` until it is empty.
+    fn drained(asked: &mut mpsc::Receiver<Ask>) -> Vec<Ask> {
+        std::iter::from_fn(|| asked.try_recv().ok()).collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn what_waits_for_room_keeps_its_order_and_a_chat_followed_again_its_place() {
+        let (mut link, mut asked, _push) = link(true, 1);
+        drop(link.take(told("r-1", "Hi")));
+        drop(link.take(subscribe(100)));
+        drop(link.take(told("r-2", "Hi")));
+        drop(link.take(subscribe(3)));
+
+        let mut asks = Vec::new();
+        for _ in 0..3 {
+            drop(next_up(&mut link).await);
+            asks.extend(drained(&mut asked));
+        }
+
+        let expected = [
+            Ask::Command(prompt("r-1", "Hi")),
+            Ask::Follow(key(), 3),
+            Ask::Command(prompt("r-2", "Hi")),
+        ];
+        assert_eq!(asks, expected);
+        assert!(link.waiting.is_empty());
+    }
+
+    #[test]
+    fn a_connection_follows_a_bounded_number_of_chats() {
+        let (mut link, _asked, _push) = link(true, 1);
+        let follow = |id: &str| {
+            envelope(Message::ChatQuery(query(
+                id,
+                ChatQueryKind::Subscribe { after: 0 },
+            )))
+        };
+        let taken: Vec<_> = (0..FOLLOWS_MAX)
+            .map(|at| link.take(follow(&format!("c-{at}"))))
+            .collect();
+
+        let one_more = link.take(follow("c-new"));
+        let again = link.take(follow("c-0"));
+
+        assert!(taken.iter().all(|step| matches!(step, Step::Nothing)));
+        assert_eq!(error_code(&one_more), Some("chat.follows_full"));
+        assert!(matches!(again, Step::Nothing));
     }
 
     #[tokio::test(start_paused = true)]
@@ -423,13 +496,13 @@ mod tests {
         drop(link.take(subscribe(3)));
 
         let while_full = next_up(&mut link).await;
-        let first = asked.recv().await.unwrap();
+        let first = soon(asked.recv()).await.unwrap();
         let once_room = next_up(&mut link).await;
 
         assert_eq!((while_full, once_room), (None, None));
         assert!(matches!(first, Ask::Command(_)));
         assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 3));
-        assert!(link.follows.is_empty());
+        assert!(link.waiting.is_empty());
     }
 
     #[test]
@@ -446,7 +519,7 @@ mod tests {
         let codes = refused.iter().map(error_code).collect::<Vec<_>>();
         assert_eq!(codes, [Some("message.unsupported"); 2]);
         asked.try_recv().unwrap_err();
-        assert!(not_uploading.follows.is_empty() && uploading.follows.is_empty());
+        assert!(not_uploading.waiting.is_empty() && uploading.waiting.is_empty());
         assert!(not_uploading.came.is_empty());
     }
 
@@ -480,12 +553,20 @@ mod tests {
     #[test]
     fn a_command_with_no_room_left_is_refused_as_unavailable() {
         let (mut link, _asked, _push) = link(true, 1);
-        let interrupt = |request| command(request, "c-1", ChatAction::Interrupt);
+        let interrupt = |request: &str| command(request, "c-1", ChatAction::Interrupt);
 
-        let taken = link.take(envelope(Message::ChatCommand(interrupt("r-1"))));
+        // One fills the queue, and as many again as it holds wait for room.
+        let taken: Vec<_> = (0..=QUEUE)
+            .map(|at| {
+                link.take(envelope(Message::ChatCommand(interrupt(&format!(
+                    "r-w{at}"
+                )))))
+            })
+            .collect();
         let refused = link.take(envelope(Message::ChatCommand(interrupt("r-2"))));
 
-        assert!(matches!(taken, Step::Nothing));
+        assert!(taken.iter().all(|step| matches!(step, Step::Nothing)));
+        assert_eq!(link.waiting.len(), QUEUE);
         assert_eq!(error_code(&refused), Some("chat.unavailable"));
         let Step::Reply(reply) = refused else {
             panic!("not refused");
@@ -575,19 +656,17 @@ mod tests {
 
     #[test]
     fn a_chat_whose_events_were_lost_is_followed_again_after_the_last_that_came() {
-        let (mut link, _asked, _push) = link(true, 4);
+        let (mut link, mut asked, _push) = link(true, 4);
         drop(link.take(subscribe(2)));
-        link.follows.clear();
 
         let first = link.upload(lost());
-        let after_first = link.follows.get(&key()).copied();
         let started = said(RunEvent::Started { session: session() });
         drop(link.upload(update(5, started)));
         let again = link.upload(lost());
 
         assert_eq!((first, again), (None, None));
-        assert_eq!(after_first, Some(2));
-        assert_eq!(link.follows.get(&key()), Some(&5));
+        let follows = [2, 2, 5].map(|after| Ask::Follow(key(), after));
+        assert_eq!(drained(&mut asked), follows);
     }
 
     #[test]
@@ -595,7 +674,7 @@ mod tests {
         let (mut link, _asked, _push) = link(true, 4);
 
         assert_eq!(link.upload(lost()), None);
-        assert!(link.follows.is_empty());
+        assert!(link.waiting.is_empty());
     }
 
     // Commits `count` prompts of `size` bytes each to chat `c-1`, under r-0, r-1 and so on.

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Envelope } from "../src/protocol.ts";
-import { fakeServer, start, waitFor } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start, waitFor } from "./harness.ts";
 
 test("Enter during a composition neither sends nor clears, and Enter after it sends", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
@@ -73,7 +73,7 @@ test("without a chat, the box keeps what is typed and Send stays off", { timeout
 });
 
 test("@ offers people and agents, and a pick stays one mention", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
@@ -138,7 +138,7 @@ test("@ offers people and agents, and a pick stays one mention", { timeout: 120_
 });
 
 test("files come by picker, paste and drop, show before sending, and can be removed", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
