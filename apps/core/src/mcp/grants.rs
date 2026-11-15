@@ -10,7 +10,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Semaphore;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
-use weacon_protocol::{PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex};
+use weacon_protocol::{AgentKind, PermissionAnswer, RunEvent, RunId, WorkspaceId, code, to_hex};
 
 use crate::chats::engine::agent::Agent;
 
@@ -33,21 +33,30 @@ impl fmt::Debug for Token {
     }
 }
 
-/// What a token lets its run read: the code of its own folder, in its own workspace.
+/// What a token lets its run do: read the code of its own folder, and propose changes, in its
+/// own workspace.
 #[derive(Debug)]
 pub(crate) struct Grant {
     pub(crate) workspace: WorkspaceId,
     pub(crate) run: RunId,
+    /// Which agent the run is, as its proposals say.
+    pub(crate) agent: AgentKind,
     pub(crate) folder: PathBuf,
     pub(crate) calls: Arc<Semaphore>,
     revoked: AtomicBool,
 }
 
 impl Grant {
-    pub(crate) fn new(workspace: WorkspaceId, run: RunId, folder: PathBuf) -> Self {
+    pub(crate) fn new(
+        workspace: WorkspaceId,
+        run: RunId,
+        agent: AgentKind,
+        folder: PathBuf,
+    ) -> Self {
         Self {
             workspace,
             run,
+            agent,
             folder,
             calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
             revoked: AtomicBool::new(false),
@@ -223,6 +232,7 @@ mod tests {
         Grant::new(
             WorkspaceId::try_from(workspace.to_owned()).unwrap(),
             RunId::try_from(run.to_owned()).unwrap(),
+            AgentKind::Claude,
             PathBuf::from("/work"),
         )
     }

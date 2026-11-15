@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use weacon_protocol::{DocAnchors, DocId, DocPin, links_to_code};
+use weacon_protocol::{DocAnchors, DocContent, DocId, DocPin, links_to_code};
 
 use crate::{Revision, Title};
 
@@ -72,11 +72,53 @@ impl DocText {
     }
 }
 
+impl From<DocText> for DocContent {
+    fn from(text: DocText) -> Self {
+        Self {
+            title: text.title.as_str().to_owned(),
+            body: text.body,
+            anchors: text.anchors,
+        }
+    }
+}
+
+/// Where each link target in `body` starts, after `](`, `<` or `]:`, and the `end` that closes it.
+const OPENERS: [(&str, char); 3] = [("](", ')'), ("<", '>'), ("]:", ' ')];
+
+/// `body` with each link whose target is `from`, as [`DocText`] finds links, now to `to`.
+#[must_use]
+pub fn relinked(body: &str, from: &str, to: &str) -> String {
+    let mut starts: Vec<usize> = OPENERS
+        .into_iter()
+        .flat_map(|(opener, end)| {
+            let after = move |(at, _): (usize, &str)| (at.saturating_add(opener.len()), end);
+            body.match_indices(opener).map(after)
+        })
+        .filter_map(|(after, end)| {
+            let rest = body.get(after..)?;
+            let target = rest.trim_start();
+            let start = after.saturating_add(rest.len().saturating_sub(target.len()));
+            (destination(target, end)? == from).then_some(start)
+        })
+        .collect();
+    starts.sort_unstable();
+    starts.dedup();
+    let mut out = String::with_capacity(body.len());
+    let mut done = 0;
+    for start in starts {
+        out.push_str(body.get(done..start).unwrap_or_default());
+        out.push_str(to);
+        done = start.saturating_add(from.len());
+    }
+    out.push_str(body.get(done..).unwrap_or_default());
+    out
+}
+
 /// The code anchors `body` may link to: each target after `](`, `<` or `]:`, up to a space
 /// or the `)` or `>` that closes it, that [`may_link_to_code`]. It finds at least what Markdown links, so
 /// a doubtful link is asked for a pin rather than missed.
 fn links(body: &str) -> BTreeSet<&str> {
-    [("](", ')'), ("<", '>'), ("]:", ' ')]
+    OPENERS
         .into_iter()
         .flat_map(|(opener, end)| body.split(opener).skip(1).map(move |rest| (rest, end)))
         .filter_map(|(rest, end)| destination(rest.trim_start(), end))
@@ -292,5 +334,34 @@ mod tests {
             last.revise(Revision::new(u64::MAX), next()),
             Err(ReviseError::LastVersion)
         );
+    }
+
+    #[test]
+    fn only_link_targets_that_are_the_anchor_are_relinked() {
+        let body =
+            "[a](sym:a::go) [b](sym:a::go_on) < sym:a::go>\n[c]: sym:a::go\nsym:a::go in prose.";
+
+        assert_eq!(
+            relinked(body, "sym:a::go", "sym:a::went"),
+            "[a](sym:a::went) [b](sym:a::go_on) < sym:a::went>\n[c]: sym:a::went\nsym:a::go in prose."
+        );
+        assert_eq!(relinked("", "sym:a", "sym:b"), "");
+    }
+
+    #[test]
+    fn a_doc_text_is_the_content_it_was_made_of() {
+        let content = DocContent {
+            title: "Plan".to_owned(),
+            body: "Ship.\n".to_owned(),
+            anchors: None,
+        };
+        let text = DocText::new(
+            Title::try_from(content.title.clone()).unwrap(),
+            content.body.clone(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(DocContent::from(text), content);
     }
 }

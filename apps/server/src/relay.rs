@@ -21,8 +21,8 @@ use crate::socket::refusal;
 
 mod kinds;
 
+pub(crate) use kinds::needs;
 use kinds::{About, Asked, answering, machine_needs, stamped};
-pub(crate) use kinds::{needs, takes};
 
 /// How many asks may wait for their answers at once, server-wide.
 const MOST_WAITING: usize = 4096;
@@ -831,7 +831,6 @@ mod tests {
         let machine = MachineId::try_from("mc-1".to_owned()).unwrap();
         assert_eq!(needs(&symbols_query(&machine, "w1")), Some(SYMBOLS));
         assert_eq!(needs(&symbols_answer(&machine, "w1")), None);
-        assert!(takes(&symbols_answer(&machine, "w1")));
     }
 
     // A relay where `machine`'s own sessions were asked under 41, relayed as 7.
@@ -1183,11 +1182,6 @@ mod tests {
         assert_eq!(needs(&command(&machine)), Some(SETTINGS));
         assert_eq!(needs(&sessions_query(&machine)), Some(SESSIONS));
         assert_eq!(needs(&settings_answer(&machine)), None);
-        assert!(takes(&sessions_answer(&machine, "/work")));
-        // From a machine, only answers and errors go back to an asker.
-        assert!(takes(&settings_answer(&machine)));
-        assert!(takes(&refusal(code!("settings.not_owner"))));
-        assert!(!takes(&query(&machine, "w1")));
         assert_eq!(code_of(result), Some("relay.unknown".to_owned()));
     }
 

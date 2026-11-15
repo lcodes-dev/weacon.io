@@ -4,6 +4,7 @@
 mod deadline;
 pub(crate) mod grants;
 mod maps;
+mod propose;
 pub(crate) mod tools;
 
 use std::convert::Infallible;
@@ -42,6 +43,7 @@ use weacon_protocol::App;
 use crate::app::WarnOnce;
 use crate::chats::engine::RunAs;
 use crate::daemon::ACCEPT_BACKOFF;
+use crate::proposals::Proposals;
 
 /// How long a connection may make no progress, and how many may be open at once, so local
 /// processes, other users' included, can't hold the core's sockets.
@@ -55,7 +57,8 @@ const LIMITS: Limits = Limits {
     stall: Duration::from_secs(10),
     connections: 64,
 };
-const MAX_BODY: usize = 64 * 1024;
+/// Room for the largest proposal a run may send, and its envelope.
+const MAX_BODY: usize = weacon_protocol::MAX_PROPOSAL + 64 * 1024;
 
 /// The core's MCP, listening.
 #[derive(Clone, Debug)]
@@ -86,6 +89,7 @@ fn listen(app: &App, log: &Logger, maps: Maps, limits: Limits) -> Result<(Mcp, S
     let (watched, watch_log, watched_grants) = (maps.clone(), log.clone(), grants.clone());
     let handler = Handler {
         version: app.version.clone(),
+        proposals: maps.proposals(),
         maps,
         log,
     };
@@ -128,6 +132,7 @@ pub(crate) fn grant(
     let grant = Grant::new(
         run_as.key.workspace.clone(),
         run_as.run.clone(),
+        run_as.agent,
         launch.cwd.clone(),
     );
     let (token, revoke) = mcp.grants.issue(grant)?;
@@ -274,6 +279,8 @@ fn empty(status: StatusCode) -> Response<Body> {
 struct Handler {
     version: String,
     maps: Maps,
+    /// Where `propose` sends; none when the core has no way to its server.
+    proposals: Option<Proposals>,
     log: Logger,
 }
 
@@ -309,7 +316,15 @@ impl ServerHandler for Handler {
         };
         let started = Instant::now();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = self.maps.answer(&call, &grant, permit, &log).await;
+        let answered = if let McpCall::Propose(args) = call {
+            let _permit = permit;
+            propose::propose(self.proposals.as_ref(), &grant, args, &log).await
+        } else {
+            Ok(self.maps.answer(&call, &grant, permit, &log).await)
+        };
+        let text = answered
+            .as_ref()
+            .map_or_else(String::as_str, String::as_str);
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let fields: [(&str, Field); 5] = [
             ("workspace_id", grant.workspace.as_str().into()),
@@ -319,7 +334,11 @@ impl ServerHandler for Handler {
             ("ms", millis.into()),
         ];
         self.log.info("mcp answered", &fields);
-        Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
+        Ok(match answered {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(text) => CallToolResult::error(vec![ContentBlock::text(text)]),
+        }
+        .into())
     }
 }
 
@@ -426,6 +445,7 @@ mod tests {
         Grant::new(
             WorkspaceId::try_from(workspace.to_owned()).unwrap(),
             RunId::try_from(run.to_owned()).unwrap(),
+            AgentKind::Claude,
             folder,
         )
     }
@@ -800,5 +820,44 @@ mod tests {
         assert_eq!((alone.mcp, no_mcp.is_none()), (None, true));
         drop(revoke);
         assert!(mcp.grants.find(&server.token).is_none());
+    }
+
+    #[tokio::test]
+    async fn propose_answers_from_the_server_and_says_when_it_was_refused() {
+        let dir = TempDir::new().unwrap();
+        let (log, _records) = recording_logger();
+        let fake = crate::proposals::fake::Fake::default();
+        let maps = Maps::off().proposing(fake.connect());
+        let build = weacon_appkit::build(&VERSION);
+        let (mcp, _server) = start(&build, &log, maps).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let auth = bearer(&token);
+        let task = call(
+            "propose",
+            json!({"change": {"kind": "new_task", "title": "Ship"}}),
+        );
+
+        let proposed = post(&mcp, &[("Authorization", &auth)], &task).await;
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        let refused = post(&mcp, &[("Authorization", &auth)], &task).await;
+
+        let error = |reply: &Reply| {
+            let message: Value = serde_json::from_str(&reply.body).unwrap();
+            message["result"]["isError"].as_bool()
+        };
+        assert_eq!(answer_text(&proposed), propose::PROPOSED);
+        assert_eq!(error(&proposed), Some(false));
+        assert_eq!(answer_text(&refused), "Not proposed: proposal.too_many.\n");
+        assert_eq!(error(&refused), Some(true));
+        assert_eq!(fake.commands().len(), 2);
+        assert_eq!(MAX_BODY, weacon_protocol::MAX_PROPOSAL + 65_536);
+        // A doc's whole text is more than any other call sends.
+        *fake.refuse.lock().unwrap() = None;
+        let large = json!({"change": {"kind": "new_task", "title": "x".repeat(MAX_BODY / 2)}});
+        let large = post(&mcp, &[("Authorization", &auth)], &call("propose", large)).await;
+        assert_eq!((large.status, error(&large)), (200, Some(false)));
     }
 }

@@ -11,13 +11,13 @@ pub(crate) fn proposed(proposal: &str, machine: &str, change: ProposalChange) ->
         id: ProposalId::try_from(proposal.to_owned()).unwrap(),
         change,
         owner: member_id("m1"),
-        agent: AgentRef {
+        agent: Some(AgentRef {
             kind: AgentKind::Claude,
             owner: AgentOwner::Member {
                 member: member_id("m1"),
             },
             machine: Some(MachineName::try_from(format!("{machine} laptop")).unwrap()),
-        },
+        }),
         machine: MachineId::try_from(machine.to_owned()).unwrap(),
         fresh: format!("new-{proposal}"),
         at: 0,

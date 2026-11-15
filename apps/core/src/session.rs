@@ -18,6 +18,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("terminal.sign_in")),
     Capability::new(code!("map.read")),
     Capability::new(code!("symbols.search")),
+    Capability::new(code!("workspace.proposals")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -125,6 +126,7 @@ mod tests {
                             Capability::new(code!("terminal.sign_in")),
                             Capability::new(code!("map.read")),
                             Capability::new(code!("symbols.search")),
+                            Capability::new(code!("workspace.proposals")),
                         ],
                     }),
                 }),
