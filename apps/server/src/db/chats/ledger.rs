@@ -13,6 +13,16 @@ pub(crate) struct NewRequest<'a> {
     pub(crate) at: i64,
 }
 
+/// A command no receipt has ended yet.
+#[derive(Debug)]
+pub(crate) struct OpenRequest {
+    pub(crate) command: ChatCommand,
+    /// When it was first sent.
+    pub(crate) sent_at: i64,
+    /// Whether its machine's core refused it for now when it was last sent.
+    pub(crate) refused: bool,
+}
+
 /// Whether a request was seen before.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Recorded {
@@ -127,13 +137,28 @@ impl Workspace {
         Ok(())
     }
 
-    /// The commands to `chat` no receipt has ended yet, oldest first, with when each was sent.
-    pub(crate) async fn open_requests(
+    /// Marks `request` refused for now by its machine's core, or sent it again.
+    pub(crate) async fn mark_refused(
         &self,
-        chat: &ChatId,
-    ) -> Result<Vec<(ChatCommand, i64)>, Fault> {
-        sqlx::query_as::<_, (String, i64)>(
-            "SELECT command, sent_at FROM chat_requests
+        request: &RequestId,
+        refused: bool,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "UPDATE chat_requests SET refused = ? WHERE workspace_id = ? AND request_id = ?",
+        )
+        .bind(refused)
+        .bind(self.id.as_str())
+        .bind(request.as_str())
+        .execute(&self.db.writer)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
+    /// The commands to `chat` no receipt has ended yet, oldest first.
+    pub(crate) async fn open_requests(&self, chat: &ChatId) -> Result<Vec<OpenRequest>, Fault> {
+        sqlx::query_as::<_, (String, i64, bool)>(
+            "SELECT command, sent_at, refused FROM chat_requests
              WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
         )
         .bind(self.id.as_str())
@@ -142,7 +167,14 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(command, sent_at)| Ok((stored_command(&command)?, sent_at)))
+        .map(|(command, sent_at, refused)| {
+            let command = stored_command(&command)?;
+            Ok(OpenRequest {
+                command,
+                sent_at,
+                refused,
+            })
+        })
         .collect()
     }
 
@@ -198,9 +230,9 @@ mod tests {
         workspace.record_request(&new).await.unwrap()
     }
 
-    fn opened(list: Vec<(ChatCommand, i64)>) -> Vec<(String, i64)> {
+    fn opened(list: Vec<OpenRequest>) -> Vec<(String, i64)> {
         list.into_iter()
-            .map(|(command, at)| (command.request.as_str().to_owned(), at))
+            .map(|open| (open.command.request.as_str().to_owned(), open.sent_at))
             .collect()
     }
 

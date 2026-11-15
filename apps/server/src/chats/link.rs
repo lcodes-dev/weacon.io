@@ -1,5 +1,6 @@
 //! What the server sends the machines that run chats, over their connections.
 
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -29,20 +30,42 @@ pub(crate) fn send_all(
         .map_err(|_| offline())
 }
 
-/// Sends `message` to `machine` once its queue has room, waiting as long as the sockets' timing
-/// allows;
-/// refuses with `machine.offline` when it isn't connected, doesn't serve chats or has no room.
-pub(crate) async fn deliver(
-    shared: &Shared,
-    machine: &MachineId,
-    message: Message,
-) -> Result<(), Fault> {
-    let sender = shared.links.sender(machine, &Capability::new(SERVE));
-    let sender = sender.ok_or_else(offline)?;
-    let envelope = envelope(shared, machine, message);
-    match timeout(shared.sockets.room_within, sender.send(envelope)).await {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) | Err(_) => Err(offline()),
+/// One connection of a machine whose core serves chats, kept apart from any newer one.
+pub(crate) struct Route {
+    machine: MachineId,
+    to: mpsc::WeakSender<Envelope>,
+}
+
+impl Route {
+    /// `machine`'s connection open now, if its core serves chats.
+    pub(crate) fn open_now(shared: &Shared, machine: &MachineId) -> Option<Self> {
+        let sender = shared.links.sender(machine, &Capability::new(SERVE))?;
+        Some(Self {
+            machine: machine.clone(),
+            to: sender.downgrade(),
+        })
+    }
+
+    /// Sends `message` over this connection once its queue has room, waiting as long as the
+    /// sockets' timing allows; refuses with `machine.offline` when it has ended or has no room.
+    pub(crate) async fn deliver(&self, shared: &Shared, message: Message) -> Result<(), Fault> {
+        let sender = self.to.upgrade().ok_or_else(offline)?;
+        let envelope = envelope(shared, &self.machine, message);
+        match timeout(shared.sockets.room_within, sender.send(envelope)).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(offline()),
+        }
+    }
+
+    pub(crate) const fn machine(&self) -> &MachineId {
+        &self.machine
+    }
+
+    /// Closes this connection, unless a newer one took over from it.
+    pub(crate) fn close(&self, shared: &Shared) {
+        if let Some(sender) = self.to.upgrade() {
+            shared.links.close_link(&self.machine, &sender);
+        }
     }
 }
 

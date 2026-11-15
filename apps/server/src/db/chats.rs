@@ -11,7 +11,7 @@ use weacon_protocol::{
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
-pub(crate) use ledger::{NewRequest, Recorded};
+pub(crate) use ledger::{NewRequest, OpenRequest, Recorded};
 pub(crate) use runs::Snapshot;
 
 use super::changes::Versioned;

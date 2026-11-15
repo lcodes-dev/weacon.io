@@ -144,8 +144,20 @@ impl Links {
     }
 
     /// Ends `machine`'s connection, which its core then opens again.
+    #[cfg(test)]
     pub(crate) fn close(&self, machine: &MachineId) {
         drop(self.lock().remove(machine));
+    }
+
+    /// Closes `machine`'s connection that `to_machine` sends to, unless a newer one took over.
+    pub(crate) fn close_link(&self, machine: &MachineId, to_machine: &mpsc::Sender<Envelope>) {
+        let mut open = self.lock();
+        if open
+            .get(machine)
+            .is_some_and(|link| link.to_machine.same_channel(to_machine))
+        {
+            drop(open.remove(machine));
+        }
     }
 
     /// Whether `machine` has a connection open now.

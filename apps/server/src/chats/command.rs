@@ -146,7 +146,9 @@ async fn go_on(
         Recorded::Conflict => return Err(conflict()),
         // Its receipt has ended it: nothing more to send.
         Recorded::Same { open: false } => return Ok(()),
-        Recorded::New | Recorded::Same { open: true } => {}
+        Recorded::New => {}
+        // Sent again, whatever its core answered before: its answer to this send counts.
+        Recorded::Same { open: true } => workspace.mark_refused(&command.request, false).await?,
     }
     let sent = [
         Message::ChatCommand(command.clone()),
@@ -257,6 +259,8 @@ mod tests {
         assert_eq!(taken.unwrap(), accepted("r-2"));
         assert!(workspace.has_request(&id("r-2")).await.unwrap());
         assert_eq!(sent(&mut serving).len(), 2);
+        // Its core refused it for now; sent again, only its next answer counts.
+        workspace.mark_refused(&id("r-2"), true).await.unwrap();
         let retried = take(
             &ada.member,
             &ada.asker,
@@ -266,6 +270,8 @@ mod tests {
         .await;
         assert_eq!(retried.unwrap(), accepted("r-2"));
         assert_eq!(sent(&mut serving).len(), 2);
+        let open = workspace.open_requests(&id("c-1")).await.unwrap();
+        assert!(open.iter().all(|request| !request.refused), "{open:?}");
     }
 
     #[tokio::test]
