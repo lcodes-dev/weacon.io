@@ -40,6 +40,10 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   assert.equal(await page.getByText("All 12 tests pass.").count(), 1);
   assert.equal(await page.getByText("Allowed", { exact: true }).count(), 1);
 
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.getByRole("region", { name: "Worktree" }).getByRole("button", { name: "Open terminal" }).waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
+
   const box = page.getByRole("combobox", { name: "Message" });
   const send = page.getByRole("button", { name: "Send" });
   await box.fill("Tidy the readme");

@@ -9,14 +9,12 @@ import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, resumeLine,
 /**
  * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
  * alone: its state each time it is `shown`, and answers while it isn't. A pull request's draft stays
- * until the core opens it. What the core offers decides whether there is one, and whether it opens
- * terminals.
+ * until the core opens it. What the core offers decides whether there is one.
  */
 export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
   const [draft, setDraft] = useState<{ title: string; body: string }>();
   const manages = useOffers(link, "worktree.manage");
-  const terminals = useOffers(link, "worktree.open_terminal");
   const usable = chatRef !== undefined && live && mine && manages;
   // Whether `ask` went out; the screen says so when it couldn't.
   const ask = (what: Ask): boolean => {
@@ -55,7 +53,6 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
   }, [opened]);
   return {
     worktree,
-    terminals,
     resume: chatRef === undefined ? undefined : resumeLine(chatRef),
     usable,
     refresh: () => ask({ kind: "state" }),

@@ -15,9 +15,10 @@ test("the review bar says where the worktree stands, and Remove asks first, then
   const bar = page.getByRole("region", { name: "Worktree" });
 
   await bar.getByText("Uncommitted changes · Commits not pushed").waitFor();
-  // This core opens no terminals, so the bar gives the line to run on the chat's machine.
-  assert.equal(await bar.getByRole("button", { name: "Open terminal" }).count(), 0);
   await bar.getByText("weacon resume --workspace=w-1 --chat=c-1").waitFor();
+  // This core opens no terminals.
+  await bar.getByRole("button", { name: "Open terminal" }).click();
+  await bar.getByText("The terminal didn't open.").waitFor();
   await bar.getByRole("button", { name: "Remove" }).click();
   const confirm = bar.getByRole("group", { name: "Remove the worktree" });
   await confirm
@@ -29,7 +30,7 @@ test("the review bar says where the worktree stands, and Remove asks first, then
   await bar.getByText("Uncommitted changes · Commits not pushed").waitFor();
 
   const actions = (harness.received() as Envelope[]).flatMap((sent) => (sent.type === "worktree_command" ? [sent.action.kind] : []));
-  assert.deepEqual(actions, ["remove", "restore"]);
+  assert.deepEqual(actions, ["open_terminal", "remove", "restore"]);
 });
 
 test("Cancel leaves the worktree where it is", { timeout: 180_000 }, async (t) => {
