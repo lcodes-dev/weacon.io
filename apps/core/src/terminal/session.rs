@@ -8,8 +8,8 @@ use tokio::time::timeout;
 use weacon_agents::{Event, Launch, SignIn, Size, Terminal};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    Bytes, SignInState, TerminalEvent, TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
-    WorkspaceId, code,
+    Bytes, Envelope, Message, SignInState, TerminalEvent, TerminalId, TerminalInput,
+    TerminalOutput, TerminalUpdate, WorkspaceId, code,
 };
 
 use super::seal::{Channel, seal_failed};
@@ -34,7 +34,7 @@ pub(super) async fn run(
     mut session: Session,
     mut frames: mpsc::Receiver<Bytes>,
     alive: Arc<()>,
-    updates: mpsc::Sender<TerminalUpdate>,
+    updates: mpsc::Sender<Envelope>,
     log: Logger,
 ) {
     let served = timeout(
@@ -49,18 +49,14 @@ pub(super) async fn run(
         log.warn("terminal failed", &[("err", Field::error(&fault))]);
         fault.code().clone()
     });
-    drop(
-        updates
-            .send(update(&session, TerminalEvent::Closed { code }))
-            .await,
-    );
+    drop(send(&updates, update(&session, TerminalEvent::Closed { code })).await);
     log.info("terminal closed", &[]);
 }
 
 async fn serve(
     session: &mut Session,
     frames: &mut mpsc::Receiver<Bytes>,
-    updates: &mpsc::Sender<TerminalUpdate>,
+    updates: &mpsc::Sender<Envelope>,
     log: &Logger,
 ) -> Result<(), Fault> {
     let accepted = TerminalEvent::Accepted {
@@ -74,7 +70,8 @@ async fn serve(
         return Ok(());
     };
     let first = session.channel.open(first.as_slice())?;
-    let (terminal, mut events) = session.launch.log_in_terminal(session.size)?;
+    let (launch, size) = (session.launch.clone(), session.size);
+    let (terminal, mut events) = off_runtime(move || launch.log_in_terminal(size)).await?;
     apply(&terminal, &first).await?;
     loop {
         tokio::select! {
@@ -120,6 +117,21 @@ pub(super) fn size_refused() -> Fault {
     )
 }
 
+/// Runs `work`, which touches files or starts processes, off the async runtime.
+pub(super) async fn off_runtime<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, Fault> + Send + 'static,
+) -> Result<T, Fault> {
+    crate::app::blocking(move || Ok(work()))
+        .await
+        .map_err(|error| {
+            Fault::new(
+                code!("terminal.start_failed"),
+                "The terminal couldn't start",
+            )
+            .because(error)
+        })?
+}
+
 fn input_failed() -> Fault {
     Fault::new(
         code!("terminal.input_failed"),
@@ -129,7 +141,7 @@ fn input_failed() -> Fault {
 
 async fn output(
     session: &mut Session,
-    updates: &mpsc::Sender<TerminalUpdate>,
+    updates: &mpsc::Sender<Envelope>,
     output: &TerminalOutput,
 ) -> Result<(), Fault> {
     let plaintext = output
@@ -165,9 +177,14 @@ fn update(session: &Session, event: TerminalEvent) -> TerminalUpdate {
     }
 }
 
-async fn send(updates: &mpsc::Sender<TerminalUpdate>, update: TerminalUpdate) -> Result<(), Fault> {
+/// Puts `update` on the uplink.
+pub(super) async fn send(
+    updates: &mpsc::Sender<Envelope>,
+    update: TerminalUpdate,
+) -> Result<(), Fault> {
+    let message = Message::Terminal(update);
     updates
-        .send(update)
+        .send(Envelope { id: 0, message })
         .await
         .map_err(|_| Fault::new(code!("terminal.gone"), "The terminal's connection is gone"))
 }

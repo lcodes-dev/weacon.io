@@ -118,17 +118,7 @@ pub(crate) async fn forward(
     }
     let message = probe.message;
     let machine = asked.machine.clone();
-    if asked.workspace != *ask.workspace {
-        return Err(refused(code!("machine.not_found"), false));
-    }
-    let theirs = shared
-        .db
-        .has_machine(&ask.asker.account, &machine)
-        .await
-        .map_err(Refusal::Failed)?;
-    if !theirs {
-        return Err(refused(code!("machine.not_found"), false));
-    }
+    theirs(shared, ask, &machine, &asked.workspace).await?;
     let relayed = shared.links.next_id();
     shared.relay.wait(relayed, asked, envelope.id, back)?;
     let sent = Envelope {
@@ -238,7 +228,28 @@ impl Relay {
     }
 }
 
-const fn refused(code: Code, retryable: bool) -> Refusal {
+/// Refuses unless `machine` is the asker's own and `workspace` the one they ask in.
+///
+/// # Errors
+/// `machine.not_found`, or the database's failure.
+pub(crate) async fn theirs(
+    shared: &Shared,
+    ask: &Ask<'_>,
+    machine: &MachineId,
+    workspace: &WorkspaceId,
+) -> Result<(), Refusal> {
+    let not_found = || refused(code!("machine.not_found"), false);
+    if workspace != ask.workspace {
+        return Err(not_found());
+    }
+    let theirs = shared.db.has_machine(&ask.asker.account, machine).await;
+    theirs
+        .map_err(Refusal::Failed)?
+        .then_some(())
+        .ok_or_else(not_found)
+}
+
+pub(crate) const fn refused(code: Code, retryable: bool) -> Refusal {
     Refusal::Refused(ErrorBody { code, retryable })
 }
 

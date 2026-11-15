@@ -19,6 +19,7 @@ use crate::links::Connected;
 use crate::relay::SETTINGS;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
+use crate::terminals;
 
 /// What a core must offer, and the server offers, to keep a machine's connection.
 const CONNECT: Code = code!("machine.connect");
@@ -145,7 +146,7 @@ async fn run(
 /// Gives what `machine` sent to the feature it is for.
 fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
     if let Message::Terminal(update) = envelope.message {
-        shared.terminals.delivered(machine, update);
+        terminals::delivered(shared, machine, update);
     } else if matches!(
         envelope.message,
         Message::MachineSettingsAnswer(_) | Message::Error(_)

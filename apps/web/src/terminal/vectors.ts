@@ -16,13 +16,9 @@ export const vectors = JSON.parse(
   readFileSync(new URL("../../../../crates/protocol/noise-vectors.json", import.meta.url), "utf8"),
 ) as { published: Vector; weacon: Vector };
 
-export function bytes(text: string): Uint8Array<ArrayBuffer> {
-  return unhex(text);
-}
-
 /** A fixed ephemeral, as the vectors use; Web Crypto takes a private X25519 key only as PKCS #8. */
 export async function fixed(privateHex: string): Promise<Ephemeral> {
-  const pkcs8 = bytes(`302e020100300506032b656e04220420${privateHex}`);
+  const pkcs8 = unhex(`302e020100300506032b656e04220420${privateHex}`);
   const privateKey = await crypto.subtle.importKey("pkcs8", pkcs8, { name: "X25519" }, false, ["deriveBits"]);
   const base = new Uint8Array(32);
   base[0] = 9;

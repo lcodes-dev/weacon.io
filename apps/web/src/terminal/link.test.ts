@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, TerminalUpdate } from "../protocol.ts";
+import { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { terminalLink } from "./link.ts";
 
 function fake(live: boolean) {
@@ -10,6 +11,9 @@ function fake(live: boolean) {
   const handles = new Set<(message: Incoming) => void>();
   let ids = 10;
   const link = terminalLink({
+    watch: () => () => {},
+    connection: 1,
+    live,
     send: (envelope) => {
       sent.push(envelope);
       return live;
@@ -53,4 +57,25 @@ test("only terminal updates reach the terminal, until it unsubscribes", () => {
 
   assert.deepEqual(heard, [update]);
   assert.equal(handles.size, 0);
+});
+
+test("the terminal hears its connection is lost when it ends or another takes its place, until it stops", () => {
+  const ended = new WorkspaceSocket("w-1");
+  const replaced = new WorkspaceSocket("w-1");
+  const quiet = new WorkspaceSocket("w-1");
+  const send = () => {};
+  for (const socket of [ended, replaced, quiet]) {
+    socket.attach(send, ["terminal.relay"]);
+  }
+  const lost: string[] = [];
+  terminalLink(ended).lost(() => lost.push("ended"));
+  terminalLink(replaced).lost(() => lost.push("replaced"));
+  const stop = terminalLink(quiet).lost(() => lost.push("quiet"));
+
+  ended.attach(undefined);
+  replaced.attach(() => {}, ["terminal.relay"]);
+  stop();
+  quiet.attach(undefined);
+
+  assert.deepEqual(lost, ["ended", "replaced"]);
 });

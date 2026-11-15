@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Pins } from "../machines/pins.ts";
 import type { AgentKind, MachineSummary, TerminalCommand, TerminalUpdate, WorkspaceId } from "../protocol.ts";
-import { SignInTerminal, type TerminalState, closedOnce } from "./sign-in-terminal.ts";
+import { SignInTerminal, type TerminalState } from "./sign-in-terminal.ts";
+import { adoptStyles } from "./styles.ts";
 
 const SIZE = { cols: 80, rows: 24 };
 
@@ -17,6 +18,8 @@ export type TerminalProps = {
   send: (command: TerminalCommand) => boolean;
   /** Hands each terminal update to `handle` until the returned function is called. */
   subscribe: (handle: (update: TerminalUpdate) => void) => () => void;
+  /** Calls `handle` once the connection is gone, until the returned function is called. */
+  lost: (handle: () => void) => () => void;
   /** Called once the terminal has closed, whatever closed it. */
   onClosed?: () => void;
 };
@@ -38,6 +41,7 @@ export function TerminalView(props: TerminalProps) {
     }
     let mounted = true;
     const terminal = new Terminal({ ...SIZE, cursorBlink: true });
+    const unstyle = adoptStyles(host);
     terminal.open(host);
     const opened = new SignInTerminal({
       machine,
@@ -48,24 +52,33 @@ export function TerminalView(props: TerminalProps) {
       size: SIZE,
       screen: {
         write: (data) => terminal.write(data),
-        state: closedOnce(setState, () => mounted && latest.current.onClosed?.()),
+        state: (next) => {
+          setState(next);
+          if (next.kind === "closed" && mounted) {
+            latest.current.onClosed?.();
+          }
+        },
       },
     });
     const encoder = new TextEncoder();
     const typing = terminal.onData((data) => void opened.input(encoder.encode(data)));
     const unsubscribe = latest.current.subscribe((update) => void opened.receive(update));
+    const unwatch = latest.current.lost(() => opened.lost());
     void opened.start();
     return () => {
       mounted = false;
       unsubscribe();
+      unwatch();
       typing.dispose();
       opened.close();
       terminal.dispose();
+      unstyle();
     };
   }, [machine.id, machine.key, workspace, agent, pins]);
+  const note = noteOf(state);
   return (
     <div className="sign-in-terminal">
-      {noteOf(state) !== undefined && <p className="muted">{noteOf(state)}</p>}
+      {note !== undefined && <p className="muted">{note}</p>}
       <div ref={screen} hidden={state.kind === "checking"} />
     </div>
   );

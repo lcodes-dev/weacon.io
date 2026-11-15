@@ -1,5 +1,5 @@
 import type { Later } from "../connection.ts";
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, RequestId } from "../protocol.ts";
 import { type Answer, MALFORMED, UNREACHABLE } from "../api/api.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
@@ -44,7 +44,7 @@ export function change(
 // The core's answer echoes the request; an error answers the envelope by its id.
 function ask(socket: SettingsSocket, later: Later, envelope: (id: number, request: RequestId) => Envelope): Promise<Answer<MachineSettings>> {
   const id = socket.nextId();
-  const request = newRequestId();
+  const request = newId();
   return new Promise((resolve) => {
     let finished = false;
     let unsubscribe = () => {};

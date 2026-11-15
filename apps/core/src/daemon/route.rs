@@ -76,13 +76,11 @@ pub(super) async fn uplink(
     let (terminal_commands, for_terminals) = mpsc::channel(uplink::QUEUE);
     tokio::spawn(terminals(host.clone(), for_terminals, replies.clone()));
     let room = Arc::new(Semaphore::new(QUERIES_AT_ONCE));
-    while let Some(Envelope { id, message }) = asks.recv().await {
-        let ask = if let Message::TerminalCommand(command) = message {
+    while let Some(ask) = asks.recv().await {
+        if let Message::TerminalCommand(command) = ask.message {
             drop(terminal_commands.send(command).await);
             continue;
-        } else {
-            Envelope { id, message }
-        };
+        }
         if matches!(ask.message, Message::MachineSettingsCommand(_)) {
             drop(commands.send(ask).await);
             continue;
@@ -113,23 +111,15 @@ async fn one_by_one(
     }
 }
 
-// Hands each terminal command to this machine's terminals, in the order they came, and their
-// updates back to the server.
+// Hands each terminal command to this machine's terminals, in the order they came.
 async fn terminals(
     host: Host,
     mut commands: mpsc::Receiver<TerminalCommand>,
     replies: mpsc::Sender<Envelope>,
 ) {
-    let (updates, mut outgoing) = mpsc::channel(uplink::QUEUE);
     let workspaces = Workspaces::new(&host.state_dir, host.path.clone());
     let log = host.log.child(&[("component", "terminals".into())]);
-    let mut terminals = Terminals::new(host.state_dir, workspaces, log, updates);
-    tokio::spawn(async move {
-        while let Some(update) = outgoing.recv().await {
-            let message = Message::Terminal(update);
-            drop(replies.send(Envelope { id: 0, message }).await);
-        }
-    });
+    let mut terminals = Terminals::new(host.state_dir, workspaces, log, replies);
     while let Some(command) = commands.recv().await {
         terminals.handle(command).await;
     }

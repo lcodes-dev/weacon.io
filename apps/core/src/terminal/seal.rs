@@ -209,7 +209,10 @@ impl Dh for X25519 {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(super) use tests::{finish, initiator, opened, sealed, write};
+
+#[cfg(test)]
+mod tests {
     use std::fs;
     use std::path::Path;
 
@@ -217,7 +220,7 @@ pub(super) mod tests {
     use snow::HandshakeState;
     use weacon_protocol::{
         AgentKind, Bytes, MachineId, SignInState, TerminalAction, TerminalCommand, TerminalId,
-        TerminalInput, TerminalOutput, WorkspaceId,
+        TerminalInput, TerminalOutput, WorkspaceId, to_hex,
     };
 
     use super::*;
@@ -247,10 +250,6 @@ pub(super) mod tests {
     struct Vectors {
         published: Vector,
         weacon: Vector,
-    }
-
-    fn hex(bytes: &[u8]) -> String {
-        weacon_protocol::to_hex(bytes)
     }
 
     fn unhex(hex: &str) -> Vec<u8> {
@@ -291,7 +290,6 @@ pub(super) mod tests {
         buffered(|buffer| state.write_message(payload, buffer)).unwrap()
     }
 
-    /// The browser's end after the handshake, and the core's.
     /// The browser's end once the core's `reply` is in.
     pub(in crate::terminal) fn finish(mut state: HandshakeState, reply: &[u8]) -> TransportState {
         state.read_message(reply, &mut [0; 64]).unwrap();
@@ -345,7 +343,7 @@ pub(super) mod tests {
             .read_message(&accepted.reply, &mut payload)
             .unwrap();
         assert_eq!(payload[..len], payloads[1]);
-        let handshake_hash = hex(initiator.get_handshake_hash());
+        let handshake_hash = to_hex(initiator.get_handshake_hash());
         let mut browser = initiator.into_transport_mode().unwrap();
         let mut made = vec![first, accepted.reply];
         made.extend(exchange(&mut browser, &mut accepted.channel, &payloads));
@@ -355,7 +353,7 @@ pub(super) mod tests {
             messages: messages
                 .map(|(ciphertext, message)| Message {
                     payload: message.payload.clone(),
-                    ciphertext: hex(ciphertext),
+                    ciphertext: to_hex(ciphertext),
                 })
                 .collect(),
             ..vector.clone()
@@ -375,7 +373,7 @@ pub(super) mod tests {
                 message
             } else {
                 let sealed = channel.seal(payload).unwrap();
-                let opened = buffered(|buffer| browser.read_message(&sealed, buffer)).unwrap();
+                let opened = opened(browser, &sealed);
                 assert_eq!(opened, *payload);
                 sealed
             }
@@ -405,7 +403,7 @@ pub(super) mod tests {
 
     // Weacon's messages, before they are sealed.
     fn weacon_draft() -> Vector {
-        let prologue = hex(&prologue());
+        let prologue = to_hex(&prologue());
         let data = |text: &[u8]| Bytes::new(text.to_vec()).unwrap();
         // As a terminal runs: the size in the handshake and again in the browser's first frame,
         // what the login prints, what the person types, and the end.
@@ -428,7 +426,7 @@ pub(super) mod tests {
             init_prologue: prologue.clone(),
             init_ephemeral: "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
                 .to_owned(),
-            init_remote_static: hex(&public(&machine_key())),
+            init_remote_static: to_hex(&public(&machine_key())),
             resp_prologue: prologue,
             resp_static: MACHINE.to_owned(),
             resp_ephemeral: "c8f2a1e04b3d5967788f0e1d2c3b4a59687766554433221100ffeeddccbbaa99"
@@ -437,7 +435,7 @@ pub(super) mod tests {
             messages: payloads
                 .into_iter()
                 .map(|payload| Message {
-                    payload: hex(&payload.unwrap()),
+                    payload: to_hex(&payload.unwrap()),
                     ciphertext: String::new(),
                 })
                 .collect(),
@@ -513,7 +511,7 @@ pub(super) mod tests {
         let (mut browser, mut channel) = connected();
         let full = channel.seal(&vec![7; SEALED_MAX]).unwrap();
         assert_eq!(full.len(), NOISE_MAX);
-        let opened = buffered(|buffer| browser.read_message(&full, buffer)).unwrap();
+        let opened = opened(&mut browser, &full);
         assert_eq!(opened.len(), SEALED_MAX);
         channel.seal(&vec![7; SEALED_MAX + 1]).err().unwrap();
         channel.seal(b"short").err().unwrap();

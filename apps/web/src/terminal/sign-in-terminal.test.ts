@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hex } from "../hex.ts";
+import { hex, unhex } from "../hex.ts";
 import { type PinStore, Pins } from "../machines/pins.ts";
 import type { MachineSummary, TerminalCommand, TerminalEvent } from "../protocol.ts";
-import { SignInTerminal, type TerminalState, closedOnce, prologue } from "./sign-in-terminal.ts";
-import { bytes, fixed, vectors } from "./vectors.ts";
+import { SignInTerminal, type TerminalState, prologue } from "./sign-in-terminal.ts";
+import { fixed, vectors } from "./vectors.ts";
 
 const vector = vectors.weacon;
 const message = (index: number) => {
@@ -67,7 +67,7 @@ function sealed(command: TerminalCommand | undefined): string {
 }
 
 test("the prologue is the core's", () => {
-  assert.deepEqual(prologue("m-1", "w-1", "t-1", "claude"), bytes(vector.init_prologue));
+  assert.deepEqual(prologue("m-1", "w-1", "t-1", "claude"), unhex(vector.init_prologue));
 });
 
 test("a sign-in runs sealed to the pinned key, as the core's own vector has it", async () => {
@@ -90,6 +90,20 @@ test("a sign-in runs sealed to the pinned key, as the core's own vector has it",
   assert.deepEqual(states.map((state) => state.kind), ["checking", "connecting", "open", "ended", "closed"]);
   assert.deepEqual(states.at(-2), { kind: "ended", signIn: "signed_in" });
   assert.deepEqual(states.at(-1), { kind: "closed" });
+});
+
+test("a long paste goes in pieces, each sealed in a frame of its own", async () => {
+  const { session, sent, states, receive } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  await receive({ kind: "accepted", handshake: message(1).ciphertext });
+  const before = sent.length;
+
+  await session.input(new Uint8Array(40_000).fill(0x61));
+  await session.input(new Uint8Array());
+
+  assert.equal(sent.length - before, 3);
+  assert.ok(sent.slice(before).every((command) => command.action.kind === "frame"));
+  assert.equal(states.at(-1)?.kind, "open");
 });
 
 test("a changed key, or a pin that can't be read, sends nothing", async () => {
@@ -119,7 +133,7 @@ test("anything that doesn't check out closes the terminal, which then shows noth
   const { session, sent, written, states, receive } = terminal(new Pins(store(machine.key)));
   await session.start();
   await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const tampered = bytes(message(3).ciphertext);
+  const tampered = unhex(message(3).ciphertext);
   tampered[0] = (tampered[0] ?? 0) ^ 1;
   await receive({ kind: "frame", sealed: hex(tampered) });
   assert.deepEqual(states.at(-1), { kind: "closed", problem: "broken" });
@@ -195,18 +209,18 @@ test("closing sends one close and nothing after", async () => {
   );
 });
 
-test("the page hears once that a terminal closed, and sees every state", () => {
-  const seen: string[] = [];
-  let closed = 0;
-  const state = closedOnce(
-    (next) => seen.push(next.kind),
-    () => (closed += 1),
+test("a terminal whose connection is lost closes as offline, once, and sends nothing more", async () => {
+  const { session, states, sent } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  session.lost();
+  await session.receive({ terminal: "t-1", workspace: "w-1", event: { kind: "closed" } });
+  session.close();
+
+  assert.deepEqual(states.filter((state) => state.kind === "closed"), [{ kind: "closed", problem: "offline" }]);
+  assert.deepEqual(
+    sent.map((command) => command.action.kind),
+    ["open"],
   );
-  state({ kind: "open" });
-  state({ kind: "closed" });
-  state({ kind: "closed", problem: "broken" });
-  assert.deepEqual(seen, ["open", "closed", "closed"]);
-  assert.equal(closed, 1);
 });
 
 test("a connection that can't take a command ends the terminal", async () => {

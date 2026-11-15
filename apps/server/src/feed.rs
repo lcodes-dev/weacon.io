@@ -136,6 +136,7 @@ fn feed_failed(shared: &Shared, workspace: &WorkspaceId, fault: &Fault) -> Close
 async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
     // However the feed ends, it just ends: the client sees its socket close.
     let Err(Closed) = run(&mut socket, &shared, &mut feed).await;
+    terminals::ended(&shared, &feed.answer_to);
 }
 
 async fn run(
@@ -199,7 +200,8 @@ async fn received(
             asker: &feed.asker,
             workspace: feed.member.workspace.id(),
         };
-        terminals::forward(shared, &ask, command, &feed.answer_to).await;
+        let forwarded = terminals::forward(shared, &ask, command, &feed.answer_to).await;
+        return forwarded.map_err(|fault| feed_failed(shared, ask.workspace, &fault));
     }
     Ok(())
 }

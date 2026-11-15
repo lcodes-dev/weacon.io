@@ -23,19 +23,25 @@ export class WorkspaceSocket {
    * `undefined` when it ends, keeping what was offered until the next welcome says otherwise.
    */
   attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
+    const changed = send !== this.#send || (offered !== undefined && offered !== this.#offered);
     this.#send = send;
     if (send !== undefined) {
       this.#connection += 1;
     }
-    if (offered !== undefined && offered !== this.#offered) {
+    if (offered !== undefined) {
       this.#offered = offered;
+    }
+    if (changed) {
       for (const watcher of [...this.#watchers]) {
         watcher();
       }
     }
   }
 
-  /** Calls `watcher` each time what the server offers changes, until the returned function is called. */
+  /**
+   * Calls `watcher` each time the connection or what the server offers changes, until the
+   * returned function is called.
+   */
   watch(watcher: () => void): () => void {
     this.#watchers.add(watcher);
     return () => this.#watchers.delete(watcher);
@@ -44,6 +50,11 @@ export class WorkspaceSocket {
   /** Counts the connections attached so far, so what one connection holds isn't taken for the next's. */
   get connection(): number {
     return this.#connection;
+  }
+
+  /** Whether a connection is attached now. */
+  get live(): boolean {
+    return this.#send !== undefined;
   }
 
   /** Whether the server offered `capability` when it last welcomed the feed. */

@@ -5,7 +5,7 @@ import type { AccessLevel, AgentKind, MachineSettings, MachineSettingsAction, Ma
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import { terminalLink } from "../terminal/link.ts";
+import { type LinkSocket, terminalLink } from "../terminal/link.ts";
 import { TerminalView } from "../terminal/terminal-view.tsx";
 import type { Pins } from "./pins.ts";
 import { type SettingsSocket, change, current } from "./remote-settings.ts";
@@ -30,7 +30,7 @@ const STATES = new Map<SignInState | string, string>([
 
 type Props = {
   machine: MachineSummary;
-  socket: SettingsSocket;
+  socket: SettingsSocket & LinkSocket;
   later: Later;
   pins: Pins;
   /** Whether the server relays sign-in terminals. */

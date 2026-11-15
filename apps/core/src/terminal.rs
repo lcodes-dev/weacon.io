@@ -12,7 +12,7 @@ use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, Bytes, Code, TerminalAction, TerminalCommand, TerminalEvent, TerminalId,
+    AgentKind, Bytes, Code, Envelope, TerminalAction, TerminalCommand, TerminalEvent, TerminalId,
     TerminalInput, TerminalUpdate, WorkspaceId, code,
 };
 
@@ -29,7 +29,7 @@ pub(crate) struct Terminals {
     state_dir: PathBuf,
     workspaces: Workspaces,
     log: Logger,
-    updates: mpsc::Sender<TerminalUpdate>,
+    updates: mpsc::Sender<Envelope>,
     // A terminal id is never taken twice, so a handshake can't be played again.
     seen: HashSet<TerminalId>,
     open: HashMap<TerminalId, Open>,
@@ -49,7 +49,7 @@ impl Terminals {
         state_dir: PathBuf,
         workspaces: Workspaces,
         log: Logger,
-        updates: mpsc::Sender<TerminalUpdate>,
+        updates: mpsc::Sender<Envelope>,
     ) -> Self {
         Self {
             state_dir,
@@ -143,10 +143,12 @@ impl Terminals {
             return Err(session::size_refused());
         };
         let size = session::size(cols, rows)?;
+        let (workspaces, workspace) = (self.workspaces.clone(), command.workspace.clone());
+        let launch = session::off_runtime(move || workspaces.sign_in(&workspace, agent)).await?;
         Ok(Session {
             terminal: command.terminal.clone(),
             workspace: command.workspace.clone(),
-            launch: self.workspaces.sign_in(&command.workspace, agent)?,
+            launch,
             channel: accepted.channel,
             size,
             reply: Bytes::new(accepted.reply).ok_or_else(seal::seal_failed)?,
@@ -159,7 +161,7 @@ impl Terminals {
             workspace: command.workspace,
             event: TerminalEvent::Closed { code: Some(code) },
         };
-        drop(self.updates.send(closed).await);
+        drop(session::send(&self.updates, closed).await);
     }
 }
 
@@ -183,7 +185,7 @@ mod tests {
     use super::*;
     use snow::{HandshakeState, TransportState};
 
-    use crate::terminal::seal::tests::{finish, initiator, opened, sealed, write};
+    use crate::terminal::seal::{finish, initiator, opened, sealed, write};
     use crate::test_support;
 
     const PRINTED: &str = "MARKER-PRINTED-9d1e";
@@ -206,7 +208,7 @@ mod tests {
     struct Machine {
         dir: TempDir,
         terminals: Terminals,
-        updates: mpsc::Receiver<TerminalUpdate>,
+        updates: mpsc::Receiver<Envelope>,
         public: Vec<u8>,
         records: weacon_testing::Records,
     }
@@ -292,8 +294,16 @@ mod tests {
     }
 
     async fn next_update(machine: &mut Machine) -> TerminalUpdate {
-        let update = timeout(Duration::from_secs(30), machine.updates.recv());
-        update.await.unwrap().unwrap()
+        let envelope = timeout(Duration::from_secs(30), machine.updates.recv());
+        update_of(envelope.await.unwrap().unwrap())
+    }
+
+    fn update_of(envelope: Envelope) -> TerminalUpdate {
+        assert_eq!(envelope.id, 0);
+        let weacon_protocol::Message::Terminal(update) = envelope.message else {
+            panic!("{:?}", envelope.message);
+        };
+        update
     }
 
     async fn next(machine: &mut Machine) -> TerminalEvent {
@@ -542,11 +552,12 @@ mod tests {
         let mut machine = machine();
         let (_browser, open) = opening(&machine, "t-1");
         machine.terminals.handle(open).await;
-        let accepted = machine.updates.recv().await.unwrap();
-        assert!(matches!(accepted.event, TerminalEvent::Accepted { .. }));
+        let accepted = next(&mut machine).await;
+        assert!(matches!(accepted, TerminalEvent::Accepted { .. }));
         let started = tokio::time::Instant::now();
-        let ended = machine.updates.recv().await.unwrap();
-        assert_eq!(ended.event, closed("terminal.timed_out"));
+        // Unbounded, as the paused clock would run out any bound first.
+        let ended = update_of(machine.updates.recv().await.unwrap()).event;
+        assert_eq!(ended, closed("terminal.timed_out"));
         assert_eq!(started.elapsed(), Duration::from_mins(1));
         assert!(!machine.dir.join("ran").exists());
     }

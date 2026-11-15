@@ -1,5 +1,6 @@
 import type { Pins } from "../machines/pins.ts";
 import { hex, unhex } from "../hex.ts";
+import { newId } from "../ids.ts";
 import type {
   AgentKind,
   Code,
@@ -29,13 +30,16 @@ export type TerminalState =
  */
 export type Problem = "unpinned" | "key_changed" | "key_unchecked" | "offline" | "broken" | Code;
 
-/** What a terminal shows. Output goes nowhere but `write`. */
+/** What a terminal shows. Output goes nowhere but `write`; a terminal is closed once at most. */
 export interface Screen {
   write(data: Uint8Array): void;
   state(state: TerminalState): void;
 }
 
 export type Size = { cols: number; rows: number };
+
+// Twice this as hex, in its JSON, stays within one sealed frame.
+const INPUT_PIECE = 16_384;
 
 export type Options = {
   machine: MachineSummary;
@@ -68,7 +72,7 @@ export class SignInTerminal {
 
   constructor(options: Options) {
     this.#options = options;
-    this.#terminal = options.terminal ?? hex(crypto.getRandomValues(new Uint8Array(16)));
+    this.#terminal = options.terminal ?? newId();
   }
 
   /**
@@ -122,8 +126,11 @@ export class SignInTerminal {
     }
   }
 
-  input(data: Uint8Array): Promise<void> {
-    return this.#seal({ kind: "input", data: hex(data) });
+  /** Sends what was typed; a long paste goes in pieces that each fit one sealed frame. */
+  async input(data: Uint8Array): Promise<void> {
+    for (let at = 0; at < data.length; at += INPUT_PIECE) {
+      await this.#seal({ kind: "input", data: hex(data.subarray(at, at + INPUT_PIECE)) });
+    }
   }
 
   resize(size: Size): Promise<void> {
@@ -132,7 +139,12 @@ export class SignInTerminal {
 
   /** Ends the sign-in, if it still runs. */
   close(): void {
-    this.#end();
+    this.#stop();
+  }
+
+  /** Closes the terminal once its connection has gone, which ends it on the machine too. */
+  lost(): void {
+    this.#close("offline");
   }
 
   async #open(): Promise<void> {
@@ -218,10 +230,10 @@ export class SignInTerminal {
 
   // Shows nothing more once anything fails, and asks the core to stop too.
   #fail(): void {
-    this.#end("broken");
+    this.#stop("broken");
   }
 
-  #end(problem?: Problem): void {
+  #stop(problem?: Problem): void {
     if (!this.#done && this.#sent) {
       this.#send({ kind: "close" });
     }
@@ -236,18 +248,6 @@ export class SignInTerminal {
     this.#channel?.close();
     this.#options.screen.state({ kind: "closed", ...(problem === undefined ? {} : { problem }) });
   }
-}
-
-/** Passes each state on, and calls `closed` the first time one is closed. */
-export function closedOnce(state: (state: TerminalState) => void, closed: () => void): (next: TerminalState) => void {
-  let called = false;
-  return (next) => {
-    state(next);
-    if (next.kind === "closed" && !called) {
-      called = true;
-      closed();
-    }
-  };
 }
 
 /** What both ends hash before the handshake, as the core's `TerminalCommand::prologue`. */
