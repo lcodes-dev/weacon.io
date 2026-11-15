@@ -21,7 +21,9 @@ need() {
 
 mutants=all
 if [ $# -gt 0 ]; then
-  [ $# -eq 2 ] && [ "$1" = --mutants ] || die "usage: scripts/check.sh [--mutants none|k/n]"
+  if [ $# -ne 2 ] || [ "$1" != --mutants ]; then
+    die "usage: scripts/check.sh [--mutants none|k/n]"
+  fi
   [[ $2 =~ ^(none|[0-9]+/[0-9]+)$ ]] || die "--mutants takes none or a shard such as 0/4"
   [ "$2" = none ] || [ "${2%/*}" -lt "${2#*/}" ] || die "shard k of n needs k below n"
   mutants=$2
