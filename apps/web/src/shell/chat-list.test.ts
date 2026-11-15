@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { ChatSummary, RunState } from "../protocol.ts";
 import { newestFirst, owns, rowNote, stateNote } from "./chat-list.ts";
 
-const chat = (id: string, updated_at: number): ChatSummary => ({ id, title: id, owner: "m-1", machine: "laptop", state: "open", updated_at });
+const chat = (id: string, updated_at: number): ChatSummary => ({ id, title: id, owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at });
 
 test("chats are listed newest first, and by id when they tie", () => {
   const chats = [chat("c-1", 10), chat("c-3", 30), chat("c-2", 30), chat("c-0", 20)];
@@ -32,7 +32,7 @@ test("only the chat's owner owns it, and a person whose member isn't known owns 
 });
 
 test("a chat's row names its owner once known, its machine and why it takes no prompts", () => {
-  const chat = { id: "c-1", title: "Plan", owner: "m-1", machine: "laptop", state: "full", updated_at: 1 } as const;
+  const chat = { id: "c-1", title: "Plan", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "full", updated_at: 1 } as const;
   const names = new Map([["m-1", "ada"]]);
 
   assert.equal(rowNote(chat, names), "ada · laptop · Full");
@@ -41,7 +41,7 @@ test("a chat's row names its owner once known, its machine and why it takes no p
 });
 
 test("a chat's row says what its latest run is doing, in plain words, where it is known", () => {
-  const chat = { id: "c-1", title: "Plan", owner: "m-1", machine: "laptop", state: "open", updated_at: 1 } as const;
+  const chat = { id: "c-1", title: "Plan", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1 } as const;
   const names = new Map([["m-1", "ada"]]);
   const cases: [RunState | undefined, string][] = [
     ["starting", "ada · laptop · Starting"],

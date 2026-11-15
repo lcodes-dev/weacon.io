@@ -324,9 +324,9 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   const { page } = served;
   await listChats(page, () => ({
     chats: [
-      { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 },
-      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", state: "full", updated_at: 1_800_000_100, run: "waiting" },
-      { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", state: "detached", updated_at: 1_700_000_000 },
+      { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1_800_000_000 },
+      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", machine_id: "mc-1", state: "full", updated_at: 1_800_000_100, run: "waiting" },
+      { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", machine_id: "mc-1", state: "detached", updated_at: 1_700_000_000 },
     ],
   }));
   await serveFeed(page);
@@ -350,7 +350,7 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   t.after(() => served.close());
   const { page } = served;
   const listed = await listChats(page, (asked) => ({
-    chats: asked === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", state: "open", updated_at: 1 }],
+    chats: asked === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1 }],
   }));
   const change = (workspace: string, seq: number): Envelope => ({ id: 0, type: "workspace", workspace, seq, change: { kind: "chat_changed", chat: "c-9" } });
   // A burst of two changes and one of another workspace, then, once reopened, the same two again and one more.
@@ -444,7 +444,7 @@ async function openChats(served: Served, chats: Array<{ id: string; title: strin
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { id, member } = await firstWorkspace(page);
-  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), machine: "laptop", state: "open" as const, updated_at: 1 })) }));
+  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), machine: "laptop", machine_id: "mc-1", state: "open" as const, updated_at: 1 })) }));
   await page.getByRole("button", { name: "Personal" }).click();
   return id;
 }
@@ -701,7 +701,7 @@ test("⌘K searches the open workspace, and choosing a hit goes to its place", {
   t.after(() => served.close());
   const { page } = served;
   await listChats(page, () => ({
-    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 }],
+    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1_800_000_000 }],
   }));
   const asked: string[] = [];
   let answerBread = () => {};
@@ -737,13 +737,13 @@ test("⌘K searches the open workspace, and choosing a hit goes to its place", {
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
-  assert.match(page.url(), /&chat=c-1$/);
+  assert.match(page.url(), /&chat=c-1&at=4$/);
   assert.equal(await search.count(), 0);
   await page.keyboard.press("ControlOrMeta+k");
   await search.getByRole("combobox", { name: "Search" }).fill("milk");
   await results.nth(1).waitFor();
   await page.keyboard.press("Enter");
-  await page.waitForURL(/&view=tasks$/);
+  await page.waitForURL(/&view=tasks&task=t-1$/);
   await page.keyboard.press("ControlOrMeta+k");
   await search.getByRole("combobox", { name: "Search" }).fill("milk");
   await results.nth(1).waitFor();

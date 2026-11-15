@@ -9,13 +9,15 @@ import { later } from "../connection.ts";
 import { newId } from "../ids.ts";
 import { vendorName } from "../chat/label.ts";
 import { current, repos } from "../machines/remote-settings.ts";
-import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
+import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Readiness, Starts, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
+import { TaskField } from "./task-field.tsx";
 
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
- * machine has for the workspace, with an agent, by its first prompt. Once the server takes it,
+ * machine has for the workspace, with an agent, for one of `tasks` if the person picks one, by
+ * its first prompt; `task` is picked to begin with. Once the server takes it,
  * `started` hears the chat's id; until then the box keeps the text. Back from `away`, such as
  * Settings, where an agent may have been signed in, it asks the machine again.
  */
@@ -26,6 +28,8 @@ export function NewChat({
   machines,
   started,
   openSettings,
+  tasks,
+  task,
 }: {
   socket: WorkspaceSocket;
   /** Whether the feed is up and takes commands. */
@@ -35,6 +39,9 @@ export function NewChat({
   started(chat: ChatId): void;
   /** Opens Settings, where the person signs an agent in on a machine, with `machine`'s own open. */
   openSettings(machine?: MachineId): void;
+  /** The workspace's tasks, while the server serves them. */
+  tasks?: readonly TaskRecord[] | undefined;
+  task?: TaskId | undefined;
 }) {
   const [picked, setPicked] = useState<MachineId>();
   const machine = machines.find(({ id }) => id === picked) ?? machines[0];
@@ -52,6 +59,8 @@ export function NewChat({
   }, [away]);
   const [repo, setRepo] = useState<RepoId>();
   const [agent, setAgent] = useState<AgentKind>("claude");
+  const [taskId, setTaskId] = useState(task);
+  const forTask = tasks?.find(({ id }) => id === taskId);
   const commands = useChatCommands(socket, undefined, live, () => {});
   const [starts] = useState(() => new Starts());
   const opened = useRef(started);
@@ -76,7 +85,11 @@ export function NewChat({
     if (machine === undefined || chosenRepo === undefined || chosenAgent === undefined) {
       return "refused";
     }
-    const start = starts.begin(request, socket.workspace, text, { machine: machine.id, repo: chosenRepo, agent: chosenAgent }, newId);
+    // The server gives the task its title, so a task picked before the list loaded still goes;
+    // one the loaded list doesn't have doesn't.
+    const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
+    const choice = { machine: machine.id, repo: chosenRepo, agent: chosenAgent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
+    const start = starts.begin(request, socket.workspace, text, choice, newId);
     const sent = await commands.start(start.chatRef, start.action, request);
     const chat = starts.end(request, sent);
     if (chat !== undefined) {
@@ -130,6 +143,7 @@ export function NewChat({
           </select>
         </label>
       )}
+      {tasks !== undefined && <TaskField tasks={tasks} chosen={forTask} choose={setTaskId} />}
       {settings.value !== undefined && offered.length < 2 && (
         <p>
           <button type="button" onClick={() => openSettings(machine?.id)}>

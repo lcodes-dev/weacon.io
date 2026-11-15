@@ -92,3 +92,16 @@ FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_chats RENAME TO changes;
 ";
+
+/// The task each chat was made for, if any, of its own workspace, with its title as it then was.
+pub(crate) const CHAT_TASKS: &str = "
+CREATE TABLE chat_tasks (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id)
+) STRICT;
+";

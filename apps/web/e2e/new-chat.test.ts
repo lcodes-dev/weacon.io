@@ -76,7 +76,7 @@ async function standIn(page: Page, machines: MachineList, chats: Chats): Promise
   await page.route("**/api/workspaces/*/chats", async (route) => {
     const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> }).workspaces[0]?.member ?? "");
     const list: ChatList = {
-      chats: [...(chats.unlisted === true ? [] : chats.made)].map(([id, text]) => ({ id, title: text, owner: member, machine: STUDIO.name, state: "open", updated_at: 1 })),
+      chats: [...(chats.unlisted === true ? [] : chats.made)].map(([id, text]) => ({ id, title: text, owner: member, machine: STUDIO.name, machine_id: "mc-1", state: "open", updated_at: 1 })),
     };
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) });
   });

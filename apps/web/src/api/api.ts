@@ -289,7 +289,11 @@ const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at) &&
-  ["undefined", "string"].includes(typeof (value as ChatSummary).run);
+  ["undefined", "string"].includes(typeof (value as ChatSummary).run) &&
+  // Each goes into the address or a machine's query, so each must be an id.
+  isIdText((value as ChatSummary).machine_id) &&
+  ((value as ChatSummary).task === undefined || isIdText((value as ChatSummary).task));
+const isIdText = (value: unknown): boolean => typeof value === "string" && isId(value);
 const isChats = listOf<ChatList>("chats", isChat);
 const isMark = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);

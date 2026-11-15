@@ -28,6 +28,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::CORE_BUILDS,
     steps::DOC_REPOS,
     steps::PLAIN_CODES,
+    steps::CHAT_TASKS,
     steps::INVITATIONS,
 ];
 
@@ -244,6 +245,7 @@ mod tests {
                 "search",
                 "search_rows",
                 "sign_in_challenges",
+                "chat_tasks",
                 "invitations"
             ]
         );
