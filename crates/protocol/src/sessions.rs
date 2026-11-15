@@ -72,6 +72,7 @@ pub struct OutsideSession {
     pub session: AgentSession,
     /// The folder it ran in, when its file names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub folder: Option<String>,
     pub modified_at: i64,
 }

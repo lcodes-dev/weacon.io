@@ -10,6 +10,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("machine.connect")),
     Capability::new(code!("chat.serve")),
     Capability::new(code!("machine.settings")),
+    Capability::new(code!("sessions.read")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -107,6 +108,7 @@ mod tests {
                             Capability::new(code!("machine.connect")),
                             Capability::new(code!("chat.serve")),
                             Capability::new(code!("machine.settings")),
+                            Capability::new(code!("sessions.read")),
                         ],
                     }),
                 }),

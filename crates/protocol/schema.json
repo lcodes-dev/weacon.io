@@ -2158,10 +2158,7 @@
         },
         "folder": {
           "description": "The folder it ran in, when its file names one.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "modified_at": {
           "type": "integer",

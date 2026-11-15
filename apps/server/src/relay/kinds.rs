@@ -4,29 +4,39 @@ use weacon_protocol::{
     Asker, ChatId, Code, MachineId, Message, RequestId, WorkspaceId, WorktreeAction,
 };
 
-use super::{DIFF, SETTINGS, TERMINAL, WORKTREE};
+use super::{DIFF, SESSIONS, SETTINGS, TERMINAL, WORKTREE};
 
 /// The workspace, request and subject an ask or its answer names.
 #[derive(PartialEq, Eq)]
 pub(super) struct Asked {
-    pub(super) workspace: WorkspaceId,
+    /// None for a person's own sessions, which no workspace holds.
+    pub(super) workspace: Option<WorkspaceId>,
     pub(super) request: RequestId,
     pub(super) about: About,
 }
 
-/// What an ask is about: a machine it names, or a chat's diff or worktree, whose machine the
-/// server knows. Its answer must be about the same.
+/// What an ask is about: a machine it names, its owner's own sessions on a machine, or a chat's
+/// diff or worktree, whose machine the server knows. Its answer must be about the same.
 #[derive(PartialEq, Eq)]
 pub(super) enum About {
     Machine(MachineId),
+    Sessions(MachineId),
     Diff(ChatId),
     Worktree(ChatId),
 }
 
 impl Asked {
+    fn sessions(machine: &MachineId, request: &RequestId) -> Self {
+        Self {
+            workspace: None,
+            request: request.clone(),
+            about: About::Sessions(machine.clone()),
+        }
+    }
+
     fn new(workspace: &WorkspaceId, request: &RequestId, about: About) -> Self {
         Self {
-            workspace: workspace.clone(),
+            workspace: Some(workspace.clone()),
             request: request.clone(),
             about,
         }
@@ -41,6 +51,8 @@ pub(crate) const fn needs(message: &Message) -> Option<Code> {
         Message::MachineSettingsQuery(_) | Message::MachineSettingsCommand(_)
     ) {
         Some(SETTINGS)
+    } else if matches!(message, Message::SessionsQuery(_)) {
+        Some(SESSIONS)
     } else if matches!(message, Message::DiffQuery(_)) {
         Some(DIFF)
     } else if matches!(
@@ -75,6 +87,10 @@ pub(super) fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Messag
         command.by = by;
         let about = About::Machine(command.machine.clone());
         Asked::new(&command.workspace, &command.request, about)
+    } else if let Message::SessionsQuery(query) = &mut message {
+        // No workspace, so no member: only the account.
+        query.by = by.map(|asker| asker.account);
+        Asked::sessions(&query.machine, &query.request)
     } else if let Message::DiffQuery(query) = &mut message {
         query.by = by;
         let about = About::Diff(query.chat.clone());
@@ -103,6 +119,8 @@ pub(super) fn answering(message: &Message) -> Option<Asked> {
     if let Message::MachineSettingsAnswer(answer) = message {
         let about = About::Machine(answer.machine.clone());
         Some(Asked::new(&answer.workspace, &answer.request, about))
+    } else if let Message::SessionsAnswer(answer) = message {
+        Some(Asked::sessions(&answer.machine, &answer.request))
     } else if let Message::DiffAnswer(answer) = message {
         let about = About::Diff(answer.chat.clone());
         Some(Asked::new(&answer.workspace, &answer.request, about))

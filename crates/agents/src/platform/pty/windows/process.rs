@@ -50,7 +50,7 @@ pub(super) fn start(
     };
     let application = wide(program.as_os_str())?;
     let mut line = command_line(program, command.get_args())?;
-    let environment = environment(command)?;
+    let environment = environment(command, std::env::vars_os())?;
     let folder = command
         .get_current_dir()
         .map(|dir| wide(dir.as_os_str()))

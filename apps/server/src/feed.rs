@@ -20,7 +20,7 @@ use crate::chats::{self, Watch};
 use crate::connections::Place;
 use crate::http::failure;
 use crate::proposals::PROPOSALS;
-use crate::relay::{self, Ask, DIFF, Refusal, SETTINGS, WORKTREE};
+use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
 use crate::workspaces::MEMBERS;
@@ -150,7 +150,7 @@ async fn run(
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
     let offered = [
-        FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE,
+        FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS,
     ]
     .map(Capability::new)
     .to_vec();
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(
             welcome.capabilities,
             [
-                FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE
+                FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS
             ]
             .map(Capability::new)
         );

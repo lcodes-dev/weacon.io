@@ -16,7 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, code};
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
-use crate::relay::{self, DIFF, SETTINGS, WORKTREE};
+use crate::relay::{self, DIFF, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 
@@ -106,6 +106,7 @@ async fn run(
         Capability::new(SETTINGS),
         Capability::new(DIFF),
         Capability::new(WORKTREE),
+        Capability::new(SESSIONS),
     ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
@@ -180,7 +181,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE].map(Capability::new)),
+                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)

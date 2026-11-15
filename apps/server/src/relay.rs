@@ -32,6 +32,9 @@ const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 const MOST_FILES: u32 = 500;
 /// What a machine's core offers, and the server offers, to have its settings relayed.
 pub(crate) const SETTINGS: Code = code!("machine.settings");
+/// What a client and a core offer to have a person's own sessions, run outside Weacon, read
+/// through it.
+pub(crate) const SESSIONS: Code = code!("sessions.read");
 /// What a client and a core offer to have a chat's diff relayed.
 pub(crate) const DIFF: Code = code!("diff.view");
 /// What a client and a core offer to have a chat's worktree questions and commands relayed.
@@ -124,8 +127,8 @@ pub(crate) enum Refusal {
 }
 
 /// Forwards `envelope` to the machine its message names, or that runs the chat it names, if
-/// the message is for the asker's workspace and the machine is the asker's own, and the chat
-/// theirs too. The answers reach `back` under the envelope's id, `relay.unsendable` if this
+/// the machine is the asker's own, the chat theirs too, and a message for a workspace is for
+/// the asker's. The answers reach `back` under the envelope's id, `relay.unsendable` if this
 /// server can't send one on, or `machine.no_answer` once it has waited too long.
 ///
 /// # Errors
@@ -172,13 +175,16 @@ pub(crate) async fn forward(
 
 /// The asker's machine that `asked` goes to.
 async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<MachineId, Refusal> {
-    let elsewhere = asked.workspace != *ask.workspace.id();
+    let elsewhere = asked
+        .workspace
+        .as_ref()
+        .is_some_and(|named| named != ask.workspace.id());
     let machine = match &asked.about {
         About::Machine(_) if elsewhere => return Err(refused(code!("machine.not_found"), false)),
+        About::Machine(machine) | About::Sessions(machine) => machine.clone(),
         About::Diff(_) | About::Worktree(_) if elsewhere => {
             return Err(refused(code!("chat.not_found"), false));
         }
-        About::Machine(machine) => machine.clone(),
         About::Diff(chat) | About::Worktree(chat) => {
             let chat = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
             let chat = chat.ok_or_else(|| refused(code!("chat.not_found"), false))?;
@@ -345,11 +351,13 @@ mod tests {
     use tokio::time::timeout;
 
     use weacon_protocol::{
-        AccessLevel, AccountId, ChatId, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
-        ErrorBody, FileChange, Hunk, LineOp, MAX_FRAME, MachineSettings, MachineSettingsAction,
-        MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand,
-        MachineSettingsQuery, MachineSettingsQueryKind, MemberId, RequestId, WorktreeAction,
-        WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
+        AccessLevel, AccountId, AgentKind, AgentSession, ChatId, DiffContent, DiffFile, DiffLine,
+        DiffQuery, DiffQueryKind, ErrorBody, FileChange, Hunk, LineOp, MAX_FRAME, MachineSettings,
+        MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
+        MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
+        OutsideSession, RequestId, SessionsAnswer, SessionsAnswerKind, SessionsQuery,
+        SessionsQueryKind, WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand,
+        WorktreeQuery, WorktreeQueryKind,
     };
 
     use super::*;
@@ -623,6 +631,160 @@ mod tests {
         drop(core);
     }
 
+    // A list of the sessions on `machine`, claiming to be from someone else.
+    fn sessions_query(machine: &MachineId) -> Message {
+        Message::SessionsQuery(SessionsQuery {
+            request: RequestId::try_from("r-1".to_owned()).unwrap(),
+            machine: machine.clone(),
+            query: SessionsQueryKind::List,
+            by: Some(AccountId::try_from("a-forged".to_owned()).unwrap()),
+        })
+    }
+
+    // `machine`'s list of one session, run in `folder`.
+    fn sessions_answer(machine: &MachineId, folder: &str) -> Message {
+        sessions_answer_to(machine, "r-1", folder)
+    }
+
+    fn sessions_answer_to(machine: &MachineId, request: &str, folder: &str) -> Message {
+        let session = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned();
+        Message::SessionsAnswer(SessionsAnswer {
+            request: RequestId::try_from(request.to_owned()).unwrap(),
+            machine: machine.clone(),
+            answer: SessionsAnswerKind::List {
+                sessions: vec![OutsideSession {
+                    agent: AgentKind::Claude,
+                    session: AgentSession::try_from(session).unwrap(),
+                    folder: Some(folder.to_owned()),
+                    modified_at: 0,
+                }],
+            },
+        })
+    }
+
+    // Ada's machine, its core offering `core_offers`, and her feed of w1 offering sessions.
+    async fn sessions_both(
+        fixture: &Fixture,
+        address: SocketAddr,
+        core_offers: &[&str],
+    ) -> (Paired, Socket, Socket) {
+        let paired = pair_machine(fixture, address).await;
+        let core = connected(address, &paired, core_offers).await;
+        let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
+            .await
+            .unwrap();
+        say(&mut browser, &["workspace.feed", "sessions.read"]).await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
+        (paired, core, browser)
+    }
+
+    #[tokio::test]
+    async fn a_persons_own_sessions_reach_them_as_theirs_and_nothing_of_them_is_logged() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = ["machine.connect", "sessions.read"];
+        let (paired, mut core, mut browser) =
+            sessions_both(&fixture, server.address, &offers).await;
+        let machine = paired.machine_id();
+        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+
+        send(&mut browser, envelope(51, sessions_query(&machine))).await;
+        let relayed = next_envelope(&mut core).await;
+        let answer = sessions_answer(&machine, "/MARKER-FOLDER");
+        send(&mut core, envelope(relayed.id, answer.clone())).await;
+        let answered = next_envelope(&mut browser).await;
+
+        let Message::SessionsQuery(query) = relayed.message else {
+            panic!("{relayed:?}");
+        };
+        let by = query.by.unwrap();
+        assert_eq!(by.as_str(), session["account"].as_str().unwrap());
+        assert_eq!(answered, envelope(51, answer));
+        let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn a_client_that_doesnt_offer_reading_sessions_relays_none() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = &["workspace.feed", "machine.settings"];
+        let (paired, mut core, mut browser) = both(&fixture, server.address, offers).await;
+        let machine = paired.machine_id();
+
+        send(&mut browser, envelope(51, sessions_query(&machine))).await;
+        send(&mut browser, envelope(52, query(&machine, "w1"))).await;
+
+        let relayed = next_envelope(&mut core).await;
+        assert!(
+            matches!(relayed.message, Message::MachineSettingsQuery(_)),
+            "{relayed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_go_only_to_the_askers_own_machine_when_its_core_reads_them() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = ["machine.connect", "machine.settings"];
+        let (paired, _core, mut browser) = sessions_both(&fixture, server.address, &offers).await;
+        let theirs = MachineId::try_from("mc-elsewhere".to_owned()).unwrap();
+
+        let unread = asked(&mut browser, 52, sessions_query(&paired.machine_id())).await;
+        let elsewhere = asked(&mut browser, 53, sessions_query(&theirs)).await;
+
+        assert_eq!(error_of(&unread), (52, "machine.offline", true));
+        assert_eq!(error_of(&elsewhere), (53, "machine.not_found", false));
+    }
+
+    // A relay where `machine`'s own sessions were asked under 41, relayed as 7.
+    fn sessions_waiting(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
+        let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
+        let (back, answers) = mpsc::channel(4);
+        let waiter = Waiter {
+            sent: Sent {
+                asked: Asked {
+                    workspace: None,
+                    request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                    about: About::Sessions(machine.clone()),
+                },
+                machine: machine.clone(),
+            },
+            id: 41,
+            back,
+            files_left: None,
+            timer: tokio::spawn(async {}).abort_handle(),
+            round: 0,
+        };
+        relay.lock().insert(7, waiter);
+        (relay, answers)
+    }
+
+    #[tokio::test]
+    async fn a_sessions_ask_takes_only_its_own_machines_sessions_answer() {
+        let one = MachineId::try_from("mc-1".to_owned()).unwrap();
+        let two = MachineId::try_from("mc-2".to_owned()).unwrap();
+        let (relay, mut answers) = sessions_waiting(&one);
+
+        let dropped = [
+            relay.answered(&one, envelope(7, settings_answer(&one))),
+            relay.answered(&two, envelope(7, sessions_answer(&one, "/work"))),
+            relay.answered(&one, envelope(7, sessions_answer(&two, "/work"))),
+            relay.answered(&one, envelope(7, sessions_answer_to(&one, "r-2", "/work"))),
+        ];
+        let before = answers.try_recv();
+        let answered = relay.answered(&one, envelope(7, sessions_answer(&one, "/work")));
+
+        assert_eq!(dropped, [true; 4]);
+        before.unwrap_err();
+        assert!(answered);
+        assert_eq!(
+            heard(&mut answers).await,
+            envelope(41, sessions_answer(&one, "/work"))
+        );
+    }
+
     // A relay where `machine` was asked under 41, relayed as 7; and where its answer goes.
     fn waiting_on(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
         let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
@@ -630,7 +792,7 @@ mod tests {
         let waiter = Waiter {
             sent: Sent {
                 asked: Asked {
-                    workspace: workspace_id("w1"),
+                    workspace: Some(workspace_id("w1")),
                     request: RequestId::try_from("r-1".to_owned()).unwrap(),
                     about: About::Machine(machine.clone()),
                 },
@@ -923,7 +1085,9 @@ mod tests {
         assert!(fixture.shared.relay.lock().is_empty());
         assert_eq!(needs(&query(&machine, "w1")), Some(SETTINGS));
         assert_eq!(needs(&command(&machine)), Some(SETTINGS));
+        assert_eq!(needs(&sessions_query(&machine)), Some(SESSIONS));
         assert_eq!(needs(&settings_answer(&machine)), None);
+        assert!(takes(&sessions_answer(&machine, "/work")));
         // From a machine, only answers and errors go back to an asker.
         assert!(takes(&settings_answer(&machine)));
         assert!(takes(&refusal(code!("settings.not_owner"))));
@@ -1256,7 +1420,7 @@ mod tests {
         let relay = Arc::new(Relay::new(MOST_WAITING, within));
         let (back, answers) = mpsc::channel(room);
         let asked = Asked {
-            workspace: workspace_id("w1"),
+            workspace: Some(workspace_id("w1")),
             request: request(),
             about: About::Diff(chat_id("c-1")),
         };
@@ -1314,7 +1478,7 @@ mod tests {
         let (relay, mut answers) = diff_waiting(3, ANSWER_WITHIN);
         let back = relay.lock().get(&7).unwrap().back.clone();
         let asked = Asked {
-            workspace: workspace_id("w1"),
+            workspace: Some(workspace_id("w1")),
             request: request(),
             about: About::Machine(mc1()),
         };

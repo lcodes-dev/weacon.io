@@ -882,10 +882,7 @@ export type OutsideSession = {
   /**
    * The folder it ran in, when its file names one.
    */
-  folder?: (
-    | string
-    | null
-  );
+  folder?: string;
   modified_at: number;
   session: AgentSession;
 };
