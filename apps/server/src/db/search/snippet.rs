@@ -1,80 +1,91 @@
-//! A hit's snippet: [`SHOWN`] characters around its first match, cut in linear time however
-//! many matches its text holds.
+//! A hit's snippet: [`SHOWN`] characters around its first match, each match in them marked,
+//! found in linear time however many matches its text holds.
 
 use weacon_protocol::{Mark, Snippet};
 
-use super::{MATCH_END, MATCH_START};
-use crate::search::query::fold;
+use crate::search::fold::fold;
+use crate::search::query::Marks;
 
 /// How many characters a snippet shows before its first match, and in all.
 const BEFORE: usize = 40;
 const SHOWN: usize = 200;
 
-/// The snippet around the first of `words` in `body`, each folded as [`fold`] folds; for a body
-/// that holds none of them, as where only the title matched, the snippet of `title_marked`,
-/// whose matches the index marked.
-pub(super) fn of(body: &str, words: &[String], title_marked: &str) -> Snippet {
-    let chars: Vec<char> = body.chars().collect();
-    let folded: String = chars.iter().copied().map(fold).collect();
-    let first = words
-        .iter()
-        .filter(|word| !word.is_empty())
-        .filter_map(|word| folded.find(word.as_str()))
-        .min()
-        .and_then(|byte| folded.get(..byte))
-        .map(|before| before.chars().count());
-    let Some(first) = first else {
-        let chars: Vec<char> = title_marked.chars().collect();
-        let first = chars.iter().position(|ch| *ch == MATCH_START).unwrap_or(0);
-        let (start, end) = window(&chars, first);
-        let shown: String = chars.get(start..end).unwrap_or_default().iter().collect();
-        return snippet(&cut(shown, start, end < chars.len()));
-    };
-    let (start, end) = window(&chars, first);
-    let folded: Vec<char> = folded.chars().collect();
-    let words: Vec<Vec<char>> = words.iter().map(|word| word.chars().collect()).collect();
-    let shown = marked(&chars, &folded, &words, (start, end));
-    snippet(&cut(shown, start, end < chars.len()))
+/// The snippet around the first match in `body`, or in `title` when the body holds none, as
+/// where only the title matched; a title without one shows as it is.
+pub(super) fn of(body: &str, title: &str, marks: &Marks) -> Snippet {
+    around(body, marks)
+        .or_else(|| around(title, marks))
+        .unwrap_or_else(|| shown(&Text::new(title), (0, SHOWN), &[]))
 }
 
-/// `chars` from `start` up to `end`, with each match of `words` in `folded` marked; a match
-/// right after another joins it, as the index joins its own.
-fn marked(
-    chars: &[char],
-    folded: &[char],
-    words: &[Vec<char>],
-    (start, end): (usize, usize),
-) -> String {
-    let mut marked = String::new();
-    let mut index = start;
-    while index < end {
-        let Some(length) = matching(folded, index, words) else {
-            marked.extend(chars.get(index));
-            index += 1;
+/// `text` as each kind of word compares it, one character for one.
+struct Text {
+    chars: Vec<char>,
+    folded: Vec<char>,
+    ascii: Vec<char>,
+}
+
+impl Text {
+    fn new(text: &str) -> Self {
+        let chars: Vec<char> = text.chars().collect();
+        Self {
+            folded: chars.iter().copied().map(fold).collect(),
+            ascii: chars.iter().map(char::to_ascii_lowercase).collect(),
+            chars,
+        }
+    }
+
+    /// The longest word of `marks` at `index`, as long as it is.
+    fn matching(&self, index: usize, marks: &Marks) -> Option<usize> {
+        let at = |text: &[char], word: &String| {
+            let word: Vec<char> = word.chars().collect();
+            let found = !word.is_empty() && text.get(index..index + word.len()) == Some(&word[..]);
+            found.then_some(word.len())
+        };
+        let long = marks.long.iter().filter_map(|word| at(&self.folded, word));
+        let short = marks.short.iter().filter_map(|word| at(&self.ascii, word));
+        long.chain(short).max()
+    }
+}
+
+/// The snippet of `text` around its first match, if it has one.
+fn around(text: &str, marks: &Marks) -> Option<Snippet> {
+    let text = Text::new(text);
+    let first = first_match(&text, marks)?;
+    let window = window(&text.chars, first);
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    for index in window.0..window.1 {
+        let Some(length) = text.matching(index, marks) else {
             continue;
         };
-        let upto = end.min(index + length);
-        if marked.ends_with(MATCH_END) {
-            marked.pop();
-        } else {
-            marked.push(MATCH_START);
+        let upto = window.1.min(index + length);
+        // A match that overlaps or touches the one before joins it.
+        match ranges.last_mut() {
+            Some(last) if index <= last.1 => last.1 = last.1.max(upto),
+            _ => ranges.push((index, upto)),
         }
-        marked.extend(chars.get(index..upto).unwrap_or_default());
-        marked.push(MATCH_END);
-        index = upto;
     }
-    marked
+    Some(shown(&text, window, &ranges))
 }
 
-/// How many characters of the longest of `words` that `folded` holds at `index`, if any.
-fn matching(folded: &[char], index: usize, words: &[Vec<char>]) -> Option<usize> {
-    words
+/// Where the first word of `marks` is in `text`, found by one linear search for each word.
+fn first_match(text: &Text, marks: &Marks) -> Option<usize> {
+    let find = |chars: &[char], word: &String| {
+        let haystack: String = chars.iter().collect();
+        let byte = (!word.is_empty())
+            .then(|| haystack.find(word.as_str()))
+            .flatten()?;
+        haystack.get(..byte).map(|before| before.chars().count())
+    };
+    let long = marks
+        .long
         .iter()
-        .filter(|word| {
-            !word.is_empty() && folded.get(index..index + word.len()) == Some(word.as_slice())
-        })
-        .map(Vec::len)
-        .max()
+        .filter_map(|word| find(&text.folded, word));
+    let short = marks
+        .short
+        .iter()
+        .filter_map(|word| find(&text.ascii, word));
+    long.chain(short).min()
 }
 
 /// The characters a snippet shows: from a word at most [`BEFORE`] before `first`, [`SHOWN`] in all.
@@ -90,57 +101,52 @@ fn window(chars: &[char], first: usize) -> (usize, usize) {
     (start, chars.len().min(start + SHOWN))
 }
 
-/// `shown` with an ellipsis where it was cut, and a match it ends inside closed.
-fn cut(mut shown: String, start: usize, more: bool) -> String {
-    let open = shown
-        .chars()
-        .rev()
-        .find(|ch| matches!(*ch, MATCH_START | MATCH_END));
-    if open == Some(MATCH_START) {
-        shown.push(MATCH_END);
+/// `text` from `start` up to `end`, with an ellipsis where it was cut, and `ranges` as marks in
+/// UTF-16 units.
+fn shown(text: &Text, (start, end): (usize, usize), ranges: &[(usize, usize)]) -> Snippet {
+    let end = end.min(text.chars.len());
+    let lead = if start > 0 { "… " } else { "" };
+    let units = |from: usize, upto: usize| -> u32 {
+        let chars = text.chars.get(from..upto).unwrap_or_default();
+        let count: usize = chars.iter().map(|ch| ch.len_utf16()).sum();
+        u32::try_from(count + lead.encode_utf16().count()).unwrap_or(u32::MAX)
+    };
+    let marks = ranges
+        .iter()
+        .map(|(from, upto)| Mark {
+            start: units(start, *from),
+            end: units(start, *upto),
+        })
+        .collect();
+    let body: String = text
+        .chars
+        .get(start..end)
+        .unwrap_or_default()
+        .iter()
+        .collect();
+    let tail = if end < text.chars.len() { " …" } else { "" };
+    Snippet {
+        text: format!("{lead}{body}{tail}"),
+        marks,
     }
-    if start > 0 {
-        shown.insert_str(0, "… ");
-    }
-    if more {
-        shown.push_str(" …");
-    }
-    shown
-}
-
-/// A snippet's text and marks, from one with its matches between the marking bytes.
-fn snippet(marked: &str) -> Snippet {
-    let mut snippet = Snippet::default();
-    let mut start = None;
-    for ch in marked.chars() {
-        match ch {
-            MATCH_START => start = Some(utf16_len(&snippet.text)),
-            MATCH_END => {
-                if let Some(start) = start.take() {
-                    let end = utf16_len(&snippet.text);
-                    snippet.marks.push(Mark { start, end });
-                }
-            }
-            ch => snippet.text.push(ch),
-        }
-    }
-    snippet
-}
-
-fn utf16_len(text: &str) -> u32 {
-    u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn words(words: &[&str]) -> Vec<String> {
-        words.iter().map(|word| (*word).to_owned()).collect()
+    fn marks(long: &[&str], short: &[&str]) -> Marks {
+        Marks {
+            long: long
+                .iter()
+                .map(|word| word.chars().map(fold).collect())
+                .collect(),
+            short: short.iter().map(|word| word.to_ascii_lowercase()).collect(),
+        }
     }
 
     // `snippet`'s text with each mark in brackets.
-    fn shown(snippet: &Snippet) -> String {
+    fn bracketed(snippet: &Snippet) -> String {
         let units: Vec<u16> = snippet.text.encode_utf16().collect();
         let mut out = Vec::new();
         let mut at = 0;
@@ -160,72 +166,71 @@ mod tests {
     }
 
     #[test]
-    fn a_snippet_marks_its_matches_in_utf16_units() {
-        let marked = "😀 \u{1}ab\u{2}é \u{1}c\u{2}\u{2}d";
-
-        assert_eq!(
-            snippet(marked),
-            Snippet {
-                text: "😀 abé cd".to_owned(),
-                marks: vec![Mark { start: 3, end: 5 }, Mark { start: 7, end: 8 }],
-            }
+    fn a_body_is_marked_around_its_first_match_whatever_its_case_and_accents() {
+        let body = format!(
+            "{}Le Café ouvre. Le CAFÉ ferme près de la řeka.",
+            "mot ".repeat(20)
         );
-        assert_eq!(snippet("plain").marks, []);
-    }
 
-    #[test]
-    fn a_body_is_marked_around_its_first_match_whatever_the_case_and_accents() {
-        let body = format!("{}Le Café ouvre. Le CAFÉ ferme.", "mot ".repeat(20));
-
-        let found = of(&body, &words(&["cafe"]), "");
+        let found = of(&body, "Notes", &marks(&["cafe", "reka"], &[]));
         assert!(found.text.starts_with("… mot mot"), "{found:?}");
         assert!(
-            shown(&found).ends_with("Le [Café] ouvre. Le [CAFÉ] ferme."),
+            bracketed(&found).ends_with("Le [Café] ouvre. Le [CAFÉ] ferme près de la [řeka]."),
             "{found:?}"
         );
         assert_eq!(
-            shown(&of("ab abc", &words(&["ab", "abc"]), "")),
-            "[ab] [abc]"
+            bracketed(&of("😀 abc", "", &marks(&["abc"], &[]))),
+            "😀 [abc]"
         );
     }
 
     #[test]
-    fn a_title_snippet_stands_in_when_the_body_holds_no_word() {
-        let found = of("nothing here", &words(&["plan"]), "The \u{1}plan\u{2}");
-
-        assert_eq!(shown(&found), "The [plan]");
-        assert_eq!(shown(&of("", &words(&["plan"]), "plain")), "plain");
+    fn overlapping_and_touching_matches_are_one_mark() {
+        assert_eq!(
+            bracketed(&of("banana", "", &marks(&["ana"], &[]))),
+            "b[anana]"
+        );
+        assert_eq!(
+            bracketed(&of("ab abc", "", &marks(&["abc"], &["ab"]))),
+            "[ab] [abc]"
+        );
+        assert_eq!(
+            bracketed(&of("abcabc", "", &marks(&["abc"], &[]))),
+            "[abcabc]"
+        );
     }
 
     #[test]
-    fn a_snippet_shows_so_many_characters_and_closes_a_match_it_cuts() {
-        let body = "a".repeat(SHOWN * 2);
+    fn short_words_match_as_typed_ignoring_only_ascii_case() {
+        let short = marks(&["plan"], &["é", "v2"]);
 
-        let found = of(&body, &words(&["aaa"]), "");
+        assert_eq!(bracketed(&of("evidence", "Plan é", &short)), "[Plan] [é]");
+        assert_eq!(
+            bracketed(&of("", "Release V2", &marks(&["release"], &["v2"]))),
+            "[Release] [V2]"
+        );
+        assert_eq!(bracketed(&of("", "Notes", &short)), "Notes");
+    }
+
+    #[test]
+    fn a_snippet_shows_so_many_characters_and_cuts_a_long_match() {
+        let found = of(&"a".repeat(SHOWN * 2), "", &marks(&["aaa"], &[]));
         assert_eq!(found.text, format!("{} …", "a".repeat(SHOWN)));
         assert_eq!(found.marks, [Mark { start: 0, end: 200 }]);
+
+        let late = format!("{}plan {}", "word ".repeat(20), "x".repeat(SHOWN));
+        let title = of("", &late, &marks(&["plan"], &[]));
+        assert!(title.text.starts_with("… word word"), "{title:?}");
+        assert!(title.text.ends_with(" …"), "{title:?}");
+        assert_eq!(bracketed(&title).matches("[plan]").count(), 1);
     }
 
     #[test]
-    fn many_matches_in_a_whole_body_are_cut_in_one_pass() {
+    fn many_matches_in_a_whole_body_are_found_in_one_pass() {
         let body = "aaa ".repeat(64 * 1024);
 
-        let found = of(&body, &words(&["aaa"]), "");
+        let found = of(&body, "", &marks(&["aaa"], &[]));
         assert_eq!(found.marks.len(), SHOWN / 4);
         assert!(found.text.ends_with(" …"));
-    }
-
-    #[test]
-    fn a_long_title_is_cut_like_a_body_and_a_match_it_cuts_is_closed() {
-        let late = format!("{}\u{1}plan\u{2} {}", "word ".repeat(20), "x".repeat(SHOWN));
-        let open = format!("\u{1}{}\u{2}", "a".repeat(SHOWN * 2));
-
-        let cut_late = of("", &words(&["zzz"]), &late);
-        assert!(cut_late.text.starts_with("… word word"), "{cut_late:?}");
-        assert!(cut_late.text.ends_with(" …"), "{cut_late:?}");
-        assert_eq!(shown(&cut_late).matches("[plan]").count(), 1);
-        let cut_open = of("", &words(&["zzz"]), &open);
-        // The window counts the marking byte the index wrote.
-        assert_eq!(cut_open.marks, [Mark { start: 0, end: 199 }]);
     }
 }

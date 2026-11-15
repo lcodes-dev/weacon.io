@@ -1,5 +1,6 @@
 //! Full-text search over what a member can read in their workspace.
 
+pub(crate) mod fold;
 pub(crate) mod query;
 
 use axum::http::StatusCode;

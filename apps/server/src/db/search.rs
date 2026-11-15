@@ -6,9 +6,9 @@ use weacon_observability::Fault;
 use weacon_protocol::SearchHit;
 
 use super::{Workspace, failed, stored, unreadable};
-use crate::search::query::Query;
+use crate::search::query::{Marks, Query};
 
-/// The bytes a snippet marks a match with; indexed text holds neither.
+/// Control bytes indexed text leaves out, as the schema's backfill does.
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
 
@@ -21,7 +21,7 @@ struct Indexed<'a> {
     at: i64,
 }
 
-type HitRow = (String, String, String, String, String);
+type HitRow = (String, String, String, String);
 
 impl Workspace {
     /// Indexes `task` by its title, as changed at `at`.
@@ -123,7 +123,7 @@ impl Workspace {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
             "SELECT search.kind, search.item, search.title,
-                 highlight(search, 3, char(1), char(2)), search.body
+                 search.body
              FROM search
              JOIN search_rows AS rows
                  ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
@@ -144,16 +144,13 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|row| hit(row, &query.marked))
+        .map(|row| hit(row, &query.marks))
         .collect()
     }
 }
 
-fn hit(
-    (kind, item, title, title_marked, body): HitRow,
-    words: &[String],
-) -> Result<SearchHit, Fault> {
-    let snippet = snippet::of(&body, words, &title_marked);
+fn hit((kind, item, title, body): HitRow, marks: &Marks) -> Result<SearchHit, Fault> {
+    let snippet = snippet::of(&body, &title, marks);
     match kind.as_str() {
         "task" => Ok(SearchHit::Task {
             task: stored(item)?,
