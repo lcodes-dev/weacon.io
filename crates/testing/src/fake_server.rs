@@ -84,23 +84,21 @@ async fn send_all(
     let mut run_lines = BufReader::new(run_lines).lines();
     let mut playing = true;
     loop {
-        let texts = tokio::select! {
+        let reply = tokio::select! {
             line = run_lines.next_line(), if playing => {
                 if let Ok(Some(line)) = line {
                     commit_played(chat, committed, line);
-                    Vec::new()
                 } else {
                     playing = false;
-                    ended(chat, committed)
+                    ended(chat, committed);
                 }
+                continue;
             }
-            Some(reply) = replies.recv() => vec![reply],
+            Some(reply) = replies.recv() => reply,
             else => break,
         };
-        for text in texts {
-            if sink.send(Frame::text(text)).await.is_err() {
-                return;
-            }
+        if sink.send(Frame::text(reply)).await.is_err() {
+            return;
         }
     }
 }
@@ -128,29 +126,26 @@ async fn keep(
     Ok(())
 }
 
-// Sends a played line, unless its run was stopped, after what tells the client the chat committed
-// with it, such as the status that its run is running again. Both go to `replies` under the
-// chat's lock, so the chat's messages keep their order.
+// Sends what the chat committed with a played line, then the line, under the chat's lock so they
+// keep their order; nothing once its run is stopped.
 fn commit_played(chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>, line: String) {
     let Ok(envelope) = Envelope::from_json(line.as_bytes()) else {
         drop(replies.send(line));
         return;
     };
-    let Ok(mut chat) = chat.lock() else {
-        return;
-    };
-    if let Some(told) = chat.played(&envelope) {
+    if let Ok(mut chat) = chat.lock()
+        && let Some(told) = chat.played(&envelope)
+    {
         send_texts(replies, &told);
         drop(replies.send(line));
     }
 }
 
-// Once the recording has played, its run asks to use Bash; nothing to send at once.
-fn ended(chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) -> Vec<String> {
+// Once the recording has played, its run asks to use Bash.
+fn ended(chat: &Mutex<FakeChat>, replies: &UnboundedSender<String>) {
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.ended());
     }
-    Vec::new()
 }
 
 fn send_texts(replies: &UnboundedSender<String>, envelopes: &[Envelope]) {
@@ -353,21 +348,26 @@ mod tests {
         commit_played(&chat, &replies, played(finished));
         let text = "I'll start".to_owned();
         commit_played(&chat, &replies, played(RunEvent::TextDelta { text }));
-        drop(replies);
 
         let mut order = Vec::new();
         while let Ok(text) = sent.try_recv() {
             let text: Value = serde_json::from_str(&text).unwrap();
-            order.push(format!(
-                "{} {}",
-                text["type"].as_str().unwrap(),
-                kind(&text)
-            ));
+            let event = text["event"]["event"]
+                .as_str()
+                .map_or_else(|| kind(&text), str::to_owned);
+            order.push((text["type"].as_str().unwrap().to_owned(), event));
         }
         // The next pass's first delta comes after its run is running again, so it is shown.
         assert_eq!(
             order,
-            ["chat finished", "chat idle", "run ", "chat running", "run "]
+            [
+                ("chat", "finished"),
+                ("chat", "idle"),
+                ("run", "finished"),
+                ("chat", "running"),
+                ("run", "text_delta")
+            ]
+            .map(|(kind, event)| (kind.to_owned(), event.to_owned()))
         );
     }
 

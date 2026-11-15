@@ -86,6 +86,30 @@ pub(crate) async fn greet(
     offers: Vec<Capability>,
     needs: &Capability,
 ) -> Result<Hello, Closed> {
+    let (hello, welcome) = hear(socket, shared, offers, needs).await?;
+    welcome.send(socket, shared).await?;
+    Ok(hello)
+}
+
+/// A welcome not sent yet, for a caller that gets ready for the client first.
+pub(crate) struct PendingWelcome {
+    id: u32,
+    answer: Message,
+}
+
+impl PendingWelcome {
+    pub(crate) async fn send(self, socket: &mut WebSocket, shared: &Shared) -> Result<(), Closed> {
+        reply(socket, shared, self.id, self.answer).await
+    }
+}
+
+/// The client's hello, as `greet` takes it, and the welcome that answers it, still to send.
+pub(crate) async fn hear(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    offers: Vec<Capability>,
+    needs: &Capability,
+) -> Result<(Hello, PendingWelcome), Closed> {
     let Some(Ok(Frame::Text(text))) = socket.recv().await else {
         return Err(Closed);
     };
@@ -106,8 +130,7 @@ pub(crate) async fn greet(
         reply(socket, shared, id, refusal(code!("capability.missing"))).await?;
         return Err(Closed);
     }
-    reply(socket, shared, id, answer).await?;
-    Ok(hello)
+    Ok((hello, PendingWelcome { id, answer }))
 }
 
 pub(crate) fn refusal(code: Code) -> Message {

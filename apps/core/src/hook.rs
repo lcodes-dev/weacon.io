@@ -20,15 +20,15 @@ const LIMIT: Duration = Duration::from_secs(5);
 /// Prints what `command`'s hook adds for the current folder, or nothing.
 pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Ending {
     let HookCommand::SessionStart = command;
-    print(&app.log, std::env::current_dir(), LIMIT, out);
+    print(&app.log, std::env::current_dir(), out);
     Ending::Done
 }
 
-/// Prints `folder`'s session-start map if it's ready within `limit`, or nothing.
-fn print(log: &Logger, folder: io::Result<PathBuf>, limit: Duration, out: &mut impl Write) {
+/// Prints `folder`'s session-start map, or nothing.
+fn print(log: &Logger, folder: io::Result<PathBuf>, out: &mut impl Write) {
     let printed = folder
         .map_err(|error| skipped().because(error))
-        .and_then(|folder| session_start(folder, limit))
+        .and_then(session_start)
         .and_then(|text| {
             out.write_all(text.as_bytes())
                 .map_err(|error| skipped().because(error))
@@ -37,8 +37,8 @@ fn print(log: &Logger, folder: io::Result<PathBuf>, limit: Duration, out: &mut i
 }
 
 /// Where to begin in `folder`'s code, or nothing when it has no code map.
-fn session_start(folder: PathBuf, limit: Duration) -> Result<String, Fault> {
-    within(limit, move || {
+fn session_start(folder: PathBuf) -> Result<String, Fault> {
+    within(LIMIT, move || {
         let call = McpCall::Map(MapArgs {
             budget: Some(SESSION_START_BYTES),
         });
@@ -96,7 +96,7 @@ mod tests {
             repository(&dir.join(format!("crate_number_{n}")), &format!("item_{n}"));
         }
 
-        let text = session_start(dir.to_path_buf(), LIMIT).unwrap();
+        let text = session_start(dir.to_path_buf()).unwrap();
 
         // Large enough to be cut, so the answer fills most of the size it may take.
         assert!((3000..=4000).contains(&text.len()), "{}", text.len());
@@ -107,8 +107,8 @@ mod tests {
     fn a_folder_without_code_adds_nothing_and_a_missing_one_fails() {
         let dir = TempDir::new().unwrap();
 
-        assert_eq!(session_start(dir.to_path_buf(), LIMIT).unwrap(), "");
-        let missing = session_start(dir.join("gone"), LIMIT).unwrap_err();
+        assert_eq!(session_start(dir.to_path_buf()).unwrap(), "");
+        let missing = session_start(dir.join("gone")).unwrap_err();
         assert_eq!(missing.code().as_str(), "map.read_failed");
     }
 
@@ -132,14 +132,14 @@ mod tests {
         let (log, records) = recording_logger();
         let mut out = Vec::new();
 
-        print(&log, Ok(dir.to_path_buf()), LIMIT, &mut out);
+        print(&log, Ok(dir.to_path_buf()), &mut out);
         let printed = String::from_utf8(out).unwrap();
         assert!(printed.contains("pantry_item"), "{printed}");
         assert!(messages(&records).is_empty());
 
         let mut out = Vec::new();
-        print(&log, Err(io::ErrorKind::NotFound.into()), LIMIT, &mut out);
-        print(&log, Ok(dir.join("gone")), LIMIT, &mut out);
+        print(&log, Err(io::ErrorKind::NotFound.into()), &mut out);
+        print(&log, Ok(dir.join("gone")), &mut out);
         assert!(out.is_empty());
         assert_eq!(messages(&records), ["hook skipped", "hook skipped"]);
     }
@@ -151,8 +151,8 @@ mod tests {
         repository(&folder, "marker_item_7");
         let (log, records) = recording_logger();
 
-        let map = session_start(folder.clone(), LIMIT);
-        note(&log, session_start(folder.join("marker_gone_5"), LIMIT).map(drop));
+        let map = session_start(folder.clone());
+        note(&log, session_start(folder.join("marker_gone_5")).map(drop));
 
         assert!(map.unwrap().contains("marker_item_7"));
         assert_eq!(messages(&records), ["hook skipped"]);
