@@ -688,6 +688,17 @@ mod tests {
         assert!(ends(&mut silent).await);
     }
 
+    // Pings `client`'s feed and waits for its pong, past what else it sends.
+    async fn pong_past_the_rest(client: &mut Socket) {
+        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+        while let Some(Ok(wire)) = frame(client).await {
+            if matches!(wire, Wire::Pong(_)) {
+                return;
+            }
+        }
+        panic!("the feed ended");
+    }
+
     #[tokio::test]
     async fn a_long_message_is_taken_and_an_oversized_one_ends_the_feed() {
         assert_eq!(MAX_MESSAGE, 1 << 20);
@@ -698,15 +709,8 @@ mod tests {
             .send(Wire::text("x".repeat(64 * 1024)))
             .await
             .unwrap();
-        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
         // Past what the feed sends meanwhile, the pong says it took the long one.
-        loop {
-            match frame(&mut client).await {
-                Some(Ok(Wire::Pong(_))) => break,
-                Some(Ok(Wire::Text(_) | Wire::Ping(_))) => {}
-                other => panic!("the feed ended: {other:?}"),
-            }
-        }
+        pong_past_the_rest(&mut client).await;
         client
             .send(Wire::text("x".repeat(MAX_MESSAGE + 1)))
             .await

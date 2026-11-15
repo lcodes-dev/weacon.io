@@ -957,7 +957,7 @@ mod tests {
         let two = MachineId::try_from("mc-2".to_owned()).unwrap();
         let (relay, mut answers) = waiting_on(&one);
         if let Some(waiter) = relay.lock().get_mut(&7) {
-            let chat = weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap();
+            let chat = ChatId::try_from("c-1".to_owned()).unwrap();
             waiter.sent.asked.about = About::Command(chat);
         }
 
