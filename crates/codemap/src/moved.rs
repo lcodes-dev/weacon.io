@@ -368,6 +368,24 @@ mod tests {
     }
 
     #[test]
+    fn a_flow_whose_other_step_stayed_as_one_moved_unchanged_is_reanchored() {
+        let before = repo(
+            "mod m;\npub fn run() {}\n",
+            "pub fn go() {}\npub struct S;\n",
+        );
+        let after = repo(
+            "mod m;\npub fn run() {}\npub fn go() {}\n",
+            "pub struct S;\n",
+        );
+
+        let Some(Moved::Reanchored(now)) = moved(&before, &after, "flow:a_b::run->a_b::m::go")
+        else {
+            panic!("not reanchored");
+        };
+        assert_eq!(now.anchor.to_string(), "flow:a_b::run->a_b::go");
+    }
+
+    #[test]
     fn a_flow_whose_other_step_changed_as_one_moved_is_no_reanchor() {
         let before = repo(LIB, MODULE);
         let after = repo(

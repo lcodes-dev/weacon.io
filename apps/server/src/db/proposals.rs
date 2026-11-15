@@ -991,7 +991,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn findings_kept_past_the_limit_are_refused() {
+    async fn findings_kept_past_the_limit_are_refused_and_up_to_it_kept() {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
         let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
@@ -1005,16 +1005,20 @@ mod tests {
         one.add_doc(&Doc::new(id("p"), text), &by("m1"))
             .await
             .unwrap();
-        let long = |pin: &str| ProposalChange::NeedsUpdate {
+        let stale = |pin: &str, bytes: usize| weacon_protocol::StaleAnchor {
+            pin: pin.parse().unwrap(),
+            change: weacon_protocol::AnchorChange::Gone {
+                was: "x".repeat(bytes),
+            },
+        };
+        let needs = |anchors| ProposalChange::NeedsUpdate {
             doc: id("p"),
             base: 1,
-            anchors: vec![weacon_protocol::StaleAnchor {
-                pin: pin.parse().unwrap(),
-                change: weacon_protocol::AnchorChange::Gone {
-                    was: "x".repeat(MAX_PROPOSAL / 2),
-                },
-            }],
+            anchors,
         };
+        let long = |pin: &str| needs(vec![stale(pin, MAX_PROPOSAL / 2)]);
+        let merged = needs(vec![stale(go, MAX_PROPOSAL / 2), stale(run, 0)]);
+        let room = MAX_PROPOSAL - serde_json::to_string(&merged).unwrap().len();
         let core = |proposal: &str, change| Proposed {
             agent: None,
             ..proposed(proposal, "mc1", change)
@@ -1026,5 +1030,7 @@ mod tests {
         assert_eq!(code(&both), "proposal.too_large");
         let first = one.proposal(&id("first")).await.unwrap();
         assert_eq!(first.state, ProposalState::Open);
+        let fits = needs(vec![stale(run, room)]);
+        one.propose(&core("third", fits)).await.unwrap();
     }
 }
