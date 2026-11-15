@@ -8,9 +8,15 @@ export const SYMBOLS: WebCapability = "symbols.search";
 
 /** The machine the palette asks for symbols: the open chat's, by its name, when it offers them, else the first that does. */
 export function searcher(machines: readonly MachineSummary[], chatMachine: string | undefined): MachineId | undefined {
-  const offering = machines.filter((machine) => machine.capabilities?.includes(SYMBOLS) === true);
+  const offering = machines.filter(offers);
   return (offering.find((machine) => machine.name === chatMachine) ?? offering[0])?.id;
 }
+
+/**
+ * Whether `machine` searches its code now: connected, with a core that said what it offers and
+ * didn't leave out symbol search.
+ */
+const offers = (machine: MachineSummary) => machine.connected === true && machine.core !== undefined && !(machine.missing ?? []).includes(SYMBOLS);
 
 /** The items of the open workspace's code on `machine` that match `words`, best first. */
 export function symbols(socket: MachineSocket, machine: MachineId, words: string, later: Later): Promise<Answer<CodeSymbol[]>> {

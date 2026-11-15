@@ -810,11 +810,20 @@ export type MachineSettingsQueryKind = (
  */
 export type MachineSummary = {
   /**
-   * What the machine's core offers while it is connected; none while it isn't.
+   * Whether its core is connected now.
    */
-  capabilities?: Array<Capability>;
+  connected?: boolean;
+  /**
+   * The core's build when it last connected; none until it has.
+   */
+  core?: App;
   id: MachineId;
   key: MachineKey;
+  /**
+   * What the server offers cores that this one didn't offer back when it last connected:
+   * it is older than the server supports, and those features don't reach it.
+   */
+  missing?: Array<Capability>;
   name: MachineName;
   os: MachineOs;
   paired_at: number;

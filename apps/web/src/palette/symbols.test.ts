@@ -5,30 +5,37 @@ import type { MachineSummary, Symbol as CodeSymbol } from "../protocol.ts";
 import { fake } from "../machines/fake-socket.ts";
 import { place, searcher, symbols } from "./symbols.ts";
 
-const machine = (id: string, name: string, capabilities?: string[]): MachineSummary => ({
+const CORE = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
+
+// A machine, connected unless `offline`, whose core offers symbols unless `older`; `silent` when its core never said.
+const machine = (id: string, name: string, how: { offline?: boolean; older?: boolean; silent?: boolean } = {}): MachineSummary => ({
   id,
   name,
   os: "linux",
   key: "ab".repeat(32),
   paired_at: 1,
-  ...(capabilities === undefined ? {} : { capabilities }),
+  ...(how.silent === true ? {} : { core: CORE }),
+  ...(how.older === true ? { missing: ["symbols.search"] } : {}),
+  ...(how.offline === true ? {} : { connected: true }),
 });
 
 const RUN: CodeSymbol = { repo: "site", kind: "fn", name: "a::run", path: "src/lib.rs", line: 2 };
 
 test("the open chat's machine is asked when it offers symbols, else the first machine that does", () => {
   const machines = [
-    machine("mc-1", "Laptop"),
-    machine("mc-2", "Studio", ["machine.connect", "symbols.search"]),
-    machine("mc-3", "Server", ["symbols.search"]),
-    machine("mc-4", "Old", ["machine.connect"]),
+    machine("mc-1", "Laptop", { older: true }),
+    machine("mc-2", "Studio"),
+    machine("mc-3", "Server"),
+    machine("mc-4", "Old", { offline: true }),
+    machine("mc-5", "Quiet", { silent: true }),
   ];
 
   assert.equal(searcher(machines, "Server"), "mc-3");
   assert.equal(searcher(machines, "Laptop"), "mc-2");
   assert.equal(searcher(machines, "Old"), "mc-2");
+  assert.equal(searcher(machines, "Quiet"), "mc-2");
   assert.equal(searcher(machines, undefined), "mc-2");
-  assert.equal(searcher(machines.slice(0, 1), "Laptop"), undefined);
+  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], "Laptop"), undefined);
   assert.equal(searcher([], undefined), undefined);
 });
 

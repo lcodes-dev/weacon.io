@@ -25,6 +25,7 @@ use crate::http::{Body, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
 use crate::secret::random_token;
 use crate::shared::Shared;
+use crate::uplink;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
@@ -202,10 +203,14 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
 
 /// `GET /api/machines`: the machines paired with the signed-in account.
 pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.machines_of(&session.account).await {
+    match shared
+        .db
+        .machines_of(&session.account, &uplink::offers())
+        .await
+    {
         Ok(mut machines) => {
             for machine in &mut machines {
-                machine.capabilities = shared.links.offers(&machine.id);
+                machine.connected = shared.links.is_open(&machine.id);
             }
             Json(MachineList { machines }).into_response()
         }
@@ -305,8 +310,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_list_says_what_a_connected_machines_core_offers() {
-        use crate::test_support::socket::{next, open, pongs, say};
+    async fn the_list_says_whether_a_machines_core_is_connected_now() {
+        use crate::test_support::socket::{next, open, say};
 
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
@@ -321,13 +326,11 @@ mod tests {
             .await
             .unwrap();
         say(&mut core, &["machine.connect", "symbols.search"]).await;
+        // Welcomed only once its connection is open.
         next(&mut core).await;
-        // Only an open connection answers pings, so its offers are registered by then.
-        assert!(pongs(&mut core).await);
 
-        assert_eq!(offline["machines"][0].get("capabilities"), None);
-        let offers = &list().await["machines"][0]["capabilities"];
-        assert_eq!(*offers, json!(["machine.connect", "symbols.search"]));
+        assert_eq!(offline["machines"][0].get("connected"), None);
+        assert_eq!(list().await["machines"][0]["connected"], json!(true));
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import type { ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
+import type { App, ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
 
 // The core's own test key, and the fingerprint the core prints for it.
 export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
@@ -77,6 +77,19 @@ export async function pair(page: Page): Promise<{ machine: string; token: string
   return claim(page, { pairing, secret });
 }
 
+/** The build the test cores say they are. */
+export const BUILD: App = { name: "weacon-core", version: "0.0.0", commit: "0000000" };
+
+/** A core's connection to the server, which says `hello` as `app` offering `capabilities` once open. */
+export function dial(page: Page, token: string, app: App, capabilities: string[]): WebSocket {
+  const url = new URL("/api/machines/connect", page.url());
+  url.protocol = "ws:";
+  // Node's WebSocket takes headers, as the core's own client sends its bearer token.
+  const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } } as unknown as string[]);
+  socket.onopen = () => socket.send(JSON.stringify({ id: 1, type: "hello", protocol: PROTOCOL, app, capabilities } satisfies Envelope));
+  return socket;
+}
+
 /** The sessions a person ran outside Weacon, as a core reads them: its list, and the one session's events so far. */
 export type Outside = { sessions: OutsideSession[]; events: ChatEntry[] };
 
@@ -93,17 +106,11 @@ export async function core(
   outside?: Outside,
   symbols?: CodeSymbol[],
 ): Promise<{ settings: MachineSettings; queries: number; set(settings: MachineSettings): void; refuse(): void; close(): void }> {
-  const url = new URL("/api/machines/connect", page.url());
-  url.protocol = "ws:";
-  // Node's WebSocket takes headers, as the core's own client sends its bearer token.
-  const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } } as unknown as string[]);
+  const socket = dial(page, token, BUILD, ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"]), ...(symbols === undefined ? [] : ["symbols.search"])]);
   const held = { settings, refusing: false, queries: 0 };
   const send = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
   await new Promise<void>((resolve, reject) => {
     socket.onerror = () => reject(new Error("the core couldn't connect"));
-    socket.onopen = () => {
-      send({ id: 1, type: "hello", protocol: PROTOCOL, app: { name: "weacon-core", version: "0.0.0", commit: "0000000" }, capabilities: ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"]), ...(symbols === undefined ? [] : ["symbols.search"])] });
-    };
     socket.onmessage = ({ data }) => {
       const envelope = JSON.parse(String(data)) as Envelope;
       if (envelope.type === "welcome") {
