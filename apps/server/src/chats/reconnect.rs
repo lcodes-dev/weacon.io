@@ -536,10 +536,16 @@ mod tests {
         let (one, two) = tokio::join!(resend_now(shared, &machine), resend_now(shared, &machine));
 
         assert_eq!((one.unwrap(), two.unwrap()), (0, 0));
-        let mut follows = sent(&mut attached);
-        follows.sort_by_key(|message| format!("{message:?}"));
-        let (c1, c2) = (follow_query("c-1"), follow_query("c-2"));
-        assert_eq!(follows, [c1.clone(), c1, c2.clone(), c2]);
+        // Each follows both, unless the other ended the refused one's chat first.
+        let follows = sent(&mut attached);
+        let count = |chat| {
+            follows
+                .iter()
+                .filter(|message| **message == follow_query(chat))
+                .count()
+        };
+        assert!((1..=2).contains(&count("c-1")), "{follows:?}");
+        assert_eq!((count("c-2"), follows.len()), (2, count("c-1") + 2));
         let events = workspace.events_after(&id("c-1"), 0, 100, 1 << 20).await;
         let receipts: Vec<_> = events.unwrap().into_iter().filter_map(outcome).collect();
         let failed = Outcome::Failed {
