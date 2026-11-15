@@ -30,24 +30,13 @@ test("the open chat's machine is asked when it offers symbols, else the first ma
     machine("mc-5", "Quiet", { silent: true }),
   ];
 
-  const named = (name: string) => ({ name });
-  assert.equal(searcher(machines, named("Server")), "mc-3");
-  assert.equal(searcher(machines, named("Laptop")), "mc-2");
-  assert.equal(searcher(machines, named("Old")), "mc-2");
-  assert.equal(searcher(machines, named("Quiet")), "mc-2");
+  assert.equal(searcher(machines, "mc-3"), "mc-3");
+  assert.equal(searcher(machines, "mc-1"), "mc-2");
+  assert.equal(searcher(machines, "mc-4"), "mc-2");
+  assert.equal(searcher(machines, "mc-5"), "mc-2");
   assert.equal(searcher(machines, undefined), "mc-2");
-  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], named("Laptop")), undefined);
+  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], "mc-1"), undefined);
   assert.equal(searcher([], undefined), undefined);
-});
-
-test("the open chat's machine is found by its id, whatever its name, when the server gives the id", () => {
-  // Two machines of one name: only the id tells them apart.
-  const machines = [machine("mc-1", "Laptop"), machine("mc-2", "Laptop"), machine("mc-3", "Studio")];
-
-  assert.equal(searcher(machines, { id: "mc-2", name: "Laptop" }), "mc-2");
-  assert.equal(searcher(machines, { id: "mc-3", name: "Laptop" }), "mc-3");
-  assert.equal(searcher(machines, { id: "mc-9", name: "Studio" }), "mc-1");
-  assert.equal(searcher(machines, { id: undefined, name: "Studio" }), "mc-3");
 });
 
 test("a search asks the machine for the open workspace and takes its own answer, leaving out kinds it doesn't know", async () => {

@@ -10,7 +10,6 @@ import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
 import { Palette } from "../palette/palette.tsx";
-import type { ChatMachine } from "../palette/symbols.ts";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
@@ -225,7 +224,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const names = useNames(api, workspace.id, socket);
   const served = useSections(socket);
   const searches = useOffers(socket, "workspace.search");
-  const palette = (chatMachine?: ChatMachine) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
+  const palette = (chatMachine?: MachineId) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
   if (place.view === "chats") {
     return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} tasksServed={served.tasks} />;
   }
@@ -308,7 +307,7 @@ function WorkspaceChats({
   palette,
   openSettings,
   tasksServed,
-}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: ChatMachine): ReactNode; tasksServed: boolean }) {
+}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: MachineId): ReactNode; tasksServed: boolean }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
@@ -329,7 +328,7 @@ function WorkspaceChats({
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
-      {palette(listedChat && { id: listedChat.machine_id, name: listedChat.machine })}
+      {palette(listedChat?.machine_id)}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
         <ChatsNav

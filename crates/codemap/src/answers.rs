@@ -204,14 +204,28 @@ impl Index {
         text.finish()
     }
 
-    /// The flows that each of `docs` pins, a doc's own in its order, as [`Self::flows`] lists
-    /// them, without its heading.
+    /// The flows pinned by the `docs` docs that hold the most of `words`, whatever their case,
+    /// best first, each doc's in its order, as [`Self::flows`] lists them without its heading.
     #[must_use]
-    pub fn flows_of(&self, docs: &[&str]) -> Vec<String> {
-        let mut seen = BTreeSet::new();
-        docs.iter()
-            .filter(|doc| seen.insert(**doc))
-            .flat_map(|doc| self.flows.iter().filter(move |flow| flow.file == *doc))
+    pub fn flows_matching(&self, words: &[&str], docs: usize) -> Vec<String> {
+        let words: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+        let pinning: BTreeSet<&str> = self.flows.iter().map(|flow| flow.file.as_str()).collect();
+        let mut ranked: Vec<(usize, &str)> = pinning
+            .into_iter()
+            .filter_map(|file| {
+                let text = self.docs.get(file)?.to_lowercase();
+                let held = words
+                    .iter()
+                    .filter(|word| text.contains(word.as_str()))
+                    .count();
+                (held > 0).then_some((held, file))
+            })
+            .collect();
+        ranked.sort_by_key(|(held, _)| Reverse(*held));
+        ranked
+            .into_iter()
+            .take(docs)
+            .flat_map(|(_, doc)| self.flows.iter().filter(move |flow| flow.file == doc))
             .map(flow_line)
             .collect()
     }
@@ -326,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn the_flows_of_some_docs_are_listed_doc_by_doc_once_each() {
+    fn the_flows_of_the_docs_that_hold_the_most_words_come_first() {
         let index = index(&files(&[
             ("lib/Cargo.toml", "[package]\nname = \"lib\"\n"),
             (
@@ -335,25 +349,31 @@ mod tests {
             ),
             (
                 "docs/a.md",
-                "flow:lib::run->lib::keep\n\nflow:lib::keep->lib::run\n",
+                "# Keeping\nflow:lib::run->lib::keep\n\nflow:lib::keep->lib::run\n",
             ),
-            ("docs/b.md", "See flow:lib::run->lib::gone.\n"),
-            ("docs/c.md", "flow:lib::keep->lib::keep\n"),
+            (
+                "docs/b.md",
+                "Keeping RUNS here: flow:lib::run->lib::gone.\n",
+            ),
+            ("docs/c.md", "Runs: flow:lib::keep->lib::keep\n"),
+            ("docs/d.md", "Keeping runs, with no flow.\n"),
         ]))
         .unwrap();
 
-        let listed = index.flows_of(&["docs/b.md", "docs/a.md", "docs/b.md", "docs/none.md"]);
+        let listed = index.flows_matching(&["keeping", "Runs"], 2);
 
         assert_eq!(
             listed,
             [
                 "- docs/b.md:1  lib::run -> lib::gone: breaks: no item lib::gone",
-                "- docs/a.md:1  lib::run -> lib::keep: holds",
-                "- docs/a.md:3  lib::keep -> lib::run: breaks: lib::keep doesn't reach lib::run \
+                "- docs/a.md:2  lib::run -> lib::keep: holds",
+                "- docs/a.md:4  lib::keep -> lib::run: breaks: lib::keep doesn't reach lib::run \
                  through calls",
             ]
         );
-        assert!(index.flows_of(&[]).is_empty());
+        assert_eq!(index.flows_matching(&["runs"], 5).len(), 2);
+        assert!(index.flows_matching(&["zebra"], 5).is_empty());
+        assert!(index.flows_matching(&[], 5).is_empty());
     }
 
     #[test]

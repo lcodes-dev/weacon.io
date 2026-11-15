@@ -96,7 +96,7 @@ test("a message found with ⌘K opens its chat at it, however far back it is", {
   t.after(() => served.close());
   const { page } = served;
   const last = 600;
-  await standIn(page, () => [{ id: "c-1", title: "Garden notes", machine: STUDIO.name, state: "open", updated_at: 1 }]);
+  await standIn(page, () => [{ id: "c-1", title: "Garden notes", machine: STUDIO.name, machine_id: "mc-1", state: "open", updated_at: 1 }]);
   await page.route("**/api/workspaces/*/search", (route) => {
     const hits = [{ kind: "chat", chat: "c-1", title: "Garden notes", seq: 5, snippet: { text: "Where the compost goes", marks: [] } }];
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });

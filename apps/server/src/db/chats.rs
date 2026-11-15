@@ -394,7 +394,7 @@ mod tests {
             state: ChatState::Open,
             updated_at: NOW + 5,
             run: None,
-            machine_id: Some(id("mc-1")),
+            machine_id: id("mc-1"),
             task: None,
         };
         assert_eq!(listed.first(), Some(&summary));

@@ -8,8 +8,7 @@ use weacon_observability::{Fault, Logger};
 use weacon_protocol::{ChatTask, MapQuery, MapQueryKind, McpCall, WorkspaceId};
 
 use super::{Maps, Stores};
-use crate::codemap::{locate, off_runtime, repo_map};
-use crate::db::Looking;
+use crate::codemap::{locate, off_runtime};
 use crate::mcp::grants::Grants;
 use crate::mcp::tools::{budget, or_empty};
 
@@ -88,24 +87,11 @@ impl Stores {
         task: &ChatTask,
         bytes: usize,
     ) -> Result<Option<String>, Fault> {
-        let Some((watched, index)) = self.index(workspace, folder).await? else {
+        let Some((_, index)) = self.index(workspace, folder).await? else {
             return Ok(None);
         };
-        let store = self.db.workspace(&watched.workspace);
-        let map = repo_map(&store, &self.git, watched.main);
-        let words = title_words(&task.title);
-        let hits = map.search(Some(&watched.worktree), &words, Looking::DocsWithAnyWord);
-        let hits = hits.await?;
-        let docs: Vec<&str> = hits
-            .iter()
-            .take(DOCS)
-            .map(|hit| hit.path.as_str())
-            .collect();
-        let flows = task_flows(
-            &task.title,
-            index.flows_of(&docs),
-            bytes * FLOWS_TENTHS / 10,
-        );
+        let found = index.flows_matching(&title_words(&task.title), DOCS);
+        let flows = task_flows(&task.title, found, bytes * FLOWS_TENTHS / 10);
         let rest = bytes.saturating_sub(flows.len());
         let start = if index.crates.is_empty() {
             String::new()
@@ -117,14 +103,13 @@ impl Stores {
 }
 
 /// The words of `title` a doc may match: those of 4 characters or more, once each.
-fn title_words(title: &str) -> String {
+fn title_words(title: &str) -> Vec<&str> {
     let mut seen = std::collections::BTreeSet::new();
-    let words: Vec<&str> = title
+    title
         .split(|ch: char| !ch.is_alphanumeric())
         .filter(|word| word.chars().nth(3).is_some() && seen.insert(*word))
         .take(WORDS)
-        .collect();
-    words.join(" ")
+        .collect()
 }
 
 /// `flows` under a line that quotes `title`, a person's words, within `share` bytes and ending
@@ -166,14 +151,15 @@ mod tests {
 
     #[test]
     fn a_titles_longer_words_are_searched_once_each_and_at_most_eight() {
-        assert_eq!(title_words("Fix the sign-in page: the page"), "sign page");
-        assert_eq!(title_words("a to be and the"), "");
+        let words = |title| title_words(title).join(" ");
+        assert_eq!(words("Fix the sign-in page: the page"), "sign page");
+        assert_eq!(words("a to be and the"), "");
         let many = "alpha bravo charlie delta echoes foxtrot golfer hotel india";
         assert_eq!(
-            title_words(many),
+            words(many),
             "alpha bravo charlie delta echoes foxtrot golfer hotel"
         );
-        assert_eq!(title_words("née déjà vu"), "déjà");
+        assert_eq!(words("née déjà vu"), "déjà");
     }
 
     #[test]

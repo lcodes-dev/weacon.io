@@ -206,9 +206,8 @@ pub enum ChatAnswerKind {
     Newer,
 }
 
-/// A chat in a [`ChatList`]: `machine` is its machine's name, `machine_id` its id, left out by
-/// an older server, and `updated_at` is when its latest turn began or ended, in seconds since
-/// the Unix epoch.
+/// A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and
+/// `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatSummary {
     pub id: ChatId,
@@ -221,9 +220,7 @@ pub struct ChatSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RunState")]
     pub run: Option<RunState>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "MachineId")]
-    pub machine_id: Option<MachineId>,
+    pub machine_id: MachineId,
     /// The task it was made for, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "TaskId")]
@@ -595,7 +592,7 @@ mod tests {
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
                 run: Some(RunState::Waiting),
-                machine_id: Some("mc-1".parse().unwrap()),
+                machine_id: "mc-1".parse().unwrap(),
                 task: Some("t-1".parse().unwrap()),
             }],
         };
@@ -604,13 +601,12 @@ mod tests {
             "state": "full", "updated_at": 1_700_000_000, "run": "waiting",
             "machine_id": "mc-1", "task": "t-1",
         }] });
-        let older = json!({ "chats": [{
+        let untasked = json!({ "chats": [{
             "id": "c-1", "title": "Fix the build", "owner": "m-1", "machine": "Ada's laptop",
-            "state": "open", "updated_at": 1,
+            "machine_id": "mc-1", "state": "open", "updated_at": 1,
         }] });
-        let older: ChatList = serde_json::from_value(older).unwrap();
-        assert_eq!(older.chats[0].machine_id, None);
-        assert_eq!(older.chats[0].task, None);
+        let untasked: ChatList = serde_json::from_value(untasked).unwrap();
+        assert_eq!(untasked.chats[0].task, None);
 
         assert_eq!(serde_json::to_value(&list).unwrap(), wire);
         assert_eq!(serde_json::from_value::<ChatList>(wire).unwrap(), list);

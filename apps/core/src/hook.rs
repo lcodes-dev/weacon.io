@@ -25,7 +25,6 @@ const LIMIT: Duration = Duration::from_secs(5);
 /// The core's share of [`LIMIT`], so a map it is still reading leaves time to index here.
 const CORE_LIMIT: Duration = Duration::from_secs(2);
 const MAP_READ: Capability = Capability::new(code!("map.read"));
-const SESSION_START_READ: Capability = Capability::new(code!("map.session_start"));
 
 /// How a hook finds its folder's map: from its run's core when it has one, else by `index`,
 /// within `limit` in all.
@@ -122,18 +121,13 @@ impl Core {
     async fn stored(&self, folder: &str) -> Result<Option<String>, Fault> {
         let (welcome, mut connection) =
             Connection::open(&self.socket, self.me.clone(), Vec::new()).await?;
-        let offers = |capability: Capability| welcome.capabilities.contains(&capability);
-        let query = if offers(SESSION_START_READ) {
-            MapQueryKind::SessionStart(SESSION_START)
-        } else if offers(MAP_READ) {
-            MapQueryKind::Map(SESSION_START)
-        } else {
+        if !welcome.capabilities.contains(&MAP_READ) {
             return Ok(None);
-        };
+        }
         let query = MapQuery {
             token: self.token.clone(),
             folder: folder.to_owned(),
-            query,
+            query: MapQueryKind::SessionStart(SESSION_START),
         };
         let message = Message::MapQuery(query);
         connection.send(&Envelope { id: 2, message }).await?;

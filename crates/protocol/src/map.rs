@@ -18,7 +18,7 @@ pub struct MapQuery {
 pub enum MapQueryKind {
     /// Where to begin reading the folder's code, as the MCP's `map` tool answers.
     Map(MapArgs),
-    /// What a session starts with, from a core that offers `map.session_start`: the flows
+    /// What a session starts with: the flows
     /// pinned by the docs that best match the title of the task of the run's chat, then the
     /// folder's map, both within `budget`; the map alone for a chat without a task.
     SessionStart(MapArgs),
