@@ -14,6 +14,7 @@ use super::Git;
 use super::chats::ChatRepos;
 use super::removal::Journal;
 use super::repos::{Repo, Repos};
+use crate::db::LocalRepo;
 use crate::hold::{Hold, hold as take};
 use crate::workspaces::Workspaces;
 
@@ -72,10 +73,11 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
     weacon_appkit::write_whole(file, &serde_json::to_vec(items)?)
 }
 
-/// The core's hold on adding worktrees, for every workspace, since one repository can be in
-/// several: git can fail when two are added to a repository at once.
-pub(super) fn hold_worktrees(state_dir: &Path) -> Result<Hold, Fault> {
-    take(&state_dir.join("git/worktrees.lock")).map_err(|error| {
+/// The core's hold on adding worktrees to `repo`, for every workspace, since one repository can
+/// be in several: git can fail when two are added to a repository at once.
+pub(super) fn hold_worktrees(state_dir: &Path, repo: &Path) -> Result<Hold, Fault> {
+    let name = format!("{}.lock", LocalRepo::at(repo).as_str());
+    take(&state_dir.join("git/worktrees").join(name)).map_err(|error| {
         Fault::new(code!("git.hold_failed"), "The worktrees couldn't be held").because(error)
     })
 }
@@ -90,6 +92,24 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+
+    #[test]
+    fn worktree_holds_on_two_repositories_are_apart() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        let _one = hold_worktrees(&state, Path::new("/repo/one")).unwrap();
+
+        // Taken on a thread of its own, so a shared hold fails the test rather than hangs it.
+        let (taken, held) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(taken.send(hold_worktrees(&state, Path::new("/repo/two")).map(drop)));
+        });
+
+        let two = held
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        two.unwrap();
+    }
 
     #[test]
     fn a_list_comes_back_as_saved_and_none_is_empty() {

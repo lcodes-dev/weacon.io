@@ -27,6 +27,10 @@ impl LocalRepo {
         let digest = Sha256::digest(main_worktree.as_os_str().as_encoded_bytes());
         Self(Sha256Hex::from_bytes(digest.into()).as_str().to_owned())
     }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 /// One repository's code map within a workspace.

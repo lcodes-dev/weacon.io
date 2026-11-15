@@ -35,7 +35,7 @@ pub(crate) fn chat_tree(
             "The chat's worktree is in the Trash; restore it to go on",
         ));
     }
-    let _held = hold_worktrees(workspaces.state_dir())?;
+    let _held = hold_worktrees(workspaces.state_dir(), &found.path)?;
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
         let start = match tree.start {
@@ -152,10 +152,12 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_is_made_only_under_the_cores_hold() {
+    fn a_worktree_is_made_only_under_its_repositorys_hold() {
         let bench = bench();
         // A folder where the hold's lock file goes, so the hold can't be taken.
-        fs::create_dir_all(bench.dir.join("state/git/worktrees.lock")).unwrap();
+        let repo = bench.stores().repo(&bench.site).unwrap().path;
+        let name = format!("{}.lock", crate::db::LocalRepo::at(&repo).as_str());
+        fs::create_dir_all(bench.dir.join("state/git/worktrees").join(name)).unwrap();
 
         let error = bench.tree(&bench.site).unwrap_err();
 
