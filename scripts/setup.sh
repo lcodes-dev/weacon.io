@@ -3,6 +3,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/tools.sh
+. scripts/tools.sh
 
 # The Claude Code SessionStart hook passes `--claude-session-start`: no check tools, which take minutes
 # to build, and no Node packages. CI's mutation shards pass `--rust-only`: only cargo-mutants of those.
@@ -41,18 +43,29 @@ run_logged() {
   }
 }
 
+mkdir -p .dev
+: >.dev/setup.log
+# mise installs the pinned Node and Rust. Without it, the installed ones must be exactly those.
+install_mise="install mise from https://mise.jdx.dev, then run this again"
+if [ -n "$mise" ]; then
+  pinned=(rust)
+  [ "$mode" != all ] || pinned+=(node)
+  log "Installing the pinned tools with mise"
+  run_logged "mise install" run_mise install "${pinned[@]}"
+  use_mise
+fi
+
 toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 [ -n "$toolchain" ] || die "rust-toolchain.toml names no channel"
 cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
 export PATH="$cargo_bin:$PATH"
-mkdir -p .dev
 
 rust_version() {
   rustup run "$1" rustc --version 2>/dev/null | cut -d' ' -f2 || true
 }
 
 ensure_toolchain() {
-  command -v rustup >/dev/null || die "install rustup from https://rustup.rs, then run this again"
+  command -v rustup >/dev/null || die "$install_mise"
   local toolchains alias stable host
   toolchains="${RUSTUP_HOME:-$HOME/.rustup}/toolchains"
   if [ "$(rust_version "$toolchain")" = "$toolchain" ]; then
@@ -68,8 +81,8 @@ ensure_toolchain() {
   if rustup toolchain install "$toolchain" --profile minimal --component rustfmt,clippy >>.dev/setup.log 2>&1; then
     return
   fi
-  # Cloud sessions can't reach static.rust-lang.org but come with a stable toolchain. When that is the
-  # pinned version, it serves under the pinned name.
+  # Cloud sessions can't reach static.rust-lang.org and have no mise, but come with a stable
+  # toolchain. When that is the pinned version, it serves under the pinned name.
   stable=$(rust_version stable)
   [ "$stable" = "$toolchain" ] || die "can't download Rust $toolchain, and the installed stable is ${stable:-missing}"
   host=$(rustup run stable rustc -vV | sed -n 's/^host: //p')
@@ -106,7 +119,7 @@ ensure_node() {
   local want have
   want=$(cat .node-version)
   have=$(node --version 2>/dev/null || true)
-  [ "$have" = "v$want" ] || die "Weacon's TypeScript needs Node $want, and the installed one is ${have:-missing}; install it, then run this again"
+  [ "$have" = "v$want" ] || die "Weacon's TypeScript needs Node $want, and the installed one is ${have:-missing}; $install_mise"
   local app
   for app in extension web; do
     log "Installing the $app's packages"
@@ -133,7 +146,6 @@ persist_path() {
   fi
 }
 
-: >.dev/setup.log
 ensure_toolchain
 fetch_dependencies
 if [ "$mode" = all ]; then
