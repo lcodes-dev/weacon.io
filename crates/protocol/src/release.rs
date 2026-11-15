@@ -27,7 +27,7 @@ pub enum UpdateSchedule {
     /// Look once a week and install what's out.
     Weekly,
     /// A schedule this build doesn't know, from a newer one; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
