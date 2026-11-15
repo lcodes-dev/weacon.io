@@ -18,7 +18,7 @@ test("the review bar says where the worktree stands, and Remove asks first, then
   await bar.getByText("weacon resume --workspace=w-1 --chat=c-1").waitFor();
   // This core opens no terminals.
   await bar.getByRole("button", { name: "Open terminal" }).click();
-  await bar.getByText("The terminal didn't open.").waitFor();
+  await bar.getByText("The terminal didn't open. On a machine without a desktop terminal, run the line below there.").waitFor();
   await bar.getByRole("button", { name: "Remove" }).click();
   const confirm = bar.getByRole("group", { name: "Remove the worktree" });
   await confirm

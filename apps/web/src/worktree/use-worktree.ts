@@ -9,7 +9,7 @@ import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, resumeLine,
 /**
  * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
  * alone: its state each time it is `shown`, and answers while it isn't. A pull request's draft stays
- * until the core opens it. What the core offers decides whether there is one.
+ * until the core opens it. What the server offers decides whether there is one.
  */
 export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
