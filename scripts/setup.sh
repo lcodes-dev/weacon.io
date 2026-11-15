@@ -4,17 +4,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# The Claude Code SessionStart hook passes this flag. It gets the toolchain and the dependencies but
-# leaves the check tools, which take minutes to build, and the extension's Node packages to a plain
-# `scripts/setup.sh`.
-session_start=false
-if [ "${1:-}" = "--claude-session-start" ]; then
-  [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
-  session_start=true
-fi
+# The Claude Code SessionStart hook passes `--claude-session-start`: no check tools, which take minutes
+# to build, and no Node packages. CI's mutation shards pass `--rust-only`: only cargo-mutants of those.
+mode=all
+case "${1:-}" in
+  --claude-session-start)
+    [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
+    mode=session_start
+    ;;
+  --rust-only) mode=rust_only ;;
+esac
 
 # The tools scripts/check.sh runs, at the versions CI uses.
-tools=(deny@0.20.2 machete@0.9.2 llvm-cov@0.9.1 mutants@27.1.0)
+mutants_tool=mutants@27.1.0
+tools=(deny@0.20.2 machete@0.9.2 llvm-cov@0.9.1 "$mutants_tool")
+if [ "$mode" = rust_only ]; then
+  tools=("$mutants_tool")
+fi
 
 log() {
   printf '==> %s\n' "$*" >&2
@@ -130,13 +136,15 @@ persist_path() {
 : >.dev/setup.log
 ensure_toolchain
 fetch_dependencies
-if [ "$session_start" = false ]; then
+if [ "$mode" = all ]; then
   ensure_llvm_tools
+fi
+if [ "$mode" != session_start ]; then
   ensure_tools
 fi
 persist_path
 # Last, so a Node mismatch can't keep the Rust tools off PATH.
-if [ "$session_start" = false ]; then
+if [ "$mode" = all ]; then
   ensure_node
   ensure_chromium
 fi
