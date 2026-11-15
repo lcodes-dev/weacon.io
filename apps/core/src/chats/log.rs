@@ -80,6 +80,24 @@ fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+// The entry as one line of the log, if it can be written and fits one frame.
+fn entry_line(entry: &ChatEntry) -> Result<Vec<u8>, Fault> {
+    let mut line = serde_json::to_vec(entry).map_err(|_| {
+        Fault::new(
+            code!("chat.event_unwritable"),
+            "The event holds a part only ever received",
+        )
+    })?;
+    line.push(b'\n');
+    if line.len() > ENTRY_MAX {
+        return Err(Fault::new(
+            code!("chat.event_too_large"),
+            "The event doesn't fit one frame",
+        ));
+    }
+    Ok(line)
+}
+
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
@@ -221,19 +239,7 @@ impl ChatLog {
             seq: self.seq() + 1,
             event,
         };
-        let mut line = serde_json::to_vec(&entry).map_err(|_| {
-            Fault::new(
-                code!("chat.event_unwritable"),
-                "The event holds a part only ever received",
-            )
-        })?;
-        line.push(b'\n');
-        if line.len() > ENTRY_MAX {
-            return Err(Fault::new(
-                code!("chat.event_too_large"),
-                "The event doesn't fit one frame",
-            ));
-        }
+        let line = entry_line(&entry)?;
         let len = line.len();
         self.ensure_file()
             .await

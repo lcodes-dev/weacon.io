@@ -11,11 +11,10 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
-use weacon_protocol::{Capability, Envelope, Message, code};
+use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, code};
 
 use crate::Failure;
 use crate::fake_chat::FakeChat;
-use crate::fake_core::refusal;
 use crate::fake_worktree::FakeWorktree;
 use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
@@ -180,6 +179,17 @@ fn reply_to(
     send_texts(replies, worktree.answer(&envelope).as_slice());
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.answer(&envelope));
+    }
+}
+
+/// The error that answers the message `id`.
+pub(crate) const fn refusal(id: u32, code: Code) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        }),
     }
 }
 
@@ -374,15 +384,26 @@ mod tests {
     #[tokio::test]
     async fn another_workspaces_chat_and_messages_it_doesnt_know_are_refused() {
         let dir = TempDir::new().unwrap();
-        let received = dir.join("received.jsonl");
-        let (mut client, served) = start(String::new(), received).await;
+        let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
+        let elsewhere = WorkspaceId::try_from("w-2".to_owned()).unwrap();
+        let query = Message::ChatQuery(ChatQuery {
+            workspace: elsewhere.clone(),
+            chat: chat(),
+            query: ChatQueryKind::Snapshot,
+        });
+        let command = Message::ChatCommand(ChatCommand {
+            request: request("q-1"),
+            workspace: elsewhere,
+            chat: chat(),
+            action: ChatAction::Interrupt,
+            by: None,
+        });
+        let known = |id, message| serde_json::to_value(Envelope { id, message }).unwrap();
         let sent = [
-            json!({ "id": 2, "type": "chat_query", "workspace": "w-2", "chat": "c-1",
-                    "query": { "kind": "snapshot" } }),
-            json!({ "id": 3, "type": "chat_command", "request": "q-1", "workspace": "w-2",
-                    "chat": "c-1", "action": { "kind": "interrupt" } }),
+            known(2, query),
+            known(3, command),
             json!({ "id": 4, "type": "chat_query", "workspace": "w-1", "chat": "c-1",
                     "query": { "kind": "search" } }),
             json!({ "id": 5, "type": "chat_command", "request": "q-1", "workspace": "w-1",
@@ -403,7 +424,6 @@ mod tests {
             .iter()
             .map(|answer| (answer["id"].clone(), answer["code"].clone()))
             .collect();
-        assert!(answers.iter().all(|answer| answer["type"] == "error"));
         assert_eq!(
             refused,
             [

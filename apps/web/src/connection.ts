@@ -9,8 +9,6 @@ export type WebCapability =
   | "workspace.chats"
   | "workspace.chat_commands"
   | "diff.view"
-  | "chat.send"
-  | "chat.events"
   | "log.forward"
   | "machine.settings"
   | "worktree.manage"

@@ -116,33 +116,6 @@ fn names_os(arguments: &str) -> bool {
         .any(|word| OS_CFGS.contains(&word))
 }
 
-// Whether macro tokens hold a `cfg!`, `#[cfg]` or `#[cfg_attr]` that names an operating
-// system, such as the `cfg!(windows)` in `assert!(cfg!(windows))`.
-fn selects_os(mut cursor: Cursor<'_>) -> bool {
-    while let Some((_, next)) = cursor.token_tree() {
-        if let Some((ident, after)) = cursor.ident()
-            && (ident == "cfg" || ident == "cfg_attr")
-        {
-            let after = after
-                .punct()
-                .filter(|(bang, _)| bang.as_char() == '!')
-                .map_or(after, |(_, rest)| rest);
-            if let Some((inside, ..)) = after.any_group()
-                && names_os(&inside.token_stream().to_string())
-            {
-                return true;
-            }
-        }
-        if let Some((inside, ..)) = cursor.any_group()
-            && selects_os(inside)
-        {
-            return true;
-        }
-        cursor = next;
-    }
-    false
-}
-
 /// What a file's code refers to outside `#[cfg(test)]` modules, functions and `use`s.
 #[derive(Default)]
 struct Uses {
@@ -185,6 +158,19 @@ impl Uses {
         self.note_path(prefix, &mut path);
     }
 
+    // A `cfg!`, `#[cfg]` or `#[cfg_attr]` in a macro's tokens, as in `assert!(cfg!(windows))`.
+    fn note_cfg(&mut self, ident: &Ident, next: Cursor<'_>) {
+        let after = next
+            .punct()
+            .filter(|(bang, _)| bang.as_char() == '!')
+            .map_or(next, |(_, rest)| rest);
+        if (ident == "cfg" || ident == "cfg_attr")
+            && let Some((inside, ..)) = after.any_group()
+        {
+            self.os_cfg |= names_os(&inside.token_stream().to_string());
+        }
+    }
+
     // Takes the token at `cursor` into `path`, and returns what now ends it.
     fn note_token(
         &mut self,
@@ -199,6 +185,7 @@ impl Uses {
             return last.colon();
         }
         if let Some((ident, next)) = cursor.ident() {
+            self.note_cfg(&ident, next);
             if INCLUDES.iter().any(|name| ident == name)
                 && let Some((bang, after)) = next.punct()
                 && bang.as_char() == '!'
@@ -353,8 +340,7 @@ impl<'ast> Visit<'ast> for Uses {
 
     fn visit_macro(&mut self, mac: &'ast Macro) {
         let tokens = TokenBuffer::new2(mac.tokens.clone());
-        self.os_cfg |= mac.path.is_ident("cfg") && names_os(&mac.tokens.to_string())
-            || selects_os(tokens.begin());
+        self.os_cfg |= mac.path.is_ident("cfg") && names_os(&mac.tokens.to_string());
         if mac
             .path
             .segments

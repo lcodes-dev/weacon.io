@@ -14,9 +14,9 @@ use weacon_protocol::{
 
 mod events;
 
-use crate::fake_core::refusal;
+use crate::fake_server::refusal;
 
-use events::{agent, asks_bash, run, said};
+use events::{agent, asks_bash, run, said, unknown};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -85,6 +85,9 @@ impl FakeChat {
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Vec<Envelope> {
         let id = envelope.id;
         let refused = |code| vec![refusal(id, code)];
+        if unknown(&envelope.message) {
+            return refused(code!("message.unsupported"));
+        }
         if let Message::ChatQuery(ChatQuery {
             workspace,
             chat,
@@ -108,9 +111,6 @@ impl FakeChat {
         };
         if !self.is(workspace, chat) {
             return refused(code!("chat.not_found"));
-        }
-        if *action == ChatAction::Newer {
-            return refused(code!("message.unsupported"));
         }
         let seq = self.seq();
         self.command(request, action);
@@ -196,7 +196,7 @@ impl FakeChat {
                 self.told_since(*after)
             }
             ChatQueryKind::Subscribe { .. } => vec![self.envelope(id, ChatAnswerKind::EventsLost)],
-            ChatQueryKind::Newer => vec![refusal(id, code!("message.unsupported"))],
+            ChatQueryKind::Newer => Vec::new(),
         }
     }
 
@@ -1023,11 +1023,18 @@ mod tests {
             fake.answer(&query(3, "c-1", ChatQueryKind::Newer)),
             [refusal(3, code!("message.unsupported"))]
         );
-        let newer = command(ChatAction::Newer);
-        assert_eq!(
-            fake.answer(&newer),
-            [refusal(newer.id, code!("message.unsupported"))]
-        );
+        let unnamed = command(ChatAction::Prompt {
+            text: "Hi".to_owned(),
+            repo: None,
+            machine: None,
+            agent: Some(AgentKind::Newer),
+        });
+        for newer in [command(ChatAction::Newer), unnamed] {
+            assert_eq!(
+                fake.answer(&newer),
+                [refusal(newer.id, code!("message.unsupported"))]
+            );
+        }
         assert_eq!(fake.seq(), seq);
         assert!(
             fake.answer(&played(RunEvent::Text {

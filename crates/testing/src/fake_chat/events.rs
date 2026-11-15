@@ -2,8 +2,28 @@
 
 use serde_json::Value;
 use weacon_protocol::{
-    AgentKind, AgentOwner, AgentRef, ChatEvent, MachineName, RunEvent, RunId, RunUpdate,
+    AgentKind, AgentOwner, AgentRef, ChatAction, ChatCommand, ChatEvent, ChatQuery, ChatQueryKind,
+    MachineName, Message, RunEvent, RunId, RunUpdate,
 };
+
+/// Whether a chat query or command holds a part this build doesn't know, such as a prompt to
+/// an agent it can't name.
+pub(super) const fn unknown(message: &Message) -> bool {
+    matches!(
+        message,
+        Message::ChatQuery(ChatQuery {
+            query: ChatQueryKind::Newer,
+            ..
+        }) | Message::ChatCommand(ChatCommand {
+            action: ChatAction::Newer
+                | ChatAction::Prompt {
+                    agent: Some(AgentKind::Newer),
+                    ..
+                },
+            ..
+        })
+    )
+}
 
 pub(super) fn run(id: &str) -> Result<RunId, String> {
     RunId::try_from(id.to_owned())

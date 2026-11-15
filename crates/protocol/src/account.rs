@@ -22,7 +22,7 @@ token_id!(
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInStart {
     pub workspace: WorkspaceId,
-    pub email: Secret<String>,
+    pub email: Secret,
 }
 
 /// The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
@@ -37,8 +37,8 @@ pub struct SignInStarted {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignInFinish {
     pub workspace: WorkspaceId,
-    pub email: Secret<String>,
-    pub code: Secret<String>,
+    pub email: Secret,
+    pub code: Secret,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "ChallengeId")]
     pub challenge: Option<ChallengeId>,
@@ -48,22 +48,22 @@ pub struct SignInFinish {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SignedIn {
     pub member: MemberId,
-    pub token: Secret<String>,
+    pub token: Secret,
 }
 
 /// Asks the server to send a one-time code to `email`, if that person may sign in. The
 /// answer, a [`SignInStarted`], is the same either way.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInStart {
-    pub email: Secret<String>,
+    pub email: Secret,
 }
 
 /// Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,
 /// for an [`AccountSignedIn`].
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignInFinish {
-    pub email: Secret<String>,
-    pub code: Secret<String>,
+    pub email: Secret,
+    pub code: Secret,
     pub challenge: ChallengeId,
 }
 
@@ -72,10 +72,10 @@ pub struct AccountSignInFinish {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountSignedIn {
     pub account: AccountId,
-    pub email: Secret<String>,
+    pub email: Secret,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
-    pub token: Option<Secret<String>>,
+    pub token: Option<Secret>,
 }
 
 #[cfg(test)]

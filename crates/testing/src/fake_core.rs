@@ -3,9 +3,7 @@
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use weacon_protocol::{
-    App, Capability, Code, Envelope, ErrorBody, Hello, Message, code, encode_line,
-};
+use weacon_protocol::{App, Capability, Code, Envelope, Hello, Message, code, encode_line};
 
 use crate::Failure;
 use crate::replay::play;
@@ -76,17 +74,6 @@ pub fn client_hello(
                 commit: "1a2b3c4".to_owned(),
             },
             capabilities: capabilities.into_iter().map(Capability::new).collect(),
-        }),
-    }
-}
-
-/// The error that answers the message `id`.
-pub(crate) const fn refusal(id: u32, code: Code) -> Envelope {
-    Envelope {
-        id,
-        message: Message::Error(ErrorBody {
-            code,
-            retryable: false,
         }),
     }
 }

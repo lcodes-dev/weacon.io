@@ -210,8 +210,6 @@ pub struct ChatList {
     pub chats: Vec<ChatSummary>,
 }
 
-impl ChatEvent {}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};

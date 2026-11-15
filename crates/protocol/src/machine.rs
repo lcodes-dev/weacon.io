@@ -76,8 +76,8 @@ pub struct PairStart {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairStarted {
     pub pairing: PairingId,
-    pub code: Secret<String>,
-    pub secret: Secret<String>,
+    pub code: Secret,
+    pub secret: Secret,
     pub expires_at: i64,
 }
 
@@ -85,7 +85,7 @@ pub struct PairStarted {
 /// [`PairPending`].
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairLookup {
-    pub code: Secret<String>,
+    pub code: Secret,
 }
 
 /// A machine waiting to be paired, for the person to check against what its terminal shows.
@@ -102,7 +102,7 @@ pub struct PairPending {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairConfirm {
     pub pairing: PairingId,
-    pub code: Secret<String>,
+    pub code: Secret,
 }
 
 /// From the core that started `pairing`: whether the person has confirmed it yet. The answer
@@ -110,7 +110,7 @@ pub struct PairConfirm {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairClaim {
     pub pairing: PairingId,
-    pub secret: Secret<String>,
+    pub secret: Secret,
 }
 
 /// The answer to a [`PairClaim`].
@@ -125,7 +125,7 @@ pub enum PairClaimed {
     Paired {
         machine: MachineId,
         owner: AccountId,
-        token: Secret<String>,
+        token: Secret,
     },
     /// A state this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]

@@ -163,7 +163,7 @@ pub(crate) async fn finish(
 pub(crate) async fn session(session: Session) -> Json<AccountSignedIn> {
     Json(AccountSignedIn {
         account: session.account,
-        email: session.email.as_str().to_owned().into(),
+        email: session.email.as_str().into(),
         token: None,
     })
 }
@@ -219,7 +219,7 @@ async fn signed_in(
     Ok(account.map(|account| {
         let who = AccountSignedIn {
             account,
-            email: email.as_str().to_owned().into(),
+            email: email.as_str().into(),
             token: None,
         };
         (who, token)

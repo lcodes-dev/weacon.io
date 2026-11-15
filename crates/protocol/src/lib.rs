@@ -159,4 +159,23 @@ mod tests {
             "an optional field is left out, never null"
         );
     }
+
+    #[test]
+    fn a_value_only_ever_received_is_never_written() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            for line in text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("#[serde(other"))
+            {
+                assert!(
+                    line.contains("#[serde(other, skip_serializing)]"),
+                    "{}: {line}",
+                    path.display()
+                );
+            }
+        }
+    }
 }

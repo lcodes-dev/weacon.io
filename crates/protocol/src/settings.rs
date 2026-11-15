@@ -128,8 +128,6 @@ pub enum SignInState {
     Newer,
 }
 
-impl MachineSettingsAnswerKind {}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};

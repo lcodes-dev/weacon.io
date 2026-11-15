@@ -76,8 +76,6 @@ pub struct OutsideSession {
     pub modified_at: i64,
 }
 
-impl SessionsAnswerKind {}
-
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
