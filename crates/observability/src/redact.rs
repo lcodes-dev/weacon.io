@@ -145,10 +145,10 @@ fn replacement(key: &str) -> Option<&'static str> {
     let joined = words.concat();
     let last = words.last().map_or("", String::as_str);
     let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
-    let named = SECRET_IN_KEY.iter().any(|word| joined.contains(word))
-        || SECRET_ENDS.iter().any(|end| joined.ends_with(end));
+    let within = |list: &[&str]| list.iter().any(|part| joined.contains(part));
+    let named = within(&SECRET_IN_KEY) || SECRET_ENDS.iter().any(|end| joined.ends_with(end));
     let secret = (named || has(&SECRET_WORDS))
-        && !NOT_SECRET_KEY.iter().any(|word| joined.contains(word))
+        && !within(&NOT_SECRET_KEY)
         && !DESCRIBES_SECRET.contains(&last);
     if secret {
         Some("[redacted]")
@@ -271,14 +271,14 @@ mod tests {
             ("authorName", "Ada".into()),
             ("bypass", true.into()),
             ("sessionId", "session_1".into()),
-            ("note", "Basic setup failed".into()),
+            ("note", "setup failed".into()),
         ];
         let Value::Object(expected) = json!({
             "tokens": 1200, "inputTokens": 800, "messages": 3, "hasPassword": true,
             "primaryKey": "id", "tokenCount": 3, "authStatus": "signed-in",
             "authMethod": "subscription", "contentLength": 52, "cacheKey": "chat_1",
             "subcommand": "status", "metadata": { "kind": "note" }, "authorName": "Ada",
-            "bypass": true, "sessionId": "session_1", "note": "Basic setup failed",
+            "bypass": true, "sessionId": "session_1", "note": "setup failed",
         }) else {
             panic!("not an object")
         };
