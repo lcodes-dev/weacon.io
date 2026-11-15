@@ -129,7 +129,7 @@ pub(crate) fn restart(runner: Runner<'_>) -> Result<(), Fault> {
 }
 
 /// Starts `weacon update` for `state_dir` in a unit of its own, so restarting the service
-/// doesn't stop it; false when no service is installed.
+/// doesn't stop it; false when no service is installed, an error when it couldn't start.
 pub(crate) fn launch_with(state_dir: &Path, env: Env<'_>, runner: Runner<'_>) -> io::Result<bool> {
     let exe = std::env::current_exe()?;
     if !installed(&exe, state_dir, env) {
@@ -152,7 +152,12 @@ pub(crate) fn launch_with(state_dir: &Path, env: Env<'_>, runner: Runner<'_>) ->
         exe,
         "update",
     ];
-    runner("systemd-run", &args)
+    // A launch systemd refused is a failure, so the check that asked for it runs again.
+    if runner("systemd-run", &args)? {
+        Ok(true)
+    } else {
+        Err(io::Error::other("systemd-run failed"))
+    }
 }
 
 fn run_step(step: &Step, runner: Runner<'_>) -> Result<(), Fault> {
@@ -324,7 +329,10 @@ mod tests {
             exe.display()
         );
         if platform::USER_SERVICES {
-            assert_eq!(calls, [expected]);
+            assert_eq!(calls, std::slice::from_ref(&expected));
+            let refused = launch_with(&state, &env, &mut runner(&mut calls, &expected));
+            refused.unwrap_err();
+            calls.pop();
             let relative = launch_with(Path::new("state"), &env, &mut runner(&mut calls, ""));
             assert!(!relative.unwrap());
             assert_eq!(calls.len(), 1);
