@@ -387,9 +387,6 @@ mod tests {
     async fn adding_an_invited_or_past_member_keeps_their_member_and_ends_the_invitation() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
-        one.set_role(&member_id("m1"), &member_id("m3"), WorkspaceRole::Admin)
-            .await
-            .unwrap_err();
         sqlx::query("UPDATE members SET role = 'owner' WHERE member_id = 'm1'")
             .execute(&one.db.writer)
             .await
@@ -398,7 +395,6 @@ mod tests {
             member: &member_id("i1"),
             by: &member_id("m1"),
             email: &email("cy@example.com"),
-            role: WorkspaceRole::Admin,
             now: 100,
         };
         one.invite(&invitation).await.unwrap();
@@ -416,19 +412,15 @@ mod tests {
         assert_eq!(cy.unwrap(), member_id("i1"));
         assert_eq!(bo.unwrap(), member_id("m3"));
         assert!(one.invitations(100).await.unwrap().is_empty());
-        let roles: Vec<_> = one
-            .members()
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|row| (row.id, row.role))
-            .collect();
+        let ids: Vec<_> = one.members().await.unwrap();
+        let ids: Vec<_> = ids.into_iter().map(|row| (row.id, row.role)).collect();
+        let member = Some(WorkspaceRole::Member);
         assert_eq!(
-            roles,
+            ids,
             [
                 (member_id("m1"), Some(WorkspaceRole::Owner)),
-                (member_id("m3"), Some(WorkspaceRole::Member)),
-                (member_id("i1"), Some(WorkspaceRole::Admin))
+                (member_id("m3"), member),
+                (member_id("i1"), member)
             ]
         );
     }

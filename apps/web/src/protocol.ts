@@ -733,55 +733,24 @@ export type InstallCommand = {
 };
 
 /**
- * A live invitation as the workspace's owner and admins see it: the member it makes, and when
- * it ends, in seconds since the Unix epoch.
+ * A live invitation as the workspace's owner sees it: the member it makes, and when it ends, in
+ * seconds since the Unix epoch.
  */
 export type Invitation = {
   email: string;
   expires_at: number;
   member: MemberId;
-  role: WorkspaceRole;
-};
-
-export type InvitationAction = (
-  | {
-    kind: "accept";
-  }
-  | {
-    kind: "hide";
-  }
-);
-
-/**
- * Answers, as `POST /api/invitations`, an invitation to the signed-in account's address; for
- * servers that offer `workspace.team`. Accepting answers with the [`crate::WorkspaceSummary`].
- */
-export type InvitationCommand = {
-  action: InvitationAction;
-  workspace: WorkspaceId;
 };
 
 /**
- * A live invitation as the person it is addressed to sees it once signed in: the workspace,
- * what the one who invited them is called there, and the role it gives.
+ * A live invitation as the person it is addressed to sees it once signed in: the workspace, and
+ * what its owner is called there. They take it up with `POST /api/workspaces/{workspace}/accept`.
  */
 export type InvitationOffer = {
   expires_at: number;
   invited_by: string;
   name: string;
-  role: WorkspaceRole;
   workspace: WorkspaceId;
-};
-
-/**
- * One letter the server leaves in its outbox, as a JSON file, for a mail relay to send. A
- * sign-in code's letter has `code`; any other has `notice` and no `code`, so a relay that
- * knows only codes refuses it.
- */
-export type Letter = {
-  code?: string;
-  notice?: Notice;
-  to: string;
 };
 
 export type Level = (
@@ -1015,7 +984,6 @@ export type MemberAction = (
   | {
     email: string;
     kind: "invite";
-    role: WorkspaceRole;
   }
   | {
     kind: "revoke";
@@ -1024,11 +992,6 @@ export type MemberAction = (
   | {
     kind: "remove";
     member: MemberId;
-  }
-  | {
-    kind: "set_role";
-    member: MemberId;
-    role: WorkspaceRole;
   }
   | {
     kind: "leave";
@@ -1050,7 +1013,7 @@ export type MemberId = string;
 
 /**
  * A workspace's members, past ones included, in the order they were added, from the server to
- * clients that have the capability `workspace.members`. Its owner and admins also get the live
+ * clients that have the capability `workspace.members`. Its owner also gets the live
  * invitations, from servers that offer `workspace.team`.
  */
 export type MemberList = {
@@ -1085,15 +1048,6 @@ export type MergeHunk = (
     current: string;
     kind: "conflict";
     proposed: string;
-  }
-);
-
-/**
- * What a letter without a code tells its address. It carries nothing anyone wrote.
- */
-export type Notice = (
-  | {
-    kind: "invited";
   }
 );
 
@@ -2101,7 +2055,7 @@ export type WorkspaceId = string;
 
 /**
  * The workspaces the signed-in account is a member of, and, from servers that offer
- * `workspace.team`, the live invitations to its address it hasn't hidden.
+ * `workspace.team`, the live invitations to its address.
  */
 export type WorkspaceList = {
   invitations?: Array<InvitationOffer>;
@@ -2113,7 +2067,6 @@ export type WorkspaceList = {
  */
 export type WorkspaceRole = (
   | "owner"
-  | "admin"
   | "member"
 );
 

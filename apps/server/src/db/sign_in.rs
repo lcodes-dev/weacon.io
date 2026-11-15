@@ -141,7 +141,7 @@ impl Db {
         };
         if let Some(account) = &account {
             start_session(&mut transaction, account, attempt).await?;
-            ensure_personal(&mut transaction, account, attempt.personal, attempt.now).await?;
+            ensure_personal(&mut transaction, account, attempt.personal).await?;
         }
         transaction.commit().await.map_err(failed)?;
         Ok(account)
@@ -452,7 +452,6 @@ mod tests {
                 member: &member_id(member),
                 by: &member_id("o-w1"),
                 email: &email(address),
-                role: weacon_protocol::WorkspaceRole::Member,
                 now: at,
             };
             w1.invite(&invitation).await.unwrap();
@@ -470,7 +469,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_invitation_lets_its_address_make_an_account_but_no_personal_workspace() {
+    async fn an_invitation_lets_its_address_make_an_account_where_it_may_not_sign_up() {
         let dir = TempDir::new().unwrap();
         let db = invited(&dir).await;
 
@@ -489,11 +488,8 @@ mod tests {
         );
         let bo = try_as(&db, "bo@example.com", "c3", b"code", NOW).await;
         assert_eq!(bo.as_deref(), Some("a2"));
-        // Neither the invited address nor the member gets a Personal workspace.
         let cy = db.account(id("unused"));
-        assert!(cy.workspaces().await.unwrap().is_empty());
         assert_eq!(cy.invitations(NOW).await.unwrap().len(), 1);
-        assert_eq!(db.account(id("a2")).workspaces().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

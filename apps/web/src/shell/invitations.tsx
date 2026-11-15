@@ -1,9 +1,8 @@
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import type { InvitationOffer, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
-import { roleText } from "../members/roles.ts";
 
-/** The person's invitations, each to accept, which opens its workspace, or hide. */
+/** The person's invitations, each to accept, which opens its workspace. */
 export function Invitations({
   api,
   invitations,
@@ -17,8 +16,7 @@ export function Invitations({
   joined(workspace: WorkspaceId): void;
 }) {
   const { busy, problem, ask } = useAsk();
-  const drop = (workspace: WorkspaceId, add?: WorkspaceSummary) =>
-    change((list) => withAnswered(list, workspace, add));
+  const drop = (workspace: WorkspaceId, add: WorkspaceSummary) => change((list) => withAnswered(list, workspace, add));
   return (
     <>
       <ul aria-label="Invitations">
@@ -28,7 +26,7 @@ export function Invitations({
               {offer.name}
               <span className="muted">
                 {" "}
-                {offer.invited_by === "" ? "Invited" : `${offer.invited_by} invited you`} as {roleText(offer.role).toLowerCase()}
+                {offer.invited_by === "" ? "Invited" : `${offer.invited_by} invited you`}
               </span>
             </span>
             <button
@@ -46,9 +44,6 @@ export function Invitations({
             >
               Accept
             </button>
-            <button type="button" disabled={busy} onClick={() => void ask(() => api.hideInvitation(offer.workspace), () => drop(offer.workspace))}>
-              Hide
-            </button>
           </li>
         ))}
       </ul>
@@ -57,11 +52,11 @@ export function Invitations({
   );
 }
 
-/** `list` without the invitation to `workspace`, and with `joined` once it is accepted. */
-export function withAnswered(list: WorkspaceList | undefined, workspace: WorkspaceId, joined?: WorkspaceSummary): WorkspaceList {
+/** `list` without the invitation to `workspace`, and with `joined`, the workspace it joined. */
+export function withAnswered(list: WorkspaceList | undefined, workspace: WorkspaceId, joined: WorkspaceSummary): WorkspaceList {
   const workspaces = list?.workspaces ?? [];
   return {
-    workspaces: joined === undefined || workspaces.some(({ id }) => id === joined.id) ? workspaces : [...workspaces, joined],
+    workspaces: workspaces.some(({ id }) => id === joined.id) ? workspaces : [...workspaces, joined],
     invitations: (list?.invitations ?? []).filter((offer) => offer.workspace !== workspace),
   };
 }

@@ -89,15 +89,14 @@ pub(crate) async fn read(member: Member) -> Response {
 }
 
 /// `GET /api/workspaces/{workspace}/members`: the workspace's members, past ones too, each named
-/// as [`name_of`] says, and for its owner and admins the live invitations.
+/// as [`name_of`] says, and for its owner the live invitations.
 pub(crate) async fn members(State(shared): State<Shared>, member: Member) -> Response {
     let listed = async {
         let rows = member.workspace.members().await?;
-        let manages = rows.iter().any(|row| {
-            row.id == member.id
-                && matches!(row.role, Some(WorkspaceRole::Owner | WorkspaceRole::Admin))
-        });
-        let invitations = if manages {
+        let owns = rows
+            .iter()
+            .any(|row| row.id == member.id && row.role == Some(WorkspaceRole::Owner));
+        let invitations = if owns {
             let live = member.workspace.invitations(shared.now()).await?;
             Some(live.into_iter().map(team::invitation).collect())
         } else {
@@ -199,10 +198,9 @@ mod tests {
         assert_eq!(read, ("http/1.1 200 ok".to_owned(), made.clone()));
         let names: Vec<_> = workspaces.iter().map(|seen| seen["name"].clone()).collect();
         let roles: Vec<_> = workspaces.iter().map(|seen| seen["role"].clone()).collect();
-        // A member of a workspace when they first sign in gets no Personal one.
-        assert_eq!(names, [json!("Team"), json!("Team two")]);
-        assert_eq!(roles, [json!("member"), json!("owner")]);
-        assert_eq!(workspaces[1]["member"], made["member"]);
+        assert_eq!(names, [json!("Team"), json!("Personal"), json!("Team two")]);
+        assert_eq!(roles, [json!("member"), json!("owner"), json!("owner")]);
+        assert_eq!(workspaces[2]["member"], made["member"]);
     }
 
     #[tokio::test]
@@ -225,7 +223,7 @@ mod tests {
         let (_, ada_reads) = ask(ada.address, "GET /api/workspaces/w1", &ada.proof(), "").await;
         let (_, bo_reads) = ask(bo.address, "GET /api/workspaces/w1", &bo.proof(), "").await;
 
-        assert_eq!((ada_sees.len(), bo_sees.len()), (1, 1));
+        assert_eq!((ada_sees.len(), bo_sees.len()), (2, 2));
         assert_eq!(
             (&ada_sees[0]["member"], &bo_sees[0]["member"]),
             (&json!("m1"), &json!("m3"))
@@ -234,6 +232,8 @@ mod tests {
             (&ada_reads["member"], &bo_reads["member"]),
             (&json!("m1"), &json!("m3"))
         );
+        assert!(ada_sees[1]["member"].is_string());
+        assert_ne!(ada_sees[1]["member"], bo_sees[1]["member"]);
     }
 
     #[tokio::test]
@@ -292,13 +292,10 @@ mod tests {
     #[tokio::test]
     async fn signing_in_again_makes_no_second_personal_workspace() {
         let fixture = Fixture::new().await;
-        let cy = email("cy@example.com");
-        let db = &fixture.shared.db;
-        db.add_account(&fresh_account(), &cy).await.unwrap();
-        drop(fixture.client("cy@example.com").await);
-        let (_server, cy) = fixture.client("cy@example.com").await;
+        drop(fixture.client("ada@example.com").await);
+        let (_server, ada) = fixture.client("ada@example.com").await;
 
-        let personal = listed(&cy)
+        let personal = listed(&ada)
             .await
             .into_iter()
             .filter(|seen| seen["name"] == "Personal")
@@ -354,11 +351,11 @@ mod tests {
         let bad_id = ask(ada.address, "GET /api/workspaces/w.1", &ada.proof(), "").await;
         let (nobody, _) = ask(ada.address, "GET /api/workspaces", "", "").await;
 
-        assert_eq!(theirs.len(), 1);
+        assert_eq!(theirs.len(), 2);
         assert_eq!(mine.len(), 1);
         assert_eq!(mine[0]["name"], "Personal");
         assert!(!theirs.contains(&mine[0]));
-        assert_eq!(refusals.len(), 4);
+        assert_eq!(refusals.len(), 6);
         for refusal in refusals {
             assert_eq!(
                 refusal,
@@ -380,7 +377,8 @@ mod tests {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
         let create = json!({ "name": "Team" }).to_string();
-        for _ in 0..100 {
+        // The Personal workspace is one of them.
+        for _ in 1..100 {
             let (made, _) = ada.send("POST /api/workspaces", &create).await;
             assert_eq!(made, "http/1.1 201 created");
         }
@@ -429,7 +427,7 @@ mod tests {
         let page = "cookie: __Host-weacon_session=x\r\norigin: https://other.example\r\n";
         let (crossed, _) = ask(ada.address, "POST /api/workspaces", page, &create).await;
 
-        assert_eq!(listed(&ada).await.len(), 1);
+        assert_eq!(listed(&ada).await.len(), 2);
         assert_eq!(nobody, "http/1.1 401 unauthorized");
         assert_eq!(crossed, "http/1.1 403 forbidden");
         Title::try_from(long.clone()).unwrap();

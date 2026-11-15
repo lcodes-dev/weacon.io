@@ -14,8 +14,6 @@ import type {
   DocList,
   DocRecord,
   DocRevise,
-  InvitationAction,
-  InvitationCommand,
   InvitationOffer,
   MachineId,
   MachineList,
@@ -114,7 +112,7 @@ export class Api {
     return this.#ask("GET", base(workspace), undefined, isWorkspace);
   }
 
-  /** Changes who is in `workspace`: invites, revokes, removes, sets a role or leaves. */
+  /** Changes who is in `workspace`: invites, revokes, removes or leaves. */
   changeMembers(workspace: WorkspaceId, action: MemberAction): Promise<Answer<undefined>> {
     const body: MemberCommand = { action };
     return this.#ask("POST", `${base(workspace)}/members`, body, isEmpty);
@@ -122,15 +120,7 @@ export class Api {
 
   /** Takes up an invitation to the signed-in address, answering with the workspace joined. */
   acceptInvitation(workspace: WorkspaceId): Promise<Answer<WorkspaceSummary>> {
-    const body: InvitationCommand = { workspace, action: { kind: "accept" } };
-    return this.#ask("POST", "/api/invitations", body, isWorkspace);
-  }
-
-  /** Stops showing an invitation to the signed-in address. */
-  hideInvitation(workspace: WorkspaceId): Promise<Answer<undefined>> {
-    const action: InvitationAction = { kind: "hide" };
-    const body: InvitationCommand = { workspace, action };
-    return this.#ask("POST", "/api/invitations", body, isEmpty);
+    return this.#ask("POST", `${base(workspace)}/accept`, undefined, isWorkspace);
   }
 
   /** Makes a workspace the signed-in account owns. */
@@ -293,7 +283,7 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
 }
 
 const isOffer = (value: unknown): value is InvitationOffer =>
-  fields(value, ["workspace", "name", "invited_by", "role"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
+  fields(value, ["workspace", "name", "invited_by"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
 const isList = (value: unknown): value is WorkspaceList =>
   listOf("workspaces", isWorkspace)(value) && (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isOffer)(value));
 const isChat = (value: unknown): value is ChatSummary =>
@@ -342,7 +332,7 @@ const isOffers = (offers: unknown): boolean => offers === undefined || (Array.is
 const isMachineList = listOf<MachineList>("machines", isMachine);
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
-const isInvitation = (value: unknown): boolean => fields(value, ["member", "email", "role"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
+const isInvitation = (value: unknown): boolean => fields(value, ["member", "email"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
 const isMembers = (value: unknown): value is MemberList =>
   listOf("members", (member) => fields(member, ["id", "name"]))(value) &&
   (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isInvitation)(value));

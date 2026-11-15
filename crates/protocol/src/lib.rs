@@ -98,10 +98,7 @@ pub use symbols::{
 pub use task::{
     Author, TaskChange, TaskCreate, TaskEditBody, TaskId, TaskList, TaskRecord, TaskStatus,
 };
-pub use team::{
-    Invitation, InvitationAction, InvitationCommand, InvitationOffer, Letter, MemberAction,
-    MemberCommand, Notice,
-};
+pub use team::{Invitation, InvitationOffer, MemberAction, MemberCommand};
 pub use terminal::{
     Bytes, NOISE_MAX, SEALED_MAX, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
     TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
@@ -149,8 +146,6 @@ mod tests {
         generator.subschema_for::<MachineList>();
         generator.subschema_for::<MemberList>();
         generator.subschema_for::<MemberCommand>();
-        generator.subschema_for::<InvitationCommand>();
-        generator.subschema_for::<Letter>();
         generator.subschema_for::<SearchQuery>();
         generator.subschema_for::<SearchAnswer>();
         generator.subschema_for::<ProposalList>();

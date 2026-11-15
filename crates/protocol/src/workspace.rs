@@ -30,8 +30,6 @@ pub struct Asker {
 pub enum WorkspaceRole {
     /// Made the workspace; there is one.
     Owner,
-    /// Was made one by the owner: invites, and removes members.
-    Admin,
     /// Was added to it.
     Member,
     /// A role this build doesn't know, from a newer peer; only ever received, and it allows
@@ -61,7 +59,7 @@ pub struct WorkspaceSummary {
 }
 
 /// The workspaces the signed-in account is a member of, and, from servers that offer
-/// `workspace.team`, the live invitations to its address it hasn't hidden.
+/// `workspace.team`, the live invitations to its address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
@@ -83,7 +81,7 @@ pub struct MemberSummary {
 }
 
 /// A workspace's members, past ones included, in the order they were added, from the server to
-/// clients that have the capability `workspace.members`. Its owner and admins also get the live
+/// clients that have the capability `workspace.members`. Its owner also gets the live
 /// invitations, from servers that offer `workspace.team`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberList {
@@ -99,8 +97,7 @@ pub struct MemberList {
 pub enum WorkspaceChange {
     /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
-    /// Someone was invited, joined, left, was removed or got another role, or an invitation
-    /// ended. Only for clients that have the capability `workspace.team`, which read the members
+    /// Someone was invited, joined, left or was removed, or an invitation ended. Only for clients that have the capability `workspace.team`, which read the members
     /// again.
     MembersChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
@@ -143,7 +140,7 @@ mod tests {
             members: vec![MemberSummary {
                 id: "m-1".parse().unwrap(),
                 name: "Ada".to_owned(),
-                role: Some(WorkspaceRole::Admin),
+                role: Some(WorkspaceRole::Owner),
             }],
             invitations: None,
         };
@@ -155,7 +152,7 @@ mod tests {
 
         round_trips(
             &list,
-            json!({ "members": [{ "id": "m-1", "name": "Ada", "role": "admin" }] }),
+            json!({ "members": [{ "id": "m-1", "name": "Ada", "role": "owner" }] }),
         );
         round_trips(&past, json!({ "id": "m-2", "name": "Bo" }));
     }
@@ -244,7 +241,6 @@ mod tests {
         round_trips(&list, json!({ "workspaces": [wire] }));
         round_trips(&create, json!({ "name": "Team" }));
         round_trips(&WorkspaceRole::Owner, json!("owner"));
-        round_trips(&WorkspaceRole::Admin, json!("admin"));
         round_trips(&WorkspaceRole::Member, json!("member"));
         assert_eq!(
             serde_json::from_value::<WorkspaceRole>(json!("auditor")).unwrap(),

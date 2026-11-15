@@ -13,7 +13,6 @@ const PROBLEMS = new Map<Code, string>([
   ["member.not_found", "That person isn't here any more."],
   ["member.exists", "That address is a member already."],
   ["invitation.exists", "That address is invited already."],
-  ["invitation.too_many", "Too many invitations for now. Try again later."],
   ["invitation.not_found", "That invitation has ended."],
   ["pairing.not_found", "No machine is waiting under that code. Check it, or run weacon pair again."],
   ["pairing.too_many", "Too many tries. Wait a while, then try again."],

@@ -1,24 +1,22 @@
-//! Who is in a workspace: its owner and admins invite and remove people, and an invited
-//! address, once signed in, takes up or hides its invitation.
+//! Who is in a workspace: its owner invites and removes people, and an invited address, once
+//! signed in, takes up its invitation.
 
 use axum::Json;
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use weacon_observability::{Fault, Field};
+use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, Invitation, InvitationAction, InvitationCommand, InvitationOffer, MemberAction,
-    MemberCommand, code,
+    Code, Invitation, InvitationOffer, MemberAction, MemberCommand, WorkspaceId, code,
 };
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
 use crate::db::{Account, InvitationRow, NewInvitation};
 use crate::email::Email;
-use crate::http::{Body, error, failure, invalid, not_found, too_many};
-use crate::outbox::mail_failed;
+use crate::http::{Body, error, failure, invalid, not_found};
 use crate::shared::Shared;
 use crate::workspaces::name_of;
 
@@ -26,7 +24,7 @@ use crate::workspaces::name_of;
 pub(crate) const TEAM: Code = code!("workspace.team");
 
 pub(crate) fn routes() -> Router<Shared> {
-    Router::new().route("/api/invitations", post(answer))
+    Router::new().route("/api/workspaces/{workspace}/accept", post(accept))
 }
 
 /// `POST /api/workspaces/{workspace}/members`: changes who is in the workspace, and tells its
@@ -38,20 +36,16 @@ pub(crate) async fn command(
 ) -> Response {
     let workspace = &member.workspace;
     let done = match body.action {
-        MemberAction::Invite { email, role } => {
+        MemberAction::Invite { email } => {
             let Ok(email) = Email::parse(email.expose()) else {
                 return invalid(code!("email.invalid"));
             };
-            invite(&shared, &member, &email, role).await
+            invite(&shared, &member, &email).await
         }
         MemberAction::Revoke { member: invited } => {
             workspace.revoke(&member.id, &invited, shared.now()).await
         }
         MemberAction::Remove { member: removed } => workspace.remove(&member.id, &removed).await,
-        MemberAction::SetRole {
-            member: other,
-            role,
-        } => workspace.set_role(&member.id, &other, role).await,
         MemberAction::Leave => workspace.leave(&member.id).await,
         MemberAction::Newer => return invalid(code!("request.invalid")),
     };
@@ -64,58 +58,31 @@ pub(crate) async fn command(
     }
 }
 
-async fn invite(
-    shared: &Shared,
-    member: &Member,
-    email: &Email,
-    role: weacon_protocol::WorkspaceRole,
-) -> Result<(), Fault> {
+async fn invite(shared: &Shared, member: &Member, email: &Email) -> Result<(), Fault> {
     let new = NewInvitation {
         member: &fresh(&new_id)?,
         by: &member.id,
         email,
-        role,
         now: shared.now(),
     };
-    if member.workspace.invite(&new).await? {
-        let (outbox, to) = (shared.outbox.clone(), email.clone());
-        let left = tokio::task::spawn_blocking(move || outbox.notify(&to)).await;
-        // The invitation stands whether or not its notice is left.
-        if let Err(fault) = left
-            .map_err(|error| mail_failed().because(error))
-            .and_then(|left| left)
-        {
-            let workspace = member.workspace.id().as_str().into();
-            let fields = [("workspace_id", workspace), ("err", Field::error(&fault))];
-            shared.log.warn("notice failed", &fields);
-        }
-    }
-    Ok(())
+    member.workspace.invite(&new).await
 }
 
-/// `POST /api/invitations`: takes up or hides an invitation to the signed-in account's address.
-pub(crate) async fn answer(
+/// `POST /api/workspaces/{workspace}/accept`: takes up the invitation to the signed-in account's
+/// address, and answers with the workspace joined.
+pub(crate) async fn accept(
     State(shared): State<Shared>,
     session: Session,
-    Body(body): Body<InvitationCommand>,
+    Path(workspace): Path<WorkspaceId>,
 ) -> Response {
     let account = shared.db.account(session.account);
-    let now = shared.now();
-    match body.action {
-        InvitationAction::Accept => match account.accept(&body.workspace, now).await {
-            Ok(Some(summary)) => {
-                shared.wake_feeds(&body.workspace);
-                Json(summary).into_response()
-            }
-            Ok(None) => not_found(code!("invitation.not_found")),
-            Err(fault) => failure(fault),
-        },
-        InvitationAction::Hide => match account.hide(&body.workspace, now).await {
-            Ok(true) => StatusCode::NO_CONTENT.into_response(),
-            Ok(false) => not_found(code!("invitation.not_found")),
-            Err(fault) => failure(fault),
-        },
-        InvitationAction::Newer => invalid(code!("request.invalid")),
+    match account.accept(&workspace, shared.now()).await {
+        Ok(Some(summary)) => {
+            shared.wake_feeds(&workspace);
+            Json(summary).into_response()
+        }
+        Ok(None) => not_found(code!("invitation.not_found")),
+        Err(fault) => failure(fault),
     }
 }
 
@@ -140,7 +107,6 @@ pub(crate) async fn offers(
             invited_by: invited_by.to_owned(),
             workspace: offer.workspace,
             name: offer.name,
-            role: offer.role,
             expires_at: offer.expires_at,
         });
     }
@@ -151,7 +117,6 @@ pub(crate) fn invitation(row: InvitationRow) -> Invitation {
     Invitation {
         member: row.member,
         email: row.email.as_str().into(),
-        role: row.role,
         expires_at: row.expires_at,
     }
 }
@@ -164,8 +129,6 @@ fn refused(fault: Fault) -> Response {
         not_found(code)
     } else if code == code!("member.exists") || code == code!("invitation.exists") {
         error(StatusCode::CONFLICT, code, false)
-    } else if code == code!("invitation.too_many") {
-        too_many(code)
     } else {
         failure(fault)
     }
@@ -173,6 +136,8 @@ fn refused(fault: Fault) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use serde_json::{Value, json};
     use weacon_protocol::{Message, WorkspaceChange, WorkspaceUpdate};
 
@@ -194,8 +159,8 @@ mod tests {
         ask(who.address, &path, &who.proof(), &body).await
     }
 
-    fn invite(address: &str, role: &str) -> Value {
-        json!({ "kind": "invite", "email": address, "role": role })
+    fn invite(address: &str) -> Value {
+        json!({ "kind": "invite", "email": address })
     }
 
     async fn members(who: &Client, workspace: &str) -> Value {
@@ -203,39 +168,25 @@ mod tests {
         ask(who.address, &path, &who.proof(), "").await.1
     }
 
-    async fn answer(who: &Client, workspace: &str, kind: &str) -> (String, Value) {
-        let body = json!({ "workspace": workspace, "action": { "kind": kind } }).to_string();
-        ask(who.address, "POST /api/invitations", &who.proof(), &body).await
+    async fn accept(who: &Client, workspace: &str) -> (String, Value) {
+        let path = format!("POST /api/workspaces/{workspace}/accept");
+        ask(who.address, &path, &who.proof(), "").await
     }
 
-    // Every letter waiting, each taken out of the outbox.
-    fn letters(fixture: &Fixture) -> Vec<Value> {
-        fixture
-            .letters()
-            .into_iter()
-            .map(|file| {
-                let letter = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-                std::fs::remove_file(file).unwrap();
-                letter
-            })
-            .collect()
+    async fn read(who: &Client, path: &str) -> (String, Value) {
+        ask(who.address, &format!("GET {path}"), &who.proof(), "").await
     }
 
-    async fn feed(
-        address: std::net::SocketAddr,
-        token: &str,
-        workspace: &str,
-        offers: &[&str],
-    ) -> Socket {
-        let mut socket = open(address, &format!("/api/workspaces/{workspace}/feed"), token)
-            .await
-            .unwrap();
+    async fn feed(address: SocketAddr, token: &str, workspace: &str, offers: &[&str]) -> Socket {
+        let path = format!("/api/workspaces/{workspace}/feed");
+        let mut socket = open(address, &path, token).await.unwrap();
         say(&mut socket, offers).await;
         assert!(matches!(next(&mut socket).await, Message::Welcome(_)));
         socket
     }
 
-    fn change(message: Message) -> WorkspaceChange {
+    async fn change(socket: &mut Socket) -> WorkspaceChange {
+        let message = next(socket).await;
         let Message::Workspace(WorkspaceUpdate { change, .. }) = message else {
             panic!("{message:?}");
         };
@@ -243,8 +194,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_invitation_is_answered_the_same_whoever_the_address_is_and_notices_say_nothing_else()
-     {
+    async fn an_invitation_is_answered_the_same_whoever_the_address_is() {
         let fixture = Fixture::new().await;
         let db = &fixture.shared.db;
         db.add_account(&fresh_account(), &email("cy@example.com"))
@@ -252,39 +202,28 @@ mod tests {
             .unwrap();
         let (_server, ada, crew) = crew(&fixture).await;
 
-        let bo = command(&ada, &crew, invite("Bo@Example.com", "member")).await;
-        let cy = command(&ada, &crew, invite("cy@example.com", "admin")).await;
-        let again = command(&ada, &crew, invite("bo@example.com", "admin")).await;
-        let herself = command(&ada, &crew, invite("ada@example.com", "member")).await;
+        let bo = command(&ada, &crew, invite("Bo@Example.com")).await;
+        let cy = command(&ada, &crew, invite("cy@example.com")).await;
+        let again = command(&ada, &crew, invite("bo@example.com")).await;
+        let herself = command(&ada, &crew, invite("ada@example.com")).await;
+        let bad = command(&ada, &crew, invite("not an address")).await;
+        let newer = command(&ada, &crew, json!({ "kind": "transfer" })).await;
 
         assert_eq!(bo, ("http/1.1 204 no content".to_owned(), Value::Null));
         assert_eq!(cy, bo);
         assert_eq!(again.0, "http/1.1 409 conflict");
         assert_eq!(again.1["code"], "invitation.exists");
         assert_eq!(herself.1["code"], "member.exists");
-        let mut told = letters(&fixture);
-        told.sort_by_key(|letter| letter["to"].to_string());
-        assert_eq!(
-            told,
-            [
-                json!({ "to": "bo@example.com", "notice": { "kind": "invited" } }),
-                json!({ "to": "cy@example.com", "notice": { "kind": "invited" } })
-            ]
-        );
+        assert_eq!(bad.1["code"], "email.invalid");
+        assert_eq!(newer.1["code"], "request.invalid");
         let listed = members(&ada, &crew).await;
         let invited: Vec<_> = listed["invitations"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|invitation| (invitation["email"].clone(), invitation["role"].clone()))
+            .map(|invitation| invitation["email"].clone())
             .collect();
-        assert_eq!(
-            invited,
-            [
-                (json!("bo@example.com"), json!("member")),
-                (json!("cy@example.com"), json!("admin"))
-            ]
-        );
+        assert_eq!(invited, [json!("bo@example.com"), json!("cy@example.com")]);
         assert_eq!(listed["members"].as_array().unwrap().len(), 1);
     }
 
@@ -292,96 +231,56 @@ mod tests {
     async fn an_invited_address_signs_in_takes_it_up_and_the_workspace_hears_it() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        let mut ada_feed = feed(
-            server.address,
-            &ada.token,
-            &crew,
-            &["workspace.feed", "workspace.team"],
-        )
-        .await;
-        assert!(matches!(
-            change(next(&mut ada_feed).await),
-            WorkspaceChange::MemberJoined { .. }
-        ));
+        let offers = ["workspace.feed", "workspace.team"];
+        let mut ada_feed = feed(server.address, &ada.token, &crew, &offers).await;
+        let joined = change(&mut ada_feed).await;
+        assert!(matches!(joined, WorkspaceChange::MemberJoined { .. }));
 
-        command(&ada, &crew, invite("bo@example.com", "member")).await;
-        assert_eq!(
-            change(next(&mut ada_feed).await),
-            WorkspaceChange::MembersChanged
-        );
-        letters(&fixture);
+        command(&ada, &crew, invite("bo@example.com")).await;
+        assert_eq!(change(&mut ada_feed).await, WorkspaceChange::MembersChanged);
         let bo = fixture
             .sign_in_client(server.address, "bo@example.com")
             .await;
-        let outside = ask(
-            bo.address,
-            &format!("GET /api/workspaces/{crew}"),
-            &bo.proof(),
-            "",
-        )
-        .await;
-        let (joined, summary) = answer(&bo, &crew, "accept").await;
-        let (_, after) = ask(bo.address, "GET /api/workspaces", &bo.proof(), "").await;
-        let inside = ask(
-            bo.address,
-            &format!("GET /api/workspaces/{crew}"),
-            &bo.proof(),
-            "",
-        )
-        .await;
+        let outside = read(&bo, &format!("/api/workspaces/{crew}")).await;
+        let (taken, summary) = accept(&bo, &crew).await;
+        let (_, after) = read(&bo, "/api/workspaces").await;
+        let inside = read(&bo, &format!("/api/workspaces/{crew}")).await;
 
         assert_eq!(outside.0, "http/1.1 401 unauthorized");
-        assert_eq!(joined, "http/1.1 200 ok");
+        assert_eq!(taken, "http/1.1 200 ok");
         assert_eq!(summary["role"], "member");
-        assert_eq!(after["workspaces"], json!([summary]));
+        assert!(after["workspaces"].as_array().unwrap().contains(&summary));
         assert_eq!(after["invitations"], json!([]));
         assert_eq!(inside.0, "http/1.1 200 ok");
-        assert_eq!(
-            change(next(&mut ada_feed).await),
-            WorkspaceChange::MembersChanged
-        );
+        assert_eq!(change(&mut ada_feed).await, WorkspaceChange::MembersChanged);
         assert!(members(&bo, &crew).await.get("invitations").is_none());
+        assert_eq!(accept(&bo, &crew).await.0, "http/1.1 404 not found");
     }
 
     #[tokio::test]
     async fn an_invited_address_sees_the_workspace_and_who_invited_it() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        command(&ada, &crew, invite("bo@example.com", "member")).await;
-        letters(&fixture);
+        command(&ada, &crew, invite("bo@example.com")).await;
         let bo = fixture
             .sign_in_client(server.address, "bo@example.com")
             .await;
 
-        let (_, listed) = ask(bo.address, "GET /api/workspaces", &bo.proof(), "").await;
+        let (_, listed) = read(&bo, "/api/workspaces").await;
 
-        assert_eq!(listed["workspaces"], json!([]));
+        assert_eq!(listed["workspaces"][0]["name"], "Personal");
         let offers = listed["invitations"].as_array().unwrap();
         assert_eq!(offers.len(), 1);
         let offer = &offers[0];
-        let seen = [
-            &offer["workspace"],
-            &offer["name"],
-            &offer["invited_by"],
-            &offer["role"],
-        ];
-        assert_eq!(
-            seen,
-            [
-                &json!(crew),
-                &json!("Crew"),
-                &json!("ada"),
-                &json!("member")
-            ]
-        );
+        let seen = [&offer["workspace"], &offer["name"], &offer["invited_by"]];
+        assert_eq!(seen, [&json!(crew), &json!("Crew"), &json!("ada")]);
     }
 
     #[tokio::test]
     async fn only_an_invitation_gets_an_address_a_code_where_nobody_may_sign_up() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        command(&ada, &crew, invite("bo@example.com", "member")).await;
-        letters(&fixture);
+        command(&ada, &crew, invite("bo@example.com")).await;
 
         start_sign_in(server.address, "di@example.com").await;
         fixture.settled().await;
@@ -395,93 +294,50 @@ mod tests {
     async fn a_removed_member_is_refused_at_once_and_their_feed_ends() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        command(&ada, &crew, invite("bo@example.com", "member")).await;
-        letters(&fixture);
+        command(&ada, &crew, invite("bo@example.com")).await;
         let bo = fixture
             .sign_in_client(server.address, "bo@example.com")
             .await;
-        let (_, summary) = answer(&bo, &crew, "accept").await;
+        let (_, summary) = accept(&bo, &crew).await;
         let member = summary["member"].clone();
         // A feed that hears of no members' changes ends all the same.
         let mut bo_feed = feed(server.address, &bo.token, &crew, &["workspace.feed"]).await;
-        assert!(matches!(
-            change(next(&mut bo_feed).await),
-            WorkspaceChange::MemberJoined { .. }
-        ));
+        let joined = change(&mut bo_feed).await;
+        assert!(matches!(joined, WorkspaceChange::MemberJoined { .. }));
 
-        let by_member = command(&bo, &crew, invite("cy@example.com", "member")).await;
-        let made_admin = command(
-            &ada,
-            &crew,
-            json!({ "kind": "set_role", "member": member, "role": "admin" }),
-        )
-        .await;
+        let by_member = command(&bo, &crew, invite("cy@example.com")).await;
         let removed = command(&ada, &crew, json!({ "kind": "remove", "member": member })).await;
+        let nobody = command(&ada, &crew, json!({ "kind": "remove", "member": "m9" })).await;
 
         assert_eq!(by_member.0, "http/1.1 403 forbidden");
         assert_eq!(by_member.1["code"], "member.not_allowed");
-        assert_eq!(made_admin.0, "http/1.1 204 no content");
         assert_eq!(removed.0, "http/1.1 204 no content");
+        assert_eq!(nobody.1["code"], "member.not_found");
         assert!(ends(&mut bo_feed).await);
-        let read = ask(
-            bo.address,
-            &format!("GET /api/workspaces/{crew}"),
-            &bo.proof(),
-            "",
-        )
-        .await;
-        assert_eq!(read.0, "http/1.1 401 unauthorized");
+        let refused = read(&bo, &format!("/api/workspaces/{crew}")).await;
+        assert_eq!(refused.0, "http/1.1 401 unauthorized");
         let left = command(&bo, &crew, json!({ "kind": "leave" })).await;
         assert_eq!(left.0, "http/1.1 401 unauthorized");
-        let (_, listed) = ask(bo.address, "GET /api/workspaces", &bo.proof(), "").await;
-        assert_eq!(listed["workspaces"], json!([]));
         let past = &members(&ada, &crew).await["members"][1];
         assert_eq!(past, &json!({ "id": member, "name": "bo" }));
     }
 
     #[tokio::test]
-    async fn a_hidden_invitation_reads_as_live_to_the_workspace_and_odd_asks_are_refused() {
+    async fn a_revoked_invitation_cant_be_taken_up() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        command(&ada, &crew, invite("bo@example.com", "member")).await;
-        letters(&fixture);
+        command(&ada, &crew, invite("bo@example.com")).await;
         let bo = fixture
             .sign_in_client(server.address, "bo@example.com")
             .await;
+        let invitation = members(&ada, &crew).await["invitations"][0]["member"].clone();
 
-        let hidden = answer(&bo, &crew, "hide").await;
-        let (_, listed) = ask(bo.address, "GET /api/workspaces", &bo.proof(), "").await;
-        let again = answer(&bo, &crew, "hide").await;
-        let newer = answer(&bo, &crew, "snooze").await;
-        let elsewhere = answer(&bo, "w1", "accept").await;
-        let bad_address = command(&ada, &crew, invite("not an address", "member")).await;
-        let newer_action = command(&ada, &crew, json!({ "kind": "transfer" })).await;
-        let nobody = command(&ada, &crew, json!({ "kind": "remove", "member": "m9" })).await;
-
-        assert_eq!(hidden.0, "http/1.1 204 no content");
-        assert_eq!(listed["invitations"], json!([]));
+        let revoke = json!({ "kind": "revoke", "member": invitation });
         assert_eq!(
-            members(&ada, &crew).await["invitations"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
-        assert_eq!(again.0, "http/1.1 204 no content");
-        assert_eq!(newer.0, "http/1.1 422 unprocessable entity");
-        assert_eq!(elsewhere.0, "http/1.1 404 not found");
-        assert_eq!(bad_address.1["code"], "email.invalid");
-        assert_eq!(newer_action.1["code"], "request.invalid");
-        assert_eq!(nobody.1["code"], "member.not_found");
-        let revoke = |member: &Value| json!({ "kind": "revoke", "member": member });
-        let invitation = &members(&ada, &crew).await["invitations"][0]["member"];
-        assert_eq!(
-            command(&ada, &crew, revoke(invitation)).await.0,
+            command(&ada, &crew, revoke).await.0,
             "http/1.1 204 no content"
         );
-        assert_eq!(
-            answer(&bo, &crew, "accept").await.0,
-            "http/1.1 404 not found"
-        );
+        assert_eq!(accept(&bo, &crew).await.0, "http/1.1 404 not found");
+        assert_eq!(accept(&bo, "w1").await.0, "http/1.1 404 not found");
     }
 }

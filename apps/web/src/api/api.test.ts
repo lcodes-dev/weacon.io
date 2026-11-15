@@ -138,13 +138,12 @@ test("a workspace refused to a session that still is one is left, and one refuse
   assert.deepEqual(sent, ["/api/workspaces/w%201/members", "/api/session", "/api/workspaces/w-2", "/api/session"]);
 });
 
-test("members are changed, invitations answered, and lists with invitations of the wrong shape refused", async () => {
-  const offer = { workspace: "w-1", name: "Crew", invited_by: "ada", role: "member", expires_at: 9 };
-  const invitation = { member: "m-2", email: "bo@example.com", role: "admin", expires_at: 9 };
+test("members are changed, invitations taken up, and lists with invitations of the wrong shape refused", async () => {
+  const offer = { workspace: "w-1", name: "Crew", invited_by: "ada", expires_at: 9 };
+  const invitation = { member: "m-2", email: "bo@example.com", expires_at: 9 };
   const { api, sent } = serve(
     { status: 204 },
     { status: 200, body: { id: "w-1", name: "Crew", role: "member" } },
-    { status: 204 },
     { status: 200, body: { workspaces: [], invitations: [offer] } },
     { status: 200, body: { workspaces: [], invitations: [{ ...offer, workspace: "a/b" }] } },
     { status: 200, body: { workspaces: [], invitations: [{ ...offer, expires_at: "soon" }] } },
@@ -152,19 +151,17 @@ test("members are changed, invitations answered, and lists with invitations of t
     { status: 200, body: { members: [], invitations: [{ ...invitation, expires_at: undefined }] } },
   );
 
-  assert.deepEqual(await api.changeMembers("w-1", { kind: "invite", email: "bo@example.com", role: "admin" }), { ok: true, value: undefined });
+  assert.deepEqual(await api.changeMembers("w-1", { kind: "invite", email: "bo@example.com" }), { ok: true, value: undefined });
   assert.deepEqual(await api.acceptInvitation("w-1"), { ok: true, value: { id: "w-1", name: "Crew", role: "member" } });
-  assert.deepEqual(await api.hideInvitation("w-1"), { ok: true, value: undefined });
   assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [], invitations: [offer] } });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.equal((await api.members("w-1")).ok, true);
   assert.deepEqual(await api.members("w-1"), { ok: false, code: MALFORMED });
   const json = { "content-type": "application/json" };
-  assert.deepEqual(sent.slice(0, 3), [
-    { path: "/api/workspaces/w-1/members", method: "POST", headers: json, body: '{"action":{"kind":"invite","email":"bo@example.com","role":"admin"}}' },
-    { path: "/api/invitations", method: "POST", headers: json, body: '{"workspace":"w-1","action":{"kind":"accept"}}' },
-    { path: "/api/invitations", method: "POST", headers: json, body: '{"workspace":"w-1","action":{"kind":"hide"}}' },
+  assert.deepEqual(sent.slice(0, 2), [
+    { path: "/api/workspaces/w-1/members", method: "POST", headers: json, body: '{"action":{"kind":"invite","email":"bo@example.com"}}' },
+    { path: "/api/workspaces/w-1/accept", method: "POST" },
   ]);
 });
 

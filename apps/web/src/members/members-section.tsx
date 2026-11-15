@@ -4,10 +4,10 @@ import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import type { MemberAction, MemberList, MemberSummary, WorkspaceRole } from "../protocol.ts";
+import type { MemberAction, MemberList, MemberSummary } from "../protocol.ts";
 import type { OpenWorkspace } from "../shell/workspaces.tsx";
 import { useOffers } from "../shell/workspace-socket.ts";
-import { manages, mayManage, roleText } from "./roles.ts";
+import { roleText } from "./roles.ts";
 
 /** Whether other people are in the workspace `list` lists: more than one member now. */
 export function isTeam(list: MemberList): boolean {
@@ -15,8 +15,8 @@ export function isTeam(list: MemberList): boolean {
 }
 
 /**
- * Settings' Members: who is in the open workspace and with what role, past members marked, and
- * for its owner and admins its invitations and a form to invite; each may leave but the owner.
+ * Settings' Members: who is in the open workspace, past members marked, and for its owner its
+ * invitations, a form to invite and Remove; each member may leave.
  */
 export function MembersSection({ api, open, members }: { api: Api; open: OpenWorkspace; members: Loading<MemberList> }) {
   const team = useOffers(open.socket, "workspace.team");
@@ -26,7 +26,7 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
   }
   const { workspace } = open;
   const list = members.value;
-  const role = list?.members.find(({ id }) => id === workspace.member)?.role ?? workspace.role;
+  const owner = workspace.role === "owner";
   const act = (action: MemberAction, done?: () => void) =>
     void changing.ask(
       () => api.changeMembers(workspace.id, action),
@@ -43,7 +43,7 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
       {list !== undefined && (
         <ul aria-label="Members">
           {list.members.map((member) => (
-            <Member key={member.id} member={member} me={member.id === workspace.member} by={role} busy={changing.busy} act={act} />
+            <Member key={member.id} member={member} me={member.id === workspace.member} removes={owner} busy={changing.busy} act={act} />
           ))}
         </ul>
       )}
@@ -53,16 +53,16 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
           <ul aria-label="Invitations">
             {list.invitations.map((invitation) => (
               <li key={invitation.member}>
-                {invitation.email} <span className="muted">{roleText(invitation.role)}, ends {ending(invitation.expires_at)}</span>{" "}
+                {invitation.email} <span className="muted">ends {ending(invitation.expires_at)}</span>{" "}
                 <Confirm label="Revoke" question={`Revoke the invitation to ${invitation.email}?`} busy={changing.busy} confirm={() => act({ kind: "revoke", member: invitation.member })} />
               </li>
             ))}
           </ul>
         </>
       )}
-      {manages(role) && <Invite owner={role === "owner"} busy={changing.busy} invite={(email, as, done) => act({ kind: "invite", email, role: as }, done)} />}
+      {owner && <Invite busy={changing.busy} invite={(email, done) => act({ kind: "invite", email }, done)} />}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}
-      {role !== "owner" && (
+      {!owner && (
         <Confirm label="Leave" question={`Leave ${workspace.name}?`} busy={changing.busy} confirm={() => act({ kind: "leave" }, () => open.left(`You left ${workspace.name}.`))} />
       )}
     </section>
@@ -72,42 +72,35 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
 function Member({
   member,
   me,
-  by,
+  removes,
   busy,
   act,
 }: {
   member: MemberSummary;
   me: boolean;
-  by: WorkspaceRole;
+  removes: boolean;
   busy: boolean;
   act(action: MemberAction): void;
 }) {
   const { id, name, role } = member;
-  const changes = !me && by === "owner" && mayManage(by, role);
   return (
     <li>
       {name}
-      {me && " (you)"} <span className="muted">{role === undefined ? "Past member" : roleText(role)}</span>
-      {changes && (
-        <button type="button" disabled={busy} onClick={() => act({ kind: "set_role", member: id, role: role === "admin" ? "member" : "admin" })}>
-          {role === "admin" ? "Make member" : "Make admin"}
-        </button>
-      )}
-      {!me && mayManage(by, role) && <Confirm label="Remove" question={`Remove ${name} from this workspace?`} busy={busy} confirm={() => act({ kind: "remove", member: id })} />}
+      {me && " (you)"} <span className="muted">{role === undefined ? "Past member" : roleText(role)}</span>{" "}
+      {removes && role === "member" && <Confirm label="Remove" question={`Remove ${name} from this workspace?`} busy={busy} confirm={() => act({ kind: "remove", member: id })} />}
     </li>
   );
 }
 
-function Invite({ owner, busy, invite }: { owner: boolean; busy: boolean; invite(email: string, role: WorkspaceRole, done: () => void): void }) {
+function Invite({ busy, invite }: { busy: boolean; invite(email: string, done: () => void): void }) {
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<WorkspaceRole>("member");
   const [sent, setSent] = useState<string>();
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
         setSent(undefined);
-        invite(email.trim(), role, () => {
+        invite(email.trim(), () => {
           setSent(`Invited ${email.trim()}. They see the invitation once they sign in.`);
           setEmail("");
         });
@@ -118,15 +111,6 @@ function Invite({ owner, busy, invite }: { owner: boolean; busy: boolean; invite
         Email
         <input type="email" required value={email} onChange={(event) => setEmail(event.target.value)} />
       </label>
-      {owner && (
-        <label>
-          Role
-          <select value={role} onChange={(event) => setRole(event.target.value === "admin" ? "admin" : "member")}>
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
-          </select>
-        </label>
-      )}
       <button type="submit" disabled={busy}>
         Invite
       </button>

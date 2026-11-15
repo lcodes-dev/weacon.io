@@ -1,11 +1,10 @@
-//! The invitations to an account's address, which only that account sees and answers.
+//! The invitations to an account's address, which only that account sees and takes up.
 
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
+use weacon_protocol::{MemberId, WorkspaceId, WorkspaceSummary};
 
 use super::super::changes::Versioned;
 use super::super::{Account, Workspace, failed, stored};
-use super::stored_role;
 
 /// A live invitation to the account's address, with the member who made it.
 #[derive(Debug, PartialEq, Eq)]
@@ -13,7 +12,6 @@ pub(crate) struct Offer {
     pub(crate) workspace: WorkspaceId,
     pub(crate) name: String,
     pub(crate) invited_by: MemberId,
-    pub(crate) role: WorkspaceRole,
     pub(crate) expires_at: i64,
 }
 
@@ -27,13 +25,12 @@ macro_rules! live {
 }
 
 impl Account {
-    /// The live invitations to the account's address that it hasn't hidden, oldest first.
+    /// The live invitations to the account's address, soonest to end first.
     pub(crate) async fn invitations(&self, now: i64) -> Result<Vec<Offer>, Fault> {
-        sqlx::query_as::<_, (String, String, String, String, i64)>(concat!(
-            "SELECT w.workspace_id, w.name, i.invited_by, m.role, i.expires_at
-             FROM workspaces AS w JOIN ",
+        sqlx::query_as::<_, (String, String, String, i64)>(concat!(
+            "SELECT w.workspace_id, w.name, i.invited_by, i.expires_at FROM workspaces AS w JOIN ",
             live!(),
-            " AND w.workspace_id = m.workspace_id AND i.hidden = 0 ORDER BY i.invited_at, m.rowid"
+            " AND w.workspace_id = m.workspace_id ORDER BY i.expires_at, m.rowid"
         ))
         .bind(self.id.as_str())
         .bind(now)
@@ -41,20 +38,19 @@ impl Account {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(workspace, name, invited_by, role, expires_at)| {
+        .map(|(workspace, name, invited_by, expires_at)| {
             Ok(Offer {
                 workspace: stored(workspace)?,
                 name,
                 invited_by: stored(invited_by)?,
-                role: stored_role(&role)?,
                 expires_at,
             })
         })
         .collect()
     }
 
-    /// Takes up the live invitation to `workspace`, hidden or not, and gives the workspace as
-    /// its new member sees it; `None` when there is none.
+    /// Takes up the live invitation to `workspace`, and gives the workspace as its new member
+    /// sees it; `None` when there is none.
     pub(crate) async fn accept(
         &self,
         workspace: &WorkspaceId,
@@ -100,29 +96,11 @@ impl Account {
         transaction.commit().await.map_err(failed)?;
         place.summary(&member).await
     }
-
-    /// Stops showing the live invitation to `workspace`; false when there is none. The
-    /// workspace isn't told.
-    pub(crate) async fn hide(&self, workspace: &WorkspaceId, now: i64) -> Result<bool, Fault> {
-        let hidden = sqlx::query(concat!(
-            "UPDATE invitations SET hidden = 1 WHERE workspace_id = ?3 AND member_id =
-                 (SELECT m.member_id FROM ",
-            live!(),
-            " AND m.workspace_id = ?3)"
-        ))
-        .bind(self.id.as_str())
-        .bind(now)
-        .bind(workspace.as_str())
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(hidden.rows_affected() == 1)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::AccountId;
+    use weacon_protocol::{AccountId, WorkspaceRole};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -154,7 +132,6 @@ mod tests {
                 member: &member_id(member),
                 by: &member_id(owner),
                 email: &email(address),
-                role: WorkspaceRole::Admin,
                 now: NOW,
             };
             place.invite(&invitation).await.unwrap();
@@ -167,7 +144,6 @@ mod tests {
             workspace: workspace_id(workspace),
             name: workspace.to_uppercase(),
             invited_by: member_id(by),
-            role: WorkspaceRole::Admin,
             expires_at: NOW + INVITATION_LIFETIME,
         }
     }
@@ -184,8 +160,6 @@ mod tests {
         assert!(cy.invitations(ends).await.unwrap().is_empty());
         assert_eq!(cy.accept(&workspace_id("w1"), ends).await.unwrap(), None);
         assert_eq!(cy.accept(&workspace_id("w2"), NOW).await.unwrap(), None);
-        assert!(!cy.hide(&workspace_id("w2"), NOW).await.unwrap());
-        assert!(cy.workspaces().await.unwrap().is_empty());
         let bo: AccountId = id("a-bo");
         db.add_account(&bo, &email("bo@example.com")).await.unwrap();
         assert_eq!(
@@ -195,22 +169,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_hidden_invitation_still_stands_and_taking_it_up_makes_a_member() {
+    async fn taking_up_an_invitation_makes_a_member_once() {
         let dir = TempDir::new().unwrap();
         let db = invited(&dir).await;
         let cy = db.account(id("a-cy"));
         let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
         let before = w1.changes_since(0, 100).await.unwrap().len();
 
-        assert!(cy.hide(&workspace_id("w1"), NOW).await.unwrap());
-        assert!(cy.invitations(NOW).await.unwrap().is_empty());
-        assert_eq!(w1.invitations(NOW).await.unwrap().len(), 1);
-        assert_eq!(w1.changes_since(0, 100).await.unwrap().len(), before);
         let joined = cy.accept(&workspace_id("w1"), NOW).await.unwrap().unwrap();
 
-        assert_eq!(joined.role, WorkspaceRole::Admin);
+        assert_eq!(joined.role, WorkspaceRole::Member);
         assert_eq!(joined.member, Some(member_id("i1")));
         assert_eq!(cy.workspaces().await.unwrap(), [joined]);
+        assert!(cy.invitations(NOW).await.unwrap().is_empty());
         assert!(w1.invitations(NOW).await.unwrap().is_empty());
         assert_eq!(w1.changes_since(0, 100).await.unwrap().len(), before + 1);
         assert_eq!(cy.accept(&workspace_id("w1"), NOW).await.unwrap(), None);
