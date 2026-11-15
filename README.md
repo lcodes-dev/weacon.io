@@ -176,9 +176,9 @@ Open your workspace, then **Settings**, then the machine's **Settings**. There y
 
 - **Error reports**: off until you turn them on.
 - **Agent access**: what the workspace's agents may do on this machine: off, read only, ask first or full.
-- **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal sealed between the browser and your core. The server only relays bytes it can't read.
+- **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal sealed between the browser and your core. The server only relays bytes it can't read. But the server also serves the web app's code, so this trusts whoever runs the server; if you don't, sign in over SSH on the machine instead, with the command below.
 
-To sign in from a terminal instead, use the workspace's id, the `workspace=` part of the web app's address:
+To sign in from a terminal, on the machine or over SSH, use the workspace's id, the `workspace=` part of the web app's address:
 
 ```bash
 target/debug/weacon login claude --workspace <workspace id>
