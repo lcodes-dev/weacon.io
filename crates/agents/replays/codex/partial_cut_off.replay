@@ -1,0 +1,13 @@
+# Written from the documentation of `codex app-server`, whose item/agentMessage/delta appends
+# to an agent message; not a capture of a real run. The agent exits before the whole message comes.
+> {"id":1,"method":"initialize","params":{"clientInfo":{"name":"weacon-core","title":"Weacon","version":"0.1.0"}}}
+< {"id":1,"result":{"userAgent":"codex_cli_rs/0.166.0"}}
+> {"method":"initialized"}
+> {"id":2,"method":"thread/start","params":{"approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":"workspace-write"}}
+< {"id":2,"result":{"thread":{"id":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"}}}
+> {"id":3,"method":"turn/start","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","input":[{"type":"text","text":"Bump the version","text_elements":[]}]}}
+< {"id":3,"result":{"turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"turn/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turn":{"id":"turn-1","items":[],"status":"inProgress"}}}
+< {"method":"item/started","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","item":{"type":"agentMessage","id":"item-1","text":""}}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":"Bumping"}}
+< {"method":"item/agentMessage/delta","params":{"threadId":"019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b","turnId":"turn-1","itemId":"item-1","delta":" it"}}
