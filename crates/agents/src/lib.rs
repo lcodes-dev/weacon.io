@@ -19,6 +19,7 @@ mod vendor;
 mod wire;
 
 pub use access::resolve;
+pub use claude::TOKEN_VARIABLE;
 pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;

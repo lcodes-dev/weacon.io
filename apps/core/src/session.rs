@@ -16,6 +16,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("repo.list")),
     Capability::new(code!("chat.hold")),
     Capability::new(code!("terminal.sign_in")),
+    Capability::new(code!("map.read")),
     Capability::new(code!("symbols.search")),
 ];
 
@@ -122,6 +123,7 @@ mod tests {
                             Capability::new(code!("repo.list")),
                             Capability::new(code!("chat.hold")),
                             Capability::new(code!("terminal.sign_in")),
+                            Capability::new(code!("map.read")),
                             Capability::new(code!("symbols.search")),
                         ],
                     }),

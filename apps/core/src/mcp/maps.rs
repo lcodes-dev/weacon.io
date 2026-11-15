@@ -2,6 +2,7 @@
 //! repository, only when the run's workspace registered that repository, kept current by a
 //! watch of each live run's worktree.
 
+mod hook;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -56,6 +57,10 @@ struct Stores {
     reads: Arc<Semaphore>,
 }
 
+/// A read of a map that didn't end within its limit.
+#[derive(Debug)]
+struct TooSlow;
+
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
@@ -91,10 +96,26 @@ impl Maps {
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
+        let place = (grant.workspace.clone(), grant.folder.clone());
+        match self.stored(call, place, permit, log).await {
+            Ok(Some(answer)) => answer,
+            Ok(None) => NO_MAP.to_owned(),
+            Err(TooSlow) => TOO_SLOW.to_owned(),
+        }
+    }
+
+    /// [`Self::answer`]'s answer from the map of the folder in `place`'s workspace when there
+    /// is one; none when there isn't, and [`TooSlow`] once the limit passes.
+    async fn stored(
+        &self,
+        call: &McpCall,
+        (workspace, folder): (WorkspaceId, PathBuf),
+        permit: OwnedSemaphorePermit,
+        log: &Logger,
+    ) -> Result<Option<String>, TooSlow> {
         let Some(stores) = self.stores(log).await else {
-            return NO_MAP.to_owned();
+            return Ok(None);
         };
-        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
         let (call, reading_log) = (call.clone(), log.clone());
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {
@@ -108,13 +129,12 @@ impl Maps {
                 .flatten()
         });
         match tokio::time::timeout(self.limit, reading).await {
-            Err(_) => TOO_SLOW.to_owned(),
-            Ok(Ok(Some(answer))) => answer,
-            Ok(Ok(None)) => NO_MAP.to_owned(),
+            Err(_) => Err(TooSlow),
+            Ok(Ok(answer)) => Ok(answer),
             Ok(Err(error)) => {
                 let fault = failed().because(error);
                 log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-                NO_MAP.to_owned()
+                Ok(None)
             }
         }
     }

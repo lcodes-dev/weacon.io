@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
-    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, Pick,
-    ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery, SymbolsAnswer,
-    SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
+    DiffQuery, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery, MapAnswer,
+    MapQuery, Pick, ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery,
+    SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
     WorktreeCommand, WorktreeQuery, code,
 };
 
@@ -49,6 +49,8 @@ pub enum Message {
     WorktreeCommand(WorktreeCommand),
     WorktreeAnswer(WorktreeAnswer),
     ProposalCommand(ProposalCommand),
+    MapQuery(MapQuery),
+    MapAnswer(MapAnswer),
     SymbolsQuery(SymbolsQuery),
     SymbolsAnswer(SymbolsAnswer),
     /// A message type this build doesn't know, from a newer peer.

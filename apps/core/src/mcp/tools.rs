@@ -19,6 +19,16 @@ pub(crate) const CHURN_COMMITS: u32 = 500;
 
 pub(crate) const NO_MAP: &str = "No code map for this folder.\n";
 
+/// `answer`, or nothing in place of "no map": a repository without code adds nothing to a
+/// session.
+pub(crate) fn or_empty(answer: String) -> String {
+    if answer == NO_MAP {
+        String::new()
+    } else {
+        answer
+    }
+}
+
 /// Longer than any item's path, and too long to echo back within a budget.
 const LONGEST_PATH: usize = 500;
 const NO_ITEM: &str = "No item has this path.\n";
