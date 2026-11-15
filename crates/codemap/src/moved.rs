@@ -310,4 +310,25 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn a_rename_is_of_an_item_of_its_kind_in_its_file_whatever_else_left() {
+        let before = repo("mod m;\npub fn run() { m::go() }\npub struct X;\n", MODULE);
+        let other_kind = repo(LIB, "pub struct W(u8);\npub struct S;\n");
+        let elsewhere_left = repo(
+            "mod m;\npub fn run() { m::went() }\n",
+            "pub fn went() {}\npub struct S;\n",
+        );
+
+        assert_eq!(
+            moved(&before, &other_kind, "sym:a_b::m::go"),
+            Some(Moved::Gone {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned()
+            })
+        );
+        assert_eq!(
+            moved(&before, &elsewhere_left, "sym:a_b::m::go"),
+            Some(Moved::Reanchored(pin(&elsewhere_left, "sym:a_b::m::went")))
+        );
+    }
 }
