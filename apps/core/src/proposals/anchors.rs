@@ -428,6 +428,40 @@ mod tests {
             "mod m;\npub fn run() { go() }\npub fn go() {}\n",
             "pub fn more() {}\n",
         );
+        let (fake, other) = (Fake::default(), Fake::default());
+        for fake in [&fake, &other] {
+            let pinned = doc("d-1", &before, &["sym:a_b::m::go"]);
+            fake.docs.lock().unwrap().push(pinned);
+        }
+        let proposals = fake.connect();
+
+        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
+            .await
+            .unwrap();
+        let again = moved(&proposals, &workspace(), &[&after], &later, &commit('c'))
+            .await
+            .unwrap();
+        // Another core that sees the same move.
+        moved(
+            &other.connect(),
+            &workspace(),
+            &[&before],
+            &after,
+            &commit('b'),
+        )
+        .await
+        .unwrap();
+
+        let commands = fake.commands();
+        assert_eq!((again, commands.len()), (0, 1));
+        assert_eq!(commands[0].action, other.commands()[0].action);
+    }
+
+    #[tokio::test]
+    async fn a_second_move_of_a_symbol_whose_re_anchor_is_open_needs_an_update() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
+        let later = repo("mod m;\npub fn run() { go() }\npub fn go() { run() }\n", "");
         let fake = Fake::default();
         fake.docs
             .lock()
@@ -441,13 +475,24 @@ mod tests {
         let again = moved(&proposals, &workspace(), &[&after], &later, &commit('c'))
             .await
             .unwrap();
-        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
-            .await
-            .unwrap();
 
         let commands = fake.commands();
-        assert_eq!((again, commands.len()), (0, 2));
-        assert_eq!(commands[0].action, commands[1].action);
+        assert_eq!((again, commands.len()), (1, 2));
+        let stale = StaleAnchor {
+            pin: pin(&after, "sym:a_b::go"),
+            change: AnchorChange::Changed {
+                was: "fn a_b::go  src/lib.rs:3".to_owned(),
+                now: "fn a_b::go  src/lib.rs:3".to_owned(),
+            },
+        };
+        assert_eq!(
+            changes(&commands[1]),
+            [ProposalChange::NeedsUpdate {
+                doc: "d-1".parse().unwrap(),
+                base: 3,
+                anchors: vec![stale],
+            }]
+        );
     }
 
     #[tokio::test]

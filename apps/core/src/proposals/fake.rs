@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc};
 use weacon_protocol::{
-    Code, DocRecord, Envelope, Message, Outcome, PinnedDoc, ProposalAnswer, ProposalAnswerKind,
-    ProposalCommand, ProposalQuery, ProposalQueryKind, Receipt, code,
+    Code, DocContent, DocRecord, Envelope, Message, Outcome, PinnedDoc, ProposalAction,
+    ProposalAnswer, ProposalAnswerKind, ProposalChange, ProposalCommand, ProposalQuery,
+    ProposalQueryKind, Receipt, code,
 };
 
 use super::{Proposals, channel, serve};
@@ -61,8 +62,43 @@ impl Fake {
         Message::Receipt(Receipt { request, outcome })
     }
 
+    /// What the latest re-anchor this core sent from `doc`'s revision makes it, as
+    /// the server applies a machine's own open re-anchor to what it answers that machine.
+    fn own_edit(&self, doc: &DocRecord) -> Option<DocContent> {
+        let commands = self.commands.lock().unwrap();
+        let batched = commands.iter().rev().flat_map(|command| {
+            let ProposalAction::Batch { proposals } = &command.action else {
+                return Vec::new();
+            };
+            proposals.iter().map(|batched| &batched.change).collect()
+        });
+        batched.into_iter().find_map(|change| {
+            let ProposalChange::DocEdit {
+                doc: id,
+                base,
+                content,
+            } = change
+            else {
+                return None;
+            };
+            (*id == doc.id && *base == doc.version).then(|| content.clone())
+        })
+    }
+
     fn query(&self, ProposalQuery { request, query, .. }: ProposalQuery) -> ProposalAnswer {
-        let docs = self.docs.lock().unwrap();
+        let docs: Vec<DocRecord> = self
+            .docs
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|doc| {
+                let mut doc = doc.clone();
+                if let Some(content) = self.own_edit(&doc) {
+                    doc.content = content;
+                }
+                doc
+            })
+            .collect();
         let answer = match query {
             // A page holds one doc, so a core reads them page by page.
             ProposalQueryKind::Pinned { after } => {
