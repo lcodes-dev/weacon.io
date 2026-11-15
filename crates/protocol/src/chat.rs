@@ -57,7 +57,7 @@ pub enum ChatAction {
     /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
     Release,
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -108,7 +108,7 @@ pub enum ChatEvent {
         text: String,
     },
     /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -137,7 +137,7 @@ pub enum ChatQueryKind {
         limit: u32,
     },
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -170,7 +170,7 @@ pub enum ChatAnswerKind {
         events: Vec<ChatEntry>,
     },
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -202,7 +202,7 @@ pub enum ChatState {
     /// Its machine was unpaired, or no longer has its log: it can be read, never prompted.
     Detached,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -212,46 +212,6 @@ pub enum ChatState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatList {
     pub chats: Vec<ChatSummary>,
-}
-
-impl ChatAction {
-    pub(crate) const fn is_newer(&self) -> bool {
-        match self {
-            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::Permission { .. } | Self::Interrupt | Self::Hold | Self::Release => false,
-            Self::Newer => true,
-        }
-    }
-}
-
-impl ChatEvent {
-    pub(crate) const fn is_newer(&self) -> bool {
-        match self {
-            Self::Prompt { agent, .. } => matches!(agent, Some(AgentKind::Newer)),
-            Self::OutsidePrompt { .. } => false,
-            Self::Receipt { receipt } => receipt.outcome.is_newer(),
-            Self::Run { update } => update.event.is_newer(),
-            Self::RunStatus { status } => status.is_newer(),
-            Self::Newer => true,
-        }
-    }
-}
-
-impl ChatAnswerKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::EventsLost => false,
-            Self::Snapshot { runs, events, .. } => {
-                runs.iter().any(RunStatus::is_newer) || any_newer(events)
-            }
-            Self::Window { events } => any_newer(events),
-            Self::Newer => true,
-        }
-    }
-}
-
-pub(crate) fn any_newer(entries: &[ChatEntry]) -> bool {
-    entries.iter().any(|entry| entry.event.is_newer())
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 mod access;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -136,6 +136,16 @@ impl Workspaces {
     pub(crate) fn places(&self, workspace: &WorkspaceId) -> [(AgentKind, Option<Launch>); 2] {
         let root = self.root(workspace);
         AGENTS.map(|(agent, _)| (agent, self.located(workspace, agent, root.clone()).ok()))
+    }
+
+    /// The core's state folder, which holds every workspace's.
+    pub(crate) fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
+    /// The `PATH` vendors' programs, and git, are found on.
+    pub(crate) fn path(&self) -> Option<&OsStr> {
+        self.path.as_deref()
     }
 
     /// The folder for everything this machine keeps for `workspace` but its settings.

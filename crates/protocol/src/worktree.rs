@@ -23,7 +23,7 @@ pub enum WorktreeQueryKind {
     /// Whether the worktree is in the Trash, and what removing it would set aside.
     State,
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -58,7 +58,7 @@ pub enum WorktreeAction {
     /// machine; only its owner may ask, of a core that offers `worktree.open_terminal`.
     OpenTerminal,
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -92,7 +92,7 @@ pub enum WorktreeAnswerKind {
     /// A terminal was opened on the core's machine.
     TerminalOpened,
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

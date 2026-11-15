@@ -203,7 +203,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
         Author::Agent {
             owner,
             agent: Some(agent),
-        } if !agent.is_newer() && answers_to(agent, owner) => {
+        } if answers_to(agent, owner) => {
             Some(("agent", owner, Some(serde_json::to_string(agent).ok()?)))
         }
         Author::Agent { .. } | Author::Newer => None,

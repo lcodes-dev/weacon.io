@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{Instant, sleep_until, timeout, timeout_at};
 use weacon_agents::{Event, Launch, SignIn, Size, Terminal};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
@@ -84,12 +84,14 @@ async fn serve(
     loop {
         tokio::select! {
             event = events.next() => {
+                // A browser that is gone doesn't take what is shown, so showing it can't wait.
+                let by = heard + QUIET;
                 let Some(Event::Output(data)) = event else {
                     let sign_in = signed_in(&session.launch, log).await;
-                    return output(session, updates, &TerminalOutput::Ended { sign_in }).await;
+                    return shown(session, updates, &TerminalOutput::Ended { sign_in }, by).await;
                 };
                 let data = Bytes::new(data).ok_or_else(seal_failed)?;
-                output(session, updates, &TerminalOutput::Output { data }).await?;
+                shown(session, updates, &TerminalOutput::Output { data }, by).await?;
             }
             sealed = frames.recv() => {
                 let Some(sealed) = sealed else {
@@ -167,6 +169,21 @@ fn input_failed() -> Fault {
     )
 }
 
+// Sends `output` by the time `by`, or times the terminal out.
+async fn shown(
+    session: &mut Session,
+    updates: &mpsc::Sender<Envelope>,
+    output: &TerminalOutput,
+    by: Instant,
+) -> Result<(), Fault> {
+    by_then(by, self::output(session, updates, output)).await
+}
+
+// What `work` gives, if it is done by `by`.
+async fn by_then(by: Instant, work: impl Future<Output = Result<(), Fault>>) -> Result<(), Fault> {
+    timeout_at(by, work).await.map_err(|_| timed_out())?
+}
+
 async fn output(
     session: &mut Session,
     updates: &mpsc::Sender<Envelope>,
@@ -215,4 +232,25 @@ pub(super) async fn send(
         .send(Envelope { id: 0, message })
         .await
         .map_err(|_| Fault::new(code!("terminal.gone"), "The terminal's connection is gone"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{pending, ready};
+
+    use super::*;
+
+    // Time is paused, so the wait ends as soon as nothing else can happen.
+    #[tokio::test(start_paused = true)]
+    async fn what_isnt_done_by_its_time_times_the_terminal_out() {
+        let started = Instant::now();
+        let by = started + QUIET;
+
+        let done = by_then(by, ready(Ok(()))).await;
+        let stuck = by_then(by, pending()).await;
+
+        done.unwrap();
+        assert_eq!(stuck.unwrap_err().code().as_str(), "terminal.timed_out");
+        assert_eq!(started.elapsed(), QUIET);
+    }
 }

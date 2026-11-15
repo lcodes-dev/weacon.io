@@ -168,6 +168,22 @@ test("an open terminal seals a frame every 20 seconds until it closes, so the co
   assert.equal(beats.stopped, true);
 });
 
+test("a beat after a resize keeps the new size", async () => {
+  const { session, sent, receive, beats } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  await receive({ kind: "accepted", handshake: message(1).ciphertext });
+  const larger = { cols: 100, rows: 30 };
+
+  await session.resize(larger);
+  beats.run?.();
+  await session.resize(larger);
+
+  // Each frame seals the same size, so each is as long as the others.
+  const [resized, beat, again] = sent.slice(-3).map((command) => sealed(command).length);
+  assert.equal(beat, resized);
+  assert.equal(again, resized);
+});
+
 test("a changed key, or a pin that can't be read, sends nothing", async () => {
   for (const [pins, problem] of [
     [new Pins(store("00".repeat(32))), "key_changed"],

@@ -20,6 +20,31 @@ impl Listener {
     }
 }
 
+/// Takes this process's lock on all of `file`, waiting while another process has it. The lock is
+/// the process's own, so a child it forks, even one that hasn't yet run its program, never keeps
+/// it, and it ends when the process closes `file`.
+#[expect(unsafe_code, reason = "fcntl has no safe API in std")]
+pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // SAFETY: `flock` is plain data, valid all zeros: a lock on the whole file from its start.
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::c_short::try_from(libc::F_WRLCK).map_err(|_| io::ErrorKind::Unsupported)?;
+    lock.l_whence =
+        libc::c_short::try_from(libc::SEEK_SET).map_err(|_| io::ErrorKind::Unsupported)?;
+    loop {
+        // SAFETY: the descriptor stays open for the call, and `lock` is a valid `flock` it only
+        // reads.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLKW, &raw const lock) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
 /// Removes `dir` and all it holds; read-only files go too, as the folder's own permission
 /// decides.
 pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
@@ -109,6 +134,17 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+
+    #[test]
+    fn a_lock_the_file_cant_take_is_an_error_not_a_wait() {
+        let dir = TempDir::new().unwrap();
+        let file = dir.join("list.lock");
+        fs::write(&file, "").unwrap();
+
+        let error = lock_for_process(&fs::File::open(&file).unwrap()).unwrap_err();
+
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+    }
 
     #[test]
     fn new_folders_are_private_and_existing_ones_kept() {

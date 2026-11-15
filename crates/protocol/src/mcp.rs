@@ -18,7 +18,7 @@ pub enum McpCall {
     /// The doc lines that pin one item.
     DocsFor(SymbolArgs),
     /// A tool this build doesn't offer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     Newer,
 }
 

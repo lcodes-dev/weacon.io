@@ -19,6 +19,7 @@ mod receipt;
 mod release;
 mod repo;
 mod run;
+mod secret;
 mod sessions;
 mod settings;
 mod task;
@@ -71,6 +72,7 @@ pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
 };
+pub use secret::Secret;
 pub use sessions::{
     OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
@@ -153,5 +155,28 @@ mod tests {
             fs::read_to_string(&path).is_ok_and(|committed| committed == current),
             "schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p weacon-protocol"
         );
+        assert!(
+            !current.contains(r#""null""#),
+            "an optional field is left out, never null"
+        );
+    }
+
+    #[test]
+    fn a_value_only_ever_received_is_never_written() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            for line in text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("#[serde(other"))
+            {
+                assert!(
+                    line.contains("#[serde(other, skip_serializing)]"),
+                    "{}: {line}",
+                    path.display()
+                );
+            }
+        }
     }
 }

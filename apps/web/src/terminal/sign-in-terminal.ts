@@ -83,9 +83,11 @@ export class SignInTerminal {
   #received: Promise<void> = Promise.resolve();
   #typed: Promise<void> = Promise.resolve();
   #stopBeating = () => {};
+  #size: Size;
 
   constructor(options: Options) {
     this.#options = options;
+    this.#size = options.size;
     this.#terminal = options.terminal ?? newId();
   }
 
@@ -154,6 +156,7 @@ export class SignInTerminal {
   }
 
   resize(size: Size): Promise<void> {
+    this.#size = size;
     return this.#seal({ kind: "resize", ...size });
   }
 
@@ -205,9 +208,9 @@ export class SignInTerminal {
     this.#channel = channel;
     this.#options.screen.state({ kind: "open" });
     // The same size again changes nothing on the machine.
-    this.#stopBeating = (this.#options.every ?? every)(() => void this.resize(this.#options.size), BEAT_MS);
+    this.#stopBeating = (this.#options.every ?? every)(() => void this.resize(this.#size), BEAT_MS);
     // The core starts the login only once a frame shows this end holds the keys.
-    await this.resize(this.#options.size);
+    await this.resize(this.#size);
   }
 
   async #opened(sealed: string): Promise<Shown | undefined> {

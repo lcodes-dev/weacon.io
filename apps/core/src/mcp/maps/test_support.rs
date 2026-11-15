@@ -8,7 +8,7 @@ use weacon_protocol::{RepoId, WorkspaceId};
 use super::Maps;
 use crate::chats::Places;
 use crate::db::{BASE, Db, LocalRepo};
-use crate::git::repos::Repos;
+use crate::git::state::Stores;
 use crate::git::{Git, fixture, git, repo};
 use crate::workspaces::Workspaces;
 
@@ -39,7 +39,7 @@ impl Setup {
     /// Registers `repo` for `workspace` as `id`.
     pub(crate) fn register(&self, workspace: &WorkspaceId, id: &str, repo: &Path) {
         let id = RepoId::try_from(id.to_owned()).unwrap();
-        let repos = Repos::of(&self.workspaces, workspace.clone());
+        let repos = Stores::new(&self.workspaces, workspace).repos();
         repos.add(&self.git, id, repo).unwrap();
     }
 

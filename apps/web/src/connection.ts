@@ -13,8 +13,6 @@ export type WebCapability =
   | "workspace.members"
   | "workspace.chat_commands"
   | "diff.view"
-  | "chat.send"
-  | "chat.events"
   | "log.forward"
   | "machine.settings"
   | "sessions.read"
