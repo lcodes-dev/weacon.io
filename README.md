@@ -41,7 +41,7 @@ Weacon is open source, under the MIT licence.
 
 ## What Weacon promises
 
-- **Your agent sign-ins never touch Weacon.** Agents run as the vendors' own programs. You sign in with the vendor's own tool. Weacon only reads whether you are signed in, and never stores, logs or forwards a credential.
+- **Your agent sign-ins never touch Weacon.** Agents run as the vendors' own programs. You sign in with the vendor's own tool. Weacon only reads whether you are signed in, and never stores, logs or forwards a credential. The sign-in terminal in the web app is sealed between your browser and your core, but it trusts whoever runs the server, which serves the web app's code; if you don't, sign in over SSH on the machine instead.
 - **Workspaces never mix.** An agent only runs with a sign-in from its own workspace. Nothing one workspace sees reveals another.
 - **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies. What it serves to its own agents listens on 127.0.0.1 only.
 - **Agents propose, people decide.** Changes that agents make to docs and tasks arrive as proposals that a person accepts.
