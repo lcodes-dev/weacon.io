@@ -1252,7 +1252,7 @@
       ]
     },
     "ChatSummary": {
-      "description": "A chat in a [`ChatList`]: `machine` is its machine's name, `machine_id` its id, left out by\nan older server, and `updated_at` is when its latest turn began or ended, in seconds since\nthe Unix epoch.",
+      "description": "A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and\n`updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.",
       "type": "object",
       "properties": {
         "id": {
@@ -1292,7 +1292,8 @@
         "owner",
         "machine",
         "state",
-        "updated_at"
+        "updated_at",
+        "machine_id"
       ]
     },
     "ChatTask": {
@@ -2350,7 +2351,7 @@
           ]
         },
         {
-          "description": "What a session starts with, from a core that offers `map.session_start`: the flows\npinned by the docs that best match the title of the task of the run's chat, then the\nfolder's map, both within `budget`; the map alone for a chat without a task.",
+          "description": "What a session starts with: the flows\npinned by the docs that best match the title of the task of the run's chat, then the\nfolder's map, both within `budget`; the map alone for a chat without a task.",
           "type": "object",
           "properties": {
             "kind": {

@@ -444,14 +444,13 @@ export type ChatState = (
 );
 
 /**
- * A chat in a [`ChatList`]: `machine` is its machine's name, `machine_id` its id, left out by
- * an older server, and `updated_at` is when its latest turn began or ended, in seconds since
- * the Unix epoch.
+ * A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and
+ * `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
  */
 export type ChatSummary = {
   id: ChatId;
   machine: MachineName;
-  machine_id?: MachineId;
+  machine_id: MachineId;
   owner: MemberId;
   /**
    * What its latest run is doing; left out when it has had none.
