@@ -26,7 +26,17 @@ impl<A: Agent> Engine<A> {
                 code!("request.conflict"),
                 "That request id was used for another command",
             )),
-            Seen::Never | Seen::Pending => self.act(key, request, action, seen).await,
+            Seen::Never | Seen::Pending => {
+                match self.act(key, request.clone(), action, seen).await {
+                    // Its receipt ends it, so asking again changes nothing.
+                    Err(fault) if never_taken(&fault) => {
+                        let code = fault.code().clone();
+                        let refused = Outcome::Failed { code };
+                        self.commit_receipt(key, &request, refused).await
+                    }
+                    acted => acted,
+                }
+            }
         }
     }
 
@@ -244,6 +254,17 @@ impl<A: Agent> Engine<A> {
     }
 }
 
+// Whether a command refused with `fault` could never be taken, however often it is sent.
+fn never_taken(fault: &Fault) -> bool {
+    [
+        code!("chat.empty_prompt"),
+        code!("chat.agent_conflict"),
+        code!("message.unsupported"),
+        code!("chat.held"),
+    ]
+    .contains(fault.code())
+}
+
 #[cfg(test)]
 mod tests {
     use weacon_protocol::RunState;
@@ -305,8 +326,9 @@ mod tests {
         engine.runs.unjam(path);
 
         let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
-        let other = engine.command(&key(), other).await;
-        assert_eq!(other.unwrap_err().code().as_str(), "chat.agent_conflict");
+        engine.command(&key(), other).await.unwrap();
+        let refused = &crate::chats::test_support::request("r-2");
+        assert!(engine.open(&key()).await.unwrap().events.has_ended(refused));
         engine.command(&key(), first).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();

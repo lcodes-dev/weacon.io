@@ -936,13 +936,14 @@ mod tests {
         let bytes = [
             hello(PROTOCOL),
             line(2, Message::ChatQuery(subscribe)),
-            line(3, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
-            line(4, Message::ChatCommand(prompt("r-2", " "))),
-            line(5, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
+            line(3, Message::ChatCommand(prompt("r-2", " "))),
+            line(4, Message::ChatCommand(prompt("r-1", "MARKER-PROMPT"))),
+            line(5, Message::ChatCommand(prompt("r-1", "Other"))),
+            line(6, Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot))),
         ]
         .concat();
 
-        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 8).await;
         let records = running.stop().await;
 
         let Message::Welcome(welcome) = &replies[0] else {
@@ -951,16 +952,17 @@ mod tests {
         // Not diff.view or worktree.manage until chats are given worktrees.
         assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
         let (events, answers) = events_and_answers(&replies[1..]);
-        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert_eq!(error_code(answers[0]), Some("request.conflict"));
         assert!(matches!(answers[1], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 3)));
         assert_eq!(
             events,
             [
-                "1 prompt r-1 MARKER-PROMPT",
-                "2 receipt r-1 accepted",
-                "3 run-1 is Starting",
-                "4 run-1 is Running",
+                "1 receipt r-2 failed chat.empty_prompt",
+                "2 prompt r-1 MARKER-PROMPT",
+                "3 receipt r-1 accepted",
+                "4 run-1 is Starting",
+                "5 run-1 is Running",
             ]
         );
         assert!(soon(bench.started.recv()).await.is_some());

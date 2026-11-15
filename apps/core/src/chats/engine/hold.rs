@@ -276,17 +276,20 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_held_chat_refuses_its_seventeenth_prompt_before_the_log() {
+    async fn a_held_chat_fails_its_seventeenth_prompt_without_logging_it() {
         let (bench, _holder, _pushes) = held_with_a_prompt().await;
         for at in 2..=HELD_QUEUE {
             let asked = prompt(&format!("r-{at}"), "More");
             bench.command(asked).await.unwrap();
         }
 
-        let refused = bench.command(prompt("r-17", "One too many")).await;
+        bench.command(prompt("r-17", "One too many")).await.unwrap();
 
-        assert_eq!(code_of(refused), "chat.held");
-        assert_eq!(seq(&bench).await, 32);
+        let (watcher, mut pushes) = client(2);
+        let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 32 });
+        bench.chats.query(subscribe, &watcher).await.unwrap();
+        let failed = pushed(&mut pushes, 1).await;
+        assert_eq!(failed, ["33 receipt r-17 failed chat.held"]);
     }
 
     #[tokio::test(start_paused = true)]

@@ -46,6 +46,8 @@ struct Commanded {
     /// The place of its prompt, when it was one.
     prompt: Option<u64>,
     stage: Stage,
+    /// A receipt said it failed.
+    failed: bool,
 }
 
 /// How far a command got, as its receipts say; a later receipt never moves it back.
@@ -164,6 +166,7 @@ impl ChatLog {
                     Stage::Ended
                 };
                 commanded.stage = commanded.stage.max(stage);
+                commanded.failed |= matches!(receipt.outcome, Outcome::Failed { .. });
             }
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
@@ -270,7 +273,7 @@ impl ChatLog {
 
     /// Whether a command under `request` was committed before, and with the same content. Only
     /// a prompt's content is kept, in the prompt entry its owner commits before any receipt, so
-    /// any other command counts as the same.
+    /// any other command counts as the same, and so does anything under a refused request.
     pub(crate) async fn seen(
         &self,
         request: &RequestId,
@@ -280,7 +283,7 @@ impl ChatLog {
             return Ok(Seen::Never);
         };
         let Some(seq) = commanded.prompt else {
-            let same = !matches!(action, ChatAction::Prompt { .. });
+            let same = commanded.failed || !matches!(action, ChatAction::Prompt { .. });
             return Ok(if same { Seen::Same } else { Seen::Other });
         };
         let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);

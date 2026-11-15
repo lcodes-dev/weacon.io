@@ -529,19 +529,26 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_repeated_request_does_nothing_and_a_conflicting_or_empty_one_is_refused() {
+    async fn a_repeated_request_does_nothing_a_conflicting_one_is_refused_and_an_empty_one_fails() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
 
         bench.command(prompt("r-1", "Hi")).await.unwrap();
         let conflict = bench.command(prompt("r-1", "Bye")).await;
-        let empty = bench.command(prompt("r-2", " \n")).await;
+        for _ in 0..2 {
+            bench.command(prompt("r-2", " \n")).await.unwrap();
+        }
         bench.command(prompt("r-3", "Next")).await.unwrap();
 
         assert_eq!(code_of(conflict), "request.conflict");
-        assert_eq!(code_of(empty), "chat.empty_prompt");
-        assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 Next"]);
+        assert_eq!(
+            pushed(&mut pushes, 2).await,
+            [
+                "5 receipt r-2 failed chat.empty_prompt",
+                "6 prompt r-3 Next"
+            ]
+        );
         agent.told.try_recv().unwrap_err();
     }
 
@@ -678,19 +685,28 @@ mod tests {
         assert_eq!(started.run_as.agent, AgentKind::Codex);
         skip(&mut pushes, 4).await;
         let other = prompt_naming("r-2", "More", AgentKind::Claude);
-        assert_eq!(code_of(bench.command(other).await), "chat.agent_conflict");
+        bench.command(other).await.unwrap();
         let same = prompt_naming("r-3", "More", AgentKind::Codex);
         bench.command(same).await.unwrap();
-        assert_eq!(pushed(&mut pushes, 1).await, ["5 prompt r-3 More"]);
+        assert_eq!(
+            pushed(&mut pushes, 2).await,
+            [
+                "5 receipt r-2 failed chat.agent_conflict",
+                "6 prompt r-3 More"
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_agent_this_build_doesnt_know_is_refused() {
+    async fn a_prompt_naming_an_agent_this_build_doesnt_know_fails() {
         let bench = bench();
+        let mut pushes = watch(&bench).await;
 
         let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
+        bench.command(newer).await.unwrap();
 
-        assert_eq!(code_of(bench.command(newer).await), "message.unsupported");
+        let failed = pushed(&mut pushes, 1).await;
+        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1039,11 +1055,14 @@ mod tests {
     async fn what_this_build_doesnt_know_is_refused_and_a_stopped_engine_says_so() {
         let bench = bench();
         let (anyone, _pushes) = client(2);
+        let mut pushes = watch(&bench).await;
 
         let action = bench
             .chats
             .command(command("r-1", "c-1", ChatAction::Newer), &anyone);
-        assert_eq!(code_of(action.await), "message.unsupported");
+        action.await.unwrap();
+        let failed = pushed(&mut pushes, 1).await;
+        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
         let asked = bench
             .chats
             .query(query("c-1", ChatQueryKind::Newer), &anyone);
