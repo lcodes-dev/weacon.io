@@ -60,7 +60,8 @@ const OFFERED: [Code; 16] = [
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
-const MAX_MESSAGE: usize = 16 * 1024;
+/// As much as a machine may send, so a prompt as long as a pasted log goes through.
+const MAX_MESSAGE: usize = weacon_protocol::MAX_FRAME;
 const PAGE: u32 = 500;
 
 #[derive(Deserialize)]
@@ -688,13 +689,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_message_ends_the_feed() {
-        assert_eq!(MAX_MESSAGE, 16_384);
+    async fn a_long_message_is_taken_and_an_oversized_one_ends_the_feed() {
+        assert_eq!(MAX_MESSAGE, 1 << 20);
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
+        let mut client = greeted(server.address, &ada.token, 0).await;
+        client
+            .send(Wire::text("x".repeat(64 * 1024)))
             .await
             .unwrap();
+        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+        // Past what the feed sends meanwhile, the pong says it took the long one.
+        loop {
+            match frame(&mut client).await {
+                Some(Ok(Wire::Pong(_))) => break,
+                Some(Ok(Wire::Text(_) | Wire::Ping(_))) => {}
+                other => panic!("the feed ended: {other:?}"),
+            }
+        }
         client
             .send(Wire::text("x".repeat(MAX_MESSAGE + 1)))
             .await
