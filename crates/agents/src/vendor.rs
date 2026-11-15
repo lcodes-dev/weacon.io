@@ -21,6 +21,8 @@ pub(crate) struct Vendor {
     pub(crate) own_sign_in: fn(&[u8]) -> bool,
     /// Whether a run is pointed at the core's MCP.
     pub(crate) takes_mcp: bool,
+    /// Whether a run answers a pre-tool hook, which is where the command guard runs.
+    pub(crate) takes_hook: bool,
     /// A run's command and wire, resuming the session when given.
     pub(crate) drive: fn(&Launch, &App, Option<&AgentSession>) -> (Command, RunWire),
     /// The program on a session, for a person to carry on by hand, where it can be.

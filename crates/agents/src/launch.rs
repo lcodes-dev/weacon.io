@@ -30,6 +30,8 @@ pub struct Launch {
     pub cwd: PathBuf,
     /// What the agent may do on this machine, which decides the prompts no person is asked.
     pub access: AccessLevel,
+    /// The command, word by word, that answers the agent's pre-tool hook, when it has one.
+    pub hook: Option<Vec<String>>,
     /// The core's MCP for this run; only Claude Code is pointed at it.
     pub mcp: Option<McpServer>,
     /// A Claude Code plugin folder for this run, given only when absolute.
@@ -85,6 +87,7 @@ impl Launch {
             config_dir: workspace_dir.join(name),
             cwd,
             access: AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
             plugin: None,
         })
@@ -221,6 +224,12 @@ impl Launch {
     #[must_use]
     pub fn takes_mcp(&self) -> bool {
         self.vendor().is_ok_and(|vendor| vendor.takes_mcp)
+    }
+
+    /// Whether this agent answers a pre-tool hook, which is where the command guard runs.
+    #[must_use]
+    pub fn takes_hook(&self) -> bool {
+        self.vendor().is_ok_and(|vendor| vendor.takes_hook)
     }
 
     pub(crate) fn with_workspace_sign_in(&self, vendor: &Vendor) -> Command {
@@ -389,6 +398,16 @@ mod tests {
     }
 
     #[test]
+    fn only_claude_code_answers_the_guard_hook() {
+        let dir = TempDir::new().unwrap();
+        let takes = |agent| launch(agent, &dir).takes_hook();
+
+        assert!(takes(AgentKind::Claude));
+        assert!(!takes(AgentKind::Codex));
+        assert!(!takes(AgentKind::Newer));
+    }
+
+    #[test]
     fn each_agent_starts_through_its_own_driver() {
         let dir = TempDir::new().unwrap();
         let first_arg = |agent| {
@@ -426,6 +445,7 @@ mod tests {
                 config_dir: PathBuf::from("/state/w/claude"),
                 cwd: PathBuf::from("/work"),
                 access: AccessLevel::AskFirst,
+                hook: None,
                 mcp: None,
                 plugin: None,
             }

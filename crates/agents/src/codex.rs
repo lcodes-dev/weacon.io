@@ -23,9 +23,13 @@ pub(crate) const VENDOR: Vendor = Vendor {
     // Codex prints nothing that says where its sign-in comes from, so its exit decides alone.
     own_sign_in: |_| true,
     takes_mcp: false,
+    takes_hook: false,
     drive,
     resume: None,
 };
+
+/// The folders and files under home that hold its sign-in.
+pub(crate) const CREDENTIALS: [&str; 1] = [".codex"];
 
 /// `codex` as an app server, its wire resuming `session` when given.
 fn drive(launch: &Launch, app: &App, session: Option<&AgentSession>) -> (Command, RunWire) {
