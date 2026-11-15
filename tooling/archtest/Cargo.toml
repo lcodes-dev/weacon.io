@@ -1,6 +1,6 @@
 [package]
 name = "weacon-archtest"
-description = "Checks the workspace's dependency rules and conventions"
+description = "Checks the workspace's dependency rules"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,7 +10,6 @@ publish.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
-syn.workspace = true
 toml.workspace = true
 
 [lints]

@@ -273,12 +273,6 @@ Everything CI runs, in order. Run it before every commit:
 scripts/check.sh
 ```
 
-Everything but the mutation tests, which take longest:
-
-```bash
-scripts/check.sh --mutants none
-```
-
 One crate's tests, or the ones whose names match:
 
 ```bash
