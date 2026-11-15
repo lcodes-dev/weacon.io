@@ -45,6 +45,12 @@ pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
     }
 }
 
+/// Removes `dir` and all it holds; read-only files go too, as the folder's own permission
+/// decides.
+pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
+    fs::remove_dir_all(dir)
+}
+
 /// Bytes this user may still write on the disk holding `dir`.
 #[expect(unsafe_code, reason = "statvfs has no safe API in std")]
 #[cfg_attr(

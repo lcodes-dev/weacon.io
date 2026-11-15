@@ -14,6 +14,7 @@ use weacon_protocol::{
 };
 
 use crate::git::state::Stores;
+use crate::outside::Outside;
 use crate::workspaces::{Settings, Workspaces, sign_ins, states, store_access};
 use crate::{app, reports};
 
@@ -23,12 +24,14 @@ pub(crate) struct Identity {
     pub(crate) account: AccountId,
 }
 
-/// Where the settings live, and the reporter a new answer to error reports applies to.
+/// Where the settings live, the reporter a new answer to error reports applies to, and the
+/// person's own agent folders.
 #[derive(Clone)]
 pub(crate) struct Host {
     pub(crate) state_dir: PathBuf,
     pub(crate) path: Option<OsString>,
     pub(crate) reporter: Arc<Reporter>,
+    pub(crate) outside: Outside,
     pub(crate) log: Logger,
 }
 
@@ -212,6 +215,7 @@ mod tests {
             state_dir: dir.to_path_buf(),
             path,
             reporter: Arc::clone(&app.reporter),
+            outside: Outside::default(),
             log: app.log.clone(),
         }
     }

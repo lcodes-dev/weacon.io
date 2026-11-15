@@ -145,8 +145,7 @@ mod tests {
         }
 
         async fn printed(launch: &Launch) -> (String, bool) {
-            let (_terminal, mut events) =
-                launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
+            let (_terminal, mut events) = launch.open_login(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
             match after_output(&mut events, &mut seen).await {
                 Some(Event::Exited { success }) => (seen, success),
@@ -174,7 +173,7 @@ mod tests {
                 "{codex}"
             );
             launch(AgentKind::Newer, &dir)
-                .log_in_terminal(Size::new(80, 24).unwrap())
+                .open_login(Size::new(80, 24).unwrap())
                 .err()
                 .unwrap();
         }
@@ -186,10 +185,7 @@ mod tests {
                 program: dir.join("missing"),
                 ..launch(AgentKind::Claude, &dir)
             };
-            let error = gone
-                .log_in_terminal(Size::new(80, 24).unwrap())
-                .err()
-                .unwrap();
+            let error = gone.open_login(Size::new(80, 24).unwrap()).err().unwrap();
             assert_eq!(error.code().as_str(), "agent.login_failed");
 
             let waiting = dir.join("waiting");
@@ -198,8 +194,7 @@ mod tests {
                 program: waiting,
                 ..launch(AgentKind::Claude, &dir)
             };
-            let (terminal, mut events) =
-                launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
+            let (terminal, mut events) = launch.open_login(Size::new(80, 24).unwrap()).unwrap();
             let ready = next_event(&mut events).await;
             assert!(matches!(ready, Some(Event::Output(_))), "{ready:?}");
             drop(terminal);
@@ -219,8 +214,7 @@ mod tests {
                 program: asking,
                 ..launch(AgentKind::Claude, &dir)
             };
-            let (terminal, mut events) =
-                launch.log_in_terminal(Size::new(80, 24).unwrap()).unwrap();
+            let (terminal, mut events) = launch.open_login(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
             output_until(&mut events, &mut seen, "ready").await;
             terminal.resize(Size::new(90, 20).unwrap()).unwrap();

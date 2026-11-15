@@ -385,6 +385,10 @@ export type ChatSummary = {
   id: ChatId;
   machine: MachineName;
   owner: MemberId;
+  /**
+   * What its latest run is doing; left out when it has had none.
+   */
+  run?: RunState;
   state: ChatState;
   title: string;
   updated_at: number;
@@ -878,10 +882,7 @@ export type OutsideSession = {
   /**
    * The folder it ran in, when its file names one.
    */
-  folder?: (
-    | string
-    | null
-  );
+  folder?: string;
   modified_at: number;
   session: AgentSession;
 };
