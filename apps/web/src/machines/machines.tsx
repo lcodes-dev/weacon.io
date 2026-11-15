@@ -23,18 +23,21 @@ export function Machines({
   pins,
   later,
   socket,
+  opened,
 }: {
   api: Api;
   pins: Pins;
   later: Later;
   /** The open workspace's socket, for its settings on each machine; none while no workspace is open. */
   socket: WorkspaceSocket | undefined;
+  /** A machine whose settings open by themselves, as one just paired does. */
+  opened: MachineId | undefined;
 }) {
   const { value, problem, loading, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
   const [waiting, setWaiting] = useState<MachineId>();
   const [stalled, setStalled] = useState(false);
-  const [justPaired, setJustPaired] = useState<MachineId>();
+  const [justPaired, setJustPaired] = useState<MachineId | undefined>(opened);
   useEffect(() => {
     if (waiting === undefined) {
       return;
@@ -99,7 +102,8 @@ function Machine({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [open, setOpen] = useState(false);
-  // Its settings open by themselves once, so the person is asked about error reports at once.
+  // Its settings open by themselves once: a machine just paired asks about error reports at once,
+  // and one opened from New chat shows its sign-ins.
   useEffect(() => {
     if (justPaired && socket !== undefined) {
       setOpen(true);

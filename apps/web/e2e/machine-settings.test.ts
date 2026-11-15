@@ -20,7 +20,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { token } = await pair(page);
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await row.waitFor();
@@ -30,7 +30,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await page.getByRole("button", { name: "Back" }).click();
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   // Paired with no workspace open, so they don't open by themselves once one is.
   await row.getByRole("button", { name: "Studio settings" }).waitFor();
   assert.equal(await row.getByRole("region", { name: "Studio settings" }).count(), 0);
@@ -99,7 +99,7 @@ test("a machine paired with a workspace open shows its settings at once, to ask 
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   // Holds the machine list until its core is connected, so the settings open on a core they can reach.
   const connected = Promise.withResolvers<void>();
   await page.route("**/api/machines", async (route) => {

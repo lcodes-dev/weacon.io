@@ -6,14 +6,14 @@ import { BUILD, core, dial, pair } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
 
 const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [] };
-const CURRENT = ["machine.connect", "machine.settings", "diff.view", "worktree.manage", "sessions.read", "symbols.search", "workspace.proposals"];
+const CURRENT = ["machine.connect", "machine.settings", "diff.view", "worktree.manage", "sessions.read", "symbols.search", "workspace.proposals", "chat.serve"];
 
 test("a core older than the server shows as outdated in the machines list and its settings, and a current one doesn't", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { token } = await pair(page);
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await page.getByRole("button", { name: "Back" }).click();
@@ -22,7 +22,7 @@ test("a core older than the server shows as outdated in the machines list and it
   // The list is read again only when the page is.
   const reopen = async () => {
     await page.reload();
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     await row.getByText("Linux, paired").waitFor();
   };
   const outdated = row.getByText("Its weacon is older than this server supports. Run weacon update there.");
