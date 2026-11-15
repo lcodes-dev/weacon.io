@@ -15,11 +15,14 @@ use crate::shared::Shared;
 pub(crate) struct Timing {
     pub(crate) hello_within: Duration,
     pub(crate) ping_every: Duration,
+    /// How long a message waits for room in a machine's queue.
+    pub(crate) room_within: Duration,
 }
 
 pub(crate) const TIMING: Timing = Timing {
     hello_within: Duration::from_secs(10),
     ping_every: Duration::from_secs(30),
+    room_within: Duration::from_secs(5),
 };
 
 /// The socket has ended: its client left, may have it no more, or something failed.
