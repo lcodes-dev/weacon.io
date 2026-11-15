@@ -144,6 +144,7 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
+        self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {
             self.end_request(&mut *transaction, chat, request).await?;
@@ -325,12 +326,12 @@ pub(super) enum Place {
     Before(u64),
 }
 
-struct Row<'a> {
-    seq: i64,
+pub(in crate::db) struct Row<'a> {
+    pub(in crate::db) seq: i64,
     core_seq: Option<i64>,
-    event: &'a ChatEvent,
+    pub(in crate::db) event: &'a ChatEvent,
     body: String,
-    at: i64,
+    pub(in crate::db) at: i64,
 }
 
 // Numbers the events after `seq`, skipping those from the machine at or before `core_seq`,

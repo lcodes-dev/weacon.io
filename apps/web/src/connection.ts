@@ -12,6 +12,7 @@ export type WebCapability =
   | "workspace.proposals"
   | "workspace.members"
   | "workspace.chat_commands"
+  | "workspace.search"
   | "diff.view"
   | "log.forward"
   | "machine.settings"

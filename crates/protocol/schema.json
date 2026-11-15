@@ -3358,11 +3358,41 @@
             "title",
             "snippet"
           ]
+        },
+        {
+          "description": "A chat, by its title or by one of the messages its log keeps: a person's prompt or an\nagent's text. `seq` is that message's place in the log.",
+          "type": "object",
+          "properties": {
+            "chat": {
+              "$ref": "#/$defs/ChatId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "chat",
+            "title",
+            "snippet"
+          ]
         }
       ]
     },
     "SearchQuery": {
-      "description": "Asks the server, under the capability `workspace.search`, for what in the workspace holds\nevery word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three\nor more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and\ntext without a longer word finds nothing. `limit` is 20 without one, and at most 50.",
+      "description": "Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in\nthe workspace that hold every word of `text`, at most 8 words of at most 64 characters, in\n256 bytes. Words of three or more characters match whatever their case and accents; shorter\nones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.\n`limit` is 20 without one, and at most 50.",
       "type": "object",
       "properties": {
         "limit": {
