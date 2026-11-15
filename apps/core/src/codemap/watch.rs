@@ -74,7 +74,14 @@ impl<S: Source> Watch<S> {
             // Another refresh may have stored a base meanwhile, so this worktree's layer is rebuilt.
             was => {
                 self.seen = None;
-                let base = self.repo.base().await?;
+                // A base that can't be read leaves the one before, so its move is still seen.
+                let base = match self.repo.base().await {
+                    Ok(base) => base,
+                    Err(fault) => {
+                        self.base = was;
+                        return Err(fault);
+                    }
+                };
                 if let Some(was) = was.filter(|was| was.commit != base.commit) {
                     self.moved = Some(Move {
                         was: was.facts,
@@ -207,5 +214,26 @@ mod tests {
         assert_eq!(moved.commit, commit_id("c2"));
         assert_eq!((moved.was.len(), moved.now.len()), (2, 1));
         assert_eq!(watch.take_move(), None);
+    }
+
+    #[tokio::test]
+    async fn a_move_whose_new_base_failed_to_read_is_seen_once_it_reads() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, source) = watch(&dir).await;
+        let (log, _) = recording_logger();
+        source.commit(
+            "c1",
+            &[("Cargo.toml", MANIFEST), ("src/lib.rs", "fn a() {}\n")],
+        );
+        watch.check(&log).await;
+
+        source.commit("c2", &[("Cargo.toml", MANIFEST)]);
+        source.fail_trees(true);
+        assert_eq!(watch.check(&log).await, None);
+        source.fail_trees(false);
+        watch.check(&log).await;
+
+        let moved = watch.take_move().unwrap();
+        assert_eq!((moved.commit, moved.was.len()), (commit_id("c2"), 2));
     }
 }

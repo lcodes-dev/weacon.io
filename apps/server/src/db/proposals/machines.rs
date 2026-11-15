@@ -40,7 +40,8 @@ impl Workspace {
         &self,
         after: Option<&DocId>,
     ) -> Result<(Vec<PinnedDoc>, bool), Fault> {
-        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        // One snapshot, so no revision lands between the page and its docs.
+        let mut reader = self.db.readers.begin().await.map_err(failed)?;
         let mut ids: Vec<String> = sqlx::query_scalar(
             "SELECT docs.doc_id FROM docs JOIN doc_versions USING (workspace_id, doc_id, version)
              WHERE docs.workspace_id = ? AND doc_versions.commit_id IS NOT NULL

@@ -126,8 +126,11 @@ pub(super) fn server(
         tokio::select! {
             never = Box::pin(link.run(from_daemon)) => match never {},
             never = uplink(asked, asks, replies, answered) => match never {},
-            // Every way to propose is gone, so the rest serves on.
-            () = proposer => std::future::pending().await,
+            // Once every way to propose is gone, the rest serves on.
+            () = async {
+                proposer.await;
+                std::future::pending::<()>().await;
+            } => {}
         }
     }
 }

@@ -85,6 +85,10 @@ impl Workspace {
         let change = self
             .superseding(transaction, proposed, &target, change)
             .await?;
+        // Findings it kept may take it past the limit.
+        if change.len() > MAX_PROPOSAL {
+            return Err(too_large());
+        }
         self.room_for_proposal(transaction, &proposed.machine)
             .await?;
         // At least what its revision will count, so that accepting it fits in what it frees.
@@ -1013,5 +1017,43 @@ mod tests {
         );
         let second = one.proposal(&id("second")).await.unwrap();
         assert_eq!(second.change, Some(later));
+    }
+
+    #[tokio::test]
+    async fn findings_kept_past_the_limit_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
+        let body = "[a](sym:a::go) [b](sym:a::run)\n".to_owned();
+        let text = weacon_model::DocText::new(title, body, Some(anchors)).unwrap();
+        one.add_doc(&Doc::new(id("p"), text), &by("m1"))
+            .await
+            .unwrap();
+        let long = |pin: &str| ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 1,
+            anchors: vec![weacon_protocol::StaleAnchor {
+                pin: pin.parse().unwrap(),
+                change: weacon_protocol::AnchorChange::Gone {
+                    was: "x".repeat(MAX_PROPOSAL / 2),
+                },
+            }],
+        };
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+
+        one.propose(&core("first", long(go))).await.unwrap();
+        let both = one.propose(&core("second", long(run))).await.unwrap_err();
+
+        assert_eq!(code(&both), "proposal.too_large");
+        let first = one.proposal(&id("first")).await.unwrap();
+        assert_eq!(first.state, ProposalState::Open);
     }
 }

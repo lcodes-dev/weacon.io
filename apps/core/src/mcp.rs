@@ -55,7 +55,8 @@ const LIMITS: Limits = Limits {
     stall: Duration::from_secs(10),
     connections: 64,
 };
-const MAX_BODY: usize = 64 * 1024;
+/// Room for the largest proposal a run may send, and its envelope.
+const MAX_BODY: usize = weacon_protocol::MAX_PROPOSAL + 64 * 1024;
 
 /// The core's MCP, listening.
 #[derive(Clone, Debug)]
@@ -874,5 +875,11 @@ mod tests {
         assert_eq!(answer_text(&refused), "Not proposed: proposal.too_many.\n");
         assert_eq!(error(&refused), Some(true));
         assert_eq!(fake.commands().len(), 2);
+        assert_eq!(MAX_BODY, weacon_protocol::MAX_PROPOSAL + 65_536);
+        // A doc's whole text is more than any other call sends.
+        *fake.refuse.lock().unwrap() = None;
+        let large = json!({"change": {"kind": "new_task", "title": "x".repeat(MAX_BODY / 2)}});
+        let large = post(&mcp, &[("Authorization", &auth)], &call("propose", large)).await;
+        assert_eq!((large.status, error(&large)), (200, Some(false)));
     }
 }

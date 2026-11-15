@@ -69,12 +69,12 @@ impl Index {
             Anchor::Symbol(path) => self.renamed_symbol(now, path).map(Anchor::Symbol),
             Anchor::Flow(steps) => steps
                 .iter()
-                .map(|step| {
-                    if now.items.contains_key(step) {
-                        Some(step.clone())
-                    } else {
-                        self.renamed_symbol(now, step)
-                    }
+                .map(|step| match now.items.get(step) {
+                    // A step whose code changed is no mechanical re-anchor.
+                    Some(item) => (item.symbol.fingerprint
+                        == self.items.get(step)?.symbol.fingerprint)
+                        .then(|| step.clone()),
+                    None => self.renamed_symbol(now, step),
                 })
                 .collect::<Option<Vec<_>>>()
                 .map(Anchor::Flow),
@@ -184,13 +184,11 @@ mod tests {
             moved(&before, &moved_out, "sym:a_b::m::go"),
             Some(Moved::Reanchored(pin(&moved_out, "sym:a_b::go")))
         );
-        assert_eq!(
+        // Its caller's code changed with the call, so the flow is no mechanical re-anchor.
+        assert!(matches!(
             moved(&before, &renamed, "flow:a_b::run->a_b::m::go"),
-            Some(Moved::Reanchored(pin(
-                &renamed,
-                "flow:a_b::run->a_b::m::went"
-            )))
-        );
+            Some(Moved::Gone { .. })
+        ));
     }
 
     #[test]
@@ -329,6 +327,22 @@ mod tests {
         assert_eq!(
             moved(&before, &elsewhere_left, "sym:a_b::m::go"),
             Some(Moved::Reanchored(pin(&elsewhere_left, "sym:a_b::m::went")))
+        );
+    }
+
+    #[test]
+    fn a_flow_whose_other_step_changed_as_one_moved_is_no_reanchor() {
+        let before = repo(LIB, MODULE);
+        let after = repo(
+            "mod m;\npub fn run() { m::went(); m::went() }\n",
+            "pub fn went() {}\npub struct S;\n",
+        );
+
+        assert_eq!(
+            moved(&before, &after, "flow:a_b::run->a_b::m::go"),
+            Some(Moved::Gone {
+                was: "fn a_b::run  a/src/lib.rs:2\nfn a_b::m::go  a/src/m.rs:1".to_owned()
+            })
         );
     }
 }
