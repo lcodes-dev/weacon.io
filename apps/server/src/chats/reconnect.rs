@@ -5,7 +5,7 @@ use std::future::Future;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::task::JoinSet;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatCommand, ChatId, Message, Outcome, Receipt, code};
+use weacon_protocol::{ChatId, Message, Outcome, Receipt, code};
 
 use super::answers;
 use super::link::{self, Route};
@@ -110,15 +110,11 @@ async fn again(
 ) -> Result<(), Fault> {
     let id = request.command.request.clone();
     if recent(shared, request.sent_at) {
-        workspace.sending(&id).await?;
-        let sent = route
+        // Still refused until it is queued, so no later prompt goes before it.
+        route
             .deliver(shared, Message::ChatCommand(request.command))
-            .await;
-        // Not sent after all, so its core's refusal still stands.
-        if sent.is_err() && request.refused {
-            workspace.mark_refused(&id).await?;
-        }
-        return sent;
+            .await?;
+        return workspace.resent(&id, request.refusals).await;
     }
     if !request.refused {
         return Ok(());
@@ -141,7 +137,7 @@ async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) ->
             continue;
         };
         if recent(shared, first.sent_at) {
-            send_first(shared, workspace, route, first.command).await?;
+            send_first(shared, workspace, route, first).await?;
         } else if !first.sent {
             workspace.forget_chat(&chat).await?;
             continue;
@@ -165,16 +161,18 @@ async fn send_first(
     shared: &Shared,
     workspace: &Workspace,
     route: &Route,
-    first: ChatCommand,
+    first: OpenRequest,
 ) -> Result<(), Fault> {
-    let request = first.request.clone();
+    let request = first.command.request.clone();
     workspace.mark_sent(&request, true).await?;
-    workspace.sending(&request).await?;
-    let sent = route.deliver(shared, Message::ChatCommand(first)).await;
+    let sent = route
+        .deliver(shared, Message::ChatCommand(first.command))
+        .await;
     if sent.is_err() {
         workspace.mark_sent(&request, false).await?;
     }
-    sent
+    sent?;
+    workspace.resent(&request, first.refusals).await
 }
 
 // Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of now.
@@ -188,7 +186,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use weacon_protocol::{ChatQuery, ChatQueryKind, WorkspaceId};
+    use weacon_protocol::{ChatQuery, ChatQueryKind, RequestId, WorkspaceId};
 
     use super::*;
     use crate::chats::test_support::{Ada, ada, attach, sent};
@@ -592,7 +590,8 @@ mod tests {
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
         assert!(request.refused && !request.sent, "{request:?}");
         // Sent again by a member meanwhile: its core's answer to that send counts, not this.
-        workspace.sending(&id("r-c-1")).await.unwrap();
+        let refusals = workspace.refusals(&id("r-c-1")).await.unwrap();
+        workspace.resent(&id("r-c-1"), refusals).await.unwrap();
         let receipt = Receipt {
             request: id("r-c-1"),
             outcome: Outcome::Failed {
@@ -603,6 +602,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(workspace.open_requests(&chat).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refused_command_holds_back_later_prompts_until_it_is_queued_again() {
+        let fixture = Fixture::new().await;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        let mut shared = fixture.shared.clone();
+        shared.sockets.room_within = Duration::from_hours(1);
+        let mut full = attach(&shared, &ada, &["chat.serve"]);
+        let queued = (0..crate::links::QUEUE).map(|_| link::follow(&id("w1"), &id("c-9"), 0));
+        link::send_all(&shared, &ada.machine, queued.collect()).unwrap();
+        let route = Route::open_now(&shared, &ada.machine).unwrap();
+        let chat = id::<ChatId>("c-1");
+        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        let later = id::<RequestId>("r-2");
+
+        let resending = again(&shared, workspace, &route, &chat, request);
+        let waiting = async {
+            // The resend waits for room, and a later prompt still waits behind it.
+            assert!(workspace.refused_before(&chat, &later).await.unwrap());
+            full.incoming.recv().await.unwrap();
+        };
+        let (resent, ()) = tokio::join!(resending, waiting);
+
+        resent.unwrap();
+        assert!(!workspace.refused_before(&chat, &later).await.unwrap());
     }
 
     #[tokio::test]

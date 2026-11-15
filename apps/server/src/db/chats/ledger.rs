@@ -23,6 +23,8 @@ pub(crate) struct OpenRequest {
     pub(crate) sent: bool,
     /// Whether its machine's core refused it for now when it was last sent.
     pub(crate) refused: bool,
+    /// How often its machine's core refused it for now.
+    pub(crate) refusals: i64,
 }
 
 /// Whether a request was seen before.
@@ -195,7 +197,7 @@ impl Workspace {
     /// Marks `request` refused for now by its machine's core, which so never got it.
     pub(crate) async fn mark_refused(&self, request: &RequestId) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET refused = 1, sent = 0
+            "UPDATE chat_requests SET refused = 1, sent = 0, refusals = refusals + 1
              WHERE workspace_id = ? AND request_id = ?",
         )
         .bind(self.id.as_str())
@@ -206,24 +208,39 @@ impl Workspace {
         Ok(())
     }
 
-    /// Forgets its core's last refusal of `request`, before it is sent again, so only its
-    /// answer to that send counts.
-    pub(crate) async fn sending(&self, request: &RequestId) -> Result<(), Fault> {
+    /// Marks `request` sent once it is queued for its machine, its core's last refusal of it
+    /// forgotten, unless its core refused it again since it had been refused `refusals` times.
+    pub(crate) async fn resent(&self, request: &RequestId, refusals: i64) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET refused = 0 WHERE workspace_id = ? AND request_id = ?",
+            "UPDATE chat_requests SET refused = 0, sent = 1
+             WHERE workspace_id = ? AND request_id = ? AND refusals = ?",
         )
         .bind(self.id.as_str())
         .bind(request.as_str())
+        .bind(refusals)
         .execute(&self.db.writer)
         .await
         .map_err(failed)?;
         Ok(())
     }
 
+    /// How often its core refused `request` for now.
+    pub(crate) async fn refusals(&self, request: &RequestId) -> Result<i64, Fault> {
+        sqlx::query_scalar(
+            "SELECT refusals FROM chat_requests WHERE workspace_id = ? AND request_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(request.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)
+        .map(Option::unwrap_or_default)
+    }
+
     /// The commands to `chat` no receipt has ended yet, oldest first.
     pub(crate) async fn open_requests(&self, chat: &ChatId) -> Result<Vec<OpenRequest>, Fault> {
-        sqlx::query_as::<_, (String, i64, bool, bool)>(
-            "SELECT command, sent_at, sent, refused FROM chat_requests
+        sqlx::query_as::<_, (String, i64, bool, bool, i64)>(
+            "SELECT command, sent_at, sent, refused, refusals FROM chat_requests
              WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
         )
         .bind(self.id.as_str())
@@ -232,13 +249,14 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(command, sent_at, sent, refused)| {
+        .map(|(command, sent_at, sent, refused, refusals)| {
             let command = stored_command(&command)?;
             Ok(OpenRequest {
                 command,
                 sent_at,
                 sent,
                 refused,
+                refusals,
             })
         })
         .collect()
@@ -425,15 +443,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_sent_again_but_never_sent_is_still_forgotten() {
+    async fn a_request_sent_again_counts_only_its_cores_answer_to_that_send() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
+        one.mark_refused(&id("r-2")).await.unwrap();
+        let before = one.refusals(&id("r-2")).await.unwrap();
+        let refused = |one: Vec<OpenRequest>| one.iter().any(|open| open.refused);
+
+        // Refused again while it was being sent: that refusal stands.
+        one.mark_refused(&id("r-2")).await.unwrap();
+        one.resent(&id("r-2"), before).await.unwrap();
+        assert!(refused(one.open_requests(&id("c-1")).await.unwrap()));
+        one.resent(&id("r-2"), before + 1).await.unwrap();
+        assert!(!refused(one.open_requests(&id("c-1")).await.unwrap()));
+        assert_eq!(one.refusals(&id("r-2")).await.unwrap(), 2);
+        assert_eq!(one.refusals(&id("r-9")).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_request_refused_and_never_sent_again_is_still_forgotten() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
         assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
         one.mark_refused(&id("r-2")).await.unwrap();
 
-        // A second sender clears the refusal before its send, which fails like the first's.
-        one.sending(&id("r-2")).await.unwrap();
         one.forget_request(&id("r-2")).await.unwrap();
 
         assert!(!one.has_request(&id("r-2")).await.unwrap());

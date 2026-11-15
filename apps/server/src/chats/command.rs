@@ -142,14 +142,13 @@ async fn go_on(
         at: shared.now(),
     };
     let recorded = workspace.record_request(&asked).await?;
-    match recorded {
+    let refusals = match recorded {
         Recorded::Conflict => return Err(conflict()),
         // Its receipt has ended it: nothing more to send.
         Recorded::Same { open: false } => return Ok(()),
-        Recorded::New => {}
-        // Sent again, whatever its core answered before: its answer to this send counts.
-        Recorded::Same { open: true } => workspace.sending(&command.request).await?,
-    }
+        Recorded::New => 0,
+        Recorded::Same { open: true } => workspace.refusals(&command.request).await?,
+    };
     // A prompt goes after one its core refused for now, once that one is sent again.
     let prompt = matches!(command.action, ChatAction::Prompt { .. });
     if prompt
@@ -172,7 +171,8 @@ async fn go_on(
         }
         return Err(fault);
     }
-    workspace.mark_sent(&command.request, true).await
+    // Sent, unless its core refused it again meanwhile: only its answer to this send counts.
+    workspace.resent(&command.request, refusals).await
 }
 
 fn busy() -> Fault {
