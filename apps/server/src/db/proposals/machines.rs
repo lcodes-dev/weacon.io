@@ -202,4 +202,19 @@ mod tests {
             None
         );
     }
+
+    #[tokio::test]
+    async fn a_full_page_of_pinned_docs_has_no_more_when_none_follow() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        for doc in ["d1", "d2", "d3", "d4"] {
+            one.add_doc(&Doc::new(id(doc), text(true)), &by("m1"))
+                .await
+                .unwrap();
+        }
+
+        let (docs, more) = one.pinned_docs(None).await.unwrap();
+
+        assert_eq!((docs.len(), more), (PAGE_DOCS, false));
+    }
 }

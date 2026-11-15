@@ -763,4 +763,10 @@ mod tests {
         );
         never_sent(answered(&json!({ "kind": "tasks" })));
     }
+
+    #[test]
+    fn a_proposal_fits_twice_in_a_frame() {
+        assert_eq!(MAX_PROPOSAL, 512 * 1024);
+        assert_eq!(2 * MAX_PROPOSAL, crate::MAX_FRAME);
+    }
 }

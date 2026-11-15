@@ -47,10 +47,10 @@ pub(crate) async fn moved(
                 Err(fault) => refused = refused.or(Some(fault)),
             }
         }
-        after = docs.last().map(|doc| doc.id.clone());
-        if !more || after.is_none() {
+        let Some(last) = docs.last().filter(|_| more) else {
             return refused.map_or(Ok(batches), Err);
-        }
+        };
+        after = Some(last.id.clone());
     }
 }
 

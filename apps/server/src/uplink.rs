@@ -17,7 +17,7 @@ use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
-use crate::relay::{self, DIFF, SESSIONS, SETTINGS, WORKTREE};
+use crate::relay::{DIFF, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
 use crate::terminals;
@@ -159,7 +159,7 @@ async fn run(
 async fn hand_off(shared: &Shared, machine: &Machine, envelope: Envelope) -> Option<Message> {
     #[expect(
         clippy::wildcard_enum_match_arm,
-        reason = "a machine sends no other message a feature takes"
+        reason = "the relay takes every other message a machine sends"
     )]
     match envelope.message {
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
@@ -171,15 +171,15 @@ async fn hand_off(shared: &Shared, machine: &Machine, envelope: Envelope) -> Opt
             let answer = proposals::query(shared, machine, query).await;
             return Some(Message::ProposalAnswer(answer));
         }
-        message if relay::takes(&message) => {
+        // The relay passes over what answers none of its asks; an error it doesn't claim is
+        // for no other feature yet.
+        message => {
             let envelope = Envelope {
                 id: envelope.id,
                 message,
             };
-            // An error the relay doesn't claim is for no other feature yet.
             let _claimed = shared.relay.answered(&machine.id, envelope);
         }
-        _ => {}
     }
     None
 }

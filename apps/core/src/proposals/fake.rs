@@ -2,6 +2,7 @@
 //! command a core sends, and answers queries from the docs it holds.
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{Notify, mpsc};
 use weacon_protocol::{
@@ -25,7 +26,9 @@ pub(crate) struct Fake {
 impl Fake {
     /// A way to propose to this fake, as through a connected uplink.
     pub(crate) fn connect(&self) -> Proposals {
-        let (proposals, asks) = channel();
+        let (mut proposals, asks) = channel();
+        // So that a test whose answer never comes fails soon.
+        proposals.set_patience(Duration::from_secs(5));
         let (to_server, mut sent) = mpsc::channel(8);
         let (answered, answers) = mpsc::channel(8);
         tokio::spawn(serve(asks, to_server, answers));

@@ -599,4 +599,29 @@ mod tests {
             }
         );
     }
+
+    #[tokio::test]
+    async fn a_doc_of_exactly_the_most_bytes_is_answered() {
+        let fixture = Fixture::new().await;
+        let db = &fixture.shared.db;
+        let one = db.workspace(&workspace_id("w1")).await.unwrap();
+        let by = Attribution::by(member_id("m1"), 0);
+        let made = |body: String| {
+            let title = Title::try_from("Plan".to_owned()).unwrap();
+            Doc::new(id("big"), DocText::new(title, body, None).unwrap())
+        };
+        let empty = serde_json::to_vec(&record(made(String::new())))
+            .unwrap()
+            .len();
+        // Each control character takes six bytes as JSON, so few fill a frame.
+        let room = MAX_PROPOSAL - empty;
+        let body = "\u{1}".repeat(room / 6) + &"x".repeat(room % 6);
+        one.add_doc(&made(body), &by).await.unwrap();
+        let server = fixture.run().await;
+        let mut core = connected(&fixture, server.address).await;
+
+        let read = queried(&mut core, "w1", ProposalQueryKind::Doc { doc: id("big") }).await;
+
+        assert!(matches!(read, ProposalAnswerKind::Doc { .. }), "{read:?}");
+    }
 }

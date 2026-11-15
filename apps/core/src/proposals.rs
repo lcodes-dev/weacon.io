@@ -433,4 +433,16 @@ mod tests {
         });
         assert_eq!(unoffered(&command), Some(refused));
     }
+
+    #[test]
+    fn a_change_of_exactly_the_most_bytes_is_proposed() {
+        let titled = |length: usize| ProposalChange::NewTask {
+            title: "x".repeat(length),
+        };
+        let overhead = serde_json::to_vec(&titled(0)).unwrap().len();
+
+        proposal_id(&workspace(), "run-1", &titled(MAX_PROPOSAL - overhead)).unwrap();
+        let over = proposal_id(&workspace(), "run-1", &titled(MAX_PROPOSAL - overhead + 1));
+        assert_eq!(over.unwrap_err().code(), &code!("proposal.too_large"));
+    }
 }

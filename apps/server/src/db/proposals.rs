@@ -321,7 +321,7 @@ fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
 
 /// A "needs an update" `change` with the findings of the `older` ones it supersedes that it
 /// lacks, from the same revision, so that a later move doesn't hide what an earlier one found;
-/// none for any other change, or when there are none to keep.
+/// none for any other change.
 fn kept_findings(change: &ProposalChange, older: Vec<ProposalChange>) -> Option<ProposalChange> {
     let ProposalChange::NeedsUpdate { doc, base, anchors } = change else {
         return None;
@@ -342,7 +342,7 @@ fn kept_findings(change: &ProposalChange, older: Vec<ProposalChange>) -> Option<
             }
         }
     }
-    (kept.len() > anchors.len()).then(|| ProposalChange::NeedsUpdate {
+    Some(ProposalChange::NeedsUpdate {
         doc: doc.clone(),
         base: *base,
         anchors: kept,
@@ -942,5 +942,76 @@ mod tests {
         assert_eq!(state(&list, "first"), ProposalState::Superseded);
         let second = one.proposal(&id("second")).await.unwrap();
         assert_eq!(second.change, Some(stale_of(&[run, go])));
+    }
+
+    #[tokio::test]
+    async fn a_change_of_exactly_the_most_bytes_is_checked_and_a_larger_one_refused() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let titled = |length: usize| ProposalChange::NewTask {
+            title: "x".repeat(length),
+        };
+        let overhead = serde_json::to_string(&titled(0)).unwrap().len();
+
+        let most = one
+            .propose(&proposed("p1", "mc1", titled(MAX_PROPOSAL - overhead)))
+            .await;
+        let over = one
+            .propose(&proposed("p2", "mc1", titled(MAX_PROPOSAL - overhead + 1)))
+            .await;
+
+        // The most bytes pass the size check, to be refused for their long title.
+        assert_eq!(code(&most.unwrap_err()), "proposal.invalid");
+        assert_eq!(code(&over.unwrap_err()), "proposal.too_large");
+    }
+
+    #[tokio::test]
+    async fn a_needs_update_names_some_of_the_docs_pins_and_keeps_only_findings_of_its_revision() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let text = |body: &str| {
+            let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
+            weacon_model::DocText::new(title, body.to_owned(), Some(anchors.clone())).unwrap()
+        };
+        one.add_doc(
+            &Doc::new(id("p"), text("[a](sym:a::go) [b](sym:a::run)\n")),
+            &by("m1"),
+        )
+        .await
+        .unwrap();
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+        let foreign = stale_of(&["sym:a::other#0123456789abcdef"]);
+
+        let none = one.propose(&core("none", stale_of(&[]))).await.unwrap_err();
+        let elsewhere = one.propose(&core("foreign", foreign)).await.unwrap_err();
+        one.propose(&core("first", stale_of(&[go]))).await.unwrap();
+        let revised = text("[a](sym:a::go) and [b](sym:a::run)\n");
+        one.revise_doc(&id("p"), weacon_model::Revision::new(1), revised, &by("m1"))
+            .await
+            .unwrap();
+        let ProposalChange::NeedsUpdate { anchors, .. } = stale_of(&[run]) else {
+            panic!();
+        };
+        let later = ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 2,
+            anchors,
+        };
+        one.propose(&core("second", later.clone())).await.unwrap();
+
+        assert_eq!(
+            (code(&none), code(&elsewhere)),
+            ("proposal.invalid", "proposal.invalid")
+        );
+        let second = one.proposal(&id("second")).await.unwrap();
+        assert_eq!(second.change, Some(later));
     }
 }

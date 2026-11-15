@@ -725,4 +725,12 @@ mod tests {
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].action, commands[1].action);
     }
+
+    #[tokio::test]
+    async fn proposing_maps_hold_where_moves_are_proposed() {
+        let fake = Fake::default();
+
+        assert!(Maps::off().proposals.is_none());
+        assert!(Maps::off().proposing(fake.connect()).proposals.is_some());
+    }
 }

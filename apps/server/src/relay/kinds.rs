@@ -109,11 +109,6 @@ pub(super) fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Messag
     Some((asked, message))
 }
 
-/// Whether `message`, from a machine, is an answer or an error the relay may take back.
-pub(crate) fn takes(message: &Message) -> bool {
-    matches!(message, Message::Error(_)) || answering(message).is_some()
-}
-
 /// What an answer the relay carries back names.
 pub(super) fn answering(message: &Message) -> Option<Asked> {
     if let Message::MachineSettingsAnswer(answer) = message {
