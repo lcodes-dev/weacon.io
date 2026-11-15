@@ -21,6 +21,8 @@ use super::chats::ChatRepo;
 use super::state::Stores;
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
+use crate::runs::ChatKey;
+use crate::terminals::{self, OpenTerminal};
 use crate::workspaces::Workspaces;
 
 /// Moves an item to the person's Trash; tests pass one of their own.
@@ -46,6 +48,7 @@ struct Inner {
     workspaces: Workspaces,
     work_root: Option<PathBuf>,
     to_trash: ToTrash,
+    open_terminal: OpenTerminal,
     workers: Arc<Semaphore>,
     // Held while a journal changes; it guards no data, so a panic under it leaves none broken.
     journals: Mutex<()>,
@@ -59,11 +62,13 @@ impl Worktrees {
         path: Option<OsString>,
         work_root: Option<PathBuf>,
         to_trash: ToTrash,
+        open_terminal: OpenTerminal,
     ) -> Self {
         let inner = Inner {
             workspaces: Workspaces::new(state_dir, path),
             work_root,
             to_trash,
+            open_terminal,
             workers: Arc::new(Semaphore::new(WORKERS)),
             journals: Mutex::new(()),
         };
@@ -206,6 +211,12 @@ impl Inner {
         chat: &ChatId,
         action: WorktreeAction,
     ) -> Result<WorktreeAnswerKind, Fault> {
+        // The terminal needs only the chat's folder, not its worktree.
+        if matches!(action, WorktreeAction::OpenTerminal) {
+            let key = ChatKey::new(workspace, chat);
+            let (state_dir, work_root) = (self.workspaces.state_dir(), self.work_root.as_deref());
+            return terminals::open_in_chat(state_dir, work_root, &key, self.open_terminal);
+        }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
         match action {
@@ -228,7 +239,6 @@ impl Inner {
             WorktreeAction::OpenPullRequest { title, body } => {
                 self.pull_request(&found, &title, &body)
             }
-            // Not offered by this core yet.
             WorktreeAction::OpenTerminal | WorktreeAction::Newer => Err(unknown()),
         }
     }
@@ -336,14 +346,31 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
         .repos()
         .add(&git(dir), site.clone(), &repo)
         .unwrap();
-    let key = crate::runs::ChatKey::new(&workspace, &chat_id);
+    let key = ChatKey::new(&workspace, &chat_id);
     let worktree = super::launch::chat_tree(&with_path, &work, &key, &site).unwrap();
-    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin);
+    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin, opened);
     (worktrees, workspace, chat_id, worktree)
 }
 
+// Opens no terminal, but leaves what it was given beside the work folder's workspaces.
 #[cfg(test)]
+fn opened(folder: &Path, args: &[OsString]) -> io::Result<bool> {
+    let work = folder
+        .ancestors()
+        .nth(2)
+        .ok_or(io::ErrorKind::InvalidInput)?;
+    let given: Vec<_> = std::iter::once(folder.as_os_str())
+        .chain(args.iter().map(OsString::as_os_str))
+        .collect();
+    std::fs::write(
+        work.join("opened"),
+        given.join(std::ffi::OsStr::new("\n")).as_encoded_bytes(),
+    )?;
+    Ok(true)
+}
+
 // A Trash of the test's own: `bin` in the folder above `work/<workspace>/<chat>`.
+#[cfg(test)]
 fn bin(path: &Path, _: SystemTime) -> io::Result<Trashed> {
     let dir = path.ancestors().nth(3).ok_or(io::ErrorKind::InvalidInput)?;
     let bin = dir.join("bin");
@@ -727,12 +754,10 @@ mod tests {
 
         let error = bench.worktrees.diff(other).await.unwrap_err();
         assert_eq!(code(&error), "worktree.none");
-        for action in [Action::OpenTerminal, Action::Newer] {
-            assert_eq!(
-                code(&bench.act(action).await.unwrap_err()),
-                "request.unknown"
-            );
-        }
+        assert_eq!(
+            code(&bench.act(Action::Newer).await.unwrap_err()),
+            "request.unknown"
+        );
         let newer = WorktreeQuery {
             request: request(),
             workspace: bench.workspace.clone(),
@@ -777,5 +802,61 @@ mod tests {
         };
         assert_eq!(big.content, DiffContent::TooLarge);
         assert_eq!(fitted(small.clone()), small);
+    }
+
+    fn terminals_on(bench: &Bench) {
+        fs::write(bench.dir.join("state/terminals.json"), r#"{"open":true}"#).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_terminal_opens_in_the_chats_folder_on_its_own_resume_once_turned_on() {
+        let bench = bench();
+        let off = bench.act(Action::OpenTerminal).await.unwrap_err();
+        assert_eq!(code(&off), "terminal.off");
+        terminals_on(&bench);
+
+        let answer = bench.act(Action::OpenTerminal).await.unwrap();
+        assert_eq!(answer, WorktreeAnswerKind::TerminalOpened);
+        let given = fs::read_to_string(bench.dir.join("work/opened")).unwrap();
+        let folder = bench.worktree.to_str().unwrap();
+        assert_eq!(
+            given.lines().collect::<Vec<_>>(),
+            [folder, "resume", "--workspace=w-1", "--chat=c-1"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_terminal_needs_the_chats_folder_and_a_desktop() {
+        let bench = bench();
+        terminals_on(&bench);
+        let other = WorktreeCommand {
+            request: request(),
+            workspace: bench.workspace.clone(),
+            chat: chat("c-2"),
+            action: Action::OpenTerminal,
+            by: None,
+        };
+        let none = bench.worktrees.command(other).await.unwrap_err();
+        assert_eq!(code(&none), "terminal.no_folder");
+
+        let no_desktop = |_: &Path, _: &[OsString]| Ok(false);
+        let (state, work) = (bench.dir.join("state"), bench.dir.join("work"));
+        let headless = Worktrees::new(&state, None, Some(work), bin, no_desktop);
+        let asked = WorktreeCommand {
+            request: request(),
+            workspace: bench.workspace.clone(),
+            chat: bench.chat.clone(),
+            action: Action::OpenTerminal,
+            by: None,
+        };
+        let refused = headless.command(asked.clone()).await.unwrap_err();
+        assert_eq!(code(&refused), "terminal.none");
+        let broken = |_: &Path, _: &[OsString]| Err(io::ErrorKind::NotFound.into());
+        let (state, work) = (bench.dir.join("state"), bench.dir.join("work"));
+        let failing = Worktrees::new(&state, None, Some(work), bin, broken);
+        assert_eq!(
+            code(&failing.command(asked).await.unwrap_err()),
+            "terminal.failed"
+        );
     }
 }

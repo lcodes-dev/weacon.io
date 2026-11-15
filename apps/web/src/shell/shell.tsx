@@ -100,7 +100,11 @@ function SignedIn({ api, log, account, signedOut }: { api: Api; log: Log; accoun
         </Settings>
       )
     : undefined;
-  return <Workspaces api={api} log={log} who={who} page={page} />;
+  const openSettings = () => {
+    signingOut.clear();
+    setSettings(true);
+  };
+  return <Workspaces api={api} log={log} who={who} page={page} openSettings={openSettings} />;
 }
 
 function Body({

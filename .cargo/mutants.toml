@@ -18,6 +18,8 @@
 # `trash_into` instead.
 # On Linux, a Trash name that can't be checked can't be moved into either; `place`'s guard
 # matters where the Trash can be written but not read, as macOS may allow.
+# The daemon's own terminal opener and macOS's Terminal.app open a real window, so no test runs
+# them; tests pass an opener of their own and check the command `terminal_in` builds.
 exclude_globs = [
     "**/platform/**/windows.rs",
     "**/platform/pty/windows/*.rs",
@@ -38,6 +40,8 @@ exclude_re = [
     "replace \\+ with \\* in full_names",
     "hold\\.rs:.*: (replace let_go with \\(\\)|replace <impl Drop for Hold>::drop with \\(\\)|delete ! in hold)$",
     "replace != with == in lock_for_process$",
+    "daemon/worktrees\\.rs:.*replace open_terminal ->",
+    "platform/terminal_app/macos\\.rs:.*replace desktop_terminal ->",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.
 minimum_test_timeout = 60

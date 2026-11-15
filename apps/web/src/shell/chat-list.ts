@@ -7,7 +7,7 @@ export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
 }
 
 /** Whether `member`, the person's in the chat's workspace, owns `chat`; an unknown member owns none. */
-export function owns(member: MemberId | undefined, chat: ChatSummary | undefined): boolean {
+export function owns(member: MemberId | undefined, chat: Pick<ChatSummary, "owner"> | undefined): boolean {
   return member !== undefined && chat?.owner === member;
 }
 

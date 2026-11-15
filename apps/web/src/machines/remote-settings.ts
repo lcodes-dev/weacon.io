@@ -1,18 +1,16 @@
 import type { Later } from "../connection.ts";
-import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, RequestId } from "../protocol.ts";
+import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, MachineSettingsAnswerKind, RepoId, RequestId } from "../protocol.ts";
 import { type Answer, MALFORMED } from "../api/api.ts";
 import { type MachineSocket, askMachine } from "./ask-machine.ts";
 
 /** `machine`'s settings for the socket's workspace, as they are now. */
 export function current(socket: MachineSocket, machine: MachineId, later: Later): Promise<Answer<MachineSettings>> {
-  return ask(socket, later, (id, request) => ({
-    id,
-    type: "machine_settings_query",
-    request,
-    machine,
-    workspace: socket.workspace,
-    query: { kind: "current" },
-  }));
+  return ask(socket, later, query(socket, machine, "current"), settingsIn);
+}
+
+/** The repositories `machine` has for the socket's workspace, sorted; a core older than `repo.list` answers `request.unknown`. */
+export function repos(socket: MachineSocket, machine: MachineId, later: Later): Promise<Answer<RepoId[]>> {
+  return ask(socket, later, query(socket, machine, "repos"), (answer) => (answer.kind === "repos" ? answer.repos : undefined));
 }
 
 /** Changes `machine`'s settings for the socket's workspace; the answer is them after the change. */
@@ -22,26 +20,36 @@ export function change(
   action: MachineSettingsAction,
   later: Later,
 ): Promise<Answer<MachineSettings>> {
-  return ask(socket, later, (id, request) => ({
+  const command = (id: number, request: RequestId): Envelope => ({
     id,
     type: "machine_settings_command",
     request,
     machine,
     workspace: socket.workspace,
     action,
-  }));
+  });
+  return ask(socket, later, command, settingsIn);
 }
 
-function ask(socket: MachineSocket, later: Later, envelope: (id: number, request: RequestId) => Envelope): Promise<Answer<MachineSettings>> {
+function settingsIn(answer: MachineSettingsAnswerKind): MachineSettings | undefined {
+  if (answer.kind !== "current") {
+    return undefined;
+  }
+  const { kind, ...settings } = answer;
+  return settings;
+}
+
+function query(socket: MachineSocket, machine: MachineId, kind: "current" | "repos"): (id: number, request: RequestId) => Envelope {
+  return (id, request) => ({ id, type: "machine_settings_query", request, machine, workspace: socket.workspace, query: { kind } });
+}
+
+// Asks with `envelope`; `read` takes the answer's body, or nothing when it is another kind.
+function ask<T>(socket: MachineSocket, later: Later, envelope: (id: number, request: RequestId) => Envelope, read: (answer: MachineSettingsAnswerKind) => T | undefined): Promise<Answer<T>> {
   return askMachine(socket, later, envelope, (message, request) => {
     if (message.type !== "machine_settings_answer" || message.request !== request) {
       return undefined;
     }
-    const { answer } = message;
-    if (answer.kind !== "current") {
-      return { ok: false, code: MALFORMED };
-    }
-    const { kind, ...settings } = answer;
-    return { ok: true, value: settings };
+    const value = read(message.answer);
+    return value === undefined ? { ok: false, code: MALFORMED } : { ok: true, value };
   });
 }

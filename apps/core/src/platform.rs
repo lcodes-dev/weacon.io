@@ -8,6 +8,7 @@ mod chrome;
 mod procs;
 mod programs;
 mod spawn_policy;
+mod terminal_app;
 pub(crate) mod trash;
 #[cfg(unix)]
 mod unix;
@@ -21,6 +22,7 @@ pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::{plant_link, plant_program};
 pub(crate) use spawn_policy::spawn_policy;
+pub(crate) use terminal_app::terminal_in;
 #[cfg(unix)]
 pub(crate) use unix::*;
 #[cfg(windows)]

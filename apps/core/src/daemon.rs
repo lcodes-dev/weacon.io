@@ -1011,7 +1011,7 @@ mod tests {
         let (refused, _other) = exchange(connect(&running.socket).await, &other, 3).await;
 
         assert!(matches!(&answers[1], Message::ChatAnswer(_)), "{answers:?}");
-        assert_eq!(error_code(&refused[1]), Some("chat.busy"));
+        assert_eq!(error_code(&refused[1]), Some("chat.held"));
         assert!(matches!(&refused[2], Message::ChatAnswer(answer)
             if matches!(answer.answer, ChatAnswerKind::Snapshot { seq: 2, .. })));
         drop(holder);

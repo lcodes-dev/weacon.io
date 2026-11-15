@@ -15,8 +15,9 @@ test("the review bar says where the worktree stands, and Remove asks first, then
   const bar = page.getByRole("region", { name: "Worktree" });
 
   await bar.getByText("Uncommitted changes · Commits not pushed").waitFor();
-  // This core opens no terminals.
+  // This core opens no terminals, so the bar gives the line to run on the chat's machine.
   assert.equal(await bar.getByRole("button", { name: "Open terminal" }).count(), 0);
+  await bar.getByText("weacon resume --workspace=w-1 --chat=c-1").waitFor();
   await bar.getByRole("button", { name: "Remove" }).click();
   const confirm = bar.getByRole("group", { name: "Remove the worktree" });
   await confirm

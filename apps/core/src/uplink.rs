@@ -75,7 +75,8 @@ enum Ended {
 pub(crate) struct Uplink {
     pub(crate) state_dir: PathBuf,
     pub(crate) app: App,
-    pub(crate) capabilities: Vec<Capability>,
+    /// What it offers the server, worked out again at each hello from its state folder.
+    pub(crate) capabilities: fn(&Path) -> Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
     pub(crate) chats: Chats,
@@ -215,12 +216,16 @@ impl Uplink {
 
     /// Says hello, and gives the server's welcome if it offers the connection.
     async fn greeted(&self, socket: &mut Socket) -> Option<Welcome> {
+        let (offered, dir) = (self.capabilities, self.state_dir.clone());
+        let capabilities = tokio::task::spawn_blocking(move || offered(&dir))
+            .await
+            .ok()?;
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
                 protocol: PROTOCOL,
                 app: self.app.clone(),
-                capabilities: self.capabilities.clone(),
+                capabilities,
             }),
         };
         send(socket, &hello).await;
@@ -367,7 +372,7 @@ pub(crate) fn new(
     Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
-        capabilities: crate::session::CAPABILITIES.to_vec(),
+        capabilities: |dir| crate::session::offered(dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
         chats,
@@ -420,7 +425,7 @@ mod tests {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
-            capabilities: vec![Capability::new(CONNECT)],
+            capabilities: |_| vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
             // A way to an engine that has stopped.
@@ -729,7 +734,7 @@ mod tests {
                 request,
                 workspace,
                 chat,
-                action: WorktreeAction::Restore,
+                action: WorktreeAction::OpenTerminal,
                 by,
             }),
         ]
