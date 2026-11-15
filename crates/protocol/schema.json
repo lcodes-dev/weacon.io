@@ -1071,6 +1071,10 @@
         "owner": {
           "$ref": "#/$defs/MemberId"
         },
+        "run": {
+          "description": "What its latest run is doing; left out when it has had none.",
+          "$ref": "#/$defs/RunState"
+        },
         "state": {
           "$ref": "#/$defs/ChatState"
         },
@@ -3997,7 +4001,7 @@
           ]
         },
         {
-          "description": "A chat was made, or its title, state or latest turn changed. Only for clients that have\nthe capability `workspace.chats`, which read the chats again.",
+          "description": "A chat was made, or its title, state, latest turn or latest run changed. Only for clients that have\nthe capability `workspace.chats`, which read the chats again.",
           "type": "object",
           "properties": {
             "chat": {
