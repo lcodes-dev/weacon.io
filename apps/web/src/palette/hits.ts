@@ -1,7 +1,10 @@
 import type { SearchHit, Snippet } from "../protocol.ts";
 import type { Place } from "../shell/place.ts";
 
-/** A hit as the palette lists it: what it is, its title and snippet, and the place it opens: a task opens the tasks. */
+/**
+ * A hit as the palette lists it: what it is, its title and snippet, and the place it opens. A task
+ * opens the tasks, and a message its chat at the latest entries: neither place has its item yet.
+ */
 export type Listed = { key: string; kind: "Task" | "Doc" | "Chat"; title: string; snippet: Snippet; place: Place };
 
 /** The hits the palette knows how to list, in the server's order; a newer kind is left out. */
@@ -33,11 +36,6 @@ export function parts(snippet: Snippet): { text: string; marked: boolean }[] {
   }
   cut.push({ text: snippet.text.slice(at), marked: false });
   return cut.filter((part) => part.text !== "");
-}
-
-/** Where the selection moves from `at` among `count` items, wrapping at either end. */
-export function moved(at: number, count: number, by: 1 | -1): number {
-  return count === 0 ? 0 : (at + by + count) % count;
 }
 
 /** Whether `event` is the key that opens the palette: ⌘K, or Ctrl+K off a Mac. */

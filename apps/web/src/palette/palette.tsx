@@ -4,7 +4,8 @@ import type { Answer, Api } from "../api/api.ts";
 import { type Loaded, Loader } from "../api/loaded.ts";
 import type { SearchHit, WorkspaceId } from "../protocol.ts";
 import type { Place } from "../shell/place.ts";
-import { type Listed, listed, moved, opensPalette, parts } from "./hits.ts";
+import { composing, picker } from "../composer/keys.ts";
+import { type Listed, listed, opensPalette, parts } from "./hits.ts";
 import "./palette.css";
 
 /** The search palette over `workspace`'s tasks, docs and chats, opened with ⌘K while `enabled`; choosing a hit goes to its place. */
@@ -81,13 +82,18 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
             }
           }}
           onKeyDown={(event) => {
-            if (event.key === "Escape") {
+            if (composing(event.nativeEvent)) {
+              return;
+            }
+            const action = picker(event.nativeEvent, hits.length, at);
+            if (action === "close") {
               close();
-            } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            } else if (action === "pick") {
               event.preventDefault();
-              setAt(moved(at, hits.length, event.key === "ArrowDown" ? 1 : -1));
-            } else if (event.key === "Enter") {
               choose(hits[at]);
+            } else if (action !== undefined) {
+              event.preventDefault();
+              setAt(action);
             }
           }}
         />

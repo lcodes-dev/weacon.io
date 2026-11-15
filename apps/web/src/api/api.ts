@@ -112,7 +112,7 @@ export class Api {
 
   /** What in `workspace` holds every word of `query`'s text, best first. */
   search(workspace: WorkspaceId, query: SearchQuery): Promise<Answer<SearchAnswer>> {
-    return this.#ask("POST", `/api/workspaces/${workspace}/search`, query, isSearchAnswer);
+    return this.#ask("POST", `${base(workspace)}/search`, query, isSearchAnswer);
   }
 
   /** Who is or was a member of `workspace`, with the name each is shown by. */
@@ -258,15 +258,16 @@ const isHit = (value: unknown): boolean => {
   if (!fields(value, ["kind"])) {
     return false;
   }
-  const hit = value as { kind: string; snippet?: unknown; chat?: string };
+  const hit = value as { kind: string; snippet: unknown; doc: string; chat: string };
   const known = fields(value, ["title"]) && isSnippet(hit.snippet);
+  // A doc's or a chat's id goes into the address, so it must be one.
   switch (hit.kind) {
     case "task":
-    case "doc":
       return known;
+    case "doc":
+      return known && fields(value, ["doc"]) && isId(hit.doc);
     case "chat":
-      // A chat's id goes into the address, so it must be one.
-      return known && fields(value, ["chat"]) && isId(hit.chat ?? "");
+      return known && fields(value, ["chat"]) && isId(hit.chat);
     default:
       return true;
   }

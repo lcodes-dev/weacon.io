@@ -12,9 +12,10 @@ export function sends(key: Key): boolean {
   return !composing(key) && key.key === "Enter" && !key.shiftKey;
 }
 
-/** What a key does while the picker is open: pick, close it, or move to an option. */
+/** What a key does while a list of options is open: pick, close it, or move to an option; with no options, an arrow does nothing. */
 export function picker(key: Key, count: number, active: number): "pick" | "close" | number | undefined {
-  if (key.shiftKey) {
+  const arrow = key.key === "ArrowDown" || key.key === "ArrowUp";
+  if (key.shiftKey || (arrow && count === 0)) {
     return undefined;
   }
   switch (key.key) {

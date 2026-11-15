@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { SearchHit } from "../protocol.ts";
-import { listed, moved, opensPalette, parts } from "./hits.ts";
+import { listed, opensPalette, parts } from "./hits.ts";
 
 const snippet = { text: "the plan", marks: [] };
 
@@ -39,13 +39,6 @@ test("a snippet cuts at its marks, and marks out of order or reversed are skippe
     { text: "pl", marked: false },
     { text: "an", marked: true },
   ]);
-});
-
-test("the selection wraps at either end, and stays put with nothing listed", () => {
-  assert.equal(moved(0, 3, 1), 1);
-  assert.equal(moved(2, 3, 1), 0);
-  assert.equal(moved(0, 3, -1), 2);
-  assert.equal(moved(0, 0, 1), 0);
 });
 
 test("⌘K and Ctrl+K open the palette, and K alone doesn't", () => {

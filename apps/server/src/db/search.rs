@@ -640,6 +640,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_message_takes_the_title_of_its_own_workspaces_chat() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        for (workspace, owner, title) in
+            [(&one, "m1", "Fix the build"), (&two, "m2", "Plan the trip")]
+        {
+            make_titled(workspace, "c-1", owner, title, 3)
+                .await
+                .unwrap();
+            append(workspace, "c-1", &[(Some(1), said("The cache expired"))])
+                .await
+                .unwrap();
+        }
+
+        let query = parse("cache").unwrap().unwrap();
+        for (workspace, title) in [(&one, "Fix the build"), (&two, "Plan the trip")] {
+            let hits = workspace.search(&query, 5).await.unwrap();
+            assert!(
+                matches!(hits.as_slice(), [SearchHit::Chat { title: found, seq: Some(1), .. }] if found == title),
+                "{hits:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn chats_stored_before_their_search_are_indexed_as_a_write_indexes_them() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
