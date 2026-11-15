@@ -438,6 +438,16 @@ mod tests {
         );
     }
 
+    /// Makes the worktree hold on `dir`'s repository impossible to take: a folder stands where
+    /// its lock file goes. Gives the lock's path.
+    pub(crate) fn block_hold(dir: &Path) -> PathBuf {
+        let common = dir.join("repo/.git").canonicalize().unwrap();
+        let lock = state::worktrees_lock(&dir.join("state"), &common);
+        drop(fs::remove_file(&lock));
+        fs::create_dir_all(&lock).unwrap();
+        lock
+    }
+
     // A repository with one commit.
     pub(crate) fn repo(dir: &Path) -> PathBuf {
         let repo = dir.join("repo");
