@@ -86,10 +86,11 @@ impl Fixture {
             head_within: connections::HEAD_WITHIN,
             proxies: Arc::new([]),
             connections: Arc::new(Semaphore::new(64)),
-            // Short, so tests that wait for the feed's checks don't wait long.
+            // A short hello; pings far apart, since a client answers them only while its test
+            // reads it. Tests about pings ask for them with `pinging`.
             sockets: crate::socket::Timing {
                 hello_within: Duration::from_millis(100),
-                ping_every: Duration::from_millis(100),
+                ping_every: Duration::from_hours(1),
             },
             clock: Arc::new(Box::new(move || {
                 UNIX_EPOCH + Duration::from_secs(now.load(Ordering::Relaxed))
@@ -114,10 +115,9 @@ impl Fixture {
         }
     }
 
-    /// Pings sockets no more while a test runs, for tests whose client stops reading or that
-    /// wait on something other than a ping.
-    pub(crate) fn quiet(&mut self) {
-        self.shared.sockets.ping_every = Duration::from_hours(1);
+    /// Pings sockets every 100 ms, for tests about pings, whose clients read throughout.
+    pub(crate) fn pinging(&mut self) {
+        self.shared.sockets.ping_every = Duration::from_millis(100);
     }
 
     /// A server running on the fixture's state.

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
-import { type Late, type Send, deliverPrompt } from "../composer/prompt.ts";
+import { type Send, deliverPrompt, lateFeed } from "../composer/prompt.ts";
 import { later } from "../connection.ts";
 import { newRequestId } from "../ids.ts";
 import { route } from "../incoming.ts";
@@ -80,7 +80,7 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
   const sent = useRef(new Map<RequestId, { run: RunId; prompt: number }>());
   const [stopping, setStopping] = useState(false);
   const [stopFailed, setStopFailed] = useState<string>();
-  const [late, setLate] = useState<Late>();
+  const [{ lates, hear }] = useState(lateFeed);
   const receipts = useRef<Receipts>(undefined);
   const answerSettled = (request: RequestId, settled: Settled) => {
     const answer = sent.current.get(request);
@@ -94,7 +94,7 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
       return;
     }
     const waiting = new Receipts(later, (request, settled) => {
-      setLate({ request, settled });
+      hear({ request, settled });
       answerSettled(request, settled);
     });
     receipts.current = waiting;
@@ -141,5 +141,5 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
       setStopFailed(stopProblem(settled));
     });
   };
-  return { send, late, answering, stop: { stopping, problem: stopFailed, stop } };
+  return { send, lates, answering, stop: { stopping, problem: stopFailed, stop } };
 }

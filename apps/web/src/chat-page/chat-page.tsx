@@ -8,7 +8,7 @@ import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
 import { useSocketFor } from "../shell/workspace-socket.ts";
 
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "log.forward"] };
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "worktree.manage", "worktree.open_terminal", "log.forward"] };
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
 const FAKE_WORKSPACE = "w-1";
 

@@ -17,8 +17,8 @@ type Feed = {
   close?: (opened: number) => boolean;
   /** Capabilities to offer besides the feed and chats. */
   also?: string[];
-  /** What the nth socket answers each envelope the page sends after its hello. */
-  answer?: (sent: Envelope, opened: number) => Envelope[];
+  /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
+  answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
   /** Whether the nth socket closes once it has answered `sent`. */
   drop?: (sent: Envelope, opened: number) => boolean;
 };
@@ -38,9 +38,8 @@ async function serveFeed(page: Page, { changes = () => [], close = () => false, 
       const hello = JSON.parse(String(text)) as Envelope;
       if (hello.type !== "hello") {
         sent.push(hello);
-        for (const reply of answer(hello, nth)) {
-          socket.send(JSON.stringify(reply));
-        }
+        const reply = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
+        answer(hello, nth, reply).forEach(reply);
         if (drop(hello, nth)) {
           void socket.close();
         }
@@ -595,5 +594,146 @@ test("open changes cut short by a lost connection are asked for again once it is
   await page.getByText("src/shelves.rs").waitFor();
   assert.equal(sent.filter((envelope) => envelope.type === "diff_query").length, 2);
   await page.getByText("src/pantry.rs").waitFor();
+});
+
+// A worktree as a core answers it: c-1's has uncommitted work, any other chat has none yet.
+function worktreeServer(asked: Envelope): Envelope[] {
+  if (asked.type !== "worktree_query") {
+    return snapshot(asked);
+  }
+  if (asked.chat !== "c-1") {
+    return [{ id: asked.id, type: "error", code: "worktree.none", retryable: false }];
+  }
+  const answer = { kind: "state" as const, removed: false, uncommitted: true, unpushed: false };
+  return [{ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer }];
+}
+
+const WORKTREES = ["diff.view", "worktree.manage", "worktree.open_terminal"];
+
+test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(
+    served,
+    [
+      { id: "c-1", title: "Sort the pantry" },
+      { id: "c-2", title: "Water the plants" },
+    ],
+    (member) => member,
+  );
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByText("Uncommitted changes").waitFor();
+  await bar.getByRole("button", { name: "Open terminal" }).waitFor();
+  const withButtons = (await bar.boundingBox())?.height;
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  assert.equal(await bar.getByLabel("Title").inputValue(), "Sort the pantry");
+
+  await nav(page).getByRole("button", { name: /Water the plants/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  assert.equal(await bar.getByRole("button", { name: "Remove" }).count(), 0);
+  // The bar is as tall without its buttons as with them, so the diff below doesn't move as they come.
+  assert.equal((await bar.boundingBox())?.height, withButtons);
+});
+
+test("someone else's chat shows no worktree bar, and asks nothing of it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.locator(".chat-changes").waitFor();
+
+  assert.equal(await page.getByRole("region", { name: "Worktree" }).count(), 0);
+  assert.deepEqual(
+    sent.filter((envelope) => envelope.type === "worktree_query" || envelope.type === "worktree_command"),
+    [],
+  );
+});
+
+test("the worktree's state is asked again on each opening of the changes, and after a failure on Try again", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first ask fails, the next finds no worktree yet, and every later one finds the one made since.
+  let asked = 0;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (envelope) => {
+      if (envelope.type !== "worktree_query") {
+        return snapshot(envelope);
+      }
+      asked += 1;
+      if (asked === 1) {
+        return [{ id: envelope.id, type: "error", code: "machine.offline", retryable: true }];
+      }
+      return asked === 2 ? [{ id: envelope.id, type: "error", code: "worktree.none", retryable: false }] : worktreeServer(envelope);
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByRole("alert").getByText("The worktree's state didn't come. Try again.").waitFor();
+  await bar.getByRole("button", { name: "Try again" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("Uncommitted changes").waitFor();
+  assert.equal(asked, 3);
+});
+
+test("a pull request's draft stays until the core opens it, and its answer comes while the changes are closed", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first pull request is refused; the second's answer waits until the test sends it.
+  let tries = 0;
+  let later: (() => void) | undefined;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (asked, _nth, reply) => {
+      if (asked.type !== "worktree_command") {
+        return worktreeServer(asked);
+      }
+      tries += 1;
+      if (tries === 1) {
+        return [{ id: asked.id, type: "error", code: "request.unknown", retryable: false }];
+      }
+      const url = "https://example.com/pantry/compare";
+      later = () => reply({ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "pull_request_page", url } });
+      return [];
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  await bar.getByLabel("Description").fill("Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+
+  await bar.getByRole("alert").getByText("The pull request wasn't opened.").waitFor();
+  assert.equal(await bar.getByLabel("Description").inputValue(), "Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+  await waitFor(() => later !== undefined);
+  // What is typed while it is on its way couldn't be sent, so the form takes nothing then.
+  assert.equal(await bar.getByLabel("Description").isDisabled(), true);
+  await page.getByRole("button", { name: "Back" }).click();
+  later?.();
+  await page.getByRole("button", { name: "Changes" }).click();
+
+  const link = bar.getByRole("link", { name: "Open it" });
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), "https://example.com/pantry/compare");
+  assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 

@@ -366,7 +366,6 @@ mod tests {
     #[tokio::test]
     async fn a_feed_keeps_its_place_among_the_connections() {
         let mut fixture = Fixture::new().await;
-        fixture.quiet();
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
         let (server, ada) = fixture.client("ada@example.com").await;
@@ -384,8 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
@@ -409,8 +407,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut plain = greeted(server.address, &ada.token, 0).await;
         let first = next(&mut plain).await;
@@ -492,8 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_client_that_offers_proposals_hears_of_proposal_changes() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut plain = greeted(server.address, &ada.token, 0).await;
         next(&mut plain).await;
@@ -524,8 +520,7 @@ mod tests {
 
     #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
@@ -638,7 +633,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_answers_pings_stays_until_its_session_ends() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         // Reading answers each ping; five of them outlast the two a silent client gets.
@@ -653,8 +649,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
@@ -667,7 +662,6 @@ mod tests {
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.quiet();
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
@@ -699,7 +693,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_quiet_feed_ends_when_its_member_is_one_no_more() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
@@ -713,7 +708,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_feed_ends_when_its_session_is_signed_out() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
 
@@ -783,7 +779,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_stops_answering_is_let_go() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let (server, ada) = fixture.client("ada@example.com").await;
         let client = greeted(server.address, &ada.token, 1).await;
         // Read below the WebSocket, so nothing answers the pings.

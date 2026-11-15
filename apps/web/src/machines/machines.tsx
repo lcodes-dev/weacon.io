@@ -8,6 +8,7 @@ import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
+import { ConfirmKey } from "./confirm-key.tsx";
 import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
@@ -141,6 +142,7 @@ function Machine({
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
+      <ConfirmKey pins={pins} machine={machine} />
       {socket !== undefined && settable && (
         <button type="button" aria-label={`${machine.name} settings`} aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide settings" : "Settings"}

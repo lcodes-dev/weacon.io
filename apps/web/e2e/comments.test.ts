@@ -4,13 +4,13 @@ import { test } from "node:test";
 import type { Locator, Page } from "playwright-core";
 
 import type { Envelope } from "../src/protocol.ts";
-import { fakeServer, start, waitFor } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start, waitFor } from "./harness.ts";
 
 // The first of the fake's changed files, in path order, as `fake_diff.rs` names them.
 const FIRST_FILE = "src/ember/part_10.rs";
 
 test("Send review sends every comment as one prompt, and clears them once it is taken", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
@@ -33,7 +33,7 @@ test("Send review sends every comment as one prompt, and clears them once it is 
 });
 
 test("a dragged range of lines takes a comment that can be edited and removed", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
@@ -68,7 +68,7 @@ test("a dragged range of lines takes a comment that can be edited and removed", 
 });
 
 test("picking more lines keeps a draft, and nothing moves under a pressed pointer", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByRole("button", { name: "Changes" }).click();
@@ -101,8 +101,10 @@ function markedIn(file: Locator): (mark: string) => Promise<number[]> {
     );
 }
 
-// Presses on row `from`'s gutter and lets go on row `to`'s.
+// Presses on row `from`'s gutter and lets go on row `to`'s, once both are in view.
 async function dragGutter(page: Page, file: Locator, from: number, to: number): Promise<void> {
+  await file.locator(`.line[data-row="${to}"]`).scrollIntoViewIfNeeded();
+  await file.locator(`.line[data-row="${from}"]`).scrollIntoViewIfNeeded();
   const gutter = async (row: number) => {
     const box = await file.locator(`.line[data-row="${row}"]`).boundingBox();
     assert.ok(box !== null);
