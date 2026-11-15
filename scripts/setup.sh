@@ -48,8 +48,10 @@ mkdir -p .dev
 # mise installs the pinned Node and Rust. Without it, the installed ones must be exactly those.
 install_mise="install mise from https://mise.jdx.dev, then run this again"
 if [ -n "$mise" ]; then
-  log "Installing Node and Rust with mise"
-  run_logged "mise install" run_mise install node rust
+  pinned=(rust)
+  [ "$mode" != all ] || pinned+=(node)
+  log "Installing the pinned tools with mise"
+  run_logged "mise install" run_mise install "${pinned[@]}"
   use_mise
 fi
 
