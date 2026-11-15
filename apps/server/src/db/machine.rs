@@ -500,6 +500,12 @@ mod tests {
         assert_eq!(older[0].core.as_ref(), Some(&core));
         assert_eq!(older[0].missing, offered[1..]);
         assert_eq!(current[0].missing, []);
+        // What the core offered that the server offers only later doesn't show as missing then.
+        let later = [offered.to_vec(), vec![Capability::new(code!("diff.view"))]].concat();
+        db.saw_core(&id("mc-p1"), Some(&core), &later)
+            .await
+            .unwrap();
+        assert_eq!(db.machines_of(&ada, &later).await.unwrap()[0].missing, []);
     }
 
     #[tokio::test]

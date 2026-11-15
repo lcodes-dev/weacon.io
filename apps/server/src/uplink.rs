@@ -102,16 +102,22 @@ pub(crate) fn offers() -> Vec<Capability> {
     vec![Capability::new(CONNECT), Capability::new(SETTINGS)]
 }
 
+/// The most of a core's capabilities kept, so it can't store more; far more than any core has.
+const MOST_KEPT_OFFERS: usize = 64;
+
 /// What of `hello` the machines list keeps: its build, only when each part is short text that
-/// shows as it is stored, by the rule for machines' names; and only those of its capabilities
-/// the server offers, so a core can't store more.
+/// shows as it is stored, by the rule for machines' names; and its first capabilities, those a
+/// later server may offer too.
 fn kept(hello: &Hello) -> (Option<&App>, Vec<Capability>) {
     let build = &hello.app;
     let plain = [&build.name, &build.version, &build.commit]
         .into_iter()
         .all(|part| MachineName::try_from(part.clone()).is_ok());
-    let offers = (offers().into_iter())
-        .filter(|offer| hello.capabilities.contains(offer))
+    let offers = hello
+        .capabilities
+        .iter()
+        .take(MOST_KEPT_OFFERS)
+        .cloned()
         .collect();
     (plain.then_some(build), offers)
 }
@@ -211,7 +217,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_plain_build_and_the_servers_own_offers_are_kept() {
+    fn only_a_plain_build_and_a_bounded_list_of_offers_are_kept() {
         let hello = |version: &str, offered: &[&str]| Hello {
             protocol: PROTOCOL,
             app: App {
@@ -229,8 +235,13 @@ mod tests {
         assert_eq!(build, Some(&plain.app));
         assert_eq!(
             offers,
-            offers_named(&["machine.connect", "machine.settings"])
+            offers_named(&["future.thing", "machine.settings", "machine.connect"])
         );
+        let many: Vec<String> = (0..=MOST_KEPT_OFFERS)
+            .map(|n| format!("thing.n{n}"))
+            .collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(kept(&hello("1.2.3", &many)).1.len(), MOST_KEPT_OFFERS);
         for version in ["1.2.3\u{202e}", "1.2.3\n", &"9".repeat(65), ""] {
             assert_eq!(
                 kept(&hello(version, &[])),
