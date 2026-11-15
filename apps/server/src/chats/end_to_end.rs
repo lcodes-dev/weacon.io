@@ -7,7 +7,10 @@ use weacon_protocol::{
 };
 
 use crate::db::test_support::{prompt, said};
-use crate::test_support::socket::{self, Socket, next, open, say, upgrade_status};
+use futures_util::SinkExt as _;
+use tokio_tungstenite::tungstenite::Message as Wire;
+
+use crate::test_support::socket::{self, Socket, next, open, past_pings, say, upgrade_status};
 use crate::test_support::{
     Fixture, Running, email, fresh_account, member_id, pair_machine, sign_in, workspace_id,
 };
@@ -174,4 +177,35 @@ async fn a_prompt_runs_on_its_owners_machine_and_only_the_workspace_reads_the_ch
     assert_eq!(refusal(&elsewhere), "chat.not_found");
     let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
     assert!(!logged.contains("MARKER"), "{logged}");
+}
+
+// The answer to `message`, which must come before the pong to a ping sent after it.
+async fn answered_at_once(client: &mut Socket, message: Message) -> Message {
+    socket::send(client, Envelope { id: 2, message }).await;
+    client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+    let mut answer = None;
+    loop {
+        match past_pings(client).await {
+            Some(Ok(Wire::Pong(_))) => return answer.expect("answered only after the ping"),
+            Some(Ok(Wire::Text(text))) => {
+                let message = Envelope::from_json(text.as_bytes()).unwrap().message;
+                if !matches!(message, Message::Workspace(_)) {
+                    answer = answer.or(Some(message));
+                }
+            }
+            other => panic!("no answer: {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_feed_answers_a_chat_query_before_what_its_client_sends_next() {
+    let fixture = Fixture::new().await;
+    let server = fixture.run().await;
+    let ada = token(&fixture, &server, "ada@example.com").await;
+    let mut client = feed(&server, "w1", &ada).await;
+
+    let answer = answered_at_once(&mut client, chat_query("w1", ChatQueryKind::Snapshot)).await;
+
+    assert_eq!(refusal(&answer), "chat.not_found");
 }

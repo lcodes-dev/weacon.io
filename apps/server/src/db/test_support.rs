@@ -113,7 +113,28 @@ async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Faul
         member: &owner,
         at,
     };
-    workspace.add_chat(&new, &first).await
+    // Made on its owner's machine, unpaired again unless it was paired before.
+    let paired = sqlx::query(
+        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
+             token_hash, paired_at)
+         SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+         FROM members WHERE workspace_id = ? AND member_id = ?",
+    )
+    .bind(machine_id.as_str())
+    .bind(workspace.id.as_str())
+    .bind(owner.as_str())
+    .execute(&workspace.db.writer)
+    .await
+    .map_err(super::failed)?;
+    let added = workspace.add_chat(&new, &first).await;
+    if paired.rows_affected() > 0 {
+        sqlx::query("DELETE FROM machines WHERE machine_id = ?")
+            .bind(machine_id.as_str())
+            .execute(&workspace.db.writer)
+            .await
+            .map_err(super::failed)?;
+    }
+    added
 }
 
 pub(crate) fn status(state: RunState) -> ChatEvent {

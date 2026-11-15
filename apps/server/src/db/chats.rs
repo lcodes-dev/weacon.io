@@ -49,7 +49,7 @@ type SummaryRow = (String, String, String, String, String, i64, Option<String>);
 impl Workspace {
     /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
     /// of it once [`Self::chat_made`] says it was. A chat id or request id already in this
-    /// workspace is `db.exists`.
+    /// workspace is `db.exists`, and a machine its owner doesn't own `machine.not_found`.
     pub(crate) async fn add_chat(
         &self,
         chat: &NewChat<'_>,
@@ -73,6 +73,11 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        // Checked as it is written, so a machine unpaired meanwhile gets no chat.
+        let owned = self.runs_on_in(&mut transaction, chat.id, chat.machine_id);
+        if !owned.await? {
+            return Err(machine_not_found());
+        }
         self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }
@@ -373,7 +378,7 @@ mod tests {
     use weacon_protocol::RunState;
 
     use super::*;
-    use crate::db::test_support::{NOW, append, begin, code, id, make, status};
+    use crate::db::test_support::{NOW, append, begin, code, command, id, make, status};
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
@@ -478,6 +483,38 @@ mod tests {
         let unmade = one.unmade_on(&id("mc-1")).await.unwrap();
         assert_eq!(unmade, [(id("c-6"), member_id("m1"))]);
         assert!(two.unmade_on(&id("mc-1")).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_chat_is_made_only_on_a_machine_its_owner_still_owns() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        one.pair_for("m1", "mc-1").await;
+        let (chat, owner, name) = (id("c-1"), member_id("m1"), id("Ada's laptop"));
+        let asked = command("r-1", "c-1", "Fix the build");
+        let request = NewRequest {
+            command: &asked,
+            member: &owner,
+            at: NOW,
+        };
+        let on = |machine_id| NewChat {
+            id: &chat,
+            owner: &owner,
+            title: "Fix the build",
+            repo: None,
+            machine_id,
+            machine: &name,
+            at: NOW,
+        };
+        // Unpaired since its owner chose it.
+        let (theirs, ours) = (id::<MachineId>("mc-2"), id::<MachineId>("mc-1"));
+        let unpaired = one.add_chat(&on(&theirs), &request).await;
+
+        assert_eq!(code(&unpaired.unwrap_err()), "machine.not_found");
+        assert_eq!(one.chat(&chat).await.unwrap(), None);
+        assert!(!one.has_request(&id("r-1")).await.unwrap());
+        one.add_chat(&on(&ours), &request).await.unwrap();
+        assert!(one.chat(&chat).await.unwrap().is_some());
     }
 
     async fn indexed(workspace: &Workspace, chat: &str) -> i64 {
