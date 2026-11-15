@@ -87,8 +87,8 @@ async fn resend(shared: &Shared, connected: &Connected) -> Result<usize, Fault> 
 
 /// Sends `machine` the first prompts in `workspace` it never got, as when the server stopped
 /// before sending one, and takes back the chats of those not sent within [`RESEND_WITHIN`].
-/// Each chat is made before its prompt is sent, so a first prompt failing elsewhere meanwhile
-/// can't take it back; one not sent is sent again, first, when the machine connects again.
+/// A first prompt is marked sent before it is, so its chat failing elsewhere meanwhile can't
+/// be taken back, and its chat is made only once it was, so no later prompt goes before it.
 async fn first_prompts(
     shared: &Shared,
     workspace: &Workspace,
@@ -100,11 +100,16 @@ async fn first_prompts(
             workspace.forget_chat(&chat).await?;
             continue;
         };
+        let request = command.request.clone();
+        workspace.mark_sent(&request, true).await?;
+        if let Err(fault) = link::deliver(shared, machine, Message::ChatCommand(command)).await {
+            workspace.mark_sent(&request, false).await?;
+            return Err(fault);
+        }
         if !workspace.chat_made(&chat, &owner).await? {
             continue;
         }
         shared.wake_feeds(workspace.id());
-        link::deliver(shared, machine, Message::ChatCommand(command)).await?;
         link::deliver(shared, machine, link::follow(workspace.id(), &chat, 0)).await?;
     }
     Ok(())
@@ -255,10 +260,12 @@ mod tests {
 
         assert!(!shared.links.is_open(&ada.machine));
         assert_eq!(sent(&mut full).len(), crate::links::QUEUE);
-        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
+        // Not made, so no later prompt goes before it.
+        assert!(!workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
         let mut again = attach(shared, &ada, &["chat.serve"]);
         assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
-        assert_eq!(sent(&mut again), [follow_query("c-1"), resent("c-1")]);
+        assert_eq!(sent(&mut again), [resent("c-1"), follow_query("c-1")]);
+        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
     }
 
     #[tokio::test]
