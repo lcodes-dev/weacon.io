@@ -181,9 +181,7 @@ mod tests {
         let version = http(&address, "GET /version", "");
         let start = r#"{"email":"ada@example.com"}"#;
         let started = http(&address, "POST /api/sign-in", start);
-        let (_, started_body) = started.split_once("\r\n\r\n").unwrap();
-        let challenge =
-            serde_json::from_str::<serde_json::Value>(started_body).unwrap()["challenge"].clone();
+        let challenge = field(&started, "challenge");
         let (to, code) = letter(&outbox);
         let finish = serde_json::json!({
             "email": "ada@example.com",
@@ -192,11 +190,7 @@ mod tests {
         })
         .to_string();
         let finished = http(&address, "POST /api/sign-in/finish", &finish);
-        let (_, body) = finished.split_once("\r\n\r\n").unwrap();
-        let token = serde_json::from_str::<serde_json::Value>(body).unwrap()["token"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let token = field(&finished, "token").as_str().unwrap().to_owned();
         drop(child);
         let logs: String = lines.map(Result::unwrap).collect();
 
@@ -209,9 +203,22 @@ mod tests {
         assert!(logs.contains("request handled"), "{logs}");
         // A code is short, so it is looked for as a whole JSON string.
         let challenge = challenge.as_str().unwrap();
-        for secret in ["ada@example.com", &format!("\"{code}\""), &token, challenge] {
+        let bare = format!("\"{}\"", code.replace('-', ""));
+        for secret in [
+            "ada@example.com",
+            &format!("\"{code}\""),
+            &bare,
+            &token,
+            challenge,
+        ] {
             assert!(!logs.contains(secret), "{logs}");
         }
+    }
+
+    // The field `name` of an HTTP answer's JSON body.
+    fn field(answer: &str, name: &str) -> serde_json::Value {
+        let (_, body) = answer.split_once("\r\n\r\n").unwrap();
+        serde_json::from_str::<serde_json::Value>(body).unwrap()[name].clone()
     }
 
     fn admin(args: &[&str], db: &TempDir) -> String {

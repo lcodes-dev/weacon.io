@@ -53,5 +53,6 @@ mod tests {
         assert_eq!(shown("ABCDEFGH"), "ABCD-EFGH");
         assert_eq!(normalised(" abcd-efgh "), "ABCDEFGH");
         assert_eq!(normalised("oO iI lL"), "001111");
+        assert_eq!(normalised("1234 5678"), "12345678");
     }
 }
