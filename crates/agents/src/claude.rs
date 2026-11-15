@@ -161,7 +161,8 @@ fn own_sign_in(status: &[u8]) -> bool {
 /// chat works in. Weacon's own limits are left out: the person answers its prompts.
 fn resume(launch: &Launch, session: &AgentSession) -> Command {
     let mut command = launch.with_workspace_sign_in(&VENDOR);
-    command.args(["--resume", session.as_str()]);
+    // As on every run: a repository's settings could add hooks that run as the person.
+    command.args(["--setting-sources", "user", "--resume", session.as_str()]);
     command.current_dir(&launch.cwd);
     command
 }
@@ -379,7 +380,12 @@ mod tests {
         let by_hand = resume(&claude, &session.unwrap());
         assert_eq!(
             by_hand.as_std().get_args().collect::<Vec<_>>(),
-            ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
+            [
+                "--setting-sources",
+                "user",
+                "--resume",
+                "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"
+            ]
         );
         assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
         let commands = [

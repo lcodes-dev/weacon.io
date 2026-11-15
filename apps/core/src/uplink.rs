@@ -377,7 +377,7 @@ pub(crate) fn new(
     Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
-        capabilities: crate::session::CAPABILITIES.to_vec(),
+        capabilities: crate::session::offered(state_dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
         chats,
@@ -739,7 +739,8 @@ mod tests {
                 request,
                 workspace,
                 chat,
-                action: WorktreeAction::Restore,
+                // Opening a terminal is the ask that most needs to be its owner's.
+                action: WorktreeAction::OpenTerminal,
                 by,
             }),
         ]

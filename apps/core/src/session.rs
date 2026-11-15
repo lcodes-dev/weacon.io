@@ -19,6 +19,21 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("symbols.search")),
 ];
 
+/// What the core offers its server: all of [`CAPABILITIES`], and opening terminals where the
+/// person here turned them on and there is a desktop terminal.
+pub(crate) fn offered(
+    state_dir: &std::path::Path,
+    env: crate::platform::Env<'_>,
+) -> Vec<Capability> {
+    let terminal = crate::terminals::offered(state_dir, env);
+    let open_terminal = Capability::new(code!("worktree.open_terminal"));
+    CAPABILITIES
+        .iter()
+        .cloned()
+        .chain(terminal.then_some(open_terminal))
+        .collect()
+}
+
 /// One client's place in the conversation with the daemon.
 #[derive(Debug, Default)]
 pub(crate) struct Session {
@@ -92,6 +107,21 @@ mod tests {
 
     fn error_code(reply: &Reply) -> Option<&str> {
         test_support::error_code(&reply.envelope.as_ref()?.message)
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn the_server_is_offered_terminals_only_where_turned_on_with_a_desktop() {
+        let dir = weacon_testing::TempDir::new().unwrap();
+        crate::platform::plant_program(&dir.join("bin"), "xdg-terminal-exec", 0o755);
+        let path = dir.join("bin");
+        let desktop = test_support::env(&[("PATH", path.to_str().unwrap()), ("DISPLAY", ":0")]);
+        let open_terminal = Capability::new(code!("worktree.open_terminal"));
+        assert_eq!(offered(&dir, &desktop), CAPABILITIES);
+        std::fs::write(dir.join("terminals.json"), r#"{"open":true}"#).unwrap();
+        assert_eq!(offered(&dir, &test_support::env(&[])), CAPABILITIES);
+        let offers = offered(&dir, &desktop);
+        assert_eq!(offers.split_last(), Some((&open_terminal, CAPABILITIES)));
     }
 
     #[test]

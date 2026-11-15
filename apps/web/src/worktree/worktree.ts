@@ -110,6 +110,11 @@ const PROBLEMS: Record<Ask["kind"], string> = {
   open_terminal: "The terminal didn't open.",
 };
 
+/** The command that carries the chat on by hand in a terminal on its machine. */
+export function resumeLine(chatRef: { workspace: string; chat: string }): string {
+  return `weacon resume --workspace=${chatRef.workspace} --chat=${chatRef.chat}`;
+}
+
 /** One line on where the worktree stands. */
 export function stateLine(standing: Standing): string {
   switch (standing.kind) {

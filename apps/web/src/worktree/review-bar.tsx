@@ -4,7 +4,8 @@ import "./worktree.css";
 
 /**
  * Where the chat's worktree stands, with what its owner can do with it: open a pull request,
- * remove it to the Trash after saying what goes, restore it, and open a terminal where the core can.
+ * remove it to the Trash after saying what goes, restore it, and open a terminal where the core can,
+ * or else carry the chat on by hand with the line it shows.
  */
 export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>; title: string }) {
   const { worktree, terminals, draft } = bar;
@@ -60,6 +61,11 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
       )}
       {draft !== undefined && (
         <PullRequestForm draft={draft} edit={bar.editDraft} waiting={waiting} open={bar.openPullRequest} cancel={() => bar.editDraft(undefined)} />
+      )}
+      {bar.resume !== undefined && standing.kind !== "unknown" && (
+        <p className="muted">
+          To carry this chat on in a terminal on its machine, run <code>{bar.resume}</code>
+        </p>
       )}
       {outcome?.kind === "link" && (
         <p>
