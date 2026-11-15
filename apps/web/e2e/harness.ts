@@ -82,6 +82,9 @@ export async function open(
 // Long enough for cargo to build the server first.
 export const STARTUP_MS = 300_000;
 
+/** The address query that opens the fake server's chat. */
+export const FAKE_CHAT = "&workspace=w-1&chat=c-1";
+
 /**
  * What `pick` finds in the first of `child`'s lines it accepts, at first any line; or a failure
  * once `deadlineMs` passes without one, so `open` cleans up.
@@ -124,4 +127,20 @@ export async function waitFor(done: () => boolean, deadlineMs = 10_000): Promise
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+// Selects the first piece of the text row still being written, and gives what is selected.
+// Waits for a row being written and selects it in the same frame, before the row can close.
+export async function selectInWritingRow(): Promise<string> {
+  for (let frame = 0; frame < 600; frame += 1) {
+    const row = document.querySelector("[data-writing]");
+    const piece = row?.firstChild;
+    if (row !== null && piece) {
+      row.setAttribute("data-picked", "");
+      document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
+      return document.getSelection()?.toString() ?? "";
+    }
+    await new Promise(requestAnimationFrame);
+  }
+  throw new Error("no row is being written");
 }

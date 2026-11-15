@@ -5,6 +5,8 @@ import { Composer } from "../composer/composer.tsx";
 import { blocked } from "../composer/prompt.ts";
 import { ChatChanges } from "../diff/chat-changes.tsx";
 import { useChanges } from "../diff/use-changes.ts";
+import { ReviewBar } from "../worktree/review-bar.tsx";
+import { useWorktree } from "../worktree/use-worktree.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
 import { working } from "./chat.ts";
@@ -13,9 +15,6 @@ import { lines } from "./lines.ts";
 import { StopButton } from "./stop-button.tsx";
 import { TranscriptView } from "./transcript-view.tsx";
 import "./chat.css";
-
-// No message carries members' names, so labels leave them out.
-const NO_MEMBERS = new Map<string, string>();
 
 /**
  * The chat at `chatRef` over its workspace's `link`: its transcript, and its changes with Changes,
@@ -28,6 +27,7 @@ export function ChatScreen({
   chatRef,
   mine,
   away,
+  title,
 }: {
   link: WorkspaceSocket;
   /** Whether the link's connection is up. */
@@ -35,12 +35,15 @@ export function ChatScreen({
   chatRef: ChatRef | undefined;
   mine: boolean;
   away: boolean;
+  /** The chat's title, a pull request's to start with. */
+  title?: string;
 }) {
   const [shown, setShown] = useState<"run" | "changes">("run");
   const access = useChatAccess(link);
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
   const changes = useChanges(link, chatRef, live, shown === "changes");
+  const worktree = useWorktree(link, chatRef, live, mine, shown === "changes");
   const { chat, state } = reading.sync;
   const acts = mine && access.send;
   const stop = acts && chat !== undefined && working(chat) ? commands.stop : undefined;
@@ -68,7 +71,7 @@ export function ChatScreen({
       <div className="panes">
         <div className={shown === "run" ? "pane" : "pane away"}>
           <TranscriptView
-            lines={chat === undefined ? [] : lines(chat, NO_MEMBERS)}
+            lines={chat === undefined ? [] : lines(chat)}
             older={chat !== undefined && state.kind === "live" && chat.first > 1 ? reading.more : undefined}
             answering={acts ? commands.answering : undefined}
             // A chat is on its way while the connection is made, then only from a server that serves chats.
@@ -82,11 +85,12 @@ export function ChatScreen({
           hidden={shown !== "changes"}
           mine={acts}
           send={commands.send}
-          late={commands.late}
+          lates={commands.lates}
           blocked={why}
+          bar={worktree.usable && <ReviewBar bar={worktree} title={title ?? ""} />}
         />
       </div>
-      {mine && <Composer send={commands.send} blocked={why} hidden={shown !== "run"} late={commands.late} />}
+      {mine && <Composer send={commands.send} blocked={why} hidden={shown !== "run"} lates={commands.lates} />}
     </div>
   );
 }

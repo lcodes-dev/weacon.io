@@ -111,8 +111,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_forwarded_log_keeps_only_its_known_event_and_the_feeds_ids() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
 
         let records = feed(
             &fixture,
@@ -157,8 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_client_that_doesnt_offer_to_forward_logs_gets_nothing_written() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
 
         let records = feed(&fixture, &["workspace.feed", "machine.settings"]).await;
 
@@ -172,8 +170,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_removed_writes_nothing_more_and_loses_the_feed() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = open(
             server.address,

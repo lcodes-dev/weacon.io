@@ -21,3 +21,5 @@ pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
 pub use terminal::{Event, Events, Size, Terminal};
 pub use transcript::{Step, Transcript};
+
+pub use platform::link_count;

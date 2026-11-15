@@ -16,12 +16,10 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Mutation tests need origin/main to find the changed code.
-          fetch-depth: 0
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -34,7 +32,39 @@ jobs:
             apps/extension/package-lock.json
             apps/web/package-lock.json
       - run: scripts/setup.sh
-      - run: scripts/check.sh
+      - run: scripts/check.sh --mutants none
+
+  # The mutation tests take longest, so they run in shards on runners of their own.
+  mutants:
+    name: mutants (${{ matrix.shard }}/${{ matrix.of }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      # Every shard runs to the end, so one push shows every missed mutant.
+      fail-fast: false
+      # `shard` must list every number from 0 to `of` - 1, or some mutants go untested.
+      matrix:
+        shard: [0, 1, 2, 3]
+        of: [4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Mutation tests need origin/main to find the changed code.
+          fetch-depth: 0
+          persist-credentials: false
+      # The same Rust changes check.sh's `changes` finds in CI; without them, this skips the setup too.
+      - id: rust
+        run: git diff --quiet "$(git merge-base HEAD origin/main)" -- '*.rs' || echo changed=true >>"$GITHUB_OUTPUT"
+      - if: steps.rust.outputs.changed == 'true'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ hashFiles('scripts/setup.sh') }}
+          # The mutation tests build in their own copy of the tree, not in target/.
+          cache-targets: false
+      - if: steps.rust.outputs.changed == 'true'
+        run: scripts/setup.sh --rust-only
+      - if: steps.rust.outputs.changed == 'true'
+        run: scripts/check.sh --mutants ${{ matrix.shard }}/${{ matrix.of }}
 
   # Several crates and apps have Windows code; check.sh's tools run on Linux only.
   windows:

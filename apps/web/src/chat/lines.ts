@@ -1,4 +1,4 @@
-import type { MemberId, RunId } from "../protocol.ts";
+import type { RunId } from "../protocol.ts";
 import type { TranscriptRow } from "../transcript/transcript.ts";
 import type { Ask, Chat } from "./chat.ts";
 import { label } from "./label.ts";
@@ -11,13 +11,13 @@ export type Line =
   | { key: string; kind: "ask"; run: RunId; ask: Ask };
 
 /** The lines `chat` shows: each prompt, and each turn under its agent's label with its prompts in place. */
-export function lines(chat: Chat, members: ReadonlyMap<MemberId, string>): Line[] {
+export function lines(chat: Chat): Line[] {
   return chat.items.flatMap((item): Line[] => {
     if (item.kind === "prompt") {
       return [{ key: `p${item.seq}`, kind: "prompt", text: item.text }];
     }
     const { key, run, transcript, asks } = item.turn;
-    const shown: Line[] = [{ key, kind: "agent", label: label(chat.runs.get(run)?.agent, members) }];
+    const shown: Line[] = [{ key, kind: "agent", label: label(chat.runs.get(run)?.agent) }];
     const asksAt = (at: number) => asks.filter((ask) => ask.at === at).map((ask): Line => ({ key: `${key}.a${ask.prompt}`, kind: "ask", run, ask }));
     transcript.rows.forEach((row, at) => {
       shown.push(...asksAt(at), { key: `${key}.${at}`, kind: "row", row, writing: transcript.writing && at === transcript.rows.length - 1 });
