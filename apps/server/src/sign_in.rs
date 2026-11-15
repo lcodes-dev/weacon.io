@@ -23,7 +23,6 @@ use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
 use crate::http::{Body, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::{HOUR, Limit};
-use crate::outbox::mail_failed;
 use crate::secret::{random_failed, random_token};
 use crate::shared::Shared;
 use crate::sign_up;
@@ -101,28 +100,22 @@ async fn send_code(
         return Ok(());
     }
     let code = new_code()?;
-    let code_hash = shared.secret.sign_in_code_hash(&email, &code);
     let now = shared.now();
     let new = NewChallenge {
         email: &email,
         id: challenge,
-        code_hash: &code_hash,
+        code: &code,
         now,
         expires_at: now.saturating_add(CODE_LIFETIME),
     };
-    if !shared.db.start_challenge(&new).await? {
-        return Ok(());
+    if shared.db.start_challenge(&new).await? {
+        let text = format!(
+            "Your code is {}. It works for 10 minutes; if you didn't ask for it, ignore this mail.",
+            shown(&code)
+        );
+        shared.log.mail(email.as_str(), "Your Weacon sign-in code", &text);
     }
-    let outbox = shared.outbox.clone();
-    let sent = tokio::task::spawn_blocking(move || outbox.send(&email, &shown(&code)))
-        .await
-        .map_err(|error| mail_failed().because(error))
-        .and_then(|sent| sent);
-    if sent.is_err() {
-        // A code nobody received mustn't keep the address from getting another.
-        shared.db.unmail(challenge).await?;
-    }
-    sent
+    Ok(())
 }
 
 /// `POST /api/sign-in/finish`: trades a challenge's code for a session, in the same time
@@ -206,9 +199,7 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared
-            .secret
-            .sign_in_code_hash(&email, &normalised(body.code.expose())),
+        code: &normalised(body.code.expose()),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -236,13 +227,11 @@ mod tests {
     use std::net::SocketAddr;
 
     use serde_json::{Value, json};
-    use weacon_testing::TempDir;
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
-    use crate::secret::Secret;
     use crate::test_support::{
-        Fixture, ask, bearer, email, finish_body, fresh_account, letter_in, member_id, request,
+        Fixture, ask, bearer, email, finish_body, fresh_account, member_id, request,
         request_with, run, sign_in, start_sign_in, status, workspace_id,
     };
 
@@ -268,6 +257,8 @@ mod tests {
         let finish = finish_body("ada@example.com", &challenge, &code);
         let (finished, body) = finish_with(server.address, &finish).await;
         let token = body["token"].as_str().unwrap();
+        let records = fixture.records.lock().unwrap().clone();
+        let mail = records.iter().find(|record| record.msg == "mail printed");
         let w1 = fixture
             .shared
             .db
@@ -280,6 +271,7 @@ mod tests {
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");
+        assert_eq!(mail.unwrap().fields["subject"], "Your Weacon sign-in code");
         assert_eq!(code.len(), 9);
         assert_eq!(code.get(4..5), Some("-"));
         assert_eq!(normalised(&code).len(), 8);
@@ -478,30 +470,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_code_sent_under_another_secret_is_refused() {
-        let mut fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
-        let dir = TempDir::new().unwrap();
-        fixture.shared.secret = Arc::new(
-            Secret::open(
-                &dir.join("secret"),
-                &crate::test_support::recording_logger().0,
-            )
-            .unwrap(),
-        );
-        let rotated = fixture.run().await;
-        let finish = finish_body("ada@example.com", &challenge, &code);
-
-        let (refused, _) = finish_with(rotated.address, &finish).await;
-        let (finished, _) = finish_with(server.address, &finish).await;
-
-        assert_eq!(refused, "http/1.1 401 unauthorized");
-        assert_eq!(finished, "http/1.1 200 ok");
-    }
-
-    #[tokio::test]
     async fn strangers_get_the_same_answer_and_no_code() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
@@ -582,7 +550,7 @@ mod tests {
         let (_, own) = start_sign_in(server.address, "ada@example.com").await;
         fixture.settled().await;
         let mailed_after = fixture.letters().len();
-        let (_, code) = letter_in(&inbox[1]);
+        let (_, code) = inbox[1].clone();
         let finish = finish_body("ada@example.com", &own, &code);
         let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
 
@@ -715,43 +683,6 @@ mod tests {
 
         // Unless its sender is trusted, the header changes nothing.
         assert_eq!(statuses, [accepted, limited, accepted, accepted, limited]);
-    }
-
-    #[tokio::test]
-    async fn a_code_that_cant_be_sent_is_logged_and_answered_the_same() {
-        let fixture = Fixture::new().await;
-        let mut shared = fixture.shared.clone();
-        shared.outbox = crate::outbox::Outbox::new("missing-outbox".into());
-        let server = run(shared).await;
-        let (started, _) = start_sign_in(server.address, "ada@example.com").await;
-        fixture.settled().await;
-        let failed = fixture
-            .records
-            .lock()
-            .unwrap()
-            .iter()
-            .find(|record| record.msg == "sign-in failed")
-            .map(|record| record.fields["err"]["code"].clone());
-
-        assert_eq!(started, "http/1.1 202 accepted");
-        assert_eq!(failed.unwrap(), "mail.failed");
-    }
-
-    #[tokio::test]
-    async fn codes_that_couldnt_be_sent_leave_room_for_ones_that_can() {
-        let fixture = Fixture::new().await;
-        let mut broken = fixture.shared.clone();
-        broken.outbox = crate::outbox::Outbox::new("missing-outbox".into());
-        let failing = run(broken).await;
-        for _ in 0..3 {
-            start_sign_in(failing.address, "ada@example.com").await;
-        }
-        fixture.settled().await;
-        let server = fixture.run().await;
-        start_sign_in(server.address, "ada@example.com").await;
-        fixture.settled().await;
-
-        assert_eq!(fixture.letters().len(), 1);
     }
 
     #[tokio::test]
