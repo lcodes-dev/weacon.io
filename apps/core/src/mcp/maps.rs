@@ -2,6 +2,9 @@
 //! repository, only when the run's workspace registered that repository, kept current by a
 //! watch of each live run's worktree.
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -267,70 +270,16 @@ fn failed() -> Fault {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use std::fs;
 
     use tokio::sync::Semaphore;
-    use weacon_protocol::{MapArgs, RepoId};
+    use weacon_protocol::MapArgs;
     use weacon_testing::{TempDir, recording_logger};
 
+    use super::test_support::{crate_repo, setup, workspace};
     use super::*;
-    use crate::db::{BASE, LocalRepo};
-    use crate::git::{fixture, git, repo};
-
-    pub(crate) struct Setup {
-        pub(crate) maps: Maps,
-        pub(crate) db: Db,
-        git: Git,
-        workspaces: Workspaces,
-    }
-
-    /// Maps over a new state folder in `dir`, and its own handles on the same stores.
-    pub(crate) async fn setup(dir: &Path) -> Setup {
-        let state = dir.join("state");
-        fs::create_dir(&state).unwrap();
-        let places = Places {
-            path: std::env::var_os("PATH"),
-            ..Places::default()
-        };
-        Setup {
-            maps: Maps::new(&state, &places),
-            db: Db::open(&state).await.unwrap(),
-            git: git(dir),
-            workspaces: Workspaces::new(&state, None),
-        }
-    }
-
-    impl Setup {
-        /// Registers `repo` for `workspace` as `id`.
-        pub(crate) fn register(&self, workspace: &WorkspaceId, id: &str, repo: &Path) {
-            let id = RepoId::try_from(id.to_owned()).unwrap();
-            let repos = Repos::of(&self.workspaces, workspace.clone());
-            repos.add(&self.git, id, repo).unwrap();
-        }
-
-        /// Whether `workspace` holds a stored base for `repo`.
-        pub(crate) async fn stored(&self, workspace: &WorkspaceId, repo: &Path) -> bool {
-            let map = self.db.workspace(workspace).map(&LocalRepo::at(repo));
-            map.layer(BASE).await.unwrap().is_some()
-        }
-    }
-
-    /// A repository at `dir/repo` holding the crate `name`, with its `run`, committed.
-    pub(crate) fn crate_repo(dir: &Path, name: &str) -> PathBuf {
-        let main = repo(dir);
-        fs::create_dir_all(main.join("src")).unwrap();
-        let manifest = format!("[package]\nname = \"{name}\"\n");
-        fs::write(main.join("Cargo.toml"), manifest).unwrap();
-        fs::write(main.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
-        fixture(dir, &main, &["add", "Cargo.toml", "src"]);
-        fixture(dir, &main, &["commit", "--quiet", "-m", "Add a crate"]);
-        main.canonicalize().unwrap()
-    }
-
-    pub(crate) fn workspace(id: &str) -> WorkspaceId {
-        WorkspaceId::try_from(id.to_owned()).unwrap()
-    }
+    use crate::git::fixture;
 
     fn map() -> McpCall {
         McpCall::Map(MapArgs::default())
