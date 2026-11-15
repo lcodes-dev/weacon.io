@@ -1,7 +1,7 @@
 //! The rows a layer's replacement writes, inside its transaction.
 
 use sqlx::{QueryBuilder, Sqlite};
-use weacon_codemap::{Entry, Facts};
+use weacon_codemap::{Entry, FACTS_VERSION, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::code;
 
@@ -101,14 +101,15 @@ pub(super) async fn insert_facts(
             })
             .collect::<Result<Vec<_>, Fault>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts) ",
+            "INSERT OR REPLACE INTO map_facts (workspace_id, repo, path, blob, facts, version) ",
         );
         query.push_values(rows, |mut row, (path, blob, json)| {
             row.push_bind(workspace)
                 .push_bind(repo)
                 .push_bind(path)
                 .push_bind(blob)
-                .push_bind(json);
+                .push_bind(json)
+                .push_bind(FACTS_VERSION);
         });
         query
             .build()

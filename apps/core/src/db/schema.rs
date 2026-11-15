@@ -74,6 +74,10 @@ CREATE VIRTUAL TABLE map_search USING fts5(
 -- Each layer is read again, so what search finds is stored with its line.
 DELETE FROM map_layers;
 ",
+    "
+-- Facts kept before versions count as older than every reader's.
+ALTER TABLE map_facts ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+",
 ];
 
 pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Fault> {
@@ -115,7 +119,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_map_stored_before_lines_is_read_again() {
+    async fn a_map_stored_before_lines_and_versions_is_read_again() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -125,7 +129,8 @@ mod tests {
         sqlx::raw_sql(
             "PRAGMA user_version = 1;
              INSERT INTO map_repos (workspace_id, repo) VALUES ('w', 'r');
-             INSERT INTO map_layers VALUES ('w', 'r', 'base', 'c0ffee', 1);",
+             INSERT INTO map_layers VALUES ('w', 'r', 'base', 'c0ffee', 1);
+             INSERT INTO map_facts VALUES ('w', 'r', 'src/lib.rs', 'b1', 'null');",
         )
         .execute(&pool)
         .await
@@ -137,7 +142,9 @@ mod tests {
         let count = |sql| sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool);
         assert_eq!(count("SELECT count(*) FROM map_layers").await.unwrap(), 0);
         assert_eq!(count("SELECT count(*) FROM map_repos").await.unwrap(), 1);
-        assert_eq!(count("PRAGMA user_version").await.unwrap(), 2);
+        assert_eq!(count("PRAGMA user_version").await.unwrap(), 3);
+        let older = count("SELECT count(*) FROM map_facts WHERE version = 0").await;
+        assert_eq!(older.unwrap(), 1);
         let lines = count("SELECT count(line) FROM map_search").await;
         assert_eq!(lines.unwrap(), 0);
     }

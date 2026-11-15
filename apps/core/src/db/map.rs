@@ -5,7 +5,7 @@ use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use sqlx::{QueryBuilder, Sqlite};
-use weacon_codemap::{Entry, Facts};
+use weacon_codemap::{Entry, FACTS_VERSION, Facts};
 use weacon_observability::Fault;
 use weacon_protocol::Sha256 as Sha256Hex;
 
@@ -196,7 +196,9 @@ impl Map {
             query
                 .push_bind(workspace)
                 .push(" AND repo = ")
-                .push_bind(repo);
+                .push_bind(repo)
+                .push(" AND version = ")
+                .push_bind(FACTS_VERSION);
             query.push(" AND (path, blob) IN (");
             let mut pairs = query.separated(", ");
             for (path, blob) in batch {
@@ -323,6 +325,15 @@ impl Map {
     #[cfg(test)]
     pub(crate) async fn spoil_facts(&self) {
         sqlx::query("UPDATE map_facts SET facts = '{'")
+            .execute(&self.workspace.db.pool)
+            .await
+            .unwrap();
+    }
+
+    /// Makes every stored facts row one an older reader kept.
+    #[cfg(test)]
+    pub(crate) async fn age_facts(&self) {
+        sqlx::query("UPDATE map_facts SET version = version - 1")
             .execute(&self.workspace.db.pool)
             .await
             .unwrap();

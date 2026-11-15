@@ -466,6 +466,13 @@ mod tests {
         assert_eq!(source.blobs_read().len(), 2);
         assert_eq!(repo.base().await.unwrap().facts.len(), 2);
         assert!(source.blobs_read().is_empty());
+
+        // An older reader's facts of the unchanged files are read again, then kept.
+        repo.map.age_facts().await;
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert_eq!(source.blobs_read().len(), 2);
+        assert_eq!(repo.base().await.unwrap().facts.len(), 2);
+        assert!(source.blobs_read().is_empty());
     }
 
     #[tokio::test]
