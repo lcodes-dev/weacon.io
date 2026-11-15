@@ -132,13 +132,11 @@ impl Core {
         connection.send(&Envelope { id: 2, message }).await?;
         loop {
             match connection.next().await? {
-                Some(Ok(Envelope { id: 2, message })) => {
-                    let Message::MapAnswer(answer) = message else {
-                        return Ok(None);
-                    };
-                    return Ok(answer.text);
-                }
-                None => return Ok(None),
+                Some(Ok(Envelope {
+                    id: 2,
+                    message: Message::MapAnswer(answer),
+                })) => return Ok(answer.text),
+                Some(Ok(Envelope { id: 2, .. })) | None => return Ok(None),
                 Some(_) => {}
             }
         }
@@ -200,6 +198,10 @@ mod tests {
         }
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for the indexer, which can fail"
+    )]
     fn indexed(_: &McpCall, _: &Path) -> Result<String, Fault> {
         Ok("indexed\n".to_owned())
     }
@@ -231,6 +233,21 @@ mod tests {
         assert!(text.ends_with('\n'));
     }
 
+    fn serve(
+        state: &Path,
+        places: Places,
+        log: Logger,
+        started: &std::sync::mpsc::Sender<crate::mcp::Mcp>,
+        stopped: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let spawn = SpawnPolicy::default();
+        runtime().unwrap().block_on(async {
+            let daemon = Daemon::start(state, build(&VERSION), spawn, places, log).unwrap();
+            started.send(daemon.mcp().clone()).unwrap();
+            daemon.serve(async { drop(stopped.await) }).await;
+        });
+    }
+
     /// A core serving `state` on its own thread, so a hook can block on its own runtime.
     struct Running {
         socket: PathBuf,
@@ -250,15 +267,7 @@ mod tests {
             let (started, mcp) = std::sync::mpsc::channel();
             let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
             let dir = state.to_owned();
-            let served = std::thread::spawn(move || {
-                runtime().unwrap().block_on(async move {
-                    let daemon =
-                        Daemon::start(&dir, build(&VERSION), SpawnPolicy::default(), places, log);
-                    let daemon = daemon.unwrap();
-                    started.send(daemon.mcp().clone()).unwrap();
-                    daemon.serve(async { drop(stopped.await) }).await;
-                });
-            });
+            let served = std::thread::spawn(move || serve(&dir, places, log, &started, stopped));
             Self {
                 socket: socket_path(state),
                 mcp: mcp.recv().unwrap(),
