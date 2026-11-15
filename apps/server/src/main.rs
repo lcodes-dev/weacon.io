@@ -110,9 +110,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
-    if db.index_if_missing().await? {
-        app.log.info("search rebuilt", &[]);
-    }
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
         log: app.log.clone(),

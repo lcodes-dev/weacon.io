@@ -1,4 +1,3 @@
-mod rebuild;
 mod snippet;
 
 use sqlx::SqliteConnection;
@@ -13,9 +12,6 @@ use crate::search::query::{Marks, Query};
 /// Control bytes indexed text leaves out, as the schema's backfill does.
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
-
-/// The most characters of a message the index holds; the rest of a long one isn't found.
-const MESSAGE_MAX: usize = 8192;
 
 // What a search row is of; a message's item is its chat and its place in the log, `c-1/12`.
 const TASK: &str = "task";
@@ -113,7 +109,7 @@ impl Workspace {
                 kind: MESSAGE,
                 item: &item,
                 title: "",
-                body: capped(text),
+                body: text,
                 at: row.at,
             };
             self.index(transaction, indexed).await?;
@@ -275,14 +271,6 @@ fn message_text(event: &ChatEvent) -> Option<&str> {
         | ChatEvent::RunStatus { .. }
         | ChatEvent::Newer => None,
     }
-}
-
-/// The first [`MESSAGE_MAX`] characters of `text`.
-fn capped(text: &str) -> &str {
-    text.char_indices()
-        .nth(MESSAGE_MAX)
-        .and_then(|(end, _)| text.get(..end))
-        .unwrap_or(text)
 }
 
 /// `text` without the bytes snippets mark matches with, which the schema's backfill also
@@ -694,81 +682,6 @@ mod tests {
         assert_eq!(found(&one, "flaky").await, ["c-1", "c-1/6"]);
         let query = parse("flaky").unwrap().unwrap();
         assert_eq!(one.search(&query, 1).await.unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_message_is_indexed_up_to_its_cap_and_cut_between_characters() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-        make_titled(&one, "c-1", "m1", "Notes", 3).await.unwrap();
-        let long = format!("{}deep end", "é".repeat(MESSAGE_MAX - 4));
-        append(&one, "c-1", &[(Some(1), said(&long))])
-            .await
-            .unwrap();
-
-        assert_eq!(found(&one, "deep").await, ["c-1/1"]);
-        assert!(found(&one, "end").await.is_empty());
-        let body: String = sqlx::query_scalar("SELECT body FROM search WHERE kind = 'message'")
-            .fetch_one(&one.db.readers)
-            .await
-            .unwrap();
-        assert_eq!(body.chars().count(), MESSAGE_MAX);
-        assert!(body.ends_with("deep"), "{}", &body[body.len() - 8..]);
-        assert_eq!(capped("é"), "é");
-    }
-
-    #[tokio::test]
-    async fn a_database_without_its_search_rows_is_indexed_again_as_its_writes_indexed_it() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-        chatted(&one).await;
-        let long = format!("{}deep end", "é".repeat(MESSAGE_MAX - 4));
-        append(&one, "c-1", &[(Some(5), said(&long))])
-            .await
-            .unwrap();
-        one.add_task(&new_task("t1", "Ship it", "a"), &by(4))
-            .await
-            .unwrap();
-        let pinned = doc("d1", "Framing", "See [a](sym:a).", &["sym:a"]);
-        one.add_doc(&pinned, &by(7)).await.unwrap();
-        // Made, never sent: no one lists or finds it.
-        crate::db::test_support::begin(&one, "c-2", "m1", 8)
-            .await
-            .unwrap();
-        let db = &one.db;
-        let written = index_rows(db).await;
-        assert!(!db.index_if_missing().await.unwrap());
-
-        sqlx::raw_sql("DELETE FROM search; DELETE FROM search_rows;")
-            .execute(&db.writer)
-            .await
-            .unwrap();
-        assert!(db.index_if_missing().await.unwrap());
-        assert_eq!(index_rows(db).await, written);
-        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
-        assert!(!db.index_if_missing().await.unwrap());
-
-        sqlx::query("DELETE FROM search WHERE kind = 'message'")
-            .execute(&db.writer)
-            .await
-            .unwrap();
-        assert!(db.index_if_missing().await.unwrap());
-        assert_eq!(index_rows(db).await, written);
-        let missing = ["task", "doc", "chat"];
-        for kind in missing {
-            let gone =
-                "DELETE FROM search WHERE rowid IN (SELECT row FROM search_rows WHERE kind = ?);
-                DELETE FROM search_rows WHERE kind = ?";
-            for statement in gone.split(';') {
-                sqlx::query(statement)
-                    .bind(kind)
-                    .execute(&db.writer)
-                    .await
-                    .unwrap();
-            }
-            assert!(db.index_if_missing().await.unwrap(), "{kind}");
-            assert_eq!(index_rows(db).await, written);
-        }
     }
 
     #[tokio::test]

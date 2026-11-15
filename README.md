@@ -225,7 +225,7 @@ Codex works differently from Claude Code: it asks you before every file change a
 target/debug/weacon terminals on
 ```
 
-- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message. Long messages are found by their first 8,192 characters.
+- **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message.
 - **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
 
 ```bash
