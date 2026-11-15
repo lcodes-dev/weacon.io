@@ -378,7 +378,8 @@ mod tests {
         );
         assert_eq!(index.flows_matching(&["runs"], 5).len(), 2);
         assert!(index.flows_matching(&["zebra"], 5).is_empty());
-        assert!(index.flows_matching(&[] as &[&str], 5).is_empty());
+        let none: [&str; 0] = [];
+        assert!(index.flows_matching(&none, 5).is_empty());
     }
 
     #[test]
