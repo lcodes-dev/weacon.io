@@ -4,13 +4,14 @@ use std::path::Path;
 use std::time::Instant;
 
 use weacon_appkit::Ending;
-use weacon_codemap::{Index, SourceFile, index};
+use weacon_codemap::{Churn, ContractKind, Index, SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
-use crate::cli::{MapCommand, MapSubcommand};
-use crate::codemap::{LARGEST, index_failed, read_failed};
+use crate::cli::{ContractFilter, MapCommand, MapSubcommand};
+use crate::codemap::{LARGEST, churn, index_failed, read_failed};
+use crate::git::Git;
 use crate::mcp::tools;
 
 /// Prints what the MCP's tools answer, or checks the repository's pins: `Findings` when one
@@ -35,17 +36,39 @@ pub(crate) fn run(
         Some(MapSubcommand::DocsFor { path }) => {
             answer(&McpCall::DocsFor(SymbolArgs { path, budget }), &root)?
         }
+        Some(MapSubcommand::Hotspots) => hotspots(app, budget, &root)?,
         Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
-        Some(MapSubcommand::Contracts) => answered(&root, budget, contracts)?,
+        Some(MapSubcommand::Contracts { kind }) => {
+            let kind = kind.map(contract_kind);
+            answered(&root, budget, |map, budget| contracts(map, kind, budget))?
+        }
         None => answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
     print(out, &text)?;
     Ok(Ending::Done)
 }
 
-/// The code's contracts, or a line saying it declares none.
-fn contracts(map: &Index, budget: usize) -> String {
-    let listed = map.contracts(None, budget);
+/// What the MCP's `hotspots` tool answers for `root`, weighed by the churn git counts there.
+fn hotspots(app: &App, budget: Option<u32>, root: &Path) -> Result<String, Fault> {
+    let git = Git::open(app.state_dir()?, app.path.as_deref())?;
+    let churn = churn(&git, root)?;
+    with_churn(&McpCall::Hotspots(MapArgs { budget }), root, &churn)
+}
+
+const fn contract_kind(filter: ContractFilter) -> ContractKind {
+    match filter {
+        ContractFilter::Command => ContractKind::Command,
+        ContractFilter::Code => ContractKind::ErrorCode,
+        ContractFilter::Route => ContractKind::Route,
+        ContractFilter::Serde => ContractKind::Serde,
+        ContractFilter::Table => ContractKind::Table,
+        ContractFilter::McpTool => ContractKind::McpTool,
+    }
+}
+
+/// The code's contracts of `kind`, or of every kind, or a line saying it declares none.
+fn contracts(map: &Index, kind: Option<ContractKind>, budget: usize) -> String {
+    let listed = map.contracts(kind, budget);
     if listed.is_empty() {
         "No contracts.\n".to_owned()
     } else {
@@ -92,7 +115,12 @@ fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
 
 /// What the MCP's tool answers to `call` from the code in `folder`, read now; it blocks.
 fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
-    index_folder(folder).map(|(map, _)| tools::answer_from(call, &map))
+    with_churn(call, folder, &[])
+}
+
+/// [`answer`], weighing `churn` for `hotspots`.
+fn with_churn(call: &McpCall, folder: &Path, churn: &[Churn]) -> Result<String, Fault> {
+    index_folder(folder).map(|(map, _)| tools::answer_from(call, &map, churn))
 }
 
 /// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
@@ -118,7 +146,7 @@ pub(crate) fn map_or_empty(call: &McpCall, folder: &Path) -> Result<String, Faul
     Ok(if map.crates.is_empty() {
         String::new()
     } else {
-        tools::answer_from(call, &map)
+        tools::answer_from(call, &map, &[])
     })
 }
 
@@ -316,7 +344,10 @@ mod tests {
             view(&root, MapSubcommand::Architecture),
             index.architecture(6000)
         );
-        assert_eq!(view(&root, MapSubcommand::Contracts), "No contracts.\n");
+        assert_eq!(
+            view(&root, MapSubcommand::Contracts { kind: None }),
+            "No contracts.\n"
+        );
         let serde = repo(&[
             ("Cargo.toml", "[package]\nname = \"a\"\n"),
             ("src/lib.rs", "#[derive(Serialize)]\npub struct Reply;\n"),
@@ -324,12 +355,105 @@ mod tests {
         let (declared, _) = index_folder(&serde).unwrap();
         let contracts = declared.contracts(None, 6000);
         assert!(!contracts.is_empty());
-        assert_eq!(view(&serde, MapSubcommand::Contracts), contracts);
-        for subcommand in [MapSubcommand::Architecture, MapSubcommand::Contracts] {
+        assert_eq!(
+            view(&serde, MapSubcommand::Contracts { kind: None }),
+            contracts
+        );
+        for subcommand in [
+            MapSubcommand::Architecture,
+            MapSubcommand::Contracts { kind: None },
+        ] {
             assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
         }
         let none = "Flows pinned in the docs: 0.\n";
         assert_eq!(view(&empty, MapSubcommand::Flows), none);
+    }
+
+    #[test]
+    fn hotspots_weigh_the_churn_git_counts_under_the_root() {
+        let root = repo(CRATE);
+        let (state, home) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        let git = |args: &[&str]| crate::git::fixture(&home, &root, args);
+        git(&["init", "--quiet"]);
+        git(&["add", "--all"]);
+        git(&["commit", "--quiet", "-m", "Start"]);
+        fs::write(root.join("a/src/m.rs"), "pub fn go() { }\n").unwrap();
+        git(&["commit", "--quiet", "--all", "-m", "Change"]);
+        let app = App {
+            path: std::env::var_os("PATH"),
+            ..app(Some(&state), None)
+        };
+        let hotspots = |root: &Path, app: &App| {
+            let mut out = Vec::new();
+            let command = MapCommand {
+                command: Some(MapSubcommand::Hotspots),
+                root: root.to_owned(),
+                budget: None,
+            };
+            run(app, command, &mut io::empty(), &mut out).map(|_| String::from_utf8(out).unwrap())
+        };
+        let title = "Hotspots: files that change often and that much depends on.\n";
+
+        assert_eq!(
+            hotspots(&root, &app).unwrap(),
+            format!(
+                "{title}- a/src/m.rs  2 commits, 1 edges in\n- a/src/lib.rs  1 commits, 0 edges in\n"
+            )
+        );
+        assert_eq!(
+            hotspots(&root.join("a"), &app).unwrap(),
+            format!(
+                "{title}- src/m.rs  2 commits, 1 edges in\n- src/lib.rs  1 commits, 0 edges in\n"
+            )
+        );
+        let unrepo = hotspots(&state, &app).unwrap_err();
+        let stateless = hotspots(&root, &crate::test_support::app(None, None)).unwrap_err();
+        assert_eq!(unrepo.code().as_str(), "git.failed");
+        assert_eq!(stateless.code().as_str(), "state.unavailable");
+    }
+
+    #[test]
+    fn contracts_can_be_limited_to_one_kind() {
+        let root = repo(&[
+            ("Cargo.toml", "[package]\nname = \"a\"\n"),
+            (
+                "src/lib.rs",
+                "#[derive(Serialize)]\npub struct Reply;\n#[tool]\nfn search() {}\n",
+            ),
+        ]);
+        let kinds = [
+            (
+                ContractFilter::McpTool,
+                "- mcp tool search  a::search  src/lib.rs:3\n",
+            ),
+            (
+                ContractFilter::Serde,
+                "- serde a::Reply  a::Reply  src/lib.rs:2\n",
+            ),
+            (ContractFilter::Table, "No contracts.\n"),
+        ];
+        for (kind, listed) in kinds {
+            let view = MapSubcommand::Contracts { kind: Some(kind) };
+            assert_eq!(printed(&root, Some(view), None), listed);
+        }
+        let all = [
+            ContractFilter::Command,
+            ContractFilter::Code,
+            ContractFilter::Route,
+            ContractFilter::Serde,
+            ContractFilter::Table,
+            ContractFilter::McpTool,
+        ];
+        let kinds = all.map(contract_kind);
+        let expected = [
+            ContractKind::Command,
+            ContractKind::ErrorCode,
+            ContractKind::Route,
+            ContractKind::Serde,
+            ContractKind::Table,
+            ContractKind::McpTool,
+        ];
+        assert_eq!(kinds, expected);
     }
 
     #[test]

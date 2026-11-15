@@ -107,6 +107,32 @@ impl Git {
         paths.dedup();
         Ok(paths)
     }
+
+    /// How many of the last `commits` commits up to `commit`, merges left out, changed each
+    /// file under `folder`, by its path from `folder`; paths that aren't UTF-8 are left out.
+    pub(crate) fn churn(
+        &self,
+        folder: &Path,
+        commit: &CommitId,
+        commits: u32,
+    ) -> Result<BTreeMap<String, u32>, Fault> {
+        let out = run(self
+            .command(folder)
+            .args(["log", "--format=", "--name-only", "-z", "--relative"])
+            .args(["--no-renames", "--no-merges"])
+            .arg(format!("--max-count={commits}"))
+            .arg(commit.as_str())
+            .arg("--"))?;
+        let mut churn = BTreeMap::new();
+        let files = out
+            .split(|byte| *byte == 0)
+            .filter_map(|path| std::str::from_utf8(path).ok())
+            .filter(|path| !path.is_empty());
+        for file in files {
+            *churn.entry(file.to_owned()).or_default() += 1;
+        }
+        Ok(churn)
+    }
 }
 
 /// The UTF-8 blobs in `cat-file --batch` output, by id: each a header `<id> <type> <size>`, then
@@ -211,6 +237,45 @@ mod tests {
         assert_eq!(
             changed,
             ["-n", ".gitignore", "README.md", "committed.md", "new.md"]
+        );
+    }
+
+    #[test]
+    fn counts_the_commits_that_changed_each_file_under_a_folder() {
+        let dir = TempDir::new().unwrap();
+        let repo = repo(&dir);
+        let git = git(&dir);
+        fs::create_dir_all(repo.join("src")).unwrap();
+        let commit = |files: &[(&str, &str)]| {
+            for (path, text) in files {
+                fs::write(repo.join(path), text).unwrap();
+            }
+            fixture(&dir, &repo, &["add", "--all"]);
+            fixture(&dir, &repo, &["commit", "--quiet", "-m", "Change"]);
+        };
+        commit(&[("src/a.rs", "1"), ("-n", "1")]);
+        commit(&[("src/a.rs", "2"), ("src/b.rs", "1")]);
+        commit(&[("src/a.rs", "3"), ("README.md", "# More\n")]);
+        let head = git.head(&repo).unwrap();
+        let counted = |folder: &Path, commits| {
+            let churn = git.churn(folder, &head, commits).unwrap();
+            churn.into_iter().collect::<Vec<_>>()
+        };
+        let pair = |path: &str, commits| (path.to_owned(), commits);
+
+        assert_eq!(
+            counted(&repo, 10),
+            [
+                pair("-n", 1),
+                pair(".gitattributes", 1),
+                pair("README.md", 2),
+                pair("src/a.rs", 3),
+                pair("src/b.rs", 1)
+            ]
+        );
+        assert_eq!(
+            counted(&repo.join("src"), 2),
+            [pair("a.rs", 2), pair("b.rs", 1)]
         );
     }
 
