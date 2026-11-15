@@ -10,7 +10,9 @@ mod windows;
 
 use std::ffi::OsString;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 
 #[cfg(all(unix, not(target_os = "macos")))]
 use linux::desktop_terminal;
@@ -30,12 +32,18 @@ pub(crate) fn terminal_in(folder: &Path, env: Env<'_>, run: &[OsString]) -> Opti
         return None;
     }
     let mut command = desktop_terminal(folder, env, run)?;
+    command.current_dir(folder);
+    Some(command)
+}
+
+/// The launcher's own streams go nowhere: the terminal it opens has a window of its own.
+#[cfg(unix)]
+fn detached(mut command: Command) -> Command {
     command
-        .current_dir(folder)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    Some(command)
+    command
 }
 
 #[cfg(test)]

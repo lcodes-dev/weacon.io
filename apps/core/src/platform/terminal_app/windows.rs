@@ -1,5 +1,5 @@
 //! A console window of its own, running the console's own shell with no arguments, so nothing
-//! the core is given reaches it.
+//! the core is given reaches it. Its streams are left unset: set ones would replace the console's.
 
 use std::ffi::OsString;
 use std::os::windows::process::CommandExt;

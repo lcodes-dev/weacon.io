@@ -208,12 +208,16 @@ impl Uplink {
 
     /// Says hello, and gives the server's welcome if it offers the connection.
     async fn greeted(&self, socket: &mut Socket) -> Option<Welcome> {
+        let (offered, dir) = (self.capabilities, self.state_dir.clone());
+        let capabilities = tokio::task::spawn_blocking(move || offered(&dir))
+            .await
+            .ok()?;
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
                 protocol: PROTOCOL,
                 app: self.app.clone(),
-                capabilities: (self.capabilities)(&self.state_dir),
+                capabilities,
             }),
         };
         send(socket, &hello).await;

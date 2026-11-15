@@ -27,7 +27,7 @@ pub(super) fn desktop_terminal(folder: &Path, env: Env<'_>, run: &[OsString]) ->
         None => Command::new(terminal),
     };
     command.arg(dir).args(run);
-    Some(command)
+    Some(super::detached(command))
 }
 
 #[cfg(test)]

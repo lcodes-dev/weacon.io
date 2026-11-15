@@ -23,7 +23,7 @@ fn opened_by(app: &Path, folder: &Path) -> Option<Command> {
     }
     let mut command = Command::new("/usr/bin/open");
     command.arg("-a").arg(app).arg(folder);
-    Some(command)
+    Some(super::detached(command))
 }
 
 #[cfg(test)]
