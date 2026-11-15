@@ -178,23 +178,26 @@ fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec
 }
 
 /// What moving to `now` did to `pin`, from the first of `was` it was taken from, else from the
-/// first that holds its anchor, else from the first; when none was taken from, code that
-/// differs from the pin now has changed, though that base may hold the change already.
+/// first that holds its anchor, else from the first. When none was taken from, the pin itself
+/// is the base: its anchor gone from `now` is gone, and code that differs from it has changed.
 fn pin_moved(pin: &Pin, was: &[&Index], now: &Index) -> Option<Moved> {
     let taken = |base: &&&Index| base.fingerprint(&pin.anchor) == Some(pin.fingerprint);
     if let Some(base) = was.iter().find(taken) {
         return base.after_move(now, pin);
     }
     let holds = |base: &&&Index| base.fingerprint(&pin.anchor).is_some();
-    let base = was.iter().find(holds).or_else(|| was.first())?;
-    let differs = now
-        .fingerprint(&pin.anchor)
-        .is_some_and(|code| code != pin.fingerprint);
-    base.after_move(now, pin).or_else(|| {
-        differs.then(|| Moved::Changed {
-            was: pin.anchor.to_string(),
-            now: pin.anchor.to_string(),
-        })
+    let moved = was
+        .iter()
+        .find(holds)
+        .or_else(|| was.first())?
+        .after_move(now, pin);
+    let anchor = pin.anchor.to_string();
+    moved.or_else(|| match now.fingerprint(&pin.anchor) {
+        None => Some(Moved::Gone { was: anchor }),
+        Some(code) => (code != pin.fingerprint).then(|| Moved::Changed {
+            was: anchor.clone(),
+            now: anchor,
+        }),
     })
 }
 
@@ -588,7 +591,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pin_no_base_was_taken_from_moves_from_one_holding_its_anchor_or_has_changed() {
+    async fn a_pin_no_base_was_taken_from_moves_from_one_holding_its_anchor_or_from_itself() {
         let before = repo(LIB, "pub fn go() {}\n");
         let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
         let later = repo("mod m;\npub fn run() { go() }\npub fn go() { run() }\n", "");
@@ -623,6 +626,13 @@ mod tests {
             }]
         );
         assert_eq!(moved(&[&before, &elsewhere], &elsewhere), []);
+        // Its base was let go, and no base kept or the code now holds it.
+        assert_eq!(
+            change(moved(&[&before], &before)),
+            [AnchorChange::Gone {
+                was: "sym:a_b::go".to_owned()
+            }]
+        );
     }
 
     #[tokio::test]
