@@ -38,9 +38,10 @@ export function envelopeFor(ref: ChatRef, id: number, request: RequestId, ask: A
   return { id, type: "worktree_command", ...ref, request, action: ask };
 }
 
-/** `worktree` waiting for the answer to `pending`, the last action's outcome cleared. */
+/** `worktree` waiting for the answer to `pending`; an action, Remove's state included, clears the last one's outcome. */
 export function waiting(worktree: Worktree, pending: Pending): Worktree {
-  return { ...worktree, pending: [...worktree.pending, pending], outcome: undefined };
+  const outcome = pending.ask === "state" && !pending.confirm ? worktree.outcome : undefined;
+  return { ...worktree, pending: [...worktree.pending, pending], outcome };
 }
 
 /** `worktree` once `message` answers one of its asks about the chat at `ref`; anything else leaves it as it is. */

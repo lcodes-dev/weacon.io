@@ -725,6 +725,8 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").inputValue(), "Sorted by aisle.");
   await bar.getByRole("button", { name: "Open draft pull request" }).click();
   await waitFor(() => later !== undefined);
+  // What is typed while it is on its way couldn't be sent, so the form takes nothing then.
+  assert.equal(await bar.getByLabel("Description").isDisabled(), true);
   await page.getByRole("button", { name: "Back" }).click();
   later?.();
   await page.getByRole("button", { name: "Changes" }).click();

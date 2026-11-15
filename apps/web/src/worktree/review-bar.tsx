@@ -99,11 +99,11 @@ function PullRequestForm({
     >
       <label>
         Title
-        <input value={draft.title} onChange={(event) => edit({ ...draft, title: event.target.value })} />
+        <input value={draft.title} disabled={waiting} onChange={(event) => edit({ ...draft, title: event.target.value })} />
       </label>
       <label>
         Description
-        <textarea value={draft.body} onChange={(event) => edit({ ...draft, body: event.target.value })} />
+        <textarea value={draft.body} disabled={waiting} onChange={(event) => edit({ ...draft, body: event.target.value })} />
       </label>
       <button type="submit" disabled={waiting || draft.title.trim() === ""}>
         Open draft pull request
