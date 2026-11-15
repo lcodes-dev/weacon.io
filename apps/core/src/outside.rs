@@ -11,19 +11,33 @@ use weacon_protocol::{AgentKind, SessionsAnswer, SessionsQuery, code};
 #[derive(Clone, Default)]
 pub(crate) struct Outside {
     homes: Vec<(AgentKind, PathBuf)>,
+    state_dir: Option<PathBuf>,
 }
 
 impl Outside {
-    /// The person's own agent folders, less any in or around `state_dir`, where each
-    /// workspace's sign-ins are kept; compared as resolved where they exist.
-    pub(crate) fn new(mut homes: Vec<(AgentKind, PathBuf)>, state_dir: Option<&Path>) -> Self {
-        if let Some(state_dir) = state_dir.map(resolved) {
-            homes.retain(|(_, dir)| {
-                let dir = resolved(dir);
-                !dir.starts_with(&state_dir) && !state_dir.starts_with(&dir)
-            });
+    /// The person's own agent folders; any in or around `state_dir`, where each workspace's
+    /// sign-ins are kept, is never read.
+    pub(crate) fn new(homes: Vec<(AgentKind, PathBuf)>, state_dir: Option<&Path>) -> Self {
+        Self {
+            homes,
+            state_dir: state_dir.map(Path::to_owned),
         }
-        Self { homes }
+    }
+
+    // The folders to read now, compared as resolved, since one may appear or change after start.
+    fn readable(&self) -> Vec<(AgentKind, PathBuf)> {
+        let state_dir = self.state_dir.as_deref().map(resolved);
+        let apart = |dir: &Path| {
+            let dir = resolved(dir);
+            state_dir
+                .as_ref()
+                .is_none_or(|state| !dir.starts_with(state) && !state.starts_with(&dir))
+        };
+        self.homes
+            .iter()
+            .filter(|(_, dir)| apart(dir))
+            .cloned()
+            .collect()
     }
 
     /// The answer to `query`, for the machine's owner, whoever checked that.
@@ -35,23 +49,24 @@ impl Outside {
         query: SessionsQuery,
         log: &Logger,
     ) -> Result<SessionsAnswer, Fault> {
-        let homes = self.homes.clone();
+        let outside = self.clone();
         let kind = query.query;
-        let answer = tokio::task::spawn_blocking(move || outside::answer(&Disk, &homes, &kind))
-            .await
-            .map_err(|error| {
-                Fault::new(
-                    code!("sessions.read_failed"),
-                    "The sessions couldn't be read",
-                )
-                .because(error)
-            })?
-            .ok_or_else(|| {
-                Fault::new(
-                    code!("message.unsupported"),
-                    "This core doesn't know that query",
-                )
-            })?;
+        let answer =
+            tokio::task::spawn_blocking(move || outside::answer(&Disk, &outside.readable(), &kind))
+                .await
+                .map_err(|error| {
+                    Fault::new(
+                        code!("sessions.read_failed"),
+                        "The sessions couldn't be read",
+                    )
+                    .because(error)
+                })?
+                .ok_or_else(|| {
+                    Fault::new(
+                        code!("message.unsupported"),
+                        "This core doesn't know that query",
+                    )
+                })?;
         let request = query.request.as_str().into();
         log.info("sessions answered", &[("request_id", request)]);
         Ok(SessionsAnswer {
@@ -121,6 +136,24 @@ mod tests {
         assert_eq!(listed(&kept).await, 1);
         assert_eq!(listed(&around).await, 0);
         assert_eq!(listed(&unplaced).await, 1);
+    }
+
+    #[tokio::test]
+    async fn a_folder_made_in_the_state_folder_after_start_is_never_read() {
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let roundabout = dir
+            .join("other")
+            .join("..")
+            .join("state")
+            .join("w-1")
+            .join("claude");
+        let outside = Outside::new(vec![(AgentKind::Claude, roundabout)], Some(&state));
+
+        claude_home(&state.join("w-1"), "/work", "Hi");
+
+        assert_eq!(listed(&outside).await, 0);
     }
 
     #[cfg(unix)]
