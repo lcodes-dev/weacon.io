@@ -57,9 +57,9 @@ Weacon is in early development. This is what works on `main` today:
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | The chat list and chat screen show chats the server has | Starting a chat from the web app, and the server relaying it to your machine |
+| Chats | The chat list, the chat screen and **New chat** | The server relaying a chat's prompt to your machine, so an agent can answer |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
-| Proposals | Listing, accepting and rejecting | Nothing makes proposals yet: they will come from agents through the core |
+| Proposals | Listing, accepting and rejecting; the core passes on its agents' proposals | Agents making them, which needs chats to reach your machine |
 | Search | ⌘K finds docs and tasks | |
 | Code map | `weacon map` and the local MCP the core gives its agents | |
 | Server MCP | | An MCP endpoint for agents Weacon didn't start |
@@ -193,7 +193,7 @@ target/debug/weacon repo list --workspace <workspace id>
 
 ### 7. Start a chat
 
-Not yet: starting a chat from the web app, and the server relaying it to your machine, are on their way. This step will say how once they are on `main`.
+Not yet: the server doesn't relay a chat's prompt to your machine yet. This step will say how once it does.
 
 ### 8. Try the rest
 
