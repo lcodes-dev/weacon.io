@@ -26,7 +26,7 @@ const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_mins(1);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
 /// How many messages wait to cross between the daemon and the uplink.
-const QUEUE: usize = 64;
+pub(crate) const QUEUE: usize = 64;
 
 /// How long a connection may stay quiet, and how long it must last to count as steady.
 #[derive(Clone, Copy, Debug)]
@@ -270,7 +270,7 @@ impl Uplink {
         let owners = match asking(&envelope.message) {
             Asking::By(by) => by == Some(owner),
             Asking::NotAnAsk => true,
-            Asking::Unknown => return failure(envelope.id, code!("uplink.unknown")),
+            Asking::Unknown => return reply(failure(envelope.id, code!("uplink.unknown"))),
         };
         let command = if let Message::ChatCommand(command) = &envelope.message {
             Some(command.clone())
@@ -278,19 +278,23 @@ impl Uplink {
             None
         };
         if !owners {
-            return command.map_or_else(
+            return reply(command.map_or_else(
                 || failure(envelope.id, code!("machine.not_owner")),
                 |command| refusal(envelope.id, &command, code!("chat.not_owner")),
-            );
+            ));
         }
         let id = envelope.id;
         if self.to_daemon.try_send(envelope).is_ok() {
             return Step::Nothing;
         }
         command.map_or(Step::Nothing, |command| {
-            refusal(id, &command, code!("chat.unavailable"))
+            reply(refusal(id, &command, code!("chat.unavailable")))
         })
     }
+}
+
+fn reply(envelope: Envelope) -> Step {
+    Step::Reply(Box::new(envelope))
 }
 
 /// Who asks the machine to act, in a message from the server.
@@ -327,25 +331,25 @@ fn asking(message: &Message) -> Asking<'_> {
 }
 
 /// An error under the envelope `id` it answers.
-fn failure(id: u32, code: Code) -> Step {
-    Step::Reply(Box::new(Envelope {
+pub(crate) const fn failure(id: u32, code: Code) -> Envelope {
+    Envelope {
         id,
         message: Message::Error(ErrorBody {
             code,
             retryable: false,
         }),
-    }))
+    }
 }
 
 /// A receipt that fails `command` with `code`, under the envelope `id` it came in.
-fn refusal(id: u32, command: &ChatCommand, code: Code) -> Step {
-    Step::Reply(Box::new(Envelope {
+pub(crate) fn refusal(id: u32, command: &ChatCommand, code: Code) -> Envelope {
+    Envelope {
         id,
         message: Message::Receipt(Receipt {
             request: command.request.clone(),
             outcome: Outcome::Failed { code },
         }),
-    }))
+    }
 }
 
 enum Step {
@@ -374,12 +378,9 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// The daemon's uplink while nothing routes the server's messages to the chat engine, so the
-/// owner's commands are answered `chat.unavailable`, and the daemon sends nothing up it.
-pub(crate) fn unrouted(app: &crate::app::App, state_dir: &Path) -> (Uplink, FromDaemon) {
-    let (to_daemon, _) = mpsc::channel(QUEUE);
-    let (_, from_daemon) = mpsc::channel(QUEUE);
-    let uplink = Uplink {
+/// The daemon's uplink, which hands what the server asks to `to_daemon`.
+pub(crate) fn new(app: &crate::app::App, state_dir: &Path, to_daemon: ToDaemon) -> Uplink {
+    Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
         capabilities: crate::session::CAPABILITIES.to_vec(),
@@ -387,8 +388,7 @@ pub(crate) fn unrouted(app: &crate::app::App, state_dir: &Path) -> (Uplink, From
         to_daemon,
         timing: TIMING,
         random: weacon_appkit::random_id,
-    };
-    (uplink, from_daemon)
+    }
 }
 
 #[cfg(test)]
