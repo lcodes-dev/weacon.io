@@ -30,6 +30,28 @@ impl Git {
         CommitId::try_from(text(out)?.trim().to_owned()).map_err(|_| unexpected())
     }
 
+    /// Whether `ancestor` is `commit` or in its history; one `repo` doesn't hold is neither.
+    pub(crate) fn holds(
+        &self,
+        repo: &Path,
+        commit: &CommitId,
+        ancestor: &CommitId,
+    ) -> Result<bool, Fault> {
+        let status = self
+            .command(repo)
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                ancestor.as_str(),
+                commit.as_str(),
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(not_run)?;
+        Ok(status.success())
+    }
+
     /// Each regular file at `commit`, links left out; paths that aren't UTF-8 are left out.
     pub(crate) fn tree(&self, repo: &Path, commit: &CommitId) -> Result<Vec<TreeFile>, Fault> {
         let out = run(self
@@ -224,6 +246,26 @@ mod tests {
         assert_eq!(by_path("bytes.bin"), None);
         assert_eq!(texts.len(), 3);
         assert!(git.blobs(&repo, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_commit_holds_itself_and_its_history_only() {
+        let dir = TempDir::new().unwrap();
+        let repo = repo(&dir);
+        let git = git(&dir);
+        let first = git.head(&repo).unwrap();
+        fixture(
+            &dir,
+            &repo,
+            &["commit", "--quiet", "--allow-empty", "-m", "More"],
+        );
+        let second = git.head(&repo).unwrap();
+        let unknown: CommitId = "0".repeat(40).parse().unwrap();
+
+        assert!(git.holds(&repo, &second, &first).unwrap());
+        assert!(git.holds(&repo, &second, &second).unwrap());
+        assert!(!git.holds(&repo, &first, &second).unwrap());
+        assert!(!git.holds(&repo, &second, &unknown).unwrap());
     }
 
     #[test]

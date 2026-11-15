@@ -2,7 +2,7 @@ mod chats;
 mod cores;
 mod search;
 
-pub(crate) use chats::{CHATS, REQUESTS_SENT};
+pub(crate) use chats::CHATS;
 pub(crate) use cores::CORE_BUILDS;
 pub(crate) use search::{SEARCH, SEARCH_CHATS};
 
@@ -286,6 +286,11 @@ UPDATE workspaces SET doc_bytes =
      FROM doc_versions WHERE doc_versions.workspace_id = workspaces.workspace_id)
     + (SELECT COALESCE(SUM(length(pin)), 0)
        FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
+";
+
+/// The repository a revision's pins are of, when they say.
+pub(crate) const DOC_REPOS: &str = "
+ALTER TABLE doc_versions ADD COLUMN repo_id TEXT;
 ";
 
 /// Which agent made a version, as its JSON, when its author names one.

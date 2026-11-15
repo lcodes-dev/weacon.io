@@ -578,6 +578,7 @@ mod tests {
                 .iter()
                 .map(|name| DocPin::try_from(format!("{name}#0123456789abcdef")).unwrap())
                 .collect(),
+            repo: None,
         });
         let title = Title::try_from(title.to_owned()).unwrap();
         DocText::new(title, body.to_owned(), anchors).unwrap()
