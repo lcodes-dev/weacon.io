@@ -24,7 +24,7 @@ pub(crate) fn routes() -> Router<Shared> {
 }
 
 /// `POST /api/workspaces/{workspace}/search`: what in the workspace matches the query's text.
-/// Every member reads every task and doc, so membership is the only check.
+/// Every member reads every task, doc and chat, so membership is the only check.
 async fn search(
     member: Member,
     body: Result<Body<SearchQuery>, Unreadable>,
@@ -118,7 +118,9 @@ mod tests {
     fn titles(hits: &[SearchHit]) -> Vec<&str> {
         hits.iter()
             .map(|hit| match hit {
-                SearchHit::Task { title, .. } | SearchHit::Doc { title, .. } => title.as_str(),
+                SearchHit::Task { title, .. }
+                | SearchHit::Doc { title, .. }
+                | SearchHit::Chat { title, .. } => title.as_str(),
                 SearchHit::Newer => "",
             })
             .collect()

@@ -24,6 +24,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::PROPOSALS,
     steps::CHATS,
     steps::SEARCH,
+    steps::SEARCH_CHATS,
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the

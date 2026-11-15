@@ -737,3 +737,95 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 
+test("⌘K searches the open workspace, and choosing a hit goes to its place", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, () => ({
+    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 }],
+  }));
+  const asked: string[] = [];
+  let answerBread = () => {};
+  const bread = new Promise<void>((resolve) => {
+    answerBread = resolve;
+  });
+  await page.route("**/api/workspaces/*/search", async (route) => {
+    const text = (JSON.parse(route.request().postData() ?? "{}") as { text: string }).text;
+    asked.push(text);
+    // The answer for "bread" waits, so the page still holds the one for "milk".
+    if (text === "bread") {
+      await bread;
+    }
+    const hits = [
+      { kind: "task", task: "t-1", title: "Buy milk", snippet: { text: "Buy milk", marks: [{ start: 4, end: 8 }] } },
+      { kind: "chat", chat: "c-1", title: "Merge the shopping lists", seq: 4, snippet: { text: "add the milk", marks: [{ start: 8, end: 12 }] } },
+    ];
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });
+  });
+  await serveFeed(page, { also: ["workspace.search"] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+  await page.getByRole("navigation", { name: "Chats" }).getByText("Merge the shopping lists").waitFor();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  const results = search.getByRole("option");
+  await results.nth(1).waitFor();
+  assert.deepEqual(await results.locator(".title").allInnerTexts(), ["Buy milk", "Merge the shopping lists"]);
+  assert.deepEqual(await search.locator("mark").allInnerTexts(), ["milk", "milk"]);
+  assert.deepEqual(asked, ["milk"]);
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
+  assert.match(page.url(), /&chat=c-1$/);
+  assert.equal(await search.count(), 0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/&view=tasks$/);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await search.getByRole("combobox", { name: "Search" }).fill("bread");
+  await results.first().waitFor({ state: "detached" });
+  await page.keyboard.press("Enter");
+  assert.equal(await search.count(), 1);
+  answerBread();
+  await results.nth(1).waitFor();
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "detached" });
+});
+
+test("the palette keeps focus on its input and the chosen hit in view", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await listChats(page, () => ({ chats: [] }));
+  const hits = Array.from({ length: 20 }, (_, n) => ({ kind: "task", task: `t-${n}`, title: `Buy milk ${n}`, snippet: { text: "milk", marks: [{ start: 0, end: 4 }] } }));
+  await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) }));
+  await serveFeed(page, { also: ["workspace.search"] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).click();
+
+  await page.keyboard.press("ControlOrMeta+k");
+  const search = page.getByRole("dialog", { name: "Search" });
+  const input = search.getByRole("combobox", { name: "Search" });
+  await input.fill("milk");
+  const last = search.getByRole("option").nth(19);
+  await last.waitFor();
+  const below = () => last.evaluate((row) => row.getBoundingClientRect().top >= (row.parentElement?.getBoundingClientRect().bottom ?? 0));
+  assert.equal(await below(), true);
+  for (let n = 0; n < 19; n++) {
+    await page.keyboard.press("ArrowDown");
+  }
+  assert.equal(await last.getAttribute("aria-selected"), "true");
+  assert.equal(await below(), false);
+  for (const key of ["Tab", "Shift+Tab"]) {
+    await page.keyboard.press(key);
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true);
+  }
+  await page.keyboard.press("Escape");
+  await search.waitFor({ state: "detached" });
+});
