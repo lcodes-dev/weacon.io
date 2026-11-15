@@ -2,15 +2,13 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Answer, Api } from "../api/api.ts";
 import { type Loaded, Loader } from "../api/loaded.ts";
-import type { ChatId, SearchHit, WorkspaceId } from "../protocol.ts";
+import type { SearchHit, WorkspaceId } from "../protocol.ts";
+import type { Place } from "../shell/place.ts";
 import { type Listed, listed, moved, opensPalette, parts } from "./hits.ts";
 import "./palette.css";
 
-/**
- * The search palette over `workspace`'s tasks, docs and chats, opened with ⌘K while `enabled`.
- * Choosing a chat opens it; tasks and docs have no page here yet, so they are only listed.
- */
-export function Palette({ api, workspace, enabled, openChat }: { api: Api; workspace: WorkspaceId; enabled: boolean; openChat(chat: ChatId): void }) {
+/** The search palette over `workspace`'s tasks, docs and chats, opened with ⌘K while `enabled`; choosing a hit goes to its place. */
+export function Palette({ api, workspace, enabled, go }: { api: Api; workspace: WorkspaceId; enabled: boolean; go(place: Place): void }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!enabled) {
@@ -35,15 +33,15 @@ export function Palette({ api, workspace, enabled, openChat }: { api: Api; works
       api={api}
       workspace={workspace}
       close={close}
-      openChat={(chat) => {
+      go={(place) => {
         close();
-        openChat(chat);
+        go(place);
       }}
     />
   );
 }
 
-function Search({ api, workspace, close, openChat }: { api: Api; workspace: WorkspaceId; close(): void; openChat(chat: ChatId): void }) {
+function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceId; close(): void; go(place: Place): void }) {
   const [text, setText] = useState("");
   // Each answer keeps the text it is for, so a slow one never lists, or opens, for text since changed.
   const [found, setFound] = useState<Loaded<Answered>>({ value: undefined, problem: undefined });
@@ -58,8 +56,8 @@ function Search({ api, workspace, close, openChat }: { api: Api; workspace: Work
   const answered = asked && found.value?.text === text;
   const hits = answered ? listed(found.value?.hits ?? []) : [];
   const choose = (hit: Listed | undefined) => {
-    if (hit?.chat !== undefined) {
-      openChat(hit.chat);
+    if (hit !== undefined) {
+      go(hit.place);
     }
   };
   return (
@@ -101,7 +99,6 @@ function Search({ api, workspace, close, openChat }: { api: Api; workspace: Work
               id={`palette-${index}`}
               role="option"
               aria-selected={index === at}
-              aria-disabled={hit.chat === undefined}
               onMouseEnter={() => setAt(index)}
               onClick={() => choose(hit)}
             >

@@ -8,16 +8,34 @@ import type {
   ChatList,
   ChatSummary,
   Code,
+  DocContent,
+  DocHistory,
+  DocId,
+  DocList,
+  DocRecord,
+  DocRevise,
   MachineId,
   MachineList,
   MachineSummary,
   Mark,
+  MemberList,
   PairConfirm,
   PairLookup,
   PairPending,
+  ProposalDecision,
+  ProposalId,
+  ProposalList,
+  ProposalOutcome,
+  ProposalVerdict,
   SearchAnswer,
   SearchQuery,
   SignInStarted,
+  TaskChange,
+  TaskCreate,
+  TaskEditBody,
+  TaskId,
+  TaskList,
+  TaskRecord,
   WorkspaceCreate,
   WorkspaceId,
   WorkspaceList,
@@ -97,6 +115,68 @@ export class Api {
     return this.#ask("POST", `/api/workspaces/${workspace}/search`, query, isSearchAnswer);
   }
 
+  /** Who is or was a member of `workspace`, with the name each is shown by. */
+  members(workspace: WorkspaceId): Promise<Answer<MemberList>> {
+    return this.#ask("GET", `${base(workspace)}/members`, undefined, isMembers);
+  }
+
+  /** The tasks of `workspace`, in their order. */
+  tasks(workspace: WorkspaceId): Promise<Answer<TaskList>> {
+    return this.#ask("GET", `${base(workspace)}/tasks`, undefined, isTasks);
+  }
+
+  /** Makes a task, to do, placed last. */
+  createTask(workspace: WorkspaceId, title: string): Promise<Answer<TaskRecord>> {
+    const body: TaskCreate = { title };
+    return this.#ask("POST", `${base(workspace)}/tasks`, body, isTask);
+  }
+
+  /** Makes one edit to a task read at `version`; one changed since is refused as `task.stale`. */
+  changeTask(workspace: WorkspaceId, task: TaskId, version: number, edit: TaskEditBody): Promise<Answer<TaskRecord>> {
+    const body: TaskChange = { version, edit };
+    return this.#ask("POST", `${base(workspace)}/tasks/${encodeURIComponent(task)}`, body, isTask);
+  }
+
+  /** The docs of `workspace`, without their bodies. */
+  docs(workspace: WorkspaceId): Promise<Answer<DocList>> {
+    return this.#ask("GET", `${base(workspace)}/docs`, undefined, isDocs);
+  }
+
+  doc(workspace: WorkspaceId, doc: DocId): Promise<Answer<DocRecord>> {
+    return this.#ask("GET", docPath(workspace, doc), undefined, isDoc);
+  }
+
+  /** Who made the doc's revisions, newest first. */
+  docHistory(workspace: WorkspaceId, doc: DocId): Promise<Answer<DocHistory>> {
+    return this.#ask("GET", `${docPath(workspace, doc)}/revisions`, undefined, isHistory);
+  }
+
+  /** The doc as it was at `version`. */
+  docRevision(workspace: WorkspaceId, doc: DocId, version: number): Promise<Answer<DocRecord>> {
+    return this.#ask("GET", `${docPath(workspace, doc)}/revisions/${version}`, undefined, isDoc);
+  }
+
+  createDoc(workspace: WorkspaceId, content: DocContent): Promise<Answer<DocRecord>> {
+    return this.#ask("POST", `${base(workspace)}/docs`, content, isDoc);
+  }
+
+  /** Replaces the text of a doc read at `version`; one revised since is refused as `doc.stale`. */
+  reviseDoc(workspace: WorkspaceId, doc: DocId, version: number, content: DocContent): Promise<Answer<DocRecord>> {
+    const body: DocRevise = { version, content };
+    return this.#ask("POST", docPath(workspace, doc), body, isDoc);
+  }
+
+  /** The newest proposals of `workspace`, newest first. */
+  proposals(workspace: WorkspaceId): Promise<Answer<ProposalList>> {
+    return this.#ask("GET", `${base(workspace)}/proposals`, undefined, isProposals);
+  }
+
+  /** Accepts or rejects an open proposal. */
+  decide(workspace: WorkspaceId, proposal: ProposalId, verdict: ProposalVerdict): Promise<Answer<ProposalOutcome>> {
+    const body: ProposalDecision = { verdict };
+    return this.#ask("POST", `${base(workspace)}/proposals/${encodeURIComponent(proposal)}`, body, isOutcome);
+  }
+
   /** The machines paired with the signed-in account, oldest first. */
   machines(): Promise<Answer<MachineList>> {
     return this.#ask("GET", "/api/machines", undefined, isMachineList);
@@ -138,15 +218,16 @@ export class Api {
   }
 }
 
+const base = (workspace: WorkspaceId) => `/api/workspaces/${encodeURIComponent(workspace)}`;
+const docPath = (workspace: WorkspaceId, doc: DocId) => `${base(workspace)}/docs/${encodeURIComponent(doc)}`;
+
 // What a body that doesn't parse reads as, which no answer's shape fits.
 const NOT_JSON = Symbol("not JSON");
 
+const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
 function fields(value: unknown, keys: string[]): boolean {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    keys.every((key) => typeof (value as Record<string, unknown>)[key] === "string")
-  );
+  return isObject(value) && keys.every((key) => typeof value[key] === "string");
 }
 
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
@@ -157,7 +238,7 @@ const isWorkspace = (value: unknown): value is WorkspaceSummary =>
 /** A guard for an object whose `key` holds a list of items that `item` accepts. */
 function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unknown) => value is T {
   return (value): value is T => {
-    const items = typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+    const items = isObject(value) ? value[key] : undefined;
     return Array.isArray(items) && items.every(item);
   };
 }
@@ -201,3 +282,34 @@ const isMachine = (value: unknown): value is MachineSummary =>
   isMachineKey((value as MachineSummary).key) &&
   typeof (value as MachineSummary).paired_at === "number";
 const isMachineList = listOf<MachineList>("machines", isMachine);
+const versioned = (value: unknown, keys: string[]): boolean =>
+  fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
+const isMembers = listOf<MemberList>("members", (value) => fields(value, ["id", "name"]));
+const isTask = (value: unknown): value is TaskRecord => versioned(value, ["title", "status", "order"]);
+const isTasks = listOf<TaskList>("tasks", isTask);
+const isDocs = listOf<DocList>("docs", (value) => versioned(value, ["title"]));
+const isDoc = (value: unknown): value is DocRecord => versioned(value, []) && fields((value as DocRecord).content, ["title", "body"]);
+const isRevision = (value: unknown): boolean =>
+  fields(value, ["accepted_by"]) && isObject(value) && isObject(value["author"]) && Number.isSafeInteger(value["version"]);
+const isHistory = listOf<DocHistory>("revisions", isRevision);
+const isProposal = (value: unknown): boolean =>
+  fields(value, ["id", "state"]) && isObject(value) && isObject(value["about"]) && isObject(value["author"]) && Number.isSafeInteger(value["at"]);
+const isProposals = listOf<ProposalList>("proposals", isProposal);
+const isHunk = (value: unknown): boolean =>
+  isObject(value) && (value["kind"] === "agreed" ? fields(value, ["text"]) : value["kind"] === "conflict" ? fields(value, ["base", "current", "proposed"]) : fields(value, ["kind"]));
+// Each outcome this app reads has its fields; one of a newer kind passes, to be shown as such.
+const isOutcome = (value: unknown): value is ProposalOutcome => {
+  if (!fields(value, ["outcome"]) || !isObject(value)) {
+    return false;
+  }
+  switch (value["outcome"]) {
+    case "accepted":
+      return Number.isSafeInteger(value["version"]);
+    case "doc_conflict":
+      return typeof value["title"] === "boolean" && typeof value["anchors"] === "boolean" && Array.isArray(value["hunks"]) && value["hunks"].every(isHunk);
+    case "task_conflict":
+      return Array.isArray(value["edits"]) && value["edits"].every((edit) => fields(edit, ["kind"]));
+    default:
+      return true;
+  }
+};

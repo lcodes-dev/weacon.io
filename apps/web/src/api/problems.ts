@@ -16,6 +16,19 @@ const PROBLEMS = new Map<Code, string>([
   ["machine.no_answer", "The machine didn't answer. Try again."],
   ["relay.busy", "The server is busy. Try again in a moment."],
   ["settings.not_owner", "Only this machine's owner can see or change its settings."],
+  ["task.invalid", "Give it a title of one short line."],
+  ["task.stale", "This task changed since you read it. Check it, then try again."],
+  ["task.not_found", "That task isn't there any more."],
+  ["task.too_many", "This workspace can't hold more tasks."],
+  ["doc.invalid", "Give the doc a title of one short line."],
+  ["doc.stale", "Someone saved this doc since you read it."],
+  ["doc.not_found", "That doc isn't there any more."],
+  ["doc.too_large", "The doc is too long to save."],
+  ["doc.quota_full", "This workspace has no room for more docs."],
+  ["doc.unpinned", "Links to code can only be added from a machine."],
+  ["doc.unlinked", "Links to code can only be changed from a machine."],
+  ["proposal.closed", "This proposal was already decided or withdrawn."],
+  ["proposal.not_found", "That proposal isn't there any more."],
 ]);
 
 /** What the page says when a request fails with `code`; codes it doesn't know get a general line. */

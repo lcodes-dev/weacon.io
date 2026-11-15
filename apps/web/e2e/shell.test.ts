@@ -737,7 +737,7 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 
-test("⌘K searches the open workspace, and choosing a chat opens it", { timeout: 600_000 }, async (t) => {
+test("⌘K searches the open workspace, and choosing a hit goes to its place", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -774,13 +774,17 @@ test("⌘K searches the open workspace, and choosing a chat opens it", { timeout
   await results.nth(1).waitFor();
   assert.deepEqual(await results.locator(".title").allInnerTexts(), ["Buy milk", "Merge the shopping lists"]);
   assert.deepEqual(await search.locator("mark").allInnerTexts(), ["milk", "milk"]);
-  assert.equal(await results.nth(0).getAttribute("aria-disabled"), "true");
   assert.deepEqual(asked, ["milk"]);
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press("Enter");
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
   assert.match(page.url(), /&chat=c-1$/);
   assert.equal(await search.count(), 0);
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(/&view=tasks$/);
   await page.keyboard.press("ControlOrMeta+k");
   await search.getByRole("combobox", { name: "Search" }).fill("milk");
   await results.nth(1).waitFor();

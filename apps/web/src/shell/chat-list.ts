@@ -1,3 +1,4 @@
+import type { Names } from "../members/names.ts";
 import type { ChatState, ChatSummary, MemberId } from "../protocol.ts";
 
 /** `chats`, the one whose latest turn began or ended last first. */
@@ -15,4 +16,9 @@ const NOTES: Partial<Record<ChatState, string>> = { full: "Full", detached: "Rea
 /** What a chat's row says about why it takes no prompts, if it doesn't. */
 export function stateNote(state: ChatState): string | undefined {
   return NOTES[state];
+}
+
+/** What a chat's row says under its title: its owner's name once known, its machine, and its state's note. */
+export function rowNote(chat: ChatSummary, names: Names): string {
+  return [names.get(chat.owner), chat.machine, stateNote(chat.state)].filter((part) => part !== undefined).join(" · ");
 }

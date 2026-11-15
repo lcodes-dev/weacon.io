@@ -1,18 +1,19 @@
-import type { ChatId, SearchHit, Snippet } from "../protocol.ts";
+import type { SearchHit, Snippet } from "../protocol.ts";
+import type { Place } from "../shell/place.ts";
 
-/** A hit as the palette lists it: what it is, its title and snippet, and the chat it opens, if any. */
-export type Listed = { key: string; kind: "Task" | "Doc" | "Chat"; title: string; snippet: Snippet; chat: ChatId | undefined };
+/** A hit as the palette lists it: what it is, its title and snippet, and the place it opens: a task opens the tasks. */
+export type Listed = { key: string; kind: "Task" | "Doc" | "Chat"; title: string; snippet: Snippet; place: Place };
 
 /** The hits the palette knows how to list, in the server's order; a newer kind is left out. */
 export function listed(hits: SearchHit[]): Listed[] {
   return hits.flatMap((hit): Listed[] => {
     switch (hit.kind) {
       case "task":
-        return [{ key: `task:${hit.task}`, kind: "Task", title: hit.title, snippet: hit.snippet, chat: undefined }];
+        return [{ key: `task:${hit.task}`, kind: "Task", title: hit.title, snippet: hit.snippet, place: { view: "tasks" } }];
       case "doc":
-        return [{ key: `doc:${hit.doc}`, kind: "Doc", title: hit.title, snippet: hit.snippet, chat: undefined }];
+        return [{ key: `doc:${hit.doc}`, kind: "Doc", title: hit.title, snippet: hit.snippet, place: { view: "docs", doc: hit.doc } }];
       case "chat":
-        return [{ key: `chat:${hit.chat}:${hit.seq ?? ""}`, kind: "Chat", title: hit.title, snippet: hit.snippet, chat: hit.chat }];
+        return [{ key: `chat:${hit.chat}:${hit.seq ?? ""}`, kind: "Chat", title: hit.title, snippet: hit.snippet, place: { view: "chats", chat: hit.chat } }];
       default:
         return [];
     }

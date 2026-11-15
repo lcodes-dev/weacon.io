@@ -6,7 +6,7 @@ import { listed, moved, opensPalette, parts } from "./hits.ts";
 
 const snippet = { text: "the plan", marks: [] };
 
-test("hits list in the server's order, only chats open, and a newer kind is left out", () => {
+test("hits list in the server's order, each opening its place, and a newer kind is left out", () => {
   const hits = [
     { kind: "doc", doc: "d-1", title: "Plan", snippet },
     { kind: "symbol", name: "a::b" },
@@ -16,12 +16,12 @@ test("hits list in the server's order, only chats open, and a newer kind is left
   ] as unknown as SearchHit[];
 
   assert.deepEqual(
-    listed(hits).map(({ key, kind, title, chat }) => [key, kind, title, chat]),
+    listed(hits).map(({ key, kind, title, place }) => [key, kind, title, place]),
     [
-      ["doc:d-1", "Doc", "Plan", undefined],
-      ["chat:c-1:3", "Chat", "Fix the build", "c-1"],
-      ["chat:c-1:", "Chat", "Fix the build", "c-1"],
-      ["task:t-1", "Task", "Ship", undefined],
+      ["doc:d-1", "Doc", "Plan", { view: "docs", doc: "d-1" }],
+      ["chat:c-1:3", "Chat", "Fix the build", { view: "chats", chat: "c-1" }],
+      ["chat:c-1:", "Chat", "Fix the build", { view: "chats", chat: "c-1" }],
+      ["task:t-1", "Task", "Ship", { view: "tasks" }],
     ],
   );
 });
