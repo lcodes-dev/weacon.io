@@ -19,20 +19,20 @@ export function stateNote(state: ChatState): string | undefined {
 }
 
 // A run that sleeps wakes on the next prompt, so to a person it is idle.
-const RUNS = new Map<RunState, string>([
-  ["starting", "Starting"],
-  ["running", "Running"],
-  ["waiting", "Waiting for a person"],
-  ["idle", "Idle"],
-  ["sleeping", "Idle"],
-  ["ended", "Ended"],
-]);
+const RUNS: Record<RunState, string> = {
+  starting: "Starting",
+  running: "Running",
+  waiting: "Waiting for a person",
+  idle: "Idle",
+  sleeping: "Idle",
+  ended: "Ended",
+};
 
 /**
  * What a chat's row says under its title: its owner's name once known, its machine, what its latest
  * run is doing, and its state's note; a run state this app doesn't know is left out.
  */
 export function rowNote(chat: ChatSummary, names: Names): string {
-  const run = chat.run === undefined ? undefined : RUNS.get(chat.run);
+  const run = chat.run === undefined ? undefined : (RUNS as Partial<Record<string, string>>)[chat.run];
   return [names.get(chat.owner), chat.machine, run, stateNote(chat.state)].filter((part) => part !== undefined).join(" · ");
 }

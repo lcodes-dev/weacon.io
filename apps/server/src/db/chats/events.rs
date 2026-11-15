@@ -148,23 +148,23 @@ impl Workspace {
         for request in rows.iter().filter_map(|row| ended(row.event)) {
             self.end_request(&mut *transaction, chat, request).await?;
         }
-        match rows.iter().rev().find(|row| turns(row.event)) {
-            Some(row) => self.turned(transaction, chat, row.at).await,
-            None if moved => self.run_moved(transaction, chat).await,
-            None => Ok(()),
+        let turn = rows.iter().rfind(|row| turns(row.event)).map(|row| row.at);
+        if turn.is_none() && !moved {
+            return Ok(());
         }
+        self.turned(transaction, chat, turn).await
     }
 
-    // A turn began or ended at `at`: the chat is updated then, and the feed hears of it.
+    // A turn began or ended `at`, or the latest run changed: the feed hears, and a turn dates it.
     async fn turned(
         &self,
         transaction: &mut SqliteConnection,
         chat: &ChatId,
-        at: i64,
+        at: Option<i64>,
     ) -> Result<(), Fault> {
         let owner = sqlx::query_scalar::<_, String>(
-            "UPDATE chats SET updated_at = ? WHERE workspace_id = ? AND chat_id = ?
-             RETURNING owner_member",
+            "UPDATE chats SET updated_at = COALESCE(?, updated_at)
+             WHERE workspace_id = ? AND chat_id = ? RETURNING owner_member",
         )
         .bind(at)
         .bind(self.id.as_str())

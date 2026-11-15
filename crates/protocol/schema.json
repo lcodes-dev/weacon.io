@@ -4001,7 +4001,7 @@
           ]
         },
         {
-          "description": "A chat was made, or its title, state, latest turn or latest run changed. Only for clients that have\nthe capability `workspace.chats`, which read the chats again.",
+          "description": "A chat was made, or its title, state, latest turn or latest run changed. Only for clients\nthat have the capability `workspace.chats`, which read the chats again.",
           "type": "object",
           "properties": {
             "chat": {
