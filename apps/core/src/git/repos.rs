@@ -1,6 +1,6 @@
 //! The repositories a workspace's chats may work in on this machine, which the owner adds.
 
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,17 +80,7 @@ impl Repos {
                 "That folder isn't the top of a git repository",
             ));
         }
-        let _held = state::hold(&self.file).map_err(|error| {
-            let fault = if error.kind() == io::ErrorKind::WouldBlock {
-                Fault::new(
-                    code!("repo.busy"),
-                    "Another change to the workspace's repositories is under way",
-                )
-            } else {
-                failed()
-            };
-            fault.because(error)
-        })?;
+        let _held = state::hold(&self.file).map_err(|error| failed().because(error))?;
         let mut repos = state::load::<Repo>(&self.file).map_err(|error| failed().because(error))?;
         let ours = |repo: &&Repo| repo.workspace == self.workspace;
         if let Some(kept) = repos
@@ -148,7 +138,7 @@ fn printing() -> Fault {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, io};
 
     use weacon_testing::TempDir;
 
@@ -186,17 +176,26 @@ mod tests {
     }
 
     #[test]
-    fn one_change_to_the_list_at_a_time() {
+    fn repositories_added_at_once_are_all_kept() {
         let dir = TempDir::new().unwrap();
-        let (git, folder) = (git(&dir), repo(&dir));
-        let ours = repos(&dir, "w-1");
+        let git = git(&dir);
+        let folders: Vec<PathBuf> = (0..8)
+            .map(|at| {
+                let made = TempDir::new().unwrap();
+                let folder = dir.join(format!("repo-{at}"));
+                fs::rename(repo(&made), &folder).unwrap();
+                folder
+            })
+            .collect();
 
-        let held = state::hold(&dir.join("repos.json")).unwrap();
-        let error = ours.add(&git, id("site"), &folder).unwrap_err();
-        assert_eq!(code(&error), "repo.busy");
-        drop(held);
+        std::thread::scope(|scope| {
+            for (at, folder) in folders.iter().enumerate() {
+                let (git, ours) = (&git, repos(&dir, "w-1"));
+                scope.spawn(move || ours.add(git, id(&format!("r-{at}")), folder).unwrap());
+            }
+        });
 
-        ours.add(&git, id("site"), &folder).unwrap();
+        assert_eq!(repos(&dir, "w-1").list().unwrap().len(), 8);
     }
 
     #[test]

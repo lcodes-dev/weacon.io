@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Condvar, Mutex, PoisonError};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -77,6 +77,7 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
 // The lock files this process holds: the system's lock is the whole process's, so it can't keep
 // one of its own threads from another.
 static HELD: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+static LET_GO: Condvar = Condvar::new();
 
 /// A hold on changing a file, kept until dropped, so nothing else changes it meanwhile.
 #[derive(Debug)]
@@ -94,20 +95,17 @@ impl Drop for Hold {
     }
 }
 
-/// A hold on changing `file`. While another holds it, in this process or another, this fails as
-/// `WouldBlock`.
+/// A hold on changing `file`, once another holding it, in this process or another, lets go.
 pub(super) fn hold(file: &Path) -> io::Result<Hold> {
     let lock = file.with_extension("lock");
     if let Some(parent) = lock.parent() {
         fs::create_dir_all(parent)?;
     }
-    if !HELD
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(lock.clone())
-    {
-        return Err(io::ErrorKind::WouldBlock.into());
+    let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+    while !held.insert(lock.clone()) {
+        held = LET_GO.wait(held).unwrap_or_else(PoisonError::into_inner);
     }
+    drop(held);
     let taken = File::create(&lock).and_then(|opened| {
         platform::lock_for_process(&opened)?;
         Ok(opened)
@@ -128,6 +126,7 @@ fn let_go(lock: &Path) {
     HELD.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .remove(lock);
+    LET_GO.notify_all();
 }
 
 #[cfg(test)]
@@ -146,18 +145,33 @@ mod tests {
         assert_eq!(load::<u32>(&file).unwrap(), [3, 1]);
     }
 
+    // Each thread adds to a count read and written whole: none may be lost.
     #[test]
-    fn a_file_is_held_by_one_at_a_time() {
+    fn holds_on_one_file_take_turns() {
         let dir = TempDir::new().unwrap();
-        let file = dir.join("state/list.json");
+        let file = dir.join("state/count.json");
+        let add = |file: PathBuf| {
+            for _ in 0..50 {
+                let _held = hold(&file).unwrap();
+                let count = load::<u32>(&file).unwrap();
+                save(&file, &[count.first().copied().unwrap_or(0) + 1]).unwrap();
+            }
+        };
+        let adding: Vec<_> = (0..4)
+            .map(|_| {
+                let file = file.clone();
+                std::thread::spawn(move || add(file))
+            })
+            .collect();
 
-        let held = hold(&file).unwrap();
-        assert_eq!(hold(&file).unwrap_err().kind(), io::ErrorKind::WouldBlock);
-        drop(held);
-        hold(&file).unwrap();
+        for thread in adding {
+            thread.join().unwrap();
+        }
+        assert_eq!(load::<u32>(&file).unwrap(), [200]);
     }
 
-    // Run by the test below, in a process of its own: holds the file it's given until told.
+    // Run by the test below, in a process of its own: holds the file it's given until told, then
+    // finds it untouched and marks it just before it lets go.
     #[test]
     #[ignore = "a helper the test below runs in another process"]
     fn held_in_another_process() {
@@ -166,10 +180,13 @@ mod tests {
         let Some(file) = std::env::var_os("WEACON_HOLD") else {
             return;
         };
-        let _held = hold(Path::new(&file)).unwrap();
+        let file = PathBuf::from(file);
+        let _held = hold(&file).unwrap();
         writeln!(io::stdout(), "held").unwrap();
         io::stdout().flush().unwrap();
         io::stdin().lock().read_line(&mut String::new()).unwrap();
+        assert_eq!(load::<String>(&file).unwrap(), Vec::<String>::new());
+        save(&file, &["theirs"]).unwrap();
     }
 
     #[test]
@@ -190,48 +207,20 @@ mod tests {
         let mut said = BufReader::new(other.stdout.take().unwrap()).lines();
         assert!(said.any(|line| line.unwrap() == "held"));
 
-        assert_eq!(hold(&file).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        let (trying, tried) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || {
+            trying.send(()).unwrap();
+            let _held = hold(&file).unwrap();
+            let found = load::<String>(&file).unwrap();
+            save(&file, &["ours"]).unwrap();
+            found
+        });
+        tried.recv().unwrap();
         writeln!(other.stdin.take().unwrap(), "go").unwrap();
         // Read to its end, so what it says last never meets a closed pipe.
         said.for_each(drop);
         assert!(other.wait().unwrap().success());
-        hold(&file).unwrap();
-    }
-
-    // Each start forks this process, and a child holds copies of its open files until it runs
-    // its program: a hold let go must be free at once even so.
-    #[test]
-    fn a_hold_let_go_is_free_at_once_while_programs_start() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let dir = TempDir::new().unwrap();
-        let file = dir.join("state/list.json");
-        let started = Arc::new(AtomicUsize::new(0));
-        // A working folder makes each start a fork, whose child keeps the copies longest.
-        let start = |counted: Arc<AtomicUsize>, here: PathBuf| {
-            while counted.load(Ordering::SeqCst) < 400 {
-                let mut git = std::process::Command::new("git");
-                drop(git.arg("--version").current_dir(&here).output());
-                counted.fetch_add(1, Ordering::SeqCst);
-            }
-        };
-        let starting: Vec<_> = (0..4)
-            .map(|_| {
-                let (counted, here) = (Arc::clone(&started), dir.to_path_buf());
-                std::thread::spawn(move || start(counted, here))
-            })
-            .collect();
-
-        let mut taken = true;
-        while started.load(Ordering::SeqCst) < 400 {
-            taken &= hold(&file).is_ok();
-        }
-
-        for thread in starting {
-            thread.join().unwrap();
-        }
-        assert!(taken);
+        assert_eq!(waiting.join().unwrap(), ["theirs"]);
     }
 
     #[test]

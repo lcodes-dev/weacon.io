@@ -21,6 +21,12 @@ pub(crate) fn chat_tree(
     repo: &RepoId,
 ) -> Result<PathBuf, Fault> {
     let stores = Stores::new(workspaces, &key.workspace);
+    let folder = chat_folder(work_root, &key.workspace, &key.chat);
+    let recorded = stores.chats().get(&key.chat)?;
+    // A chat that worked in a plain folder before it was given worktrees keeps it.
+    if recorded.is_none() && folder.is_dir() && !folder.join(".git").exists() {
+        return Ok(folder);
+    }
     let found = stores.repo(repo)?;
     let git = Git::open(workspaces.state_dir(), workspaces.path())?;
     if stores.removed(git.clone()).removed(&key.chat)?.is_some() {
@@ -28,12 +34,6 @@ pub(crate) fn chat_tree(
             code!("worktree.in_trash"),
             "The chat's worktree is in the Trash; restore it to go on",
         ));
-    }
-    let folder = chat_folder(work_root, &key.workspace, &key.chat);
-    let recorded = stores.chats().get(&key.chat)?;
-    // A chat that worked in a plain folder before it was given worktrees keeps it.
-    if recorded.is_none() && folder.is_dir() && !folder.join(".git").exists() {
-        return Ok(folder);
     }
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
@@ -132,6 +132,25 @@ mod tests {
     }
 
     #[test]
+    fn first_runs_of_two_chats_at_once_are_both_recorded() {
+        let bench = bench();
+        let other = ChatKey::new(&bench.key.workspace, &chat("c-2"));
+        let work = bench.dir.join("work");
+
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| bench.tree(&bench.site));
+            let second = scope.spawn(|| chat_tree(&bench.workspaces, &work, &other, &bench.site));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+
+        first.unwrap();
+        second.unwrap();
+        let chats = bench.stores().chats();
+        assert!(chats.get(&bench.key.chat).unwrap().is_some());
+        assert!(chats.get(&other.chat).unwrap().is_some());
+    }
+
+    #[test]
     fn a_worktree_whose_record_was_lost_is_recorded_again() {
         let bench = bench();
         let first = bench.tree(&bench.site).unwrap();
@@ -151,8 +170,13 @@ mod tests {
         fs::create_dir_all(&plain).unwrap();
         fs::write(plain.join("notes.md"), "mine\n").unwrap();
 
-        assert_eq!(bench.tree(&bench.site).unwrap(), plain);
+        // Even with no git on the way and a repository not registered.
+        let no_git = Workspaces::new(&bench.dir.join("state"), None);
+        let unknown = RepoId::try_from("nowhere".to_owned()).unwrap();
+        let kept = chat_tree(&no_git, &bench.dir.join("work"), &bench.key, &unknown).unwrap();
 
+        assert_eq!(kept, plain);
+        assert_eq!(bench.tree(&bench.site).unwrap(), plain);
         assert!(!plain.join(".git").exists());
         assert_eq!(bench.stores().chats().get(&bench.key.chat).unwrap(), None);
     }
