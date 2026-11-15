@@ -8,9 +8,9 @@ use weacon_protocol::{ChatEntry, ChatEvent, RunEvent, RunId, RunState, RunStatus
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChatRuns {
     /// The chat's latest run, as its last status says; a chat runs one agent at a time.
-    pub runs: Vec<RunStatus>,
+    run: Option<RunStatus>,
     /// The prompts still waiting for a person, oldest first.
-    pub waiting: Vec<Waiting>,
+    waiting: Vec<Waiting>,
 }
 
 /// A permission prompt waiting for a person: the run that asked, its number, and the place of
@@ -33,6 +33,13 @@ impl ChatRuns {
         runs
     }
 
+    /// The fold again from its [`Self::run`] and [`Self::waiting`] as a store kept them, for the
+    /// server, which keeps the fold beside the log. Every such pair is one a log can fold into.
+    #[must_use]
+    pub const fn restored(run: Option<RunStatus>, waiting: Vec<Waiting>) -> Self {
+        Self { run, waiting }
+    }
+
     /// Takes in the log's next entry.
     pub fn apply(&mut self, entry: &ChatEntry) {
         match &entry.event {
@@ -45,6 +52,24 @@ impl ChatRuns {
             | ChatEvent::OutsidePrompt { .. }
             | ChatEvent::Newer => {}
         }
+    }
+
+    /// The chat's latest run, as its last status says.
+    #[must_use]
+    pub const fn run(&self) -> Option<&RunStatus> {
+        self.run.as_ref()
+    }
+
+    /// The prompts still waiting for a person, oldest first.
+    #[must_use]
+    pub fn waiting(&self) -> &[Waiting] {
+        &self.waiting
+    }
+
+    /// Whether any of `run`'s prompts waits for a person.
+    #[must_use]
+    pub fn asks(&self, run: &RunId) -> bool {
+        self.waiting.iter().any(|waits| waits.run == *run)
     }
 
     /// Whether `run`'s prompt `prompt` waits for a person.
@@ -63,13 +88,13 @@ impl ChatRuns {
 
     // Another run's prompts can no longer be answered, nor its own once it stops working.
     fn status(&mut self, status: &RunStatus) {
-        let working = matches!(
+        let may_ask = matches!(
             status.state,
             RunState::Running | RunState::Waiting | RunState::Newer
         );
         self.waiting
-            .retain(|waits| working && waits.run == status.run);
-        self.runs = vec![status.clone()];
+            .retain(|waits| may_ask && waits.run == status.run);
+        self.run = Some(status.clone());
     }
 
     fn said(&mut self, run: &RunId, event: &RunEvent, seq: u64) {
@@ -190,15 +215,24 @@ mod tests {
         let state = ChatRuns::fold(&entries);
 
         assert_eq!(state.waiting_seqs(), [5]);
+        assert_eq!(
+            state
+                .waiting()
+                .iter()
+                .map(|waits| waits.prompt)
+                .collect::<Vec<_>>(),
+            [2]
+        );
+        assert!(state.asks(&run("run-1")) && !state.asks(&run("run-2")));
         assert!(state.waits(&run("run-1"), 2));
         assert!(!state.waits(&run("run-1"), 1) && !state.waits(&run("run-2"), 2));
         assert_eq!(
-            state.runs,
-            [RunStatus {
+            state.run(),
+            Some(&RunStatus {
                 run: run("run-1"),
                 state: RunState::Waiting,
                 agent: None
-            }]
+            })
         );
     }
 
@@ -253,12 +287,29 @@ mod tests {
 
         assert_eq!(state.waiting_seqs(), [4]);
         assert_eq!(
-            state.runs,
-            [RunStatus {
+            state.run(),
+            Some(&RunStatus {
                 run: run("run-2"),
                 state: RunState::Starting,
                 agent: None
-            }]
+            })
         );
+    }
+
+    #[test]
+    fn a_fold_kept_as_its_run_and_waiting_prompts_is_restored_as_it_was() {
+        let logs = [
+            vec![status("run-1", RunState::Waiting), asks("run-1", 1)],
+            // A prompt asked before any status, or after another run's, still waits.
+            vec![asks("run-1", 1)],
+            vec![status("run-2", RunState::Idle), asks("run-1", 2)],
+            vec![status("run-1", RunState::Idle)],
+            Vec::new(),
+        ];
+        for events in logs {
+            let folded = ChatRuns::fold(&log(events));
+            let kept = (folded.run().cloned(), folded.waiting().to_vec());
+            assert_eq!(ChatRuns::restored(kept.0, kept.1), folded);
+        }
     }
 }

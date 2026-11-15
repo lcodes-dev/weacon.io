@@ -8,6 +8,7 @@ use crate::facts::{Facts, FileKind, Reader};
 use crate::flows::{self, Flow};
 use crate::graph::{ModuleNode, file_links, nodes};
 use crate::rank::central;
+use crate::search;
 use crate::{Area, Error, Symbol};
 
 /// A file as the caller read it, its path relative to the repository root with `/` separators.
@@ -41,6 +42,8 @@ pub struct Index {
     pub(crate) items: BTreeMap<String, Located>,
     /// Every item's path, most central first.
     pub(crate) central: Vec<String>,
+    /// Each Markdown file's text, by its path.
+    pub(crate) docs: BTreeMap<String, String>,
 }
 
 /// An item and the file it is in.
@@ -95,7 +98,7 @@ pub fn index(files: &[SourceFile]) -> Result<Index, Error> {
 
 /// The index of a repository from the facts of its files.
 #[must_use]
-pub(crate) fn assemble(facts: &[Facts]) -> Index {
+pub fn assemble(facts: &[Facts]) -> Index {
     let mut crates: Vec<Crate> = facts.iter().filter_map(manifest).collect();
     crates.sort_by(|one, other| one.folder.cmp(&other.folder));
     let mut named_by_file = BTreeMap::new();
@@ -143,6 +146,7 @@ pub(crate) fn assemble(facts: &[Facts]) -> Index {
         flows,
         items,
         central,
+        docs: search::docs(facts),
     }
 }
 

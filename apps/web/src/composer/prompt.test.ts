@@ -8,14 +8,11 @@ import { after, blocked, deliverPrompt } from "./prompt.ts";
 
 test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
   const chatRef = { workspace: "w-1", chat: "c-1" };
-  const server = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-  const live = (capabilities: string[]) => ({ state: "live" as const, server, capabilities });
 
-  assert.equal(blocked(live(["chat.send"]), chatRef), undefined);
-  assert.equal(blocked(live(["chat.send"]), undefined), "Pick a chat to send to.");
-  assert.equal(blocked(live(["run.stream"]), chatRef), "This server can't take messages yet.");
-  assert.equal(blocked({ state: "connecting" }, chatRef), "Messages send once the server is connected.");
-  assert.equal(blocked({ state: "ended", code: "connection.lost" }, chatRef), "Messages send once the server is connected.");
+  assert.equal(blocked(true, chatRef, true), undefined);
+  assert.equal(blocked(true, undefined, true), "Pick a chat to send to.");
+  assert.equal(blocked(true, chatRef, false), "This server can't take messages yet.");
+  assert.equal(blocked(false, chatRef, true), "Messages send once the server is connected.");
 });
 
 test("a prompt is sent and waits for its receipt, unless it is over the server's limit", async () => {
@@ -48,6 +45,16 @@ test("an accepted prompt empties the box; any other keeps it and says why", () =
     retry,
   });
   assert.deepEqual(after("refused", "hi", "r-1"), { text: "hi", problem: "The message wasn't sent.", retry: undefined });
+  assert.deepEqual(after("offline", "hi", "r-1"), {
+    text: "hi",
+    problem: "The machine is offline, so the message wasn't sent. Try again once it's back.",
+    retry: undefined,
+  });
+  assert.deepEqual(after("detached", "hi", "r-1"), {
+    text: "hi",
+    problem: "This chat's machine is gone, so it can be read but takes no messages.",
+    retry: undefined,
+  });
   assert.deepEqual(after("too_long", "hi", "r-1"), {
     text: "hi",
     problem: "It's too long to send. Shorten it and try again.",

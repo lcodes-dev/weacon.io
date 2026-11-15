@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
@@ -25,7 +25,10 @@ const REPLAY_MAX: usize = 8 * MAX_FRAME;
 /// aren't safe to cancel or to run side by side.
 #[derive(Debug)]
 pub(crate) struct ChatLog {
-    file: File,
+    /// `None` until the first entry of a chat this machine had no log for.
+    file: Option<File>,
+    path: PathBuf,
+    workspace_root: PathBuf,
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
@@ -67,13 +70,24 @@ pub(crate) enum Seen {
     Other,
 }
 
+// Opens a log file to append, creating it and its folder private and synced when missing.
+fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
+    let dir = path.parent().ok_or(io::ErrorKind::NotFound)?;
+    platform::private_dir(dir)?;
+    let file = weacon_appkit::private_append(path)?;
+    weacon_appkit::sync_dir(dir)?;
+    weacon_appkit::sync_dir(workspace_root)?;
+    Ok(file)
+}
+
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
 
 impl ChatLog {
-    /// Opens `chat`'s log under its workspace's own folder, `workspace_root`, created
-    /// private when missing and kept through a power loss. An entry a crash cut short is dropped.
+    /// Opens `chat`'s log under its workspace's own folder, `workspace_root`. A missing log is
+    /// created private, and kept through a power loss, only with its first entry. An entry a crash
+    /// cut short is dropped.
     ///
     /// # Errors
     /// When the log can't be read or an entry before its last is damaged.
@@ -82,9 +96,10 @@ impl ChatLog {
         let path = dir.join(super::file_stem(chat) + ".jsonl");
         let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
-            platform::private_dir(&dir)?;
             let mut log = Self {
-                file: weacon_appkit::private_append(&path)?,
+                file: None,
+                path: path.clone(),
+                workspace_root,
                 starts: Vec::new(),
                 end: 0,
                 requests: HashMap::new(),
@@ -92,10 +107,13 @@ impl ChatLog {
                 agent: None,
                 runs: ChatRuns::default(),
             };
-            weacon_appkit::sync_dir(&dir)?;
-            weacon_appkit::sync_dir(&workspace_root)?;
-            let len = log.file.metadata()?.len();
-            log.replay()?;
+            if !path.try_exists()? {
+                return Ok(log);
+            }
+            let file = open_or_create(&path, &log.workspace_root)?;
+            let len = file.metadata()?.len();
+            log.replay(&file)?;
+            log.file = Some(file);
             if log.end != len {
                 // Not through `file`: on Windows a handle opened to append can't truncate.
                 OpenOptions::new()
@@ -109,8 +127,8 @@ impl ChatLog {
         .map_err(unreadable)
     }
 
-    fn replay(&mut self) -> io::Result<()> {
-        let mut lines = BufReader::new(self.file.try_clone()?);
+    fn replay(&mut self, file: &File) -> io::Result<()> {
+        let mut lines = BufReader::new(file.try_clone()?);
         let mut line = Vec::new();
         loop {
             line.clear();
@@ -211,6 +229,9 @@ impl ChatLog {
             ));
         }
         let len = line.len();
+        self.ensure_file()
+            .await
+            .map_err(|error| not_written().because(error))?;
         let written = match self.handle() {
             Ok(mut file) => {
                 blocking(move || file.write_all(&line).and_then(|()| file.sync_data())).await
@@ -317,12 +338,25 @@ impl ChatLog {
         self.broken = true;
     }
 
+    // Creates the log file on the first entry of a chat that had none.
+    async fn ensure_file(&mut self) -> io::Result<()> {
+        if self.file.is_some() || self.broken {
+            return Ok(());
+        }
+        let (path, root) = (self.path.clone(), self.workspace_root.clone());
+        self.file = Some(blocking(move || open_or_create(&path, &root)).await?);
+        Ok(())
+    }
+
     // A handle of its own on the log file, refused once a write has failed.
     fn handle(&self) -> io::Result<File> {
         if self.broken {
             return Err(io::Error::other("a write to the log failed"));
         }
-        self.file.try_clone()
+        self.file
+            .as_ref()
+            .ok_or(io::ErrorKind::NotFound)?
+            .try_clone()
     }
 
     // How many bytes the entries `first..=last` take in the file.
@@ -455,13 +489,15 @@ mod tests {
         let mut upper = ChatLog::open(&one, &chat("Ab")).await.unwrap();
         upper.append(logged_prompt("r-1", "Hi")).await.unwrap();
 
-        let lower = ChatLog::open(&one, &chat("ab")).await.unwrap();
+        let mut lower = ChatLog::open(&one, &chat("ab")).await.unwrap();
         let elsewhere = ChatLog::open(&other, &chat("Ab")).await.unwrap();
 
         assert_eq!((lower.seq(), elsewhere.seq()), (0, 0));
         assert!(one.join("chats/c-.ab.jsonl").exists());
+        // Opening a log that isn't there yet makes nothing; its first entry makes the file.
+        assert!(!one.join("chats/c-ab.jsonl").exists() && !other.exists());
+        lower.append(logged_prompt("r-2", "Hi")).await.unwrap();
         assert!(one.join("chats/c-ab.jsonl").exists());
-        assert!(other.join("chats/c-.ab.jsonl").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -500,7 +536,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
         log.append(logged_prompt("r-1", "Hi")).await.unwrap();
-        log.file = File::open(file_of(&dir)).unwrap();
+        log.file = Some(File::open(file_of(&dir)).unwrap());
 
         let failed = log.append(accepted("r-1")).await.unwrap_err();
         let after = log.append(accepted("r-1")).await.unwrap_err();

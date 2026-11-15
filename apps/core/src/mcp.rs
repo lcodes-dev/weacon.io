@@ -116,10 +116,7 @@ pub(crate) fn grant(
     let server = McpServer {
         url: mcp.url.clone(),
         token: token.as_str().to_owned(),
-        tools: tools::listed()
-            .into_iter()
-            .map(|tool| tool.name.into_owned())
-            .collect(),
+        tools: tools::UP_FRONT.map(str::to_owned).to_vec(),
     };
     Ok((
         Launch {
@@ -289,6 +286,7 @@ impl ServerHandler for Handler {
         let tool = match &call {
             McpCall::Map(_) => "map",
             McpCall::Symbol(_) => "symbol",
+            McpCall::Flow(_) => "flow",
             McpCall::Newer => return Err(ErrorData::invalid_params("No such tool", None)),
         };
         let Ok(_permit) = grant.calls.try_acquire() else {
@@ -442,11 +440,13 @@ mod tests {
         assert_eq!((one.status, two.status), (200, 200));
         assert_eq!(
             answer_text(&one),
-            "one .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
         assert_eq!(
             answer_text(&two),
-            "two .: 1 module\n  (root) src/lib.rs: 1 item\n"
+            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
+             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
         );
     }
 
@@ -710,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn only_claude_gets_the_mcp_and_its_token_ends_with_the_revoke() {
+    fn only_claude_gets_the_mcp_with_the_up_front_tools_and_a_token_the_revoke_ends() {
         let mcp = Mcp {
             url: "http://127.0.0.1:9/mcp".into(),
             grants: Grants::default(),
@@ -737,6 +737,7 @@ mod tests {
 
         let server = claude.mcp.unwrap();
         assert_eq!(server.url, mcp.url);
+        assert_eq!(server.tools, tools::UP_FRONT);
         let found = mcp.grants.find(&server.token).unwrap();
         assert_eq!(
             (found.run.as_str(), found.folder.as_path()),
