@@ -13,7 +13,7 @@ import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
-import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import type { ChatId, MachineId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
 import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
 import { readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
@@ -44,7 +44,7 @@ export function Workspaces({
   who: ReactNode;
   page?: ((socket: WorkspaceSocket | undefined) => ReactNode) | undefined;
   /** Opens Settings, where the person pairs machines and signs agents in. */
-  openSettings(): void;
+  openSettings(machine?: MachineId): void;
 }) {
   const loaded = useLoaded(() => api.workspaces(), api);
   const list = loaded.value?.workspaces;
@@ -210,7 +210,7 @@ type Open = {
   away: boolean;
   place: Place;
   go(place: Place): void;
-  openSettings(): void;
+  openSettings(machine?: MachineId): void;
 };
 
 /** The open workspace on its feed: its sections, and its chats or the section `place` names. */

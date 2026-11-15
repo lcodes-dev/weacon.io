@@ -23,12 +23,15 @@ export function Machines({
   pins,
   later,
   socket,
+  opened,
 }: {
   api: Api;
   pins: Pins;
   later: Later;
   /** The open workspace's socket, for its settings on each machine; none while no workspace is open. */
   socket: WorkspaceSocket | undefined;
+  /** A machine whose settings open by themselves, as one just paired does. */
+  opened?: MachineId | undefined;
 }) {
   const { value, problem, loading, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
@@ -60,7 +63,7 @@ export function Machines({
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Machines">
           {list.map((machine) => (
-            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
+            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} machine={machine} justPaired={machine.id === justPaired || machine.id === opened} unpaired={() => void load()} />
           ))}
         </ul>
       )}

@@ -201,9 +201,11 @@ Sign the agent in first, as in step 6, and give the workspace a repository.
 2. Pick the **Machine**, the **Repository** and the **Agent**.
 3. Type what you want done and choose **Send**.
 
-The server passes the prompt to your machine, the core starts the agent in a folder of its own for this chat, and the chat screen shows what the agent says and does as it goes.
+The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. What the agent says appears under **Agent** as it goes. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
-While the agent isn't signed in on that machine, the form says "Claude Code isn't signed in on this machine." and **Send** stays off. **Sign in from Settings** opens Settings: open the machine's **Settings** there, then **Sign in** next to Claude Code. A Codex that isn't installed shows "Codex isn't installed on this machine."
+When the agent asks to use a tool, the chat shows **Allow** and **Deny**; with the access level at ask first, it waits for you. **Stop** ends the agent's turn. Send another prompt in the same chat to carry on. Reloading the page keeps the chat as it was.
+
+While the agent isn't signed in on that machine, the form says "Claude Code isn't signed in on this machine." and **Send** stays off. **Sign in from Settings** opens Settings with that machine's settings open: choose **Sign in** next to Claude Code, then **Back**. A Codex that isn't installed shows "Codex isn't installed on this machine."
 
 Codex works differently from Claude Code: it asks you before every command and every file change, whatever the workspace's access level. Weacon's start-of-session hook for it runs only after you have reviewed it once in Codex.
 

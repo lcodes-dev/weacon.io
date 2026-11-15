@@ -35,8 +35,8 @@ export function NewChat({
   away: boolean;
   machines: MachineSummary[];
   started(chat: ChatId): void;
-  /** Opens Settings, where the person signs an agent in on a machine. */
-  openSettings(): void;
+  /** Opens Settings, where the person signs an agent in on a machine, with `machine`'s own open. */
+  openSettings(machine?: MachineId): void;
 }) {
   const [picked, setPicked] = useState<MachineId>();
   const machine = machines.find(({ id }) => id === picked) ?? machines[0];
@@ -131,7 +131,7 @@ export function NewChat({
       </label>
       {signIn === "signed_out" && (
         <p>
-          <button type="button" onClick={openSettings}>
+          <button type="button" onClick={() => openSettings(machine?.id)}>
             Sign in from Settings
           </button>
         </p>

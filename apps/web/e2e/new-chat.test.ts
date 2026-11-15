@@ -113,6 +113,8 @@ test("from an empty workspace, a person starts a chat on their connected machine
   chats.settings = { ...SETTINGS, sign_ins: [{ agent: "codex", state: "signed_in" }] };
   await form.getByRole("button", { name: "Sign in from Settings" }).click();
   await page.getByRole("heading", { name: "Machines" }).waitFor();
+  // The machine picked in New chat has its settings open, where Sign in is.
+  await page.getByRole("button", { name: `${STUDIO.name} settings`, expanded: true }).waitFor();
   await page.getByRole("button", { name: "Back" }).click();
   await form.getByText("Codex isn't signed in on this machine.").waitFor({ state: "detached" });
   await form.getByLabel("Agent").selectOption("claude");
