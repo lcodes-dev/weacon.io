@@ -126,7 +126,10 @@ pub(super) fn judge(name: &str, args: &[Word], context: &Context, cwd: &Path) ->
         return find(args, context, cwd);
     }
     if let Some((_, letters, outside)) = WRITERS.iter().find(|(writer, ..)| *writer == name) {
-        return writes(args, letters, *outside, context, cwd);
+        return writes(args, letters, *outside, context, cwd).or_else(|| {
+            (matches!(name, "cp" | "mv") && copies_a_tree(name, args, cwd))
+                .then_some(Reason::Unsure)
+        });
     }
     if is_build(name, args) {
         return builds(name, args, context, cwd);
@@ -199,6 +202,30 @@ fn allowed(option: &str, options: &Options) -> bool {
             .chars()
             .all(|flag| !flag.is_ascii_alphabetic() || options.short.contains(flag))
     })
+}
+
+// A recursive copy, or a move of a folder, carries whatever is inside — including a symlink that
+// leads out — to a new name a later command could write through, so neither can be proven safe.
+fn copies_a_tree(name: &str, args: &[Word], cwd: &Path) -> bool {
+    if name == "cp"
+        && has(
+            args,
+            &["--recursive", "--archive", "--dereference-recursive"],
+            &['r', 'R', 'a'],
+        )
+    {
+        return true;
+    }
+    let operands = positional(args);
+    let sources = if has(args, &["--target-directory"], &['t']) {
+        operands.as_slice()
+    } else {
+        operands.split_last().map_or(&[][..], |(_, rest)| rest)
+    };
+    // A glob source could match a folder the guard can't resolve ahead, so it counts too.
+    sources
+        .iter()
+        .any(|source| source.glob || (!source.dynamic && cwd.join(&source.text).is_dir()))
 }
 
 // Every option one of `letters` and every other word a path inside the worktree.

@@ -58,6 +58,48 @@ const LOOKS: [&str; 12] = [
 ];
 // What `remote` does that changes no setting.
 const REMOTE_LOOKS: [&str; 4] = ["-v", "--verbose", "show", "get-url"];
+// Subcommands where an option can delete, force or discard. For these a word the shell could
+// turn into such an option — one it alone can spell, or a glob — can't be proven safe.
+pub(super) const CAN_CHANGE: [&str; 12] = [
+    "branch", "tag", "push", "fetch", "pull", "checkout", "switch", "restore", "reset", "clean",
+    "stash", "remote",
+];
+
+// Subcommands that rewrite the working tree, so a path a later command in the same line resolved
+// may no longer be what is there.
+const TREE_REWRITERS: [&str; 11] = [
+    "checkout",
+    "switch",
+    "restore",
+    "reset",
+    "merge",
+    "pull",
+    "rebase",
+    "cherry-pick",
+    "revert",
+    "stash",
+    "clean",
+];
+
+/// Whether `git` with `args` rewrites the working tree, read past git's own global options.
+pub(super) fn rewrites_tree(args: &[Word]) -> bool {
+    let mut rest = args;
+    loop {
+        let Some((first, after)) = rest.split_first() else {
+            return false;
+        };
+        let text = first.text.as_str();
+        if text == "-C" || text == "-c" {
+            rest = after.get(1..).unwrap_or_default();
+        } else if PLAIN.contains(&text) {
+            rest = after;
+        } else if text.starts_with('-') {
+            return false;
+        } else {
+            return TREE_REWRITERS.contains(&text);
+        }
+    }
+}
 
 /// What `git` with `args`, run in `cwd`, needs a person for.
 pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reason> {
@@ -94,7 +136,16 @@ pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reas
 
 fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Option<Reason> {
     let has = |long: &[&str], short: &[char]| has(args, long, short);
-    let first = args.first().map(|arg| arg.text.as_str());
+    // Git permutes options among the operands, so a dynamic or glob word anywhere could be the
+    // deleting or forcing option, and the run can't be proven safe.
+    if CAN_CHANGE.contains(&name) && args.iter().any(|arg| arg.dynamic || arg.glob) {
+        return Some(Reason::Unsure);
+    }
+    // A subcommand's action is its first non-option word: `remote -v set-url` acts on `set-url`.
+    let first = args
+        .iter()
+        .map(|arg| arg.text.as_str())
+        .find(|text| !text.starts_with('-'));
     let unlisted = match name {
         "grep" => has(&[], &['O']),
         "remote" => first.is_some_and(|action| !REMOTE_LOOKS.contains(&action)),

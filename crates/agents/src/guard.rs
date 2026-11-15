@@ -101,9 +101,20 @@ pub fn check_command(line: &str, context: &Context) -> Option<Reason> {
         ..context.clone()
     };
     let mut cwd = context.cwd.clone();
-    commands
-        .iter()
-        .find_map(|simple| rules::judge(simple, context, &mut cwd))
+    // Once a command in the line can rewrite the worktree, a later one's write target may no
+    // longer be what the guard resolved, so it asks.
+    let mut rewritten = false;
+    commands.iter().find_map(|simple| {
+        if rewritten && rules::writes_a_path(simple) {
+            return Some(Reason::Unsure);
+        }
+        let reason = rules::judge(simple, context, &mut cwd);
+        if reason.is_some() {
+            return reason;
+        }
+        rewritten = rewritten || rules::rewrites_tree(simple);
+        None
+    })
 }
 
 /// The vendors' folders and files under `home` that hold a sign-in.
@@ -122,23 +133,36 @@ const GH_CREDENTIALS: [&str; 1] = [".config/gh"];
 
 // Asks unless `file` is inside the worktree and outside Weacon's and the vendors' folders.
 pub(crate) fn check_path(file: &Path, context: &Context, outside: Reason) -> Option<Reason> {
-    let Some(file) = resolve(file) else {
+    let Some(resolved) = resolve(file) else {
         return Some(Reason::Unsure);
     };
-    if under_any(&file, &context.weacon) {
+    // A repository's settings and hooks name programs git then runs, so a write to any `.git`
+    // path asks, whether it comes as a command word or a file tool's path; a symlink could point
+    // a plain-looking name at one, so the resolved path is checked too.
+    if in_git(&file.to_string_lossy()) || in_git(&resolved.to_string_lossy()) {
+        return Some(Reason::Unsure);
+    }
+    if under_any(&resolved, &context.weacon) {
         return Some(Reason::WeaconFolder);
     }
-    if under_any(&file, &context.credentials) {
+    if under_any(&resolved, &context.credentials) {
         return Some(Reason::Credentials);
     }
     // Inside the worktree only by its exact name: a folder that differs in case may be another.
-    let inside = resolve(&context.worktree).is_some_and(|worktree| file.starts_with(worktree));
+    let inside = resolve(&context.worktree).is_some_and(|worktree| resolved.starts_with(worktree));
     if !inside {
         return Some(outside);
     }
     // Writing a file with another name writes it wherever that name is.
-    let aliased = outside == Reason::WriteOutside && has_other_name(&file, true);
+    let aliased = outside == Reason::WriteOutside && has_other_name(&resolved, true);
     aliased.then_some(Reason::Unsure)
+}
+
+// Whether any part of `text` names a repository's `.git`; some file systems ignore case, where
+// `.GIT` is the same folder, and a command may spell the separator either way.
+fn in_git(text: &str) -> bool {
+    text.split(['/', '\\'])
+        .any(|part| part.eq_ignore_ascii_case(".git"))
 }
 
 // Whether `path` is a file reachable under more than one name, so touching it touches wherever
@@ -194,13 +218,7 @@ fn check_word(word: &Word, context: &Context, cwd: &Path, outside: Reason) -> Op
             .skip_while(|part| !part.contains(['*', '?', '[']))
             .nth(1)
             .is_some();
-    // A repository's settings and hooks name programs that git then runs. Some file systems
-    // ignore case, where `.GIT` names the same folder.
-    let in_git = word
-        .text
-        .split(['/', '\\'])
-        .any(|part| part.eq_ignore_ascii_case(".git"));
-    if (outside == Reason::WriteOutside && deep_glob) || in_git {
+    if (outside == Reason::WriteOutside && deep_glob) || in_git(&word.text) {
         return Some(Reason::Unsure);
     }
     path_of(word, context, cwd).map_or(Some(Reason::Unsure), |path| {
@@ -592,6 +610,38 @@ mod tests {
         );
         assert_eq!(check("git config --add a.b c"), Some(Reason::NotListed));
         assert_eq!(check("git config set user.name"), Some(Reason::NotListed));
+    }
+
+    #[test]
+    fn a_git_argument_the_shell_could_make_an_option_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+        // One loop over the rule's own list, so a subcommand added to it is covered without a new
+        // test. For each, a word only the shell can spell, or a glob, could be the deleting or
+        // forcing option, wherever git's permuted parse places it, even behind a leading option.
+        for sub in git::CAN_CHANGE {
+            assert_eq!(
+                check(&format!("git {sub} $X")),
+                Some(Reason::Unsure),
+                "{sub} with a dynamic flag"
+            );
+            assert_eq!(
+                check(&format!("git {sub} *")),
+                Some(Reason::Unsure),
+                "{sub} with a glob"
+            );
+            assert_eq!(
+                check(&format!("git {sub} -q $X")),
+                Some(Reason::Unsure),
+                "{sub} with a dynamic flag behind a leading option"
+            );
+        }
+        // A sub-action is read past leading options, so a change hidden behind `-v` still asks.
+        assert_eq!(
+            check("git remote -v set-url origin /tmp/x"),
+            Some(Reason::NotListed)
+        );
     }
 
     #[test]
@@ -1287,6 +1337,59 @@ mod tests {
         assert_eq!(check("mv notes.md -t /etc"), Some(Reason::WriteOutside));
         assert_eq!(check("cp -a ~ backup"), Some(Reason::WriteOutside));
         assert_eq!(check("dd of=$HOME/.bashrc"), Some(Reason::NotListed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recursive_copy_or_folder_move_inside_the_worktree_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+        fs::write(dir.join("wt/src/x"), "").unwrap();
+
+        // A plain file copy or move beside the folder stays fine.
+        assert_eq!(check("cp src/x other"), None);
+        assert_eq!(check("cp src/x src/y"), None);
+        // A recursive copy, or a move of the folder, could carry an outward link to a new name a
+        // later command writes through, so it asks even wholly inside the worktree.
+        assert_eq!(check("cp -R src stage"), Some(Reason::Unsure));
+        assert_eq!(check("cp -a src stage"), Some(Reason::Unsure));
+        assert_eq!(check("mv src stage"), Some(Reason::Unsure));
+        // A glob source can't be resolved ahead, so a move or copy of one asks too.
+        assert_eq!(check("mv src* stage"), Some(Reason::Unsure));
+        assert_eq!(check("cp src/* stage"), Some(Reason::Unsure));
+    }
+
+    #[test]
+    fn a_write_after_a_tree_change_in_the_same_line_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |line: &str| check_command(line, &context);
+
+        // A checkout, switch or restore can bring an outward symlink into being; a later write by
+        // path in the same line may go through it, whatever separates the two.
+        assert_eq!(
+            check("git checkout evil && printf x > evil"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            check("git checkout evil ; printf x > evil"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            check("git checkout evil\nprintf x > evil"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(check("git switch other && rm keep"), Some(Reason::Unsure));
+        assert_eq!(check("git restore . && cp a b"), Some(Reason::Unsure));
+        // A write before the change, and non-writing commands after it, still run; so does a lone
+        // switch.
+        assert_eq!(check("printf x > before && git checkout evil"), None);
+        assert_eq!(
+            check("git checkout -b feature && git add . && git status"),
+            None
+        );
+        assert_eq!(check("git switch main"), None);
     }
 
     // One command a line; a written `\n` is a line break inside it and `/HOME` the home folder.

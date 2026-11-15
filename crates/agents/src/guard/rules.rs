@@ -5,7 +5,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::shell::{Simple, Word};
 use super::words::{
-    Command, begins, command, is_assignment, positional, program_name, short_flags,
+    Command, begins, command, has, is_assignment, positional, program_name, short_flags,
 };
 use super::{Context, Reason, check_word, git, path_of, reading, safe};
 use crate::access::resolve;
@@ -91,6 +91,42 @@ pub(super) fn judge(simple: &Simple, context: &Context, cwd: &mut PathBuf) -> Op
         context,
     };
     call.judge(cwd).or(reads)
+}
+
+/// Whether `simple` can change which paths exist in the worktree, so a path a later command in the
+/// same line resolves may be stale.
+pub(super) fn rewrites_tree(simple: &Simple) -> bool {
+    let Command::Runs(words) = command(&simple.words) else {
+        return false;
+    };
+    words
+        .first()
+        .is_some_and(|program| program_name(&program.text) == "git")
+        && git::rewrites_tree(words.get(1..).unwrap_or_default())
+}
+
+/// Whether `simple` writes to a path the guard resolves, so an earlier command's tree change could
+/// have moved what that path names since it was checked.
+pub(super) fn writes_a_path(simple: &Simple) -> bool {
+    if simple
+        .writes
+        .iter()
+        .any(|target| !DEVICES.contains(&target.text.to_ascii_lowercase().as_str()))
+    {
+        return true;
+    }
+    let Command::Runs(words) = command(&simple.words) else {
+        return false;
+    };
+    let Some(program) = words.first() else {
+        return false;
+    };
+    let args = words.get(1..).unwrap_or_default();
+    match program_name(&program.text).as_str() {
+        "mkdir" | "touch" | "rm" | "rmdir" | "cp" | "mv" | "ln" | "chmod" | "tee" | "dd" => true,
+        "sed" | "perl" | "gawk" | "awk" => has(args, &["--in-place"], &['i']),
+        _ => false,
+    }
 }
 
 // What the command's redirections and assignments reach.

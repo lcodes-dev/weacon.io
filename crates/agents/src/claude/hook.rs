@@ -174,6 +174,50 @@ mod tests {
     }
 
     #[test]
+    fn a_file_tool_never_changes_a_git_path() {
+        let dir = TempDir::new().unwrap();
+        let context = guard_context(&dir);
+        let tool = |name: &str, input: Value| check_tool(name, &input, &context);
+
+        // A repository's own `.git` is never a file tool's to change, however the path is spelled.
+        for name in ["Write", "Edit", "MultiEdit"] {
+            assert_eq!(
+                tool(name, json!({ "file_path": "sub/.git/config" })),
+                Some(Reason::Unsure),
+                "{name} .git/config"
+            );
+        }
+        assert_eq!(
+            tool("Edit", json!({ "file_path": ".git/hooks/pre-commit" })),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            tool("Write", json!({ "file_path": "sub/.GIT/config" })),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            tool("NotebookEdit", json!({ "notebook_path": ".git/x.ipynb" })),
+            Some(Reason::Unsure)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_tool_through_a_link_into_git_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = guard_context(&dir);
+        std::fs::create_dir_all(dir.join("wt/.git")).unwrap();
+        std::os::unix::fs::symlink(dir.join("wt/.git"), dir.join("wt/gitlink")).unwrap();
+        let through = dir.join("wt/gitlink/config").display().to_string();
+
+        // The path never says `.git`, but it resolves into one.
+        assert_eq!(
+            check_tool("Write", &json!({ "file_path": through }), &context),
+            Some(Reason::Unsure)
+        );
+    }
+
+    #[test]
     fn a_search_through_home_reaches_credentials_and_a_listing_doesnt() {
         let dir = TempDir::new().unwrap();
         let context = guard_context(&dir);
