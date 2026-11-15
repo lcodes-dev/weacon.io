@@ -323,7 +323,7 @@ mod tests {
                 anchors: Some(DocAnchors {
                     commit: "a".repeat(40).parse().unwrap(),
                     pins: vec!["sym:a::went#0123456789abcdef".parse().unwrap()],
-                    repo: None,
+                    repo: Some("site".parse().unwrap()),
                 }),
             },
         }

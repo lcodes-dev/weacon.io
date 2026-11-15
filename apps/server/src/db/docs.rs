@@ -272,17 +272,23 @@ impl Workspace {
 /// title, body, commit, repository, pins and agent, and its rows.
 fn size(text: &DocText, agent: Option<&str>) -> i64 {
     let anchors = text.anchors();
-    let repo = anchors.and_then(|anchors| anchors.repo.as_ref());
-    let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len())
-        + repo.map_or(0, |repo| repo.as_str().len());
+    let commit = anchors.map_or(0, |anchors| anchors.commit.as_str().len());
+    let repo = anchors
+        .and_then(|anchors| anchors.repo.as_ref())
+        .map_or(0, |repo| repo.as_str().len());
     let pins: usize = anchors
         .iter()
         .flat_map(|anchors| &anchors.pins)
         .map(|pin| pin.as_str().len())
         .sum();
     let agent = agent.map_or(0, str::len);
-    let size =
-        REVISION_OVERHEAD + text.title().as_str().len() + text.body().len() + commit + pins + agent;
+    let size = REVISION_OVERHEAD
+        + text.title().as_str().len()
+        + text.body().len()
+        + commit
+        + repo
+        + pins
+        + agent;
     i64::try_from(size).unwrap_or(i64::MAX)
 }
 
@@ -763,6 +769,9 @@ mod tests {
             doc_bytes(&one).await,
             size(&old, None) + size(&unicode, None)
         );
-        assert_eq!(size(&old, None) + 4, size(&linked(), None));
+        assert_eq!(
+            size(&old, None) + i64::try_from("site".len()).unwrap(),
+            size(&linked(), None)
+        );
     }
 }

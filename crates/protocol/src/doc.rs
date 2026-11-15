@@ -84,8 +84,8 @@ pub struct DocContent {
 pub struct DocAnchors {
     pub commit: CommitId,
     pub pins: Vec<DocPin>,
-    /// The workspace's repository whose code the pins are of; absent in pins made before
-    /// pins said so, which any repository's move may check.
+    /// The workspace's repository the pins are of; when absent, any repository's move may
+    /// check them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RepoId")]
     pub repo: Option<RepoId>,

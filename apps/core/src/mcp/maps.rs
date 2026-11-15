@@ -200,12 +200,12 @@ async fn open(
     let db = Db::open(state_dir).await?;
     let git = Git::open(state_dir, path.as_deref())?;
     Ok(Stores {
+        moves: proposals.map(|proposals| Moves::start(proposals, git.clone())),
         db,
         git,
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
         reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
-        moves: proposals.map(Moves::start),
     })
 }
 
@@ -685,10 +685,7 @@ mod tests {
         let elsewhere = setup.maps.repo(&grant(&two, &main), &log).await;
         let off = Maps::off().repo(&grant(&one, &main), &log).await;
 
-        assert_eq!(
-            repo.map(|repo| repo.as_str().to_owned()),
-            Some("site".to_owned())
-        );
+        assert_eq!(repo, Some("site".parse().unwrap()));
         assert_eq!((elsewhere, off), (None, None));
     }
 

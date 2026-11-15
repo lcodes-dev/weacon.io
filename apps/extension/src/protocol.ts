@@ -581,8 +581,8 @@ export type DocAnchors = {
   commit: CommitId;
   pins: Array<DocPin>;
   /**
-   * The workspace's repository whose code the pins are of; absent in pins made before
-   * pins said so, which any repository's move may check.
+   * The workspace's repository the pins are of; when absent, any repository's move may
+   * check them.
    */
   repo?: RepoId;
 };

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
-use weacon_model::{DocText, Revision, TaskEdit, Title, relinked};
+use weacon_model::{DocText, Revision, TaskEdit, Title, reanchored};
 use weacon_observability::Fault;
 use weacon_protocol::{
     AnchorChange, Code, DocContent, DocId, MachineId, ProposalChange, StaleAnchor, TaskEditBody,
@@ -90,11 +90,9 @@ impl Workspace {
         if was.text == text {
             return Err(invalid());
         }
-        if proposed.agent.is_none() {
+        if proposed.agent.is_none() && !reanchors(&DocContent::from(was.text), content) {
             let own = self.own_change(transaction, doc, base, &proposed.machine);
-            let own = own.await?;
-            let from = DocContent::from(was.text);
-            if !reanchors(&from, content) && !own.is_some_and(|own| reanchors(&own, content)) {
+            if !own.await?.is_some_and(|own| reanchors(&own, content)) {
                 return Err(invalid());
             }
         }
@@ -180,20 +178,14 @@ fn invalid_if(fault: Fault, missing: &Code) -> Fault {
 }
 
 /// Whether `to` is `from` with some of its pins replaced, each in its place, its links to them
-/// relinked, and nothing else changed but which commit and repository the pins are of.
+/// relinked, and nothing else changed but the pins' commit and, when unsaid, their repository.
 fn reanchors(from: &DocContent, to: &DocContent) -> bool {
     let (Some(was), Some(now)) = (&from.anchors, &to.anchors) else {
         return false;
     };
-    let body = was
-        .pins
-        .iter()
-        .zip(&now.pins)
-        .filter(|(was, now)| was.anchor() != now.anchor())
-        .fold(from.body.clone(), |body, (was, now)| {
-            relinked(&body, was.anchor(), now.anchor())
-        });
-    from.title == to.title && was.pins.len() == now.pins.len() && body == to.body
+    let body = reanchored(&from.body, was.pins.iter().zip(&now.pins));
+    let repo = was.repo.is_none() || was.repo == now.repo;
+    from.title == to.title && was.pins.len() == now.pins.len() && body == to.body && repo
 }
 
 /// The doc text `content` holds, or `proposal.invalid`.
@@ -232,10 +224,10 @@ fn task_edits(edits: &[TaskEditBody], task: &Snapshot) -> Result<(), Fault> {
 #[cfg(test)]
 mod tests {
     use weacon_model::Doc;
-    use weacon_protocol::{DocAnchors, ProposalOutcome};
+    use weacon_protocol::ProposalOutcome;
     use weacon_testing::TempDir;
 
-    use super::super::tests::{content, revise, workspaces};
+    use super::super::tests::{edit_p, pinned, revise, workspaces};
     use super::*;
     use crate::db::test_support::{by, code, id};
     use crate::test_support::member_id;
@@ -244,25 +236,6 @@ mod tests {
     const GO: &str = "sym:a::go#0123456789abcdef";
     const RUN: &str = "sym:a::run#0123456789abcdef";
     const WENT: &str = "sym:a::went#0123456789abcdef";
-
-    fn pinned(title: &str, body: &str, pins: &[&str]) -> DocContent {
-        DocContent {
-            anchors: Some(DocAnchors {
-                commit: "b".repeat(40).parse().unwrap(),
-                pins: pins.iter().map(|pin| pin.parse().unwrap()).collect(),
-                repo: Some("site".parse().unwrap()),
-            }),
-            ..content(title, body)
-        }
-    }
-
-    fn edit(content: DocContent) -> ProposalChange {
-        ProposalChange::DocEdit {
-            doc: id("p"),
-            base: 1,
-            content,
-        }
-    }
 
     #[tokio::test]
     async fn a_core_edits_a_doc_only_to_reanchor_its_pins_or_its_own_open_reanchors() {
@@ -274,13 +247,22 @@ mod tests {
             .unwrap();
         let core = |proposal: &str, content| Proposed {
             agent: None,
-            ..proposed(proposal, "mc1", edit(content))
+            ..proposed(proposal, "mc1", edit_p(content))
+        };
+        let mut elsewhere = pinned("P", "[a](sym:a::went) [b](sym:a::run)\n", &[WENT, RUN]);
+        if let Some(anchors) = &mut elsewhere.anchors {
+            anchors.repo = Some("other".parse().unwrap());
+        }
+        let bare = Proposed {
+            agent: None,
+            ..proposed("bare", "mc1", revise("d1", 1, "Other\n"))
         };
         let refused = [
             pinned("Q", "[a](sym:a::went) [b](sym:a::run)\n", &[WENT, RUN]),
             pinned("P", "[a](sym:a::went), [b](sym:a::run)\n", &[WENT, RUN]),
             pinned("P", "[a](sym:a::went)\n", &[WENT]),
             pinned("P", "[a](sym:a::go) [b](sym:a::went)\n", &[WENT, GO]),
+            elsewhere,
         ];
         let later = pinned(
             "P",
@@ -292,22 +274,14 @@ mod tests {
             let fault = one.propose(&core("bad", content)).await.unwrap_err();
             assert_eq!(code(&fault), "proposal.invalid");
         }
-        let bare = Proposed {
-            agent: None,
-            ..proposed("bare", "mc1", revise("d1", 1, "Other\n"))
-        };
-        assert_eq!(
-            code(&one.propose(&bare).await.unwrap_err()),
-            "proposal.invalid"
-        );
+        let fault = one.propose(&bare).await.unwrap_err();
+        assert_eq!(code(&fault), "proposal.invalid");
         let first = pinned("P", "[a](sym:a::went) [b](sym:a::run)\n", &[WENT, RUN]);
         one.propose(&core("first", first)).await.unwrap();
         // From the core's own open re-anchor, which the doc doesn't pin yet.
         one.propose(&core("second", later.clone())).await.unwrap();
-        let outcome = one
-            .accept(&id("second"), &member_id("m1"), 1)
-            .await
-            .unwrap();
+        let outcome = one.accept(&id("second"), &member_id("m1"), 1).await;
+        let outcome = outcome.unwrap();
 
         assert!(
             matches!(outcome, ProposalOutcome::Accepted { .. }),

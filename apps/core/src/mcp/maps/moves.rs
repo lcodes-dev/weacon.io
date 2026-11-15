@@ -12,13 +12,19 @@ use weacon_protocol::{CommitId, RepoId, WorkspaceId};
 
 use super::{Maps, Stores, Watched};
 use crate::codemap::{Move, off_runtime};
-use crate::proposals::{self, BaseMove, Proposals};
+use crate::git::Git;
+use crate::proposals::{self, BaseMove, History, Proposals};
 
 /// How many bases of failed checks a repository's next check starts from, at most.
 const KEPT_BASES: usize = 4;
 
 /// A repository, by its workspace, its id there and its main worktree.
-pub(super) type Repository = (WorkspaceId, RepoId, PathBuf);
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct Repository {
+    workspace: WorkspaceId,
+    repo: RepoId,
+    main: PathBuf,
+}
 
 /// The commit each repository's base last moved to, and the queue that checks each move.
 #[derive(Clone, Debug)]
@@ -48,21 +54,22 @@ impl Stores {
     /// once for each commit a repository's base moves to.
     pub(super) fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
         if let Some(moves) = &self.moves {
-            let key = (
-                watched.workspace.clone(),
-                watched.repo.clone(),
-                watched.main.clone(),
-            );
+            let key = Repository {
+                workspace: watched.workspace.clone(),
+                repo: watched.repo.clone(),
+                main: watched.main.clone(),
+            };
             moves.queue(key, moved, log);
         }
     }
 }
 
 impl Moves {
-    /// Checks moves on a task of its own, proposing through `proposals`; needs a runtime.
-    pub(super) fn start(proposals: Proposals) -> Self {
+    /// Checks moves on a task of its own, proposing through `proposals` and reading each
+    /// repository's history with `git`; needs a runtime.
+    pub(super) fn start(proposals: Proposals, git: Git) -> Self {
         let (checks, queued) = mpsc::unbounded_channel();
-        tokio::spawn(check_moves(proposals, queued));
+        tokio::spawn(check_moves(proposals, git, queued));
         Self {
             seen: Arc::default(),
             checks,
@@ -85,6 +92,7 @@ impl Moves {
 /// base, with the repository's next move.
 async fn check_moves(
     proposals: Proposals,
+    git: Git,
     mut queued: mpsc::UnboundedReceiver<(Repository, Move, Logger)>,
 ) {
     let mut failed: HashMap<Repository, Vec<Vec<Facts>>> = HashMap::new();
@@ -94,6 +102,12 @@ async fn check_moves(
         bases.push(moved.was);
         let kept = bases.clone();
         let (now, commit) = (moved.now, moved.commit);
+        let history = GitHistory {
+            git: git.clone(),
+            main: key.main.clone(),
+            commit: commit.clone(),
+            known: Mutex::default(),
+        };
         let assembled = move || {
             let was: Vec<Index> = bases.iter().map(|base| assemble(base)).collect();
             Ok((was, assemble(&now), commit))
@@ -102,12 +116,13 @@ async fn check_moves(
             let (was, now, commit) = off_runtime(assembled).await?;
             let was: Vec<&Index> = was.iter().collect();
             let moved = BaseMove {
-                repo: &key.1,
+                repo: &key.repo,
                 was: &was,
                 now: &now,
                 commit: &commit,
+                history: &history,
             };
-            proposals::moved(&proposals, &key.0, &moved).await
+            proposals::moved(&proposals, &key.workspace, &moved).await
         };
         match checked.await {
             Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
@@ -116,6 +131,38 @@ async fn check_moves(
                 failed.insert(key, kept_bases(kept));
             }
         }
+    }
+}
+
+/// The history of the commit a repository's base moved to, as git in its main worktree reads
+/// it, each commit asked about once.
+struct GitHistory {
+    git: Git,
+    main: PathBuf,
+    commit: CommitId,
+    known: Mutex<HashMap<CommitId, bool>>,
+}
+
+impl History for GitHistory {
+    async fn holds(&self, commit: &CommitId) -> bool {
+        let known = |commit| {
+            let known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+            known.get(commit).copied()
+        };
+        if let Some(held) = known(commit) {
+            return held;
+        }
+        let (git, main, base, asked) = (
+            self.git.clone(),
+            self.main.clone(),
+            self.commit.clone(),
+            commit.clone(),
+        );
+        let held = off_runtime(move || git.holds(&main, &base, &asked)).await;
+        let held = held.unwrap_or(false);
+        let mut known = self.known.lock().unwrap_or_else(PoisonError::into_inner);
+        known.insert(commit.clone(), held);
+        held
     }
 }
 
@@ -143,6 +190,32 @@ mod tests {
                 reader.facts(&file).unwrap()
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_bases_history_holds_its_commit_and_those_before_it_only() {
+        let dir = weacon_testing::TempDir::new().unwrap();
+        let main = crate::git::repo(&dir);
+        let git = crate::git::git(&dir);
+        let first = git.head(&main).unwrap();
+        let more = ["commit", "--quiet", "--allow-empty", "-m", "More"];
+        crate::git::fixture(&dir, &main, &more);
+        let commit = git.head(&main).unwrap();
+        let unknown: CommitId = "0".repeat(40).parse().unwrap();
+        let history = GitHistory {
+            git,
+            main,
+            commit: first.clone(),
+            known: Mutex::default(),
+        };
+
+        assert!(history.holds(&first).await);
+        assert!(!history.holds(&commit).await);
+        assert!(!history.holds(&unknown).await);
+        // Asked once: an answer kept is given again whatever git would say now.
+        history.known.lock().unwrap().insert(first.clone(), false);
+        assert!(!history.holds(&first).await);
+        assert_eq!(history.known.lock().unwrap().len(), 3);
     }
 
     #[test]

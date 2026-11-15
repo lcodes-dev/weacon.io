@@ -1,3 +1,4 @@
+use crate::index::Located;
 use crate::{Anchor, Fingerprint, Index, Pin};
 
 /// What a move of the code did to a pin whose anchor named something before it.
@@ -105,33 +106,35 @@ impl Index {
         }
     }
 
-    /// The one path in `now` that the item at `path` was renamed or moved to with its code
-    /// unchanged: the one item of its shape that arrived, as the one of its shape that left.
+    /// The one path in `now` that the item at `path` moved to with its code unchanged, else the
+    /// one it was renamed to in its file: the one item of its shape there that arrived, as the
+    /// one of its shape there left.
     fn moved_symbol(&self, now: &Self, path: &str) -> Option<String> {
-        let shape = self.items.get(path)?.symbol.shape;
-        let alike = |item: &crate::index::Located| item.symbol.shape == shape;
-        let left = self
-            .items
-            .iter()
-            .filter(|(path, item)| alike(item) && !now.items.contains_key(*path))
-            .count();
-        let arrived: Vec<&String> = self
+        let old = self.items.get(path)?;
+        let fingerprint = old.symbol.fingerprint;
+        let moved: Vec<&String> = self
             .arrived(now)
-            .filter(|(_, item)| alike(item))
+            .filter(|(_, item)| item.symbol.fingerprint == fingerprint)
             .map(|(path, _)| path)
             .collect();
-        match arrived.as_slice() {
-            [arrived] if left == 1 => Some((*arrived).clone()),
-            _ => None,
+        if let [moved] = moved.as_slice() {
+            return Some((*moved).clone());
         }
+        self.swapped(now, |item| {
+            item.file == old.file && item.symbol.shape == old.symbol.shape
+        })
     }
 
     /// The one item of its kind that arrived in the file of the item at `path` as that left.
     fn replaced(&self, now: &Self, path: &str) -> Option<String> {
         let old = self.items.get(path)?;
-        let alike = |item: &crate::index::Located| {
+        self.swapped(now, |item| {
             item.file == old.file && item.symbol.kind == old.symbol.kind
-        };
+        })
+    }
+
+    /// The path of the one `alike` item that arrived in `now`, when one `alike` item left.
+    fn swapped(&self, now: &Self, alike: impl Fn(&Located) -> bool) -> Option<String> {
         let left = self
             .items
             .iter()
@@ -149,10 +152,7 @@ impl Index {
     }
 
     /// The items in `now` that aren't in `self`.
-    fn arrived<'a>(
-        &'a self,
-        now: &'a Self,
-    ) -> impl Iterator<Item = (&'a String, &'a crate::index::Located)> {
+    fn arrived<'a>(&'a self, now: &'a Self) -> impl Iterator<Item = (&'a String, &'a Located)> {
         now.items
             .iter()
             .filter(|(path, _)| !self.items.contains_key(*path))
@@ -424,7 +424,7 @@ mod tests {
         );
     }
     #[test]
-    fn a_symbol_renamed_as_it_moved_to_another_file_is_reanchored() {
+    fn a_symbol_renamed_as_it_moved_to_another_file_is_gone() {
         let before = repo(LIB, MODULE);
         let after = repo(
             "mod m;\npub fn run() { went() }\npub fn went() {}\n",
@@ -433,7 +433,21 @@ mod tests {
 
         assert_eq!(
             moved(&before, &after, "sym:a_b::m::go"),
-            Some(Moved::Reanchored(pin(&after, "sym:a_b::went")))
+            Some(Moved::Gone {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn items_moved_with_their_module_are_reanchored_beside_others_of_their_shape() {
+        let lib = "pub mod m { pub fn go() {} pub fn stop() {} }\n";
+        let before = repo(lib, "");
+        let after = repo("pub mod n { pub fn go() {} pub fn stop() {} }\n", "");
+
+        assert_eq!(
+            moved(&before, &after, "sym:a_b::m::go"),
+            Some(Moved::Reanchored(pin(&after, "sym:a_b::n::go")))
         );
     }
 
@@ -441,18 +455,16 @@ mod tests {
     fn a_rename_that_more_than_one_item_could_be_is_no_reanchor() {
         let before = repo(LIB, MODULE);
         let two_arrived = repo(
-            "mod m;\npub fn run() { m::a() }\npub fn b() {}\n",
-            "pub fn a() {}\npub struct S;\n",
+            "mod m;\npub fn run() { m::a() }\n",
+            "pub fn a() {}\npub fn b() {}\npub struct S;\n",
         );
         let pair = repo(LIB, "pub fn go() {}\npub fn other() {}\n");
         let one_arrived = repo(LIB, "pub fn went() {}\n");
 
-        // Either could be it, so it changed to the one that replaced it in its file.
         assert_eq!(
             moved(&before, &two_arrived, "sym:a_b::m::go"),
-            Some(Moved::Changed {
-                was: "fn a_b::m::go  a/src/m.rs:1".to_owned(),
-                now: "fn a_b::m::a  a/src/m.rs:1".to_owned(),
+            Some(Moved::Gone {
+                was: "fn a_b::m::go  a/src/m.rs:1".to_owned()
             })
         );
         // Both left and one arrived, so it may be either.
