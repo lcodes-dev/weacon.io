@@ -86,13 +86,17 @@ pub(super) fn status_names(exe: &Path, commit: &Commit, tries: u32, pause: Durat
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::PathBuf;
 
+    #[cfg(unix)]
     use weacon_testing::TempDir;
 
     use super::*;
 
+    #[cfg(unix)]
     const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
     #[cfg(unix)]
