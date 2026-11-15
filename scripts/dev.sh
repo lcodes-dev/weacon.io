@@ -61,7 +61,7 @@ trap 'kill $server $tls $core 2>/dev/null || true; wait' EXIT
 trap 'exit 130' INT TERM
 
 "$bin/weacon-server" serve --db "$data/weacon.db" --secret "$data/secret" \
-  > >(tee -a .dev/server.log | show_mails) 2>&1 &
+  > >(trap '' INT; tee -a .dev/server.log | show_mails) 2>&1 &
 server=$!
 "$bin/dev-tls" .dev/tls >>.dev/tls.log 2>&1 &
 tls=$!

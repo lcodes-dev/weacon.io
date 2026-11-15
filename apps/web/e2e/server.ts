@@ -39,7 +39,7 @@ export async function serve(): Promise<Served> {
   }
   const listening = () => records.find((record) => record.msg === "listening")?.address;
   const ready = async () => {
-    await waitFor(() => listening() !== undefined || child.exitCode !== null, STARTUP_MS);
+    await waitFor(() => listening() !== undefined || child.exitCode !== null || child.signalCode !== null, STARTUP_MS);
     const address = listening();
     if (address === undefined) {
       throw new Error("the server exited before it listened");

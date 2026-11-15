@@ -260,8 +260,13 @@ mod tests {
         let finish = finish_body("ada@example.com", &challenge, &code);
         let (finished, body) = finish_with(server.address, &finish).await;
         let token = body["token"].as_str().unwrap();
-        let subject = fixture.records.lock().unwrap().iter().any(|record| {
-            record.msg == "mail printed" && record.fields["subject"] == "Your Weacon sign-in code"
+        let text = format!(
+            "Your code is {code}. It works for 10 minutes; if you didn't ask for it, ignore this mail."
+        );
+        let mailed = fixture.records.lock().unwrap().iter().any(|record| {
+            record.msg == "mail printed"
+                && record.fields["subject"] == "Your Weacon sign-in code"
+                && record.fields["text"] == text
         });
         let w1 = fixture
             .shared
@@ -275,7 +280,7 @@ mod tests {
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");
-        assert!(subject);
+        assert!(mailed);
         assert_eq!(code.len(), 9);
         assert_eq!(code.get(4..5), Some("-"));
         assert_eq!(normalised(&code).len(), 8);
