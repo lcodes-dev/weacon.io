@@ -114,6 +114,11 @@ fn added(app: &App, workspace: &WorkspaceId) -> Option<Vec<Vec<String>>> {
         .map(|settings| settings.additions)
 }
 
+// Far more than a workspace needs, and short enough that the guard checks them all at once.
+const MAX_ADDITIONS: usize = 64;
+const MAX_WORDS: usize = 8;
+const MAX_WORD: usize = 128;
+
 // Adds or removes `change`'s words, saves the list if that changed it, and prints it.
 fn edit(
     app: &App,
@@ -123,34 +128,20 @@ fn edit(
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
     let workspaces = Workspaces::new(state_dir, None);
-    let _held = workspaces.hold(workspace).map_err(|error| {
-        Fault::new(
-            code!("guard.not_saved"),
-            "The guard's list couldn't be saved",
-        )
-        .because(error)
-    })?;
+    let _held = workspaces
+        .hold(workspace)
+        .map_err(|error| not_saved().because(error))?;
     let mut settings = workspaces.settings(workspace)?;
-    if let Some(change) = change {
-        let before = settings.additions.clone();
-        let (Change::Add(words) | Change::Remove(words)) = &change;
-        settings.additions.retain(|known| known != words);
-        if let Change::Add(words) = change {
-            settings.additions.push(words);
-        }
-        if settings.additions != before {
-            workspaces.save(workspace, &settings).map_err(|error| {
-                Fault::new(
-                    code!("guard.not_saved"),
-                    "The guard's list couldn't be saved",
-                )
-                .because(error)
-            })?;
-            app.log.info(
-                "guard changed",
-                &[("workspace_id", workspace.as_str().into())],
-            );
-        }
+    if let Some(change) = change
+        && changed(&mut settings.additions, change)?
+    {
+        workspaces
+            .save(workspace, &settings)
+            .map_err(|error| not_saved().because(error))?;
+        app.log.info(
+            "guard changed",
+            &[("workspace_id", workspace.as_str().into())],
+        );
     }
     let id = workspace.as_str();
     let lines: Vec<String> = if settings.additions.is_empty() {
@@ -168,6 +159,37 @@ fn edit(
         )
         .because(error)
     })
+}
+
+// Applies `change` to `additions`; whether that changed them.
+fn changed(additions: &mut Vec<Vec<String>>, change: Change) -> Result<bool, Fault> {
+    let before = additions.clone();
+    let (Change::Add(words) | Change::Remove(words)) = &change;
+    additions.retain(|known| known != words);
+    let Change::Add(words) = change else {
+        return Ok(*additions != before);
+    };
+    if words.len() > MAX_WORDS || words.iter().any(|word| word.len() > MAX_WORD) {
+        return Err(Fault::new(
+            code!("guard.addition_too_long"),
+            "An addition takes at most 8 words of at most 128 bytes each",
+        ));
+    }
+    if additions.len() >= MAX_ADDITIONS {
+        return Err(Fault::new(
+            code!("guard.too_many_additions"),
+            "A workspace has at most 64 additions",
+        ));
+    }
+    additions.push(words);
+    Ok(*additions != before)
+}
+
+fn not_saved() -> Fault {
+    Fault::new(
+        code!("guard.not_saved"),
+        "The guard's list couldn't be saved",
+    )
 }
 
 // What no agent changes without asking on this machine: Weacon's state and the vendors'
@@ -412,6 +434,51 @@ mod tests {
         .unwrap();
         assert_eq!(kept, left);
         assert!(dir.join("workspaces/w-w1").is_dir());
+    }
+
+    #[test]
+    fn additions_are_bounded_in_number_and_length() {
+        let dir = TempDir::new().unwrap();
+        let app = test_support::app(Some(&dir), None);
+        let add = |words: Vec<String>| {
+            change(
+                &app,
+                GuardCommand::Add {
+                    workspace: id("w1"),
+                    words,
+                },
+            )
+        };
+        let code = |result: Result<String, Fault>| result.unwrap_err().code().as_str().to_owned();
+        let long = "x".repeat(MAX_WORD);
+
+        add(vec![long.clone(); MAX_WORDS]).unwrap();
+        assert_eq!(
+            code(add(vec![format!("{long}x")])),
+            "guard.addition_too_long"
+        );
+        assert_eq!(
+            code(add(vec!["x".to_owned(); MAX_WORDS + 1])),
+            "guard.addition_too_long"
+        );
+        for number in 1..MAX_ADDITIONS {
+            add(vec![format!("tool{number}")]).unwrap();
+        }
+        // Adding one already there again only moves it, so a full list still takes it.
+        add(vec!["tool1".to_owned()]).unwrap();
+        assert_eq!(
+            code(add(vec!["one-more".to_owned()])),
+            "guard.too_many_additions"
+        );
+        let listed = change(
+            &app,
+            GuardCommand::List {
+                workspace: id("w1"),
+            },
+        )
+        .unwrap();
+        assert_eq!(listed.lines().count(), MAX_ADDITIONS);
+        assert!(listed.ends_with("asks before tool1\n"));
     }
 
     #[test]

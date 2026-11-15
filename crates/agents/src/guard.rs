@@ -678,6 +678,26 @@ mod tests {
     }
 
     #[test]
+    fn a_braced_quoted_message_that_could_split_or_evaluate_asks() {
+        let dir = TempDir::new().unwrap();
+        let context = context(&dir);
+        let check = |message: &str| check_command(&format!("git commit -m\"{message}\""), &context);
+
+        for message in [
+            "${a[@]}",
+            "${@}",
+            "${@:2}",
+            "${a[@]:1}",
+            "${!a[@]}",
+            "${a[*]}",
+        ] {
+            assert_eq!(check(message), Some(Reason::Unsure), "{message}");
+        }
+        assert_eq!(check("${a}"), None);
+        assert_eq!(check("${a:-x}"), None);
+    }
+
+    #[test]
     fn git_outside_the_worktree_only_looks() {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
@@ -1317,6 +1337,8 @@ mod tests {
             Some(Reason::Unsure)
         );
         assert_eq!(check_command("cp in* out", &context), Some(Reason::Unsure));
+        // A wildcard folder may match a link out, so where the file lands can't be listed.
+        assert_eq!(check_command("cp input s*", &context), Some(Reason::Unsure));
     }
 
     #[test]
