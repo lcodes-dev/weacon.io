@@ -27,6 +27,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::SEARCH_CHATS,
     steps::CORE_BUILDS,
     steps::DOC_REPOS,
+    steps::PLAIN_CODES,
     steps::REQUESTS_GONE,
 ];
 
@@ -229,7 +230,6 @@ mod tests {
                 "sessions",
                 "tasks",
                 "task_versions",
-                "sign_in_challenges",
                 "docs",
                 "doc_versions",
                 "doc_pins",
@@ -241,7 +241,8 @@ mod tests {
                 "chat_waiting",
                 "changes",
                 "search",
-                "search_rows"
+                "search_rows",
+                "sign_in_challenges"
             ]
         );
         for table in SERVER_WIDE {

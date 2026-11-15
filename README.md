@@ -45,7 +45,7 @@ Weacon is open source, under the MIT licence.
 - **Workspaces never mix.** An agent only runs with a sign-in from its own workspace. Nothing one workspace sees reveals another.
 - **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies. What it serves to its own agents listens on 127.0.0.1 only.
 - **Agents propose, people decide.** Changes that agents make to docs and tasks arrive as proposals that a person accepts.
-- **No content in logs.** Messages, prompts, code and credentials never reach a log line or an error report.
+- **No content in logs.** Messages, prompts, code and credentials never reach a log line or an error report. The one exception: until the server sends mail itself, it prints each mail it would send, sign-in codes included, to its own log.
 
 ## Status
 
@@ -53,7 +53,7 @@ Weacon is in early development. This is what works on `main` today:
 
 | Area | Works today | Not yet |
 | --- | --- | --- |
-| Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: they wait in a folder for a mail relay |
+| Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: nothing sends mail yet, so the server prints each one to its log |
 | Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
@@ -119,7 +119,7 @@ It builds the web app, the server, the core and a TLS front, then starts them an
 ```text
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
-  Sign-in codes:  .dev/server/outbox, one JSON file per code
+  Sign-in codes:  shown here, in each mail the server prints
   Pair the core:  WEACON_STATE_DIR=.dev/state target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
   Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and .dev/state/logs/
 ```
@@ -130,13 +130,14 @@ Leave it running, and open a second terminal in the same folder for the next ste
 
 ### 4. Sign in
 
-Open <http://localhost:8080> in Chrome, enter your email and choose **Send code**. The server writes the code to a file in `.dev/server/outbox` instead of sending an email. Read the newest one:
+Open <http://localhost:8080> in Chrome, enter your email and choose **Send code**. Nothing sends email yet, so the server prints the mail to its log instead, and `scripts/dev.sh` shows it in the first terminal:
 
-```bash
-cat "$(ls -t .dev/server/outbox/*.json | head -n 1)"
+```text
+Mail to you@example.com: Your Weacon sign-in code
+  Your code is ABCD-EFGH. It works for 10 minutes; if you didn't ask for it, ignore this mail.
 ```
 
-Enter its `code` and choose **Sign in**. You see **Workspaces**, with your **Personal** workspace. Make more under **New workspace**.
+Enter the code and choose **Sign in**. You see **Workspaces**, with your **Personal** workspace. Make more under **New workspace**.
 
 ### 5. Pair the core
 
@@ -234,7 +235,7 @@ Ctrl-C in the first terminal stops the server, the TLS front and the core. `scri
 
 | Folder | What it holds |
 | --- | --- |
-| `.dev/server/` | The server's database, its key for sign-in codes, and the codes in `outbox/` |
+| `.dev/server/` | The server's database and its key for pairing codes |
 | `.dev/tls/` | The TLS front's certificate and key |
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
@@ -254,12 +255,6 @@ Everything CI runs, in order. Run it before every commit:
 
 ```bash
 scripts/check.sh
-```
-
-Everything but the mutation tests, which take longest:
-
-```bash
-scripts/check.sh --mutants none
 ```
 
 One crate's tests, or the ones whose names match:
@@ -332,7 +327,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.
 - **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
-- **The sign-in page never accepts the code.** Use the newest file in `.dev/server/outbox`, and request a new code if it expired.
+- **The sign-in page never accepts the code.** Use the newest mail `scripts/dev.sh` shows, and request a new code if it expired.
 
 ## Licence
 
