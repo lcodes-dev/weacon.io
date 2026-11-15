@@ -6,6 +6,7 @@ mod auth;
 mod chats;
 mod cli;
 mod client;
+mod client_log;
 mod codes;
 mod connections;
 mod db;
