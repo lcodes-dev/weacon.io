@@ -11,7 +11,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
-use weacon_protocol::{Capability, Envelope, Message, code};
+use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, code};
 
 use crate::Failure;
 use crate::fake_chat::FakeChat;
@@ -22,16 +22,16 @@ use crate::{fake_core, fake_diff};
 
 const OFFERED: &[Capability] = &[
     Capability::new(code!("log.forward")),
-    Capability::new(code!("chat.send")),
-    Capability::new(code!("chat.events")),
+    Capability::new(code!("workspace.chats")),
+    Capability::new(code!("workspace.chat_commands")),
     Capability::new(code!("diff.view")),
     Capability::new(code!("worktree.manage")),
 ];
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
-/// `chat.send`, committing a receipt that accepts each command to the chat, `diff.view` and
-/// `worktree.manage`.
+/// `workspace.chats` and `workspace.chat_commands`, committing a receipt that accepts each
+/// command to the chat, `diff.view` and `worktree.manage`; it refuses a message it doesn't know.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -171,10 +171,25 @@ fn reply_to(
     let Ok(envelope) = Envelope::from_json(text.as_bytes()) else {
         return;
     };
+    if envelope.message == Message::Unknown {
+        let refused = refusal(envelope.id, code!("message.unsupported"));
+        return send_texts(replies, &[refused]);
+    }
     send_texts(replies, &fake_diff::answers(&envelope));
     send_texts(replies, worktree.answer(&envelope).as_slice());
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.answer(&envelope));
+    }
+}
+
+/// The error that answers the message `id`.
+pub(crate) const fn refusal(id: u32, code: Code) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        }),
     }
 }
 
@@ -284,8 +299,8 @@ mod tests {
             json!([
                 "run.stream",
                 "log.forward",
-                "chat.send",
-                "chat.events",
+                "workspace.chats",
+                "workspace.chat_commands",
                 "diff.view",
                 "worktree.manage"
             ])
@@ -362,6 +377,61 @@ mod tests {
                 "text",
                 "finished",
                 "idle"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn another_workspaces_chat_and_messages_it_doesnt_know_are_refused() {
+        let dir = TempDir::new().unwrap();
+        let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
+        client.send(hello(PROTOCOL)).await.unwrap();
+        texts(&mut client, 1).await;
+        let elsewhere = WorkspaceId::try_from("w-2".to_owned()).unwrap();
+        let query = Message::ChatQuery(ChatQuery {
+            workspace: elsewhere.clone(),
+            chat: chat(),
+            query: ChatQueryKind::Snapshot,
+        });
+        let command = Message::ChatCommand(ChatCommand {
+            request: request("q-1"),
+            workspace: elsewhere,
+            chat: chat(),
+            action: ChatAction::Interrupt,
+            by: None,
+        });
+        let known = |id, message| serde_json::to_value(Envelope { id, message }).unwrap();
+        let sent = [
+            known(2, query),
+            known(3, command),
+            json!({ "id": 4, "type": "chat_query", "workspace": "w-1", "chat": "c-1",
+                    "query": { "kind": "search" } }),
+            json!({ "id": 5, "type": "chat_command", "request": "q-1", "workspace": "w-1",
+                    "chat": "c-1", "action": { "kind": "rewind" } }),
+            json!({ "id": 6, "type": "chat.later" }),
+        ];
+        for text in sent {
+            client.send(Frame::text(text.to_string())).await.unwrap();
+        }
+        // A deadline, so a server that never answers fails the test instead of hanging it.
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 5))
+            .await
+            .unwrap();
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        let refused: Vec<_> = answers
+            .iter()
+            .map(|answer| (answer["id"].clone(), answer["code"].clone()))
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                (json!(2), json!("chat.not_found")),
+                (json!(3), json!("chat.not_found")),
+                (json!(4), json!("message.unsupported")),
+                (json!(5), json!("message.unsupported")),
+                (json!(6), json!("message.unsupported")),
             ]
         );
     }

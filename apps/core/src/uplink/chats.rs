@@ -196,6 +196,7 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
 // Takes up the server's asks in the order they came, until the connection is gone; the server
 // sends again what was left when it connects again.
 async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, log: Logger) {
+    let mut jumps = Jumps::new();
     while let Some(ask) = asked.recv().await
         && !client.is_gone()
     {
@@ -206,7 +207,7 @@ async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, l
                 (key, request, chats.command(command, &client).await)
             }
             Ask::Follow(key, after) => {
-                let followed = follow(&chats, &client, &key, after).await;
+                let followed = follow(&chats, &client, &key, after, &mut jumps).await;
                 (key, None, followed)
             }
         };
@@ -224,8 +225,19 @@ async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, l
 
 // Follows `key`'s chat after `after`. When that is too much to send again at once, what is
 // missing goes up a page at a time first; past the log's end, it follows from there.
-async fn follow(chats: &Chats, client: &Client, key: &ChatKey, after: u64) -> Result<(), Fault> {
-    let mut after = after;
+async fn follow(
+    chats: &Chats,
+    client: &Client,
+    key: &ChatKey,
+    asked_after: u64,
+    jumps: &mut Jumps,
+) -> Result<(), Fault> {
+    // The link knows only the seq the server asked after, so a chat that jumped from it goes on
+    // from where it landed, or what came since would be jumped over too.
+    let mut after = match jumps.get(key) {
+        Some(&(from, to)) if from == asked_after => to,
+        _ => asked_after,
+    };
     loop {
         let start = after;
         // A follow can't start without room for its client to be told it missed events.
@@ -240,6 +252,7 @@ async fn follow(chats: &Chats, client: &Client, key: &ChatKey, after: u64) -> Re
         let page = page(chats, client, key, after).await?;
         let last = page.last().map_or(0, |entry| entry.seq);
         if last <= after {
+            jumps.insert(key.clone(), (asked_after, last));
             after = last;
         }
         for entry in newer(page, after) {
@@ -262,6 +275,9 @@ async fn follow(chats: &Chats, client: &Client, key: &ChatKey, after: u64) -> Re
         }
     }
 }
+
+/// Where a chat followed past its log's end jumped: from the seq asked after, to the log's end.
+type Jumps = HashMap<ChatKey, (u64, u64)>;
 
 // The events right after `after`, as many as one answer holds; past the log's end, its last.
 async fn page(
@@ -738,6 +754,47 @@ mod tests {
         // The prompt and receipt already logged don't go up again.
         assert!(seqs.iter().all(|seq| *seq > 2), "{seqs:?}");
         assert_eq!(newer, "r-new");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_followed_again_from_where_it_jumped_misses_nothing_since() {
+        let bench = bench();
+        prompts(&bench.chats, 1, 2).await;
+        let mut jumps = Jumps::new();
+        let (first, first_pushes) = crate::chats::test_support::client(16);
+        follow(&bench.chats, &first, &key(), 100, &mut jumps)
+            .await
+            .unwrap();
+        // The first subscription is gone before the chat goes on, as one that lost events is.
+        drop(first_pushes);
+        bench.command(prompt("r-new", "Hi")).await.unwrap();
+
+        let (again, mut pushes) = crate::chats::test_support::client(16);
+        follow(&bench.chats, &again, &key(), 100, &mut jumps)
+            .await
+            .unwrap();
+
+        let prompted = std::iter::from_fn(|| pushes.try_recv().ok()).any(|pushed| {
+            matches!(pushed, Message::Chat(ChatUpdate { entry: ChatEntry { event: ChatEvent::Prompt { request, .. }, .. }, .. }) if request.as_str() == "r-new")
+        });
+        assert!(prompted, "the prompt made after the jump never came");
+
+        // A follow from any other seq is the server's own, and starts there.
+        let (other, mut from_start) = crate::chats::test_support::client(16);
+        follow(&bench.chats, &other, &key(), 0, &mut jumps)
+            .await
+            .unwrap();
+        let first = from_start.try_recv().ok();
+        assert!(
+            matches!(
+                first,
+                Some(Message::Chat(ChatUpdate {
+                    entry: ChatEntry { seq: 1, .. },
+                    ..
+                }))
+            ),
+            "{first:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

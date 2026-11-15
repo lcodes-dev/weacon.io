@@ -4,6 +4,7 @@
 mod account;
 mod backup;
 mod changes;
+mod chats;
 mod docs;
 mod machine;
 mod proposals;
@@ -11,9 +12,10 @@ mod schema;
 mod sign_in;
 mod tasks;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod workspace;
 
+pub(crate) use chats::{Snapshot, chat_not_found};
 pub(crate) use tasks::{no_room, task_not_found};
 
 use std::path::{Path, PathBuf};
@@ -201,7 +203,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
         Author::Agent {
             owner,
             agent: Some(agent),
-        } if !agent.is_newer() && answers_to(agent, owner) => {
+        } if answers_to(agent, owner) => {
             Some(("agent", owner, Some(serde_json::to_string(agent).ok()?)))
         }
         Author::Agent { .. } | Author::Newer => None,

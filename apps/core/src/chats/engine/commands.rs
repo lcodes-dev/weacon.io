@@ -2,13 +2,15 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RequestId, RunEvent,
-    RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
+    RunEvent, RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
+use super::launch::not_started;
 use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
 use crate::chats::log::{Seen, digest};
+use crate::git::state::Stores;
 use crate::runs::Queued;
 
 impl<A: Agent> Engine<A> {
@@ -77,6 +79,9 @@ impl<A: Agent> Engine<A> {
                 ..
             } => {
                 let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
+                if fresh {
+                    self.check_repo(key, repo.as_ref()).await?;
+                }
                 if fresh && text.trim().is_empty() {
                     return Err(Fault::new(
                         code!("chat.empty_prompt"),
@@ -117,6 +122,29 @@ impl<A: Agent> Engine<A> {
             )),
             (named, chosen) => Ok(chosen.or(named).unwrap_or(AgentKind::Claude)),
         }
+    }
+
+    // The chat's repository is the one its first logged prompt named: that one has to be
+    // registered in the workspace, and a later prompt can't name another.
+    async fn check_repo(&mut self, key: &ChatKey, named: Option<&RepoId>) -> Result<(), Fault> {
+        let events = &self.open(key).await?.log;
+        let Some(named) = named else {
+            return Ok(());
+        };
+        if events.agent().is_some() {
+            return match events.repo() {
+                Some(chosen) if chosen == named => Ok(()),
+                _ => Err(Fault::new(
+                    code!("chat.repo_conflict"),
+                    "The chat already works in another repository, or in none",
+                )),
+            };
+        }
+        let stores = Stores::new(&self.workspaces, &key.workspace);
+        let named = named.clone();
+        tokio::task::spawn_blocking(move || stores.repo(&named).map(drop))
+            .await
+            .unwrap_or_else(|_| Err(not_started()))
     }
 
     async fn prompt(
@@ -277,8 +305,8 @@ mod tests {
     };
     use super::*;
     use crate::chats::test_support::{
-        Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_naming, run,
-        soon,
+        Told, allow, asks, chat, command, key, logged_prompt, parts, prompt, prompt_in,
+        prompt_naming, run, soon,
     };
     use crate::runs::Runs;
 
@@ -315,6 +343,46 @@ mod tests {
             (started.run_as.key, started.run_as.run),
             (other, run("run-4"))
         );
+    }
+
+    #[tokio::test]
+    async fn the_repository_a_first_prompt_named_is_the_chats_for_good() {
+        let (mut bench, mut engine) = parts();
+        let site = bench.register("site");
+        let other = bench.register("other");
+
+        engine
+            .command(&key(), prompt_in("r-1", "Hi", &site))
+            .await
+            .unwrap();
+        launched(&mut engine).await;
+
+        let started = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(started.run_as.repo, Some(site.clone()));
+        let moved = engine.command(&key(), prompt_in("r-2", "Go", &other)).await;
+        assert_eq!(moved.unwrap_err().code().as_str(), "chat.repo_conflict");
+        engine
+            .command(&key(), prompt_in("r-3", "Go", &site))
+            .await
+            .unwrap();
+        engine.command(&key(), prompt("r-4", "Go")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_naming_an_unregistered_repository_is_refused_unlogged() {
+        let (bench, mut engine) = parts();
+        let unknown = RepoId::try_from("typo".to_owned()).unwrap();
+
+        let refused = engine
+            .command(&key(), prompt_in("r-1", "Hi", &unknown))
+            .await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "repo.unknown");
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 0);
+        let later = bench.register("site");
+        engine.command(&key(), prompt("r-2", "Hi")).await.unwrap();
+        let named = engine.command(&key(), prompt_in("r-3", "Go", &later)).await;
+        assert_eq!(named.unwrap_err().code().as_str(), "chat.repo_conflict");
     }
 
     #[tokio::test(start_paused = true)]

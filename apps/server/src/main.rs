@@ -3,8 +3,10 @@
 mod admin;
 mod app;
 mod auth;
+mod chats;
 mod cli;
 mod client;
+mod client_log;
 mod codes;
 mod connections;
 mod db;
@@ -120,6 +122,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         connections: Arc::new(Semaphore::new(max_connections)),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
+        chats: chats::Hub::default(),
         unpaired: broadcast::channel(CHANGES).0,
         links: Arc::default(),
         relay: Arc::default(),

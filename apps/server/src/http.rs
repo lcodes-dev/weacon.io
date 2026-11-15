@@ -14,6 +14,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 use weacon_protocol::code;
 
+use crate::chats;
 use crate::connections;
 use crate::docs;
 use crate::feed;
@@ -38,6 +39,7 @@ use body::MAX_BODY;
 pub(crate) use body::{Body, Unreadable, parsed};
 
 const REQUEST_ID: &str = "x-request-id";
+
 const GRACE: Duration = Duration::from_secs(10);
 /// How long a request may take from its head to its answer, its body included.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
@@ -95,6 +97,7 @@ fn router(shared: Shared) -> Router {
         .merge(tasks::routes())
         .merge(docs::routes())
         .merge(proposals::routes())
+        .merge(chats::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
@@ -123,11 +126,18 @@ async fn in_time(request: Request, next: Next) -> Response {
         .unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, code!("request.too_slow"), true))
 }
 
+/// The id `log_request` gave the request, for handlers that log after answering it.
+#[derive(Clone)]
+pub(crate) struct RequestTag(pub(crate) String);
+
 /// Logs one record per request: never its path or query, which can hold content, only the
 /// route it matched.
-async fn log_request(State(shared): State<Shared>, request: Request, next: Next) -> Response {
+async fn log_request(State(shared): State<Shared>, mut request: Request, next: Next) -> Response {
     let started = Instant::now();
     let request_id = crate::app::new_id();
+    request
+        .extensions_mut()
+        .insert(RequestTag(request_id.clone()));
     // Any other method is a client's own text.
     let method = METHODS
         .iter()

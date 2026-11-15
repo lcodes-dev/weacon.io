@@ -33,6 +33,13 @@ impl ChatRuns {
         runs
     }
 
+    /// The fold again from its [`Self::run`] and [`Self::waiting`] as a store kept them, for the
+    /// server, which keeps the fold beside the log. Every such pair is one a log can fold into.
+    #[must_use]
+    pub const fn restored(run: Option<RunStatus>, waiting: Vec<Waiting>) -> Self {
+        Self { run, waiting }
+    }
+
     /// Takes in the log's next entry.
     pub fn apply(&mut self, entry: &ChatEntry) {
         match &entry.event {
@@ -297,5 +304,22 @@ mod tests {
                 agent: None
             })
         );
+    }
+
+    #[test]
+    fn a_fold_kept_as_its_run_and_waiting_prompts_is_restored_as_it_was() {
+        let logs = [
+            vec![status("run-1", RunState::Waiting), asks("run-1", 1)],
+            // A prompt asked before any status, or after another run's, still waits.
+            vec![asks("run-1", 1)],
+            vec![status("run-2", RunState::Idle), asks("run-1", 2)],
+            vec![status("run-1", RunState::Idle)],
+            Vec::new(),
+        ];
+        for events in logs {
+            let folded = ChatRuns::fold(&log(events));
+            let kept = (folded.run().cloned(), folded.waiting().to_vec());
+            assert_eq!(ChatRuns::restored(kept.0, kept.1), folded);
+        }
     }
 }

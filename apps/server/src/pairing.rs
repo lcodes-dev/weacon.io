@@ -100,8 +100,8 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
     let recorded = shared.db.start_pairing(&new, now).await?;
     Ok(recorded.then(|| PairStarted {
         pairing,
-        code: shown(&code),
-        secret,
+        code: shown(&code).into(),
+        secret: secret.into(),
         expires_at,
     }))
 }
@@ -117,7 +117,9 @@ pub(crate) async fn lookup(
     if !shared.pairing_limits.tries.allow(from, Instant::now()) {
         return too_many(code!("pairing.too_many"));
     }
-    let code_hash = shared.secret.pairing_code_hash(&normalised(&body.code));
+    let code_hash = shared
+        .secret
+        .pairing_code_hash(&normalised(body.code.expose()));
     match shared.db.pending_pairing(&code_hash, shared.now()).await {
         Ok(Some(pending)) => Json(pending).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -152,7 +154,9 @@ async fn confirmed(
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
-        code_hash: &shared.secret.pairing_code_hash(&normalised(&body.code)),
+        code_hash: &shared
+            .secret
+            .pairing_code_hash(&normalised(body.code.expose())),
         machine: &fresh(&new_id)?,
         claim_by: now.saturating_add(CLAIM_WITHIN),
     };
@@ -178,10 +182,10 @@ pub(crate) async fn claim(
 }
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
-    let token = to_hex(&shared.secret.machine_token(&body.secret));
+    let token = to_hex(&shared.secret.machine_token(body.secret.expose()));
     let claiming = Claiming {
         pairing: &body.pairing,
-        secret_hash: &token_hash(&body.secret),
+        secret_hash: &token_hash(body.secret.expose()),
         token_hash: &token_hash(&token),
     };
     let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
@@ -191,7 +195,7 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
         Claim::Paired { machine, owner } => Some(PairClaimed::Paired {
             machine,
             owner,
-            token,
+            token: token.into(),
         }),
     })
 }
@@ -253,7 +257,7 @@ mod tests {
         let code = &pairing.code;
         let claim = claim_body(&pairing);
         let (_, waiting) = post(server.address, "/api/machines/pair/claim", "", &claim).await;
-        let typed_code = code.to_lowercase().replace('-', " ");
+        let typed_code = code.expose().to_lowercase().replace('-', " ");
         let lookup = lookup_body(&typed_code);
         let (looked, pending) = post(
             server.address,
@@ -275,10 +279,10 @@ mod tests {
         let (_, list) = ask(server.address, "GET /api/machines", &ada_proof, "").await;
 
         assert_eq!(started, "http/1.1 201 created");
-        assert_eq!(code.len(), 9);
-        assert_eq!(code.as_bytes().get(4), Some(&b'-'));
+        assert_eq!(code.expose().len(), 9);
+        assert_eq!(code.expose().as_bytes().get(4), Some(&b'-'));
         assert_eq!(pairing.expires_at, fixture.shared.now() + PAIRING_LIFETIME);
-        assert_eq!(pairing.secret.len(), 64);
+        assert_eq!(pairing.secret.expose().len(), 64);
         assert_eq!(waiting, json!({ "state": "waiting" }));
         assert_eq!(looked, "http/1.1 200 ok");
         assert_eq!(
@@ -321,7 +325,7 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = lookup_body(&pairing.code);
+        let lookup = lookup_body(pairing.code.expose());
         let wrong = json!({ "pairing": pairing.pairing, "code": "0000-0000" }).to_string();
         let right = confirm_body(&pairing);
 
@@ -441,7 +445,7 @@ mod tests {
         let server = fixture.run().await;
         let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
         let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = lookup_body(&pairing.code);
+        let lookup = lookup_body(pairing.code.expose());
         let confirm = confirm_body(&pairing);
         let claim = claim_body(&pairing);
         let mut answers = Vec::new();

@@ -1,20 +1,25 @@
 //! A chat's log: its committed events as JSON lines, in the order they were committed.
 
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent,
+    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, RepoId, RequestId, RunEvent,
     RunUpdate, code,
 };
 
 use crate::app::blocking;
 use crate::platform;
+
+mod line;
+mod requests;
+
+use line::entry_line;
+use requests::Requests;
+pub(crate) use requests::{Seen, digest};
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -33,53 +38,14 @@ pub(crate) struct ChatLog {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: HashMap<RequestId, Commanded>,
+    requests: Requests,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
+    /// The repository the chat's first prompt named, if it named one.
+    repo: Option<RepoId>,
     runs: ChatRuns,
-}
-
-/// What the log holds of one command.
-#[derive(Debug, Default)]
-struct Commanded {
-    /// The place of its prompt, when it was one.
-    prompt: Option<u64>,
-    stage: Stage,
-    /// A receipt said it failed.
-    failed: bool,
-    /// The digest of the command refused for good, while the log stays open.
-    refused: Option<u64>,
-}
-
-/// How far a command got, as its receipts say; a later receipt never moves it back.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-enum Stage {
-    #[default]
-    Logged,
-    Accepted,
-    /// A receipt other than `accepted` ended it.
-    Ended,
-}
-
-/// Whether a command was seen before under the same request.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Seen {
-    Never,
-    /// The same prompt, committed but without a receipt yet: it may not have been queued.
-    Pending,
-    /// The same command again: the caller finishes what its first try began.
-    Same,
-    /// With other content.
-    Other,
-}
-
-/// A digest of `action`, to tell a command sent again from another under the same id.
-pub(crate) fn digest(action: &ChatAction) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    hasher.write(&serde_json::to_vec(action).unwrap_or_default());
-    hasher.finish()
 }
 
 // Opens a log file to append, creating it and its folder private and synced when missing.
@@ -114,9 +80,10 @@ impl ChatLog {
                 workspace_root,
                 starts: Vec::new(),
                 end: 0,
-                requests: HashMap::new(),
+                requests: Requests::default(),
                 broken: false,
                 agent: None,
+                repo: None,
                 runs: ChatRuns::default(),
             };
             if !path.try_exists()? {
@@ -162,22 +129,20 @@ impl ChatLog {
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
         self.runs.apply(entry);
         match &entry.event {
-            ChatEvent::Prompt { request, agent, .. } => {
-                self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
-                self.agent = self
-                    .agent
-                    .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
+            ChatEvent::Prompt {
+                request,
+                agent,
+                repo,
+                ..
+            } => {
+                self.requests.prompted(request, entry.seq);
+                // The first prompt names the chat's agent and repository; later ones can't.
+                if self.agent.is_none() {
+                    self.agent = Some(agent.unwrap_or(AgentKind::Claude));
+                    self.repo.clone_from(repo);
+                }
             }
-            ChatEvent::Receipt { receipt } => {
-                let commanded = self.requests.entry(receipt.request.clone()).or_default();
-                let stage = if receipt.outcome == Outcome::Accepted {
-                    Stage::Accepted
-                } else {
-                    Stage::Ended
-                };
-                commanded.stage = commanded.stage.max(stage);
-                commanded.failed |= matches!(receipt.outcome, Outcome::Failed { .. });
-            }
+            ChatEvent::Receipt { receipt } => self.requests.receipted(receipt),
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
             | ChatEvent::OutsidePrompt { .. }
@@ -190,6 +155,11 @@ impl ChatLog {
     /// The chat's agent, once a prompt is in the log.
     pub(crate) const fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// The repository the chat works in, once a prompt naming one is first in the log.
+    pub(crate) const fn repo(&self) -> Option<&RepoId> {
+        self.repo.as_ref()
     }
 
     /// Where the chat's runs stand, as its entries say.
@@ -205,9 +175,10 @@ impl ChatLog {
     /// Commits `event` as the next entry, on disk before it is returned.
     ///
     /// # Errors
-    /// `chat.delta_not_logged` for a text delta and `chat.event_too_large` for an event that
-    /// doesn't fit one frame, which both leave the log as it was; `chat.log_not_written` when
-    /// the write fails, after which the log must be opened again.
+    /// `chat.delta_not_logged` for a text delta, `chat.event_unwritable` for an event from a
+    /// newer peer and `chat.event_too_large` for one that doesn't fit one frame, which all leave
+    /// the log as it was; `chat.log_not_written` when the write fails, after which the log must
+    /// be opened again.
     pub(crate) async fn append(&mut self, event: ChatEvent) -> Result<ChatEntry, Fault> {
         let not_written = || {
             Fault::new(
@@ -233,14 +204,7 @@ impl ChatLog {
             seq: self.seq() + 1,
             event,
         };
-        let mut line = serde_json::to_vec(&entry).map_err(|error| not_written().because(error))?;
-        line.push(b'\n');
-        if line.len() > ENTRY_MAX {
-            return Err(Fault::new(
-                code!("chat.event_too_large"),
-                "The event doesn't fit one frame",
-            ));
-        }
+        let line = entry_line(&entry)?;
         let len = line.len();
         self.ensure_file()
             .await
@@ -293,11 +257,7 @@ impl ChatLog {
             return Ok(Seen::Never);
         };
         let Some(seq) = commanded.prompt else {
-            let same = commanded.refused.map_or_else(
-                || commanded.failed || !matches!(action, ChatAction::Prompt { .. }),
-                |refused| refused == digest(action),
-            );
-            return Ok(if same { Seen::Same } else { Seen::Other });
+            return Ok(commanded.seen_unprompted(action));
         };
         let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
         let same = matches!(
@@ -314,25 +274,17 @@ impl ChatLog {
                 },
             ) if was_text == *text && was_repo == *repo && was_agent == *agent
         );
-        Ok(match (same, commanded.stage) {
-            (true, Stage::Logged) => Seen::Pending,
-            (true, Stage::Accepted | Stage::Ended) => Seen::Same,
-            (false, _) => Seen::Other,
-        })
+        Ok(commanded.seen_prompt(same))
     }
 
     /// Keeps the digest of the command refused for good under `request`, its receipt in.
     pub(crate) fn refused(&mut self, request: &RequestId, digest: u64) {
-        if let Some(commanded) = self.requests.get_mut(request) {
-            commanded.refused = Some(digest);
-        }
+        self.requests.refused(request, digest);
     }
 
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests
-            .get(request)
-            .is_some_and(|commanded| commanded.stage == Stage::Ended)
+        self.requests.has_ended(request)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -506,6 +458,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_chats_repository_is_the_one_its_first_prompt_named() {
+        let dir = TempDir::new().unwrap();
+        let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
+            request: request(id),
+            text: "Go".to_owned(),
+            repo: Some(RepoId::try_from(repo.to_owned()).unwrap()),
+            agent: None,
+        };
+        let mut log = open(&dir).await;
+        assert_eq!(log.repo(), None);
+
+        log.append(prompt("r-1", "site")).await.unwrap();
+        log.append(prompt("r-2", "other")).await.unwrap();
+
+        let site = RepoId::try_from("site".to_owned()).unwrap();
+        assert_eq!(log.repo(), Some(&site));
+        assert_eq!(open(&dir).await.repo(), Some(&site));
+        let mut plain = ChatLog::open(&dir, &chat("c-2")).await.unwrap();
+        plain.append(logged_prompt("r-1", "Hi")).await.unwrap();
+        plain.append(prompt("r-2", "site")).await.unwrap();
+        assert_eq!(plain.repo(), None);
+    }
+
+    #[tokio::test]
     async fn chats_keep_apart_by_workspace_and_by_case_in_private_files() {
         let dir = TempDir::new().unwrap();
         let (one, other) = (dir.join("w-one"), dir.join("w-other"));
@@ -574,7 +550,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_text_delta_or_an_event_too_large_for_a_frame_is_never_committed() {
+    async fn a_text_delta_a_newer_event_or_one_too_large_for_a_frame_is_never_committed() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
         let delta = ChatEvent::Run {
@@ -587,10 +563,12 @@ mod tests {
         };
 
         let refused = log.append(delta).await.unwrap_err();
+        let newer = log.append(ChatEvent::Newer).await.unwrap_err();
         let too_large = log.append(sized(1, ENTRY_MAX + 1)).await.unwrap_err();
         let largest = log.append(sized(1, ENTRY_MAX)).await.unwrap();
 
         assert_eq!(refused.code().as_str(), "chat.delta_not_logged");
+        assert_eq!(newer.code().as_str(), "chat.event_unwritable");
         assert_eq!(too_large.code().as_str(), "chat.event_too_large");
         assert_eq!(open(&dir).await.seq(), 1);
         let update = Envelope {

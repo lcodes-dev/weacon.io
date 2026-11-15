@@ -10,6 +10,10 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("machine.connect")),
     Capability::new(code!("chat.serve")),
     Capability::new(code!("machine.settings")),
+    Capability::new(code!("sessions.read")),
+    Capability::new(code!("diff.view")),
+    Capability::new(code!("worktree.manage")),
+    Capability::new(code!("repo.list")),
     Capability::new(code!("chat.hold")),
 ];
 
@@ -110,6 +114,10 @@ mod tests {
                             Capability::new(code!("machine.connect")),
                             Capability::new(code!("chat.serve")),
                             Capability::new(code!("machine.settings")),
+                            Capability::new(code!("sessions.read")),
+                            Capability::new(code!("diff.view")),
+                            Capability::new(code!("worktree.manage")),
+                            Capability::new(code!("repo.list")),
                             Capability::new(code!("chat.hold")),
                         ],
                     }),

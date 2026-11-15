@@ -42,6 +42,11 @@ impl Email {
         &self.0
     }
 
+    /// What comes before the `@`.
+    pub(crate) fn local(&self) -> &str {
+        self.0.split_once('@').map_or("", |(local, _)| local)
+    }
+
     /// What follows the `@`.
     pub(crate) fn domain(&self) -> &str {
         self.0.split_once('@').map_or("", |(_, domain)| domain)
@@ -70,6 +75,8 @@ mod tests {
             "ada@example.com"
         );
         assert_eq!(Email::parse(&longest).unwrap().as_str(), longest);
+        let ada = Email::parse("ada.l+x@example.com").unwrap();
+        assert_eq!((ada.local(), ada.domain()), ("ada.l+x", "example.com"));
         assert_eq!(
             Email::parse("o'brien+tag@mail.example.com")
                 .unwrap()
