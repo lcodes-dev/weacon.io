@@ -591,10 +591,11 @@ mod tests {
         let call = "fn sep() -> char { if cfg!(windows) { '\\\\' } else { '/' } }";
         let nested = "fn f() { assert!(cfg!(windows)); }";
         let in_a_macro = "macro_rules! m { () => { #[cfg(unix)] fn f() {} }; }";
+        let attr_in_a_macro = "macro_rules! m { () => { #[cfg_attr(unix, inline)] fn f() {} }; }";
         let deeper = "fn f() { vec![(1, matches!(2, _ if cfg!(target_os = \"linux\")))]; }";
         let feature = "#[cfg(feature = \"windows\")]\nfn trash() {}";
 
-        for text in [attribute, call, nested, in_a_macro, deeper] {
+        for text in [attribute, call, nested, in_a_macro, attr_in_a_macro, deeper] {
             assert_eq!(
                 check(&IO, "src/git.rs", text),
                 ["selects an operating system outside the platform module"]
@@ -606,6 +607,7 @@ mod tests {
         for text in [
             "fn f() { assert!(cfg!(feature = \"windows\")); }",
             "fn f() { assert!(windows); }",
+            "fn f() { assert!(is(windows)); }",
         ] {
             assert!(check(&IO, "src/git.rs", text).is_empty(), "{text}");
         }
