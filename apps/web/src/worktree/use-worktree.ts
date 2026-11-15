@@ -4,7 +4,7 @@ import type { ChatRef } from "../chat-ref.ts";
 import { newRequestId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
-import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, unsent, waiting } from "./worktree.ts";
+import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, resumeLine, unsent, waiting } from "./worktree.ts";
 
 /**
  * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
@@ -56,6 +56,7 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
   return {
     worktree,
     terminals,
+    resume: chatRef === undefined ? undefined : resumeLine(chatRef),
     usable,
     refresh: () => ask({ kind: "state" }),
     remove: () => ask({ kind: "state", confirm: true }),

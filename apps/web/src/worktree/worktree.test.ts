@@ -12,6 +12,7 @@ import {
   ended,
   envelopeFor,
   removeQuestion,
+  resumeLine,
   stateLine,
   unsent,
   waiting,
@@ -153,3 +154,6 @@ test("asking the state again keeps the last action's outcome, and the next actio
   assert.equal(asked(linked, 6, { kind: "restore" }).outcome, undefined);
 });
 
+test("the resume line names the chat and its workspace", () => {
+  assert.equal(resumeLine({ workspace: "w-1", chat: "c-1" }), "weacon resume --workspace=w-1 --chat=c-1");
+});
