@@ -147,34 +147,38 @@ fn fetch_overwrites(args: &[Word]) -> bool {
     })
 }
 
-// Whether `git clean` runs as a dry run. Letters after `-e`, and the word after `-e` or
-// `--exclude` (or an unambiguous prefix of it), are the exclude pattern, not a `-n` dry run.
+// Whether `git clean` runs as a dry run, so it deletes nothing. `-e`, `--exclude` and its
+// unambiguous prefixes take an exclude pattern, not a `-n` dry run; `--no-dry-run` turns it back
+// off, so the last word wins; a word only the shell can spell, or a glob, could be any of these,
+// so it can't be proven a dry run.
 fn dry_run(args: &[Word]) -> bool {
+    let mut dry = false;
     let mut pattern = false;
     for arg in args {
         if std::mem::take(&mut pattern) {
             continue;
         }
-        if arg.text == "--" {
+        if arg.dynamic || arg.glob {
             return false;
         }
+        if arg.text == "--" {
+            break;
+        }
         if arg.text == "--dry-run" {
-            return true;
-        }
-        if arg.text.len() > 2 && "--exclude".starts_with(arg.text.as_str()) {
+            dry = true;
+        } else if arg.text == "--no-dry-run" {
+            dry = false;
+        } else if arg.text.len() > 2 && "--exclude".starts_with(arg.text.as_str()) {
             pattern = true;
-            continue;
+        } else if let Some(flags) = short_flags(&arg.text) {
+            let (before, after) = flags.split_once('e').unwrap_or((flags, "x"));
+            if before.contains('n') {
+                dry = true;
+            }
+            pattern = after.is_empty();
         }
-        let Some(flags) = short_flags(&arg.text) else {
-            continue;
-        };
-        let (before, after) = flags.split_once('e').unwrap_or((flags, "x"));
-        if before.contains('n') {
-            return true;
-        }
-        pattern = after.is_empty();
     }
-    false
+    dry
 }
 
 fn push(args: &[Word]) -> Option<Reason> {

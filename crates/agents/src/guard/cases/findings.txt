@@ -197,3 +197,9 @@ echo ${Z:X}
 env -a ls rm -rf ../main
 env -ia ls rm -rf ../main
 echo $'\'' ; rm -rf ~ # '
+git -C ../main clean -fd "$X" -n
+git -C ../main clean --dry-run --no-dry-run -fd
+cd ..; cd wt && true & rm -rf main
+git -C ../main clean -n --no-dry-run -fdx
+echo ${(e)X}
+cd src || echo hi

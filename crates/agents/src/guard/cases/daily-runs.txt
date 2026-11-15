@@ -65,3 +65,5 @@ FOO=1 cargo test
 tsc --noEmit
 eslint src
 prettier --write src
+\\n echo hello
+cd src; true & ls

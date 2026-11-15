@@ -43,9 +43,6 @@ exclude_re = [
     # The guard's `landing` dynamic flag is masked: `safe::judge` flags a dynamic operand on its
     # own, so a copy into a folder asks either way.
     "replace \\|\\| with && in Call<'_>::landing",
-    # A `\\n`-continuation at a word's start is dropped by both `step` and `word_part`, so no word
-    # forms either way.
-    "word.is_none\\(\\) && self.peek_at\\(1\\) == Some.* with false in Parser::step",
     "git/state\\.rs:.*: (replace let_go with \\(\\)|replace <impl Drop for Hold>::drop with \\(\\)|delete ! in hold)$",
     "replace != with == in lock_for_process$",
 ]

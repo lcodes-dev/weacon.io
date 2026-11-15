@@ -29,6 +29,7 @@ fn parse_nested(line: &str, depth: usize) -> Option<Vec<Simple>> {
         parens: 0,
         blocks: 0,
         word_start: 0,
+        stmt_start: 0,
     };
     parser.list(None)?;
     (!parser.unsure).then_some(parser.found)
@@ -51,6 +52,9 @@ struct Parser {
     blocks: usize,
     // Met something it can split but not follow, such as a `case` inside a substitution.
     unsure: bool,
+    // Where in `found` the current statement (an `&&`/`||`/`|` chain) began, so a background `&`
+    // can mark all of it apart: its `cd`s run in a subshell and don't move the foreground.
+    stmt_start: usize,
 }
 
 impl Parser {
@@ -97,7 +101,9 @@ impl Parser {
             return None;
         }
         self.depth += 1;
+        let outer = std::mem::replace(&mut self.stmt_start, self.found.len());
         let listed = self.commands(end);
+        self.stmt_start = outer;
         self.depth -= 1;
         listed
     }
@@ -176,6 +182,17 @@ impl Parser {
         }
         simple.apart |= pipe || background || or;
         self.finish(simple, word);
+        // A lone `&` runs the whole preceding `&&`/`||`/`|` statement in a subshell, so a `cd` in
+        // it doesn't move the foreground: mark every command of that statement apart.
+        if background {
+            for done in self.found.get_mut(self.stmt_start..).unwrap_or_default() {
+                done.apart = true;
+            }
+        }
+        // `&`, `;` and a newline end a statement; `&&`, `||` and `|` continue it.
+        if background || matches!(char, ';' | '\n') {
+            self.stmt_start = self.found.len();
+        }
         match char {
             '(' => self.parens += 1,
             ')' => self.parens = self.parens.saturating_sub(1),
