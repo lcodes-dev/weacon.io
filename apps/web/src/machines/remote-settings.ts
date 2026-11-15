@@ -1,19 +1,11 @@
 import type { Later } from "../connection.ts";
 import { newRequestId } from "../ids.ts";
-import type { Incoming } from "../incoming.ts";
-import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, RequestId, WorkspaceId } from "../protocol.ts";
+import type { Envelope, MachineId, MachineSettings, MachineSettingsAction, RequestId } from "../protocol.ts";
 import { type Answer, MALFORMED, UNREACHABLE } from "../api/api.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 
 /** The open workspace's socket, through which the server reaches the person's machines. */
-export type SettingsSocket = {
-  readonly workspace: WorkspaceId;
-  /** Puts `envelope` on the socket; false, dropping it, while the socket isn't live. */
-  send(envelope: Envelope): boolean;
-  /** Hands every checked message that arrives to `handle`, until the returned function is called. */
-  subscribe(handle: (message: Incoming) => void): () => void;
-  /** An envelope id not yet used on this socket. */
-  nextId(): number;
-};
+export type SettingsSocket = Pick<WorkspaceSocket, "workspace" | "send" | "subscribe" | "nextId">;
 
 // The server answers `machine.no_answer` after 30 s; this is only for a server that never does.
 const ANSWER_MS = 35_000;

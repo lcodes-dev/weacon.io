@@ -43,7 +43,7 @@ export function ChatScreen({
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
   const changes = useChanges(link, chatRef, live, shown === "changes");
-  const worktree = useWorktree(link, chatRef, live, mine);
+  const worktree = useWorktree(link, chatRef, live, mine, shown === "changes");
   const { chat, state } = reading.sync;
   const acts = mine && access.send;
   const stop = acts && chat !== undefined && working(chat) ? commands.stop : undefined;

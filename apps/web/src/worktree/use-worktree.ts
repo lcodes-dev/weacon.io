@@ -8,9 +8,10 @@ import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, unsent, wai
 
 /**
  * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
- * alone; what the core offers decides whether there is one, and whether it opens terminals.
+ * alone, each time it is `shown`; what the core offers decides whether there is one, and whether it
+ * opens terminals.
  */
-export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean) {
+export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
   const manages = useOffers(link, "worktree.manage");
   const terminals = useOffers(link, "worktree.open_terminal");
@@ -27,8 +28,9 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
   };
   const workspace = chatRef?.workspace;
   const chat = chatRef?.chat;
+  const asking = usable && shown;
   useEffect(() => {
-    if (!usable || workspace === undefined || chat === undefined) {
+    if (!asking || workspace === undefined || chat === undefined) {
       return;
     }
     const ref = { workspace, chat };
@@ -38,11 +40,12 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
       unsubscribe();
       setWorktree(ended);
     };
-  }, [link, usable, workspace, chat]);
+  }, [link, asking, workspace, chat]);
   return {
     worktree,
     terminals,
     usable,
+    refresh: () => ask({ kind: "state" }),
     remove: () => ask({ kind: "state", confirm: true }),
     confirmRemove: () => {
       if (ask({ kind: "remove" })) {

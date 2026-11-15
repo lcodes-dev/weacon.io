@@ -2529,6 +2529,7 @@ name = "weacon-codemap"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "toml",
  "tree-sitter",
  "tree-sitter-rust",
@@ -2552,6 +2553,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "snow",
+ "sqlx",
  "subtle",
  "tokio",
  "tokio-rustls",
@@ -2634,6 +2636,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.30.0",
+ "weacon-model",
  "weacon-observability",
  "weacon-protocol",
 ]
