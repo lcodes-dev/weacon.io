@@ -36,6 +36,8 @@ const TOO_SLOW: &str = "The code map is still being read: try again shortly.\n";
 const POLL: Duration = Duration::from_secs(5);
 /// How many calls at once, across every run, may read a worktree no watch has read yet.
 const READS_AT_ONCE: usize = 2;
+/// How many bases of failed checks a repository's next check starts from, at most.
+const KEPT_BASES: usize = 4;
 
 /// The stores the MCP's answers come from, opened when its watches start, once the daemon
 /// holds its state folder, so a second daemon that can't start changes nothing.
@@ -351,25 +353,38 @@ async fn check_moves(
     proposals: Proposals,
     mut queued: mpsc::UnboundedReceiver<(Repository, Move, Logger)>,
 ) {
-    let mut failed: HashMap<Repository, Vec<Facts>> = HashMap::new();
-    while let Some((key, mut moved, log)) = queued.recv().await {
-        if let Some(was) = failed.remove(&key) {
-            moved.was = was;
-        }
-        let was = moved.was.clone();
-        let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
+    let mut failed: HashMap<Repository, Vec<Vec<Facts>>> = HashMap::new();
+    while let Some((key, moved, log)) = queued.recv().await {
+        // A pin re-anchored by a check that failed for another doc is from a later base.
+        let mut bases = failed.remove(&key).unwrap_or_default();
+        bases.push(moved.was);
+        let kept = bases.clone();
+        let (now, commit) = (moved.now, moved.commit);
+        let assembled = move || {
+            let was: Vec<Index> = bases.iter().map(|base| assemble(base)).collect();
+            Ok((was, assemble(&now), commit))
+        };
         let checked = async {
             let (was, now, commit) = off_runtime(assembled).await?;
+            let was: Vec<&Index> = was.iter().collect();
             proposals::moved(&proposals, &key.0, &was, &now, &commit).await
         };
         match checked.await {
             Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
             Err(fault) => {
                 log.warn("anchors check failed", &[("err", Field::error(&fault))]);
-                failed.insert(key, was);
+                failed.insert(key, kept_bases(kept));
             }
         }
     }
+}
+
+/// The oldest of `bases`, which holds at least one, and the latest of the rest, at most
+/// `KEPT_BASES` in all.
+fn kept_bases(mut bases: Vec<Vec<Facts>>) -> Vec<Vec<Facts>> {
+    let over = bases.len().saturating_sub(KEPT_BASES);
+    bases.drain(1..over.saturating_add(1));
+    bases
 }
 
 fn failed() -> Fault {
@@ -754,6 +769,23 @@ mod tests {
         assert_eq!(commands.len(), 3);
         assert_eq!(commands[0].action, commands[1].action);
         assert_eq!(commands[1].action, commands[2].action);
+    }
+
+    #[test]
+    fn a_repository_keeps_its_oldest_failed_base_and_the_latest() {
+        let bases = |count: usize| -> Vec<Vec<Facts>> {
+            (0..count)
+                .map(|n| facts(&[("src/lib.rs", &format!("pub fn f{n}() {{}}\n"))]))
+                .collect()
+        };
+        let all = bases(6);
+
+        assert_eq!(kept_bases(bases(1)), bases(1));
+        assert_eq!(kept_bases(bases(KEPT_BASES)), bases(KEPT_BASES));
+        let kept = kept_bases(all.clone());
+        assert_eq!(kept.len(), KEPT_BASES);
+        assert_eq!(kept[0], all[0]);
+        assert_eq!(kept[1..], all[3..]);
     }
 
     #[tokio::test]

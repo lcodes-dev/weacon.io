@@ -21,14 +21,14 @@ struct Reanchor {
     to: DocPin,
 }
 
-/// Proposes, for each of `workspace`'s docs that pin code, what moving the code from `was` to
-/// `now`, at `commit`, did to its anchors: a re-anchor and a "needs an update" proposal, as
-/// one batch. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
+/// Proposes, for each of `workspace`'s docs that pin code, what moving the code to `now`, at
+/// `commit`, did to its anchors: a re-anchor and a "needs an update" proposal, as one batch.
+/// Each pin moves from the first of the bases `was` it was taken from, else from the first. Gives how many docs it proposed for; a doc refused doesn't stop the others, and
 /// the first refusal is the error once all are tried.
 pub(crate) async fn moved(
     proposals: &Proposals,
     workspace: &WorkspaceId,
-    was: &Index,
+    was: &[&Index],
     now: &Index,
     commit: &CommitId,
 ) -> Result<usize, Fault> {
@@ -60,7 +60,7 @@ async fn proposed(
     proposals: &Proposals,
     workspace: &WorkspaceId,
     doc: &PinnedDoc,
-    indexes: (&Index, &Index),
+    indexes: (&[&Index], &Index),
     commit: &CommitId,
 ) -> Result<bool, Fault> {
     let changes = batch(proposals, workspace, doc, indexes, commit).await?;
@@ -95,7 +95,7 @@ async fn batch(
     proposals: &Proposals,
     workspace: &WorkspaceId,
     doc: &PinnedDoc,
-    (was, now): (&Index, &Index),
+    (was, now): (&[&Index], &Index),
     commit: &CommitId,
 ) -> Result<Vec<Batched>, Fault> {
     let (reanchors, mut stale) = findings(&doc.anchors.pins, was, now);
@@ -145,13 +145,17 @@ async fn batch(
 
 /// What moving from `was` to `now` did to `pins`: those to re-anchor, and those whose code
 /// changed or went.
-fn findings(pins: &[DocPin], was: &Index, now: &Index) -> (Vec<Reanchor>, Vec<StaleAnchor>) {
+fn findings(pins: &[DocPin], was: &[&Index], now: &Index) -> (Vec<Reanchor>, Vec<StaleAnchor>) {
     let (mut reanchors, mut stale) = (Vec::new(), Vec::new());
     for from in pins {
         let Ok(pin) = from.as_str().parse::<Pin>() else {
             continue;
         };
-        let change = match was.after_move(now, &pin) {
+        let taken = |base: &&&Index| base.fingerprint(&pin.anchor) == Some(pin.fingerprint);
+        let Some(base) = was.iter().find(taken).or_else(|| was.first()) else {
+            continue;
+        };
+        let change = match base.after_move(now, &pin) {
             None => continue,
             // A pin a doc can't hold, such as one past its length, is as good as gone.
             Some(Moved::Reanchored(to)) => match to.to_string().parse() {
@@ -299,7 +303,7 @@ mod tests {
             .push(doc("d-1", &before, &["sym:a_b::m::go"]));
         let proposals = fake.connect();
 
-        let docs = moved(&proposals, &workspace(), &before, &after, &commit('b'))
+        let docs = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -338,7 +342,7 @@ mod tests {
         let proposals = fake.connect();
         let line = "struct a_b::m::S  src/m.rs:2".to_owned();
 
-        let docs = moved(&proposals, &workspace(), &before, &after, &commit('b'))
+        let docs = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -400,7 +404,7 @@ mod tests {
         fake.docs.lock().unwrap().extend(docs);
         let proposals = fake.connect();
 
-        let batches = moved(&proposals, &workspace(), &before, &after, &commit('b'))
+        let batches = moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -431,13 +435,13 @@ mod tests {
             .push(doc("d-1", &before, &["sym:a_b::m::go"]));
         let proposals = fake.connect();
 
-        moved(&proposals, &workspace(), &before, &after, &commit('b'))
+        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
             .await
             .unwrap();
-        let again = moved(&proposals, &workspace(), &after, &later, &commit('c'))
+        let again = moved(&proposals, &workspace(), &[&after], &later, &commit('c'))
             .await
             .unwrap();
-        moved(&proposals, &workspace(), &before, &after, &commit('b'))
+        moved(&proposals, &workspace(), &[&before], &after, &commit('b'))
             .await
             .unwrap();
 
@@ -486,6 +490,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn each_pin_moves_from_the_base_it_was_taken_from() {
+        let before = repo(LIB, "pub fn go() {}\n");
+        let after = repo("mod m;\npub fn run() { go() }\npub fn go() {}\n", "");
+        let later = repo("mod m;\npub fn run() { go() }\npub fn go() { run() }\n", "");
+        let fake = Fake::default();
+        // Pinned from code neither base holds, so it moves from the oldest.
+        let elsewhere = repo(LIB, "pub fn go() { let x = 1; }\n");
+        let docs = [
+            doc("d-1", &before, &["sym:a_b::m::go"]),
+            doc("d-2", &after, &["sym:a_b::go"]),
+            doc("d-3", &elsewhere, &["sym:a_b::m::go"]),
+        ];
+        fake.docs.lock().unwrap().extend(docs);
+        let proposals = fake.connect();
+
+        let batches = moved(
+            &proposals,
+            &workspace(),
+            &[&before, &after],
+            &later,
+            &commit('c'),
+        )
+        .await
+        .unwrap();
+
+        let about: Vec<String> = fake
+            .commands()
+            .iter()
+            .flat_map(changes)
+            .map(|change| about(&change))
+            .collect();
+        let docs = ["d-1", "d-2", "d-3"].map(str::to_owned).to_vec();
+        assert_eq!((batches, about), (3, docs));
+    }
+
+    #[tokio::test]
     async fn a_refused_doc_leaves_the_others_to_be_proposed() {
         let before = repo(LIB, "pub fn go() {}\n");
         let after = repo(LIB, "pub fn go() { let x = 1; }\n");
@@ -498,7 +538,7 @@ mod tests {
         *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
         let proposals = fake.connect();
 
-        let refused = moved(&proposals, &workspace(), &before, &after, &commit('b')).await;
+        let refused = moved(&proposals, &workspace(), &[&before], &after, &commit('b')).await;
 
         assert_eq!(refused.unwrap_err().code(), &code!("proposal.too_many"));
         assert_eq!(fake.commands().len(), 2);
@@ -525,9 +565,9 @@ mod tests {
     async fn batch_of(
         proposals: &Proposals,
         doc: &PinnedDoc,
-        indexes: (&Index, &Index),
+        (was, now): (&Index, &Index),
     ) -> Vec<Batched> {
-        batch(proposals, &workspace(), doc, indexes, &commit('b'))
+        batch(proposals, &workspace(), doc, (&[was], now), &commit('b'))
             .await
             .unwrap()
     }
@@ -544,7 +584,7 @@ mod tests {
         );
         let pins = [pin(&before, "sym:a_b::m::go")];
 
-        let (reanchors, stale) = findings(&pins, &before, &after);
+        let (reanchors, stale) = findings(&pins, &[&before], &after);
 
         assert!(reanchors.is_empty());
         let gone = AnchorChange::Gone {
