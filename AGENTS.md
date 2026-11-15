@@ -98,10 +98,11 @@ Every program logs, reports errors and says which build it is from its first com
 ## Setup and commands
 
 `scripts/setup.sh` installs everything a fresh machine, cloud session, orb or CI runner needs, and is safe to run again:
-- Rust at the version in `rust-toolchain.toml`, through rustup. Where rustup can't download it, as in Claude Code cloud sessions, it uses the installed stable toolchain if that is exactly the pinned version.
+- Node at the version in `.node-version` and Rust at the version in `rust-toolchain.toml`, through mise where it is installed: `mise.toml` only turns on mise's reading of those two files, so neither version is written twice. `scripts/tools.sh`, which `setup.sh`, `dev.sh`, `check.sh` and `fix.sh` source, puts mise's tools first on `PATH`, so no script needs a shell that activated mise.
+- Without mise, as in cloud sessions, orbs and CI, the installed tools must be the pinned ones. Rust comes through rustup; where rustup can't download it, as in Claude Code cloud sessions, it uses the installed stable toolchain if that is exactly the pinned version. When rustup is missing, or Node is missing or at another version, it stops and says to install mise.
 - The dependencies.
 - The check tools at pinned versions: cargo-deny and cargo-machete, built from crates.io the first time.
-- The extension's and the web app's npm packages, at the exact versions in their `package-lock.json`, and the Chromium the web app's end-to-end tests drive, unless it is already in `PLAYWRIGHT_BROWSERS_PATH`. It needs the Node in `.node-version`, which every TypeScript app and `tooling/ts` share, and stops if another is installed.
+- The extension's and the web app's npm packages, at the exact versions in their `package-lock.json`, and the Chromium the web app's end-to-end tests drive, unless it is already in `PLAYWRIGHT_BROWSERS_PATH`. Every TypeScript app and `tooling/ts` share the Node in `.node-version`.
 - Its output goes to `.dev/setup.log`.
 
 | Where the agent runs | How it is set up |
@@ -109,15 +110,16 @@ Every program logs, reports errors and says which build it is from its first com
 | Claude Code cloud session | The `SessionStart` hook in `.claude/settings.json` runs `scripts/setup.sh --claude-session-start` (toolchain and dependencies); run `scripts/setup.sh` once before the first `scripts/check.sh` |
 | Codex cloud environment | The environment's setup script is `scripts/setup.sh` |
 | Amp orb | `.agents/setup`, a link to `scripts/setup.sh`, runs when the orb's snapshot is built |
-| A laptop, local agents and CI | `scripts/setup.sh` |
+| A Mac or Linux laptop, and local agents | Install mise, then `scripts/setup.sh` |
+| CI | `scripts/setup.sh`; the `macos` job installs mise from Homebrew first |
 
 | Command | What it does |
 | --- | --- |
 | `scripts/setup.sh` | Installs or updates everything; safe to run again |
 | `scripts/fix.sh` | Formats and applies the lint fixes clippy is sure of |
-| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests, doc tests, the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, that no tracked link points to an absolute path, and ShellCheck. CI runs it in its `check` job, also lints and tests on Windows, and its `macos` job runs `scripts/setup.sh` and `scripts/check.sh` on Apple silicon under macOS's own bash, then starts `scripts/dev.sh` and checks that the server and the core answer, when a pull request changes `scripts/setup.sh`, `scripts/check.sh`, `scripts/dev.sh`, `rust-toolchain.toml`, `.node-version` or that workflow |
+| `scripts/check.sh` | What CI runs: rustfmt, clippy with warnings as errors, docs, cargo-machete, cargo-deny, all tests, doc tests, the extension's type check, tests and build, the shared TypeScript tooling's tests, the web app's type check, build, tests and end-to-end tests in Chromium against `fake-server`, that no tracked link points to an absolute path, and ShellCheck. CI runs it in its `check` job, also lints and tests on Windows, and its `macos` job installs mise from Homebrew, runs `scripts/setup.sh` and `scripts/check.sh` on Apple silicon under macOS's own bash with mise's Node and Rust, then starts `scripts/dev.sh` and checks that the server and the core answer, when a pull request changes `mise.toml`, `scripts/setup.sh`, `scripts/tools.sh`, `scripts/check.sh`, `scripts/dev.sh`, `rust-toolchain.toml`, `.node-version` or that workflow |
 | `cargo test -p <crate> [name]` | Focused tests while iterating |
-| `scripts/dev.sh [email]` | Builds and runs the server on `http://localhost:8080`, `dev-tls` (a TLS front on `https://localhost:8443` with a certificate the core pins) and the core's daemon, with their data in `.dev/`; the first run makes the owner's account. It prints where sign-in codes land and how to pair; Ctrl-C stops all three |
+| `scripts/dev.sh [email]` | Builds and runs the server on `http://localhost:8080`, `dev-tls` (a TLS front on `https://localhost:8443` with a certificate the core pins) and the core's daemon, with their data in `.dev/`; the first run makes the owner's account. It stops if the web app's packages are missing or older than its `package-lock.json`, and prints where sign-in codes land and how to pair; Ctrl-C stops all three |
 | `WEACON_STATE_DIR=.dev/state cargo run -p weacon-core -- doctor` | Runs the core with this worktree's own state folder |
 | `cargo run -p weacon-core -- map [symbol <path> \| flows \| docs-for <path> \| search <words> \| hotspots \| architecture \| contracts [--kind <kind>]] [--root <folder>] [--budget <bytes>]` | Prints where to begin in a repository's code, where one item is, its pinned flows, the doc lines that pin an item, the items and docs that match some words, or the files that change often and that much depends on, exactly as the local MCP's `map`, `symbol`, `flow`, `docs_for`, `search` and `hotspots` tools answer; or its architecture, or its contracts, of one kind if asked |
 | `cargo run -p weacon-core -- hook session-start` | What the core's Claude Code plugin adds at session start: the current folder's map within 4,000 bytes, from the running core's stored map when the hook's run holds a token for it, else indexed by the hook itself, or nothing and exit 0 if it can't answer within 5 seconds |

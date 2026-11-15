@@ -74,29 +74,20 @@ These steps run the server, a TLS front for it and the core on one Mac or Linux 
 
 ### 1. Install the tools
 
-On macOS:
+Install [mise](https://mise.jdx.dev). It provides the Node and Rust versions the project pins in `.node-version` and `rust-toolchain.toml`, and the scripts find them without a line in your shell profile.
+
+On macOS, with [Homebrew](https://brew.sh):
 
 ```bash
 xcode-select --install
+brew install mise
 ```
 
-Install Rust with rustup from [rustup.rs](https://rustup.rs). The project pins its Rust version in `rust-toolchain.toml`, and rustup picks it up by itself.
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Install a Node version manager, such as [fnm](https://github.com/Schniz/fnm), with [Homebrew](https://brew.sh), and let your shell use it. Then open a new terminal. Step 2 installs the Node version the project pins in `.node-version`.
-
-```bash
-brew install fnm
-echo 'eval "$(fnm env --use-on-cd --shell zsh)"' >> ~/.zshrc
-```
-
-On Linux (Debian or Ubuntu), install git, a C compiler and curl, then rustup as above, and fnm with its own install script:
+On Linux (Debian or Ubuntu), install git, a C compiler and curl, then mise with its own install script, which puts it in `~/.local/bin`:
 
 ```bash
 sudo apt-get install -y git build-essential curl
+curl https://mise.run | sh
 ```
 
 To run an agent, install it and sign in to it yourself, with the vendor's own instructions. Weacon never installs or signs in an agent for you without asking.
@@ -108,20 +99,12 @@ Clone into a short path, such as `~/code/weacon.io`: the core's socket lives und
 ```bash
 git clone https://github.com/lcodes-dev/weacon.io.git ~/code/weacon.io
 cd ~/code/weacon.io
-```
-
-Install and use the pinned Node. fnm reads `.node-version` itself:
-
-```bash
-fnm install
-fnm use
-```
-
-```bash
 scripts/setup.sh
 ```
 
-The first run takes a while: it fetches the dependencies, builds the check tools and installs the web app's and the extension's packages. Its log is in `.dev/setup.log`. It is safe to run again.
+To run `cargo` or `npm` yourself, put `mise exec --` before it, or activate mise in your shell and run `mise trust` once in the clone.
+
+The first run takes a while: mise installs the pinned Node and Rust, then the script fetches the dependencies, builds the check tools and installs the web app's and the extension's packages and the Chromium the web app's tests drive. Its log is in `.dev/setup.log`. It is safe to run again, and `scripts/dev.sh` asks you to when the web app's packages are missing or out of date.
 
 ### 3. Start Weacon
 
@@ -338,7 +321,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 ## Troubleshooting
 
 - **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev/state`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
-- **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
+- **`scripts/setup.sh` says Weacon needs another Node, or to install mise.** Install mise as in step 1, then run it again. Without mise, the Node on your `PATH` must be exactly the one in `.node-version`, and rustup must be installed.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.

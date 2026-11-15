@@ -3,6 +3,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/tools.sh
+. scripts/tools.sh
+use_mise
 
 step() {
   printf '==> %s\n' "$*" >&2
