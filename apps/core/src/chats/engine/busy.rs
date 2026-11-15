@@ -29,11 +29,11 @@ pub(crate) enum LeaveStep {
 #[derive(Debug, Default)]
 pub(crate) struct Install {
     given: u64,
-    pause: Option<Pause>,
+    pub(super) pause: Option<Pause>,
 }
 
 #[derive(Debug)]
-struct Pause {
+pub(super) struct Pause {
     leave: LeaveId,
     until: Instant,
     /// Once the daemon is about to restart, an updater that hangs up resumes nothing.
@@ -108,11 +108,15 @@ impl<A: Agent> Engine<A> {
         }
     }
 
-    pub(super) async fn resume_turns(&mut self) {
+    async fn resume_turns(&mut self) {
         if self.install.pause.take().is_some() {
-            self.log.info("turns resumed after install", &[]);
-            self.go_on().await;
+            self.turns_resumed().await;
         }
+    }
+
+    pub(super) async fn turns_resumed(&mut self) {
+        self.log.info("turns resumed after install", &[]);
+        self.go_on().await;
     }
 
     pub(super) fn busy(&self) -> bool {

@@ -795,6 +795,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn leave_to_install_is_given_only_after_the_hello() {
+        use weacon_protocol::{InstallAction, InstallCommand, RequestId};
+
+        let dir = TempDir::new().unwrap();
+        let running = start(&dir).unwrap();
+        let leave = encode_line(&Envelope {
+            id: 2,
+            message: Message::InstallCommand(InstallCommand {
+                request: RequestId::try_from("i-1".to_owned()).unwrap(),
+                action: InstallAction::Leave,
+            }),
+        })
+        .unwrap();
+        let (early, _) = exchange(connect(&running.socket).await, &leave, 1).await;
+        let mut greeted = hello(PROTOCOL);
+        greeted.extend(&leave);
+        let (replies, _) = exchange(connect(&running.socket).await, &greeted, 2).await;
+        running.stop().await;
+
+        assert_eq!(error_code(&early[0]), Some("handshake.required"));
+        assert!(matches!(replies[1], Message::Receipt(_)), "{replies:?}");
+    }
+
+    #[tokio::test]
     async fn a_clients_errors_are_logged_by_code_after_its_hello() {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();

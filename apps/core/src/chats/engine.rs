@@ -192,8 +192,9 @@ impl<A: Agent> Engine<A> {
                     continue;
                 }
                 Some(launched) = self.started.recv() => self.take_launched(launched).await,
-                () = self.install.runs_out() => {
-                    self.resume_turns().await;
+                () = self.install.runs_out(), if self.install.pauses() => {
+                    self.install.pause = None;
+                    self.turns_resumed().await;
                     continue;
                 }
             };

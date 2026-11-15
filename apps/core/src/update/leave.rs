@@ -167,8 +167,9 @@ mod tests {
             line.clear();
             stream.read_line(&mut line).await.unwrap();
             if let Some(message) = answer {
-                let id: Envelope = serde_json::from_str(&line).unwrap();
-                let reply = encode_line(&Envelope { id: id.id, message }).unwrap();
+                let asked: Envelope = serde_json::from_str(&line).unwrap();
+                assert_eq!(asked.id, 2, "the hello went as 1");
+                let reply = encode_line(&Envelope { id: 2, message }).unwrap();
                 stream.write_all(&reply).await.unwrap();
             }
         });
@@ -199,6 +200,26 @@ mod tests {
         daemon(&dir, vec![LEAVE], None);
         let refused = asked(socket_path(&dir)).await.err().unwrap();
         assert_eq!(refused.code().as_str(), "update.no_leave");
+    }
+
+    #[tokio::test]
+    async fn a_daemon_that_refuses_the_handshake_gives_no_leave() {
+        let dir = TempDir::new().unwrap();
+        let mut listener = platform::bind(&socket_path(&dir)).unwrap();
+        tokio::spawn(async move {
+            let mut stream = BufReader::new(listener.accept().await.unwrap());
+            let mut line = String::new();
+            stream.read_line(&mut line).await.unwrap();
+            let refused = error(code!("protocol.unsupported"));
+            let refused = encode_line(&Envelope {
+                id: 1,
+                message: refused,
+            })
+            .unwrap();
+            stream.write_all(&refused).await.unwrap();
+        });
+        let refused = asked(socket_path(&dir)).await.err().unwrap();
+        assert_eq!(refused.code().as_str(), "daemon.other_protocol");
     }
 
     #[tokio::test]
