@@ -6,30 +6,36 @@ import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pick
 import { AttachButton, Files, useFileDrop } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import type { Lates, Send } from "./prompt.ts";
+import type { Lates, Send, Sent } from "./prompt.ts";
 import { useSend } from "./send.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
- * text until the server accepts it, and says so when it doesn't; a late receipt settles it.
+ * text until the server accepts it, and says so when it doesn't, as `explain` words it; a late
+ * receipt settles it.
  */
 export function Composer({
   send,
   blocked,
   hidden,
   lates,
+  explain,
 }: {
   send: Send;
   blocked: string | undefined;
   hidden: boolean;
   lates: Lates;
+  explain?: (sent: Sent) => string | undefined;
 }) {
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   // A draft edited after it was sent stays in the box.
-  const { sending, problem, submit: deliver, clear } = useSend<string>(send, lates, (sent) =>
-    setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
+  const { sending, problem, submit: deliver, clear } = useSend<string>(
+    send,
+    lates,
+    (sent) => setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
+    explain,
   );
   const [files, setFiles] = useState(NO_ATTACHMENTS);
   const box = useRef<HTMLTextAreaElement>(null);

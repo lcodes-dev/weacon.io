@@ -13,6 +13,12 @@ export type Ended<T> = { payload: T; taken: boolean; latest: boolean; problem: s
 export class Sends<T> {
   #held = new Map<RequestId, { text: string; payload: T }>();
   #latest: RequestId | undefined;
+  #explain: (sent: Sent) => string | undefined;
+
+  /** `explain` says why a send wasn't taken, or may not have been. */
+  constructor(explain: (sent: Sent) => string | undefined = sentProblem) {
+    this.#explain = explain;
+  }
 
   /** The request to send `text` under: that of a send of the same text that may have run, or a fresh one. */
   start(text: string, payload: T, fresh: () => RequestId): RequestId {
@@ -31,6 +37,6 @@ export class Sends<T> {
     if (sent === "too_long" || !mayHaveRun(sent)) {
       this.#held.delete(request);
     }
-    return { payload: held.payload, taken: sent === "accepted", latest: request === this.#latest, problem: sentProblem(sent) };
+    return { payload: held.payload, taken: sent === "accepted", latest: request === this.#latest, problem: this.#explain(sent) };
   }
 }

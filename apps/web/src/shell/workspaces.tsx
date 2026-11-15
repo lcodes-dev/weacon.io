@@ -13,7 +13,9 @@ import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useNames } from "../members/use-names.ts";
-import type { WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import type { ChatId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
+import { readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { owns } from "./chat-list.ts";
@@ -35,11 +37,14 @@ export function Workspaces({
   log,
   who,
   page,
+  openSettings,
 }: {
   api: Api;
   log: Log;
   who: ReactNode;
   page?: ((socket: WorkspaceSocket | undefined) => ReactNode) | undefined;
+  /** Opens Settings, where the person pairs machines and signs agents in. */
+  openSettings(): void;
 }) {
   const loaded = useLoaded(() => api.workspaces(), api);
   const list = loaded.value?.workspaces;
@@ -75,7 +80,7 @@ export function Workspaces({
     <Frame middle={page === undefined && selector} right={who}>
       <div className={page === undefined ? "pane" : "pane away"}>
         {workspace !== undefined && socket !== undefined ? (
-          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} place={place} go={go} />
+          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} />
         ) : (
           <AllWorkspaces api={api} loaded={loaded} listing={listing} choose={choose} />
         )}
@@ -198,7 +203,15 @@ function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummar
   );
 }
 
-type Open = { api: Api; workspace: WorkspaceSummary; socket: WorkspaceSocket; away: boolean; place: Place; go(place: Place): void };
+type Open = {
+  api: Api;
+  workspace: WorkspaceSummary;
+  socket: WorkspaceSocket;
+  away: boolean;
+  place: Place;
+  go(place: Place): void;
+  openSettings(): void;
+};
 
 /** The open workspace on its feed: its sections, and its chats or the section `place` names. */
 function Workspace({ log, ...open }: Open & { log: Log }) {
@@ -275,7 +288,8 @@ function Heading({ title, status }: { title: string; status: Status }) {
 
 /**
  * The workspace's chats, where the server serves them (`read`), kept fresh by its feed, beside the
- * chosen one. Only its owner sends to a chat; a person whose member the server didn't say owns none.
+ * chosen one or a new one. Only its owner sends to a chat; a person whose member the server didn't
+ * say owns none.
  */
 function WorkspaceChats({
   api,
@@ -288,31 +302,73 @@ function WorkspaceChats({
   read,
   names,
   palette,
+  openSettings,
 }: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; names: Names; palette(chatMachine?: string): ReactNode }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
-  const open = chats.value?.chats.find(({ id }) => id === place.chat);
+  const machines = useLoaded(() => api.machines(), api);
+  const { send } = useChatAccess(socket);
+  const ready = machines.value === undefined ? undefined : readiness(send, machines.value.machines);
+  const [starting, setStarting] = useState(false);
+  // The chat just started here, shown before the list has it.
+  const [started, setStarted] = useState<ChatId>();
+  const live = status.state === "live";
+  const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
+  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: "" } : undefined);
+  const newChat = starting && ready?.kind === "ready" ? ready.machines : undefined;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
-      {palette(open?.machine)}
+      {palette(listedChat?.machine)}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
-        <ChatsNav loaded={listed} names={names} chosen={place.chat} choose={(chat) => go({ view: "chats", chat })} />
+        <ChatsNav
+          loaded={listed}
+          names={names}
+          chosen={newChat === undefined ? place.chat : undefined}
+          choose={(chat) => {
+            setStarting(false);
+            go({ view: "chats", chat });
+          }}
+          start={
+            ready?.kind === "ready"
+              ? () => {
+                  setStarting(true);
+                  void machines.load();
+                }
+              : undefined
+          }
+          missing={<StartMissing ready={ready} check={() => void machines.load()} openSettings={openSettings} />}
+        />
       </div>
       <section>
-        <Heading title={open?.title ?? workspace.name} status={status} />
-        {open !== undefined && (
-          <ChatScreen
-            key={open.id}
-            link={socket}
-            live={status.state === "live"}
-            chatRef={{ workspace: workspace.id, chat: open.id }}
-            mine={owns(workspace.member, open)}
-            away={away}
-            title={open.title}
-            names={names}
+        <Heading title={newChat !== undefined ? "New chat" : open?.title || workspace.name} status={status} />
+        {newChat !== undefined ? (
+          <NewChat
+            socket={socket}
+            live={live}
+            machines={newChat}
+            openSettings={openSettings}
+            started={(chat) => {
+              setStarted(chat);
+              setStarting(false);
+              go({ view: "chats", chat });
+              void chats.load();
+            }}
           />
+        ) : (
+          open !== undefined && (
+            <ChatScreen
+              key={open.id}
+              link={socket}
+              live={live}
+              chatRef={{ workspace: workspace.id, chat: open.id }}
+              mine={listedChat === undefined || owns(workspace.member, listedChat)}
+              away={away}
+              title={open.title}
+              names={names}
+            />
+          )
         )}
       </section>
     </div>

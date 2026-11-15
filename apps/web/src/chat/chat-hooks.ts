@@ -70,8 +70,9 @@ export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined,
 type Through<T> = (command: Command, receipts: Receipts, send: (envelope: Envelope) => void) => Promise<T>;
 
 /**
- * Prompts, permission answers and Stop for the chat at `chatRef` over `link`, each waiting for its
- * receipt while the link is `live`; an accepted answer tells `answered` its prompt.
+ * Prompts, permission answers and Stop for the chat at `chatRef` over `link`, and first prompts that
+ * make a chat, each waiting for its receipt while the link is `live`; an accepted answer tells
+ * `answered` its prompt.
  */
 export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, answered: (run: RunId, prompt: number) => void) {
   const [answers, setAnswers] = useState<Answers>(new Map());
@@ -110,9 +111,9 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
       receipts.current = undefined;
     };
   }, [link, live]);
-  const command = <T,>(action: ChatAction, request: RequestId, through: Through<T>): Promise<T | "lost"> => {
+  const command = <T,>(action: ChatAction, request: RequestId, through: Through<T>, to = chatRef): Promise<T | "lost"> => {
     const waiting = receipts.current;
-    if (waiting === undefined || chatRef === undefined) {
+    if (waiting === undefined || to === undefined) {
       return Promise.resolve("lost");
     }
     const send = (envelope: Envelope) => {
@@ -120,9 +121,11 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
         throw new Error("the feed isn't live");
       }
     };
-    return through(chatCommand(link.nextId(), chatRef, request, action), waiting, send);
+    return through(chatCommand(link.nextId(), to, request, action), waiting, send);
   };
   const send: Send = (text, request) => command({ kind: "prompt", text }, request, deliverPrompt);
+  // A chat's first prompt, which makes the chat at `to`.
+  const start = (to: ChatRef, action: Extract<ChatAction, { kind: "prompt" }>, request: RequestId) => command(action, request, deliverPrompt, to);
   const act = (action: ChatAction, request: RequestId) => command(action, request, deliver);
   const answering = {
     answers,
@@ -141,5 +144,5 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
       setStopFailed(stopProblem(settled));
     });
   };
-  return { send, lates, answering, stop: { stopping, problem: stopFailed, stop } };
+  return { send, start, lates, answering, stop: { stopping, problem: stopFailed, stop } };
 }
