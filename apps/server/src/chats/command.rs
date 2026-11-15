@@ -92,15 +92,18 @@ async fn start(
         at: chat.at,
     };
     workspace.add_chat(chat, &asked).await?;
+    let Some(attempt) = workspace.begin_attempt(&command.request, chat.at).await? else {
+        return Err(link::offline());
+    };
     let sent = [
         Message::ChatCommand(command.clone()),
         link::follow(workspace.id(), &command.chat, 0),
     ];
-    if let Err(fault) = link::send_all(shared, chat.machine_id, sent.into()) {
-        workspace.forget_chat(&command.chat).await?;
+    if let Err(fault) = link::send_all(shared, chat.machine_id, sent.into(), attempt.number) {
+        workspace.forget_chat(&command.chat, attempt.number).await?;
         return Err(fault);
     }
-    workspace.mark_sent(&command.request, true).await?;
+    workspace.queued(&command.request, attempt).await?;
     workspace.chat_made(&command.chat, &member.id).await?;
     shared.wake_feeds(workspace.id());
     Ok(())
@@ -142,13 +145,12 @@ async fn go_on(
         at: shared.now(),
     };
     let recorded = workspace.record_request(&asked).await?;
-    let refusals = match recorded {
+    match recorded {
         Recorded::Conflict => return Err(conflict()),
         // Its receipt has ended it: nothing more to send.
         Recorded::Same { open: false } => return Ok(()),
-        Recorded::New => 0,
-        Recorded::Same { open: true } => workspace.refusals(&command.request).await?,
-    };
+        Recorded::New | Recorded::Same { open: true } => {}
+    }
     // A prompt goes after one its core refused for now, once that one is sent again.
     let prompt = matches!(command.action, ChatAction::Prompt { .. });
     if prompt
@@ -157,22 +159,30 @@ async fn go_on(
             .await?
     {
         if recorded == Recorded::New {
-            workspace.forget_request(&command.request).await?;
+            workspace.forget_request(&command.request, 0).await?;
         }
         return Err(busy());
     }
+    let begun = workspace
+        .begin_attempt(&command.request, shared.now())
+        .await?;
+    // Ended meanwhile by its receipt: nothing more to send.
+    let Some(attempt) = begun else {
+        return Ok(());
+    };
     let sent = [
         Message::ChatCommand(command.clone()),
         link::follow(workspace.id(), &command.chat, chat.core_seq),
     ];
-    if let Err(fault) = link::send_all(shared, &chat.machine, sent.into()) {
+    if let Err(fault) = link::send_all(shared, &chat.machine, sent.into(), attempt.number) {
         if recorded == Recorded::New {
-            workspace.forget_request(&command.request).await?;
+            workspace
+                .forget_request(&command.request, attempt.number)
+                .await?;
         }
         return Err(fault);
     }
-    // Sent, unless its core refused it again meanwhile: only its answer to this send counts.
-    workspace.resent(&command.request, refusals).await
+    workspace.queued(&command.request, attempt).await
 }
 
 fn busy() -> Fault {
@@ -254,7 +264,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
         let mut serving = attach(shared, &ada, &["chat.serve"]);
         let ask = |command| take(&ada.member, &ada.asker, shared, command);
 
@@ -309,7 +319,7 @@ mod tests {
         assert!(workspace.has_request(&id("r-2")).await.unwrap());
         assert_eq!(sent(&mut serving).len(), 2);
         // Its core refused it for now; sent again, only its next answer counts.
-        workspace.mark_refused(&id("r-2")).await.unwrap();
+        workspace.mark_refused(&id("r-2"), 1).await.unwrap();
         let retried = take(
             &ada.member,
             &ada.asker,

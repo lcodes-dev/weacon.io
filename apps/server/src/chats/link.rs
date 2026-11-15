@@ -13,12 +13,14 @@ use crate::shared::Shared;
 /// What a core must offer to be sent chats' commands and queries.
 pub(crate) const SERVE: Code = code!("chat.serve");
 
-/// Sends `messages` to `machine`, all of them or none, refusing with `machine.offline` when it
-/// isn't connected, doesn't serve chats or hasn't room for them all.
+/// Sends `messages` to `machine`, all of them or none, a command among them as its request's
+/// `attempt`; refuses with `machine.offline` when it isn't connected, doesn't serve chats or
+/// hasn't room for them all.
 pub(crate) fn send_all(
     shared: &Shared,
     machine: &MachineId,
     messages: Vec<Message>,
+    attempt: i64,
 ) -> Result<(), Fault> {
     let sender = shared.links.sender(machine, &Capability::new(SERVE));
     let sender = sender.and_then(|to| to.upgrade()).ok_or_else(offline)?;
@@ -27,7 +29,7 @@ pub(crate) fn send_all(
         .try_reserve_many(messages.len())
         .map_err(|_| offline())?;
     for (permit, message) in permits.zip(messages) {
-        permit.send(envelope(shared, machine, message));
+        permit.send(envelope(shared, machine, message, attempt));
     }
     Ok(())
 }
@@ -49,14 +51,20 @@ impl Route {
     }
 
     /// Sends `message` over this connection once its queue has room, waiting as long as the
-    /// sockets' timing allows; refuses with `machine.offline` when it has ended or has no room.
-    pub(crate) async fn deliver(&self, shared: &Shared, message: Message) -> Result<(), Fault> {
+    /// sockets' timing allows, a command as its request's `attempt`; refuses with
+    /// `machine.offline` when it has ended or has no room.
+    pub(crate) async fn deliver(
+        &self,
+        shared: &Shared,
+        message: Message,
+        attempt: i64,
+    ) -> Result<(), Fault> {
         let sender = self.to.upgrade().ok_or_else(offline)?;
         let room = timeout(shared.sockets.room_within, sender.reserve()).await;
         let Ok(Ok(permit)) = room else {
             return Err(offline());
         };
-        permit.send(envelope(shared, &self.machine, message));
+        permit.send(envelope(shared, &self.machine, message, attempt));
         Ok(())
     }
 
@@ -72,11 +80,11 @@ impl Route {
     }
 }
 
-// `message` in an envelope of its own, remembered when it holds a command.
-fn envelope(shared: &Shared, machine: &MachineId, message: Message) -> Envelope {
+// `message` in an envelope of its own, remembered as `attempt` when it holds a command.
+fn envelope(shared: &Shared, machine: &MachineId, message: Message, attempt: i64) -> Envelope {
     let id = shared.links.next_id();
     if let Message::ChatCommand(command) = &message {
-        shared.chats.sent.sent(machine, id, command);
+        shared.chats.sent.sent(machine, id, command, attempt);
     }
     Envelope { id, message }
 }

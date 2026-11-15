@@ -1,9 +1,9 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatCommand, ChatEvent, ChatId, MemberId, Receipt, RequestId};
+use weacon_protocol::{ChatCommand, ChatId, MemberId, RequestId};
 
 use super::super::{Workspace, failed, unreadable};
-use super::{Incoming, unstorable};
+use super::unstorable;
 
 /// A command a member sent a chat, as it is relayed, with `by` stamped.
 #[derive(Debug)]
@@ -19,12 +19,15 @@ pub(crate) struct OpenRequest {
     pub(crate) command: ChatCommand,
     /// When it was first sent.
     pub(crate) sent_at: i64,
-    /// Whether it was sent to its machine, as far as the server knows.
+    /// Whether it was ever queued for its machine.
     pub(crate) sent: bool,
-    /// Whether its machine's core refused it for now when it was last sent.
+    /// Whether its machine's core refused its current attempt for now.
     pub(crate) refused: bool,
-    /// How often its machine's core refused it for now.
-    pub(crate) refusals: i64,
+    /// The number of its current send attempt, 0 before the first.
+    pub(crate) attempt: i64,
+    /// When its current send attempt began, while it may still be waiting to go out; 0 once
+    /// it went out or failed to.
+    pub(crate) attempt_at: i64,
 }
 
 /// Whether a request was seen before.
@@ -95,47 +98,6 @@ impl Workspace {
         Ok(found.is_some())
     }
 
-    /// Takes `request` out of the ledger: it was recorded but never sent, unless another sender
-    /// of it sent it meanwhile.
-    pub(crate) async fn forget_request(&self, request: &RequestId) -> Result<(), Fault> {
-        sqlx::query(
-            "DELETE FROM chat_requests WHERE workspace_id = ? AND request_id = ? AND sent = 0",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(())
-    }
-
-    /// Marks `request` sent, before it is sent again, so no failed send of it forgets it
-    /// meanwhile; whether it is still there to send.
-    pub(crate) async fn claim(&self, request: &RequestId) -> Result<bool, Fault> {
-        let claimed = sqlx::query(
-            "UPDATE chat_requests SET sent = 1
-             WHERE workspace_id = ? AND request_id = ? AND open = 1",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(claimed.rows_affected() > 0)
-    }
-
-    /// Marks `request` sent to its machine, or not sent after all.
-    pub(crate) async fn mark_sent(&self, request: &RequestId, sent: bool) -> Result<(), Fault> {
-        sqlx::query("UPDATE chat_requests SET sent = ? WHERE workspace_id = ? AND request_id = ?")
-            .bind(sent)
-            .bind(self.id.as_str())
-            .bind(request.as_str())
-            .execute(&self.db.writer)
-            .await
-            .map_err(failed)?;
-        Ok(())
-    }
-
     /// Closes `request` to `chat`, which its receipt ended.
     pub(in crate::db) async fn end_request(
         &self,
@@ -156,106 +118,10 @@ impl Workspace {
         Ok(())
     }
 
-    /// Ends `receipt`'s request to `chat` with it, a final receipt the server writes for the
-    /// chat's machine, unless another receipt ended it first or, when `refused_only`, it was
-    /// sent again since its core refused it; whether it did.
-    pub(crate) async fn end_open(
-        &self,
-        chat: &ChatId,
-        receipt: Receipt,
-        at: i64,
-        refused_only: bool,
-    ) -> Result<bool, Fault> {
-        let mut transaction = self.db.write().await?;
-        let open: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM chat_requests WHERE workspace_id = ? AND chat_id = ?
-                 AND request_id = ? AND open = 1 AND (refused = 1 OR NOT ?))",
-        )
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(receipt.request.as_str())
-        .bind(refused_only)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(failed)?;
-        if !open {
-            return Ok(false);
-        }
-        let event = ChatEvent::Receipt { receipt };
-        let incoming = Incoming {
-            core_seq: None,
-            event: &event,
-            at,
-        };
-        self.append(transaction, chat, &[incoming]).await?;
-        Ok(true)
-    }
-
-    /// Whether a request to `chat` other than `request` is open and was refused for now.
-    pub(crate) async fn refused_before(
-        &self,
-        chat: &ChatId,
-        request: &RequestId,
-    ) -> Result<bool, Fault> {
-        sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM chat_requests WHERE workspace_id = ? AND chat_id = ?
-                 AND request_id != ? AND open = 1 AND refused = 1)",
-        )
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(request.as_str())
-        .fetch_one(&self.db.readers)
-        .await
-        .map_err(failed)
-    }
-
-    /// Marks `request` refused for now by its machine's core, which so never got it.
-    pub(crate) async fn mark_refused(&self, request: &RequestId) -> Result<(), Fault> {
-        sqlx::query(
-            "UPDATE chat_requests SET refused = 1, sent = 0, refusals = refusals + 1
-             WHERE workspace_id = ? AND request_id = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(())
-    }
-
-    /// Marks `request` sent once it is queued for its machine, its core's last refusal of it
-    /// forgotten, unless its core refused it again since it had been refused `refusals` times.
-    pub(crate) async fn resent(&self, request: &RequestId, refusals: i64) -> Result<(), Fault> {
-        sqlx::query(
-            "UPDATE chat_requests SET refused = 0, sent = 1
-             WHERE workspace_id = ? AND request_id = ? AND refusals = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .bind(refusals)
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(())
-    }
-
-    /// How often its core refused `request` for now.
-    pub(crate) async fn refusals(&self, request: &RequestId) -> Result<i64, Fault> {
-        sqlx::query_scalar(
-            "SELECT refusals FROM chat_requests WHERE workspace_id = ? AND request_id = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .fetch_optional(&self.db.readers)
-        .await
-        .map_err(failed)
-        .map(Option::unwrap_or_default)
-    }
-
     /// The commands to `chat` no receipt has ended yet, oldest first.
     pub(crate) async fn open_requests(&self, chat: &ChatId) -> Result<Vec<OpenRequest>, Fault> {
-        sqlx::query_as::<_, (String, i64, bool, bool, i64)>(
-            "SELECT command, sent_at, sent, refused, refusals FROM chat_requests
+        sqlx::query_as::<_, (String, i64, bool, bool, i64, i64)>(
+            "SELECT command, sent_at, sent, refused, attempt, attempt_at FROM chat_requests
              WHERE workspace_id = ? AND chat_id = ? AND open = 1 ORDER BY sent_at, rowid",
         )
         .bind(self.id.as_str())
@@ -264,14 +130,15 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(command, sent_at, sent, refused, refusals)| {
+        .map(|(command, sent_at, sent, refused, attempt, attempt_at)| {
             let command = stored_command(&command)?;
             Ok(OpenRequest {
                 command,
                 sent_at,
                 sent,
                 refused,
-                refusals,
+                attempt,
+                attempt_at,
             })
         })
         .collect()
@@ -431,8 +298,8 @@ mod tests {
         let db = crate::db::Db::open(&path).await.unwrap();
         let one = db.workspace(&id("w1")).await.unwrap();
 
-        one.forget_request(&id("r-1")).await.unwrap();
-        one.forget_request(&id("r-2")).await.unwrap();
+        one.forget_request(&id("r-1"), 0).await.unwrap();
+        one.forget_request(&id("r-2"), 0).await.unwrap();
 
         assert!(one.has_request(&id("r-1")).await.unwrap());
         assert!(!one.has_request(&id("r-2")).await.unwrap());
@@ -445,12 +312,12 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         // The first sender records it; the second finds it and sends it.
         assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
-        let again = record(&one, "r-2", "c-1", "Go", NOW).await;
-        assert_eq!(again, Recorded::Same { open: true });
-        one.mark_sent(&id("r-2"), true).await.unwrap();
+        let first = one.begin_attempt(&id("r-2"), NOW).await.unwrap().unwrap();
+        let second = one.begin_attempt(&id("r-2"), NOW).await.unwrap().unwrap();
+        one.queued(&id("r-2"), second).await.unwrap();
 
         // The first sender's send failed.
-        one.forget_request(&id("r-2")).await.unwrap();
+        one.forget_request(&id("r-2"), first.number).await.unwrap();
 
         assert!(one.has_request(&id("r-2")).await.unwrap());
         let open = opened(one.open_requests(&id("c-1")).await.unwrap());
@@ -458,23 +325,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_sent_again_counts_only_its_cores_answer_to_that_send() {
+    async fn only_the_current_attempts_refusal_counts_and_a_later_send_clears_it() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
         assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
-        one.mark_refused(&id("r-2")).await.unwrap();
-        let before = one.refusals(&id("r-2")).await.unwrap();
+        let first = one.begin_attempt(&id("r-2"), NOW).await.unwrap().unwrap();
         let refused = |one: Vec<OpenRequest>| one.iter().any(|open| open.refused);
 
+        assert!(one.mark_refused(&id("r-2"), first.number).await.unwrap());
+        assert!(!one.mark_refused(&id("r-2"), 0).await.unwrap());
+        let second = one
+            .begin_attempt(&id("r-2"), NOW + 5)
+            .await
+            .unwrap()
+            .unwrap();
         // Refused again while it was being sent: that refusal stands.
-        one.mark_refused(&id("r-2")).await.unwrap();
-        one.resent(&id("r-2"), before).await.unwrap();
+        assert!(one.mark_refused(&id("r-2"), second.number).await.unwrap());
+        one.queued(&id("r-2"), second).await.unwrap();
         assert!(refused(one.open_requests(&id("c-1")).await.unwrap()));
-        one.resent(&id("r-2"), before + 1).await.unwrap();
-        assert!(!refused(one.open_requests(&id("c-1")).await.unwrap()));
-        assert_eq!(one.refusals(&id("r-2")).await.unwrap(), 2);
-        assert_eq!(one.refusals(&id("r-9")).await.unwrap(), 0);
+        let third = one
+            .begin_attempt(&id("r-2"), NOW + 9)
+            .await
+            .unwrap()
+            .unwrap();
+        one.queued(&id("r-2"), first).await.unwrap();
+        assert!(refused(one.open_requests(&id("c-1")).await.unwrap()));
+        one.queued(&id("r-2"), third).await.unwrap();
+        let open = one.open_requests(&id("c-1")).await.unwrap();
+        assert!(!refused(open), "{third:?}");
+        let request = one.open_requests(&id("c-1")).await.unwrap().pop().unwrap();
+        assert_eq!((request.attempt, request.attempt_at), (3, 0));
+        assert_eq!(one.begin_attempt(&id("r-9"), NOW).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -483,9 +365,9 @@ mod tests {
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
         assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
-        one.mark_refused(&id("r-2")).await.unwrap();
+        assert!(one.mark_refused(&id("r-2"), 0).await.unwrap());
 
-        one.forget_request(&id("r-2")).await.unwrap();
+        one.forget_request(&id("r-2"), 0).await.unwrap();
 
         assert!(!one.has_request(&id("r-2")).await.unwrap());
     }
@@ -500,8 +382,8 @@ mod tests {
 
         assert!(one.has_request(&id("r-1")).await.unwrap());
         assert!(!two.has_request(&id("r-1")).await.unwrap());
-        one.forget_request(&id("r-1")).await.unwrap();
-        two.forget_request(&id("r-c-1")).await.unwrap();
+        one.forget_request(&id("r-1"), 0).await.unwrap();
+        two.forget_request(&id("r-c-1"), 0).await.unwrap();
 
         assert!(!one.has_request(&id("r-1")).await.unwrap());
         assert!(one.has_request(&id("r-c-1")).await.unwrap());

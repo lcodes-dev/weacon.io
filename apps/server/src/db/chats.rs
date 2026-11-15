@@ -1,3 +1,4 @@
+mod attempts;
 mod events;
 mod ledger;
 mod runs;
@@ -9,6 +10,7 @@ use weacon_protocol::{
     code,
 };
 
+pub(crate) use attempts::Guard;
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
 pub(crate) use ledger::{NewRequest, OpenRequest, Recorded};
@@ -104,11 +106,11 @@ impl Workspace {
         Ok(true)
     }
 
-    /// Takes back `chat`, made for a first prompt its machine never got, unless it was made, or
-    /// its first prompt sent, meanwhile.
-    pub(crate) async fn forget_chat(&self, chat: &ChatId) -> Result<(), Fault> {
+    /// Takes back `chat`, made for a first prompt its machine never got, unless it was made,
+    /// its first prompt queued, or another attempt of it begun than `attempt`, meanwhile.
+    pub(crate) async fn forget_chat(&self, chat: &ChatId, attempt: i64) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        if self.made(&mut transaction, chat).await? {
+        if self.made(&mut transaction, chat, attempt).await? {
             return Ok(());
         }
         sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
@@ -126,15 +128,21 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
-    // Whether `chat` was made, or its first prompt is being sent.
-    async fn made(&self, connection: &mut SqliteConnection, chat: &ChatId) -> Result<bool, Fault> {
+    // Whether `chat` was made, or its first prompt queued or sent by another attempt.
+    async fn made(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        attempt: i64,
+    ) -> Result<bool, Fault> {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM changes WHERE workspace_id = ?1 AND chat_id = ?2)
                  OR EXISTS (SELECT 1 FROM chat_requests
-                     WHERE workspace_id = ?1 AND chat_id = ?2 AND sent = 1)",
+                     WHERE workspace_id = ?1 AND chat_id = ?2 AND (sent = 1 OR attempt != ?3))",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
+        .bind(attempt)
         .fetch_one(connection)
         .await
         .map_err(failed)
@@ -533,17 +541,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_whose_first_prompt_is_being_sent_is_not_taken_back() {
+    async fn a_chat_whose_first_prompt_was_queued_or_sent_again_is_not_taken_back() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         begin(&one, "c-1", "m1", NOW).await.unwrap();
         one.mark_sent(&id("r-c-1"), true).await.unwrap();
 
-        one.forget_chat(&id("c-1")).await.unwrap();
+        one.forget_chat(&id("c-1"), 0).await.unwrap();
 
         assert!(one.chat(&id("c-1")).await.unwrap().is_some());
         one.mark_sent(&id("r-c-1"), false).await.unwrap();
-        one.forget_chat(&id("c-1")).await.unwrap();
+        one.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
+        one.forget_chat(&id("c-1"), 0).await.unwrap();
+        assert!(one.chat(&id("c-1")).await.unwrap().is_some());
+        one.forget_chat(&id("c-1"), 1).await.unwrap();
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
     }
 
@@ -558,8 +569,8 @@ mod tests {
         assert_eq!(indexed(&one, "c-1").await, 0);
         assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
 
-        one.forget_chat(&id("c-1")).await.unwrap();
-        one.forget_chat(&id("c-2")).await.unwrap();
+        one.forget_chat(&id("c-1"), 0).await.unwrap();
+        one.forget_chat(&id("c-2"), 0).await.unwrap();
 
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
         assert!(!one.has_request(&id("r-c-1")).await.unwrap());

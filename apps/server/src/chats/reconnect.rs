@@ -5,11 +5,11 @@ use std::future::Future;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::task::JoinSet;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatId, Message, Outcome, Receipt, code};
+use weacon_protocol::{ChatCommand, ChatId, Message, Outcome, Receipt, code};
 
 use super::answers;
 use super::link::{self, Route};
-use crate::db::{OpenRequest, Workspace};
+use crate::db::{Guard, OpenRequest, Workspace};
 use crate::links::Connected;
 use crate::shared::Shared;
 
@@ -76,7 +76,7 @@ async fn resend(shared: &Shared, connected: &Connected, route: &Route) -> Result
         for (chat, core_seq) in workspace.unsettled_on(machine).await? {
             let open = workspace.open_requests(&chat).await?;
             route
-                .deliver(shared, link::follow(workspace.id(), &chat, core_seq))
+                .deliver(shared, link::follow(workspace.id(), &chat, core_seq), 0)
                 .await?;
             for request in open {
                 again(shared, &workspace, route, &chat, request).await?;
@@ -100,7 +100,8 @@ async fn unserved(shared: &Shared, connected: &Connected) -> Result<usize, Fault
 }
 
 // Sends `request` again over `route` while it is recent; one its core refused for now and too
-// old to send again ends in a failed receipt, and any other is left to its receipts.
+// old to send again ends in a failed receipt, and any other is left to its receipts. One being
+// sent meanwhile is left to that send.
 async fn again(
     shared: &Shared,
     workspace: &Workspace,
@@ -108,31 +109,29 @@ async fn again(
     chat: &ChatId,
     request: OpenRequest,
 ) -> Result<(), Fault> {
-    let id = request.command.request.clone();
-    if recent(shared, request.sent_at) {
-        if !workspace.claim(&id).await? {
-            return Ok(());
-        }
-        // Still refused until it is queued, so no later prompt goes before it.
-        let sent = route
-            .deliver(shared, Message::ChatCommand(request.command))
-            .await;
-        if sent.is_err() && !request.sent {
-            workspace.mark_sent(&id, false).await?;
-        }
-        sent?;
-        return workspace.resent(&id, request.refusals).await;
+    let now = shared.now();
+    if in_flight(shared, now, request.attempt_at) {
+        return Ok(());
+    }
+    if recent(now, request.sent_at) {
+        return send_again(shared, workspace, route, request.command)
+            .await
+            .map(drop);
     }
     if !request.refused {
         return Ok(());
     }
     let receipt = Receipt {
-        request: id,
+        request: request.command.request,
         outcome: Outcome::Failed {
             code: code!("chat.unavailable"),
         },
     };
-    answers::end(shared, workspace, chat, receipt, true).await
+    let guard = Guard {
+        attempt: request.attempt,
+        refused_only: true,
+    };
+    answers::end(shared, workspace, chat, receipt, guard).await
 }
 
 /// Sends `route`'s machine the first prompts in `workspace` it never got, and takes back the
@@ -140,54 +139,66 @@ async fn again(
 async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) -> Result<(), Fault> {
     for (chat, owner) in workspace.unmade_on(route.machine()).await? {
         let Some(first) = workspace.open_requests(&chat).await?.into_iter().next() else {
-            workspace.forget_chat(&chat).await?;
+            workspace.forget_chat(&chat, 0).await?;
             continue;
         };
-        if recent(shared, first.sent_at) {
-            send_first(shared, workspace, route, first).await?;
-        } else if !first.sent {
-            workspace.forget_chat(&chat).await?;
+        // Being sent meanwhile: that send makes its chat.
+        let now = shared.now();
+        if in_flight(shared, now, first.attempt_at) {
             continue;
         }
-        // Made only once it was sent, so no later prompt goes before it; one sent long ago may
-        // have run, so its chat is followed rather than taken back.
+        if recent(now, first.sent_at) {
+            send_again(shared, workspace, route, first.command).await?;
+        } else if !first.sent {
+            workspace.forget_chat(&chat, first.attempt).await?;
+            continue;
+        }
+        // Made only once it was queued, so no later prompt goes before it; one queued long ago
+        // may have run, so its chat is followed rather than taken back.
         if !workspace.chat_made(&chat, &owner).await? {
             continue;
         }
         shared.wake_feeds(workspace.id());
         route
-            .deliver(shared, link::follow(workspace.id(), &chat, 0))
+            .deliver(shared, link::follow(workspace.id(), &chat, 0), 0)
             .await?;
     }
     Ok(())
 }
 
-// Sends `first` over `route`, marked sent before it is, so its chat failing elsewhere meanwhile
-// can't be taken back.
-async fn send_first(
+// Sends `command` again over `route` as a new attempt of its request, unless no open request
+// is there to send; whether it was queued.
+async fn send_again(
     shared: &Shared,
     workspace: &Workspace,
     route: &Route,
-    first: OpenRequest,
-) -> Result<(), Fault> {
-    let request = first.command.request.clone();
-    // Claimed first; one its chat's sender forgot meanwhile is never sent.
-    if !workspace.claim(&request).await? {
-        return Ok(());
-    }
+    command: ChatCommand,
+) -> Result<bool, Fault> {
+    let request = command.request.clone();
+    let Some(attempt) = workspace.begin_attempt(&request, shared.now()).await? else {
+        return Ok(false);
+    };
+    // Still refused until it is queued, so no later prompt goes before it.
     let sent = route
-        .deliver(shared, Message::ChatCommand(first.command))
+        .deliver(shared, Message::ChatCommand(command), attempt.number)
         .await;
-    if sent.is_err() {
-        workspace.mark_sent(&request, false).await?;
+    if let Err(fault) = sent {
+        workspace.abandon(&request, attempt).await?;
+        return Err(fault);
     }
-    sent?;
-    workspace.resent(&request, first.refusals).await
+    workspace.queued(&request, attempt).await?;
+    Ok(true)
 }
 
-// Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of now.
-fn recent(shared: &Shared, sent_at: i64) -> bool {
-    sent_at >= shared.now().saturating_sub(RESEND_WITHIN)
+// Whether a send attempt begun at `attempt_at` may still be waiting, at `now`, for room to go out.
+fn in_flight(shared: &Shared, now: i64, attempt_at: i64) -> bool {
+    let waits = i64::try_from(shared.sockets.room_within.as_secs()).unwrap_or(i64::MAX);
+    attempt_at >= now.saturating_sub(waits.saturating_add(1))
+}
+
+// Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of `now`.
+fn recent(now: i64, sent_at: i64) -> bool {
+    sent_at >= now.saturating_sub(RESEND_WITHIN)
 }
 
 #[cfg(test)]
@@ -359,7 +370,7 @@ mod tests {
         let mut full = attach(shared, &ada, &["chat.serve"]);
         let other = || link::follow(&id("w1"), &id("c-9"), 0);
         let queued = (0..crate::links::QUEUE).map(|_| other()).collect();
-        link::send_all(shared, &ada.machine, queued).unwrap();
+        link::send_all(shared, &ada.machine, queued, 0).unwrap();
 
         pick_up(shared.clone(), connected(&ada)).await;
 
@@ -520,7 +531,7 @@ mod tests {
         shared.sockets.room_within = Duration::from_hours(1);
         let _full = attach(&shared, &ada, &["chat.serve"]);
         let queued = (0..crate::links::QUEUE).map(|_| link::follow(&id("w1"), &id("c-9"), 0));
-        link::send_all(&shared, &ada.machine, queued.collect()).unwrap();
+        link::send_all(&shared, &ada.machine, queued.collect(), 0).unwrap();
         let other = Connected {
             machine: id("mc-2"),
             owner: ada.asker.account.clone(),
@@ -546,7 +557,7 @@ mod tests {
         make(workspace, "c-1", "m1", NOW - 601).await.unwrap();
         make(workspace, "c-2", "m1", NOW - 601).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
         let mut feeds = shared.changes.subscribe();
         let mut attached = attach(shared, &ada, &["chat.serve"]);
 
@@ -586,41 +597,83 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
         let _attached = attach(shared, &ada, &["chat.serve"]);
         let route = Route::open_now(shared, &ada.machine).unwrap();
         route.close(shared);
         let chat = id::<ChatId>("c-1");
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        again(shared, workspace, &route, &id("c-1"), request)
+        again(shared, workspace, &route, &chat, request)
             .await
             .unwrap_err();
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        assert!(request.refused && !request.sent, "{request:?}");
-        // One sent before stays sent when sending it again fails.
-        workspace.mark_sent(&id("r-c-1"), true).await.unwrap();
-        let sent_before = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        again(shared, workspace, &route, &chat, sent_before)
-            .await
-            .unwrap_err();
-        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
-        assert!(request.sent, "{request:?}");
-        workspace.mark_refused(&id("r-c-1")).await.unwrap();
-        // Sent again by a member meanwhile: its core's answer to that send counts, not this.
-        let refusals = workspace.refusals(&id("r-c-1")).await.unwrap();
-        workspace.resent(&id("r-c-1"), refusals).await.unwrap();
+        assert!(request.refused && request.attempt == 1, "{request:?}");
+        // Sent again by a member since the pick-up read it: that send's answer counts.
+        workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
         let receipt = Receipt {
             request: id("r-c-1"),
             outcome: Outcome::Failed {
                 code: code!("chat.unavailable"),
             },
         };
-        answers::end(shared, workspace, &id("c-1"), receipt, true)
+        let guard = Guard {
+            attempt: request.attempt,
+            refused_only: true,
+        };
+        answers::end(shared, workspace, &chat, receipt, guard)
             .await
             .unwrap();
         assert_eq!(workspace.open_requests(&chat).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pick_up_whose_send_fails_undoes_no_other_pick_ups_send() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let older = attach(shared, &ada, &["chat.serve"]);
+        let gone = Route::open_now(shared, &ada.machine).unwrap();
+        let mut newer = attach(shared, &ada, &["chat.serve"]);
+        drop(older);
+        let route = Route::open_now(shared, &ada.machine).unwrap();
+        let chat = id::<ChatId>("c-1");
+        let stale = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        let read = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+
+        // One pick-up sends it; the other, which read it unsent, then fails to.
+        again(shared, workspace, &route, &chat, read).await.unwrap();
+        again(shared, workspace, &gone, &chat, stale)
+            .await
+            .unwrap_err();
+        workspace.forget_request(&id("r-c-1"), 2).await.unwrap();
+
+        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        assert!(request.sent, "{request:?}");
+        assert_eq!(sent(&mut newer), [resent("c-1")]);
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_being_sent_is_neither_made_nor_taken_back_by_another_pick_up() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        begin(workspace, "c-1", "m1", NOW - 601).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        // A pick-up began sending it just now, and waits for room.
+        workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
+
+        assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
+
+        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
+        assert!(!chat.made);
+        assert!(sent(&mut attached).is_empty());
     }
 
     #[tokio::test]
@@ -630,12 +683,12 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        workspace.mark_refused(&id("r-c-1")).await.unwrap();
+        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
         let mut shared = fixture.shared.clone();
         shared.sockets.room_within = Duration::from_hours(1);
         let mut full = attach(&shared, &ada, &["chat.serve"]);
         let queued = (0..crate::links::QUEUE).map(|_| link::follow(&id("w1"), &id("c-9"), 0));
-        link::send_all(&shared, &ada.machine, queued.collect()).unwrap();
+        link::send_all(&shared, &ada.machine, queued.collect(), 0).unwrap();
         let route = Route::open_now(&shared, &ada.machine).unwrap();
         let chat = id::<ChatId>("c-1");
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
@@ -667,11 +720,11 @@ mod tests {
         let read = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
 
         // Its first sender's send failed and forgot it after the pick-up read it.
-        workspace.forget_request(&id("r-c-1")).await.unwrap();
+        workspace.forget_request(&id("r-c-1"), 0).await.unwrap();
         again(shared, workspace, &route, &chat, read).await.unwrap();
 
         assert!(sent(&mut attached).is_empty());
-        // Claimed first, a failed send of it no longer forgets it.
+        // Queued once, a failed send of it no longer forgets it.
         make(workspace, "c-2", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         let other = workspace
@@ -683,34 +736,9 @@ mod tests {
         again(shared, workspace, &route, &id("c-2"), other)
             .await
             .unwrap();
-        workspace.forget_request(&id("r-c-2")).await.unwrap();
+        workspace.forget_request(&id("r-c-2"), 1).await.unwrap();
         assert!(workspace.has_request(&id("r-c-2")).await.unwrap());
         assert_eq!(sent(&mut attached), [resent("c-2")]);
-    }
-
-    #[tokio::test]
-    async fn a_resend_with_no_room_leaves_the_last_send_the_one_whose_answer_counts() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let ada = ada(&fixture).await;
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
-        link::send_all(shared, &ada.machine, vec![resent("c-1")]).unwrap();
-        let first = tokio::time::timeout(crate::test_support::PATIENCE, attached.incoming.recv());
-        let first = first.await.unwrap().unwrap();
-        let queued = (0..crate::links::QUEUE).map(|_| follow_query("c-9"));
-        link::send_all(shared, &ada.machine, queued.collect()).unwrap();
-        let route = Route::open_now(shared, &ada.machine).unwrap();
-
-        route.deliver(shared, resent("c-1")).await.unwrap_err();
-
-        assert!(
-            shared
-                .chats
-                .sent
-                .answered(&ada.machine, first.id)
-                .unwrap()
-                .current
-        );
     }
 
     #[tokio::test]
@@ -730,8 +758,9 @@ mod tests {
             .pop()
             .unwrap();
 
-        workspace.forget_chat(&id("c-1")).await.unwrap();
-        send_first(shared, workspace, &route, first).await.unwrap();
+        workspace.forget_chat(&id("c-1"), 0).await.unwrap();
+        let sent_again = send_again(shared, workspace, &route, first.command).await;
+        assert!(!sent_again.unwrap());
 
         assert!(sent(&mut attached).is_empty());
     }
@@ -746,7 +775,7 @@ mod tests {
         begin(workspace, "c-2", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         for request in ["r-c-1", "r-c-2"] {
-            workspace.mark_refused(&id(request)).await.unwrap();
+            workspace.mark_refused(&id(request), 0).await.unwrap();
         }
         let _attached = attach(shared, &ada, &["chat.serve"]);
 
@@ -773,7 +802,7 @@ mod tests {
 
         route.close(shared);
         assert!(shared.links.is_open(&ada.machine));
-        let delivered = route.deliver(shared, follow_query("c-1")).await;
+        let delivered = route.deliver(shared, follow_query("c-1"), 0).await;
         assert_eq!(delivered.unwrap_err().code(), &code!("machine.offline"));
         assert!(sent(&mut newer).is_empty());
         Route::open_now(shared, &ada.machine).unwrap().close(shared);

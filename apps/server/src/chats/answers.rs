@@ -8,7 +8,7 @@ use weacon_protocol::{
     ChatCommand, ChatId, ErrorBody, MachineId, Message, Outcome, Receipt, RequestId, WorkspaceId,
 };
 
-use crate::db::Workspace;
+use crate::db::{Guard, Workspace};
 use crate::shared::Shared;
 use crate::socket::Closed;
 
@@ -25,44 +25,36 @@ pub(crate) struct Sent {
 struct Kept {
     order: VecDeque<(MachineId, u32)>,
     asked: HashMap<(MachineId, u32), Asked>,
-    /// The envelope each request went in last.
-    latest: HashMap<(WorkspaceId, RequestId), u32>,
 }
 
-/// The command an envelope carried, and whether it was the last envelope its request went in.
+/// The command an envelope carried, and the send attempt of its request it was.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Asked {
     workspace: WorkspaceId,
     chat: ChatId,
     request: RequestId,
-    pub(super) current: bool,
+    attempt: i64,
 }
 
 impl Sent {
-    /// Remembers that the envelope `id` carried `command` to `machine`.
-    pub(crate) fn sent(&self, machine: &MachineId, id: u32, command: &ChatCommand) {
+    /// Remembers that the envelope `id` carried `command` to `machine`, as its `attempt`.
+    pub(crate) fn sent(&self, machine: &MachineId, id: u32, command: &ChatCommand, attempt: i64) {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (machine.clone(), id);
         let asked = Asked {
             workspace: command.workspace.clone(),
             chat: command.chat.clone(),
             request: command.request.clone(),
-            current: false,
+            attempt,
         };
-        let request = (asked.workspace.clone(), asked.request.clone());
-        kept.latest.insert(request, id);
         if kept.asked.insert(key.clone(), asked).is_none() {
             kept.order.push_back(key);
         }
         // One is added at a time, so letting go of the oldest keeps at most `KEPT`.
         if kept.order.len() > KEPT
             && let Some(oldest) = kept.order.pop_front()
-            && let Some(gone) = kept.asked.remove(&oldest)
         {
-            let request = (gone.workspace, gone.request);
-            if kept.latest.get(&request) == Some(&oldest.1) {
-                kept.latest.remove(&request);
-            }
+            kept.asked.remove(&oldest);
         }
     }
 
@@ -70,30 +62,22 @@ impl Sent {
     pub(crate) fn answered(&self, machine: &MachineId, id: u32) -> Option<Asked> {
         let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
         let key = (machine.clone(), id);
-        let mut asked = kept.asked.remove(&key)?;
+        let asked = kept.asked.remove(&key)?;
         kept.order.retain(|each| *each != key);
-        let request = (asked.workspace.clone(), asked.request.clone());
-        asked.current = kept.latest.get(&request) == Some(&id);
-        if asked.current {
-            kept.latest.remove(&request);
-        }
         Some(asked)
     }
 }
 
-/// What a core's `answer` to the chat command `asked` makes of it. A refusal for now marks
-/// the command refused and closes the link, so it is sent again once the core connects again;
-/// any other is the command's final receipt, stored in its chat for its feeds to hear.
+/// What a core's `answer` to the chat command `asked` makes of it, while `asked` is its
+/// request's current attempt. A refusal for now marks the request refused and closes the link,
+/// so it is sent again once the core connects again; any other is the command's final receipt,
+/// stored in its chat for its feeds to hear.
 pub(crate) async fn take(
     shared: &Shared,
     machine: &MachineId,
     asked: Asked,
     answer: Message,
 ) -> Result<(), Closed> {
-    // Its request went again since, and the answer to that send is the one that counts.
-    if !asked.current {
-        return Ok(());
-    }
     #[expect(
         clippy::wildcard_enum_match_arm,
         reason = "a core answers a command only with an error or a receipt"
@@ -102,10 +86,15 @@ pub(crate) async fn take(
         Message::Error(ErrorBody {
             retryable: true, ..
         }) => {
-            if let Err(fault) = refused(shared, &asked).await {
-                warn(shared, machine, &asked, "chat refusal not marked", &fault);
-            }
-            return Err(Closed);
+            return match refused(shared, &asked).await {
+                Ok(true) => Err(Closed),
+                // An older attempt's answer: the current one's counts.
+                Ok(false) => Ok(()),
+                Err(fault) => {
+                    warn(shared, machine, &asked, "chat refusal not marked", &fault);
+                    Err(Closed)
+                }
+            };
         }
         Message::Error(ErrorBody { code, .. }) => Outcome::Failed { code },
         Message::Receipt(Receipt { outcome, .. }) => outcome,
@@ -128,21 +117,24 @@ async fn failed(shared: &Shared, asked: &Asked, outcome: Outcome) -> Result<(), 
         request: asked.request.clone(),
         outcome,
     };
-    end(shared, &place, &asked.chat, receipt, false).await
+    let guard = Guard {
+        attempt: asked.attempt,
+        refused_only: false,
+    };
+    end(shared, &place, &asked.chat, receipt, guard).await
 }
 
 /// Ends a request to `chat` with `receipt`, a final receipt the server writes for the chat's
-/// machine, and tells the chat's feeds; nothing when a receipt ended it already or, when
-/// `refused_only`, it was sent again since its core refused it.
+/// machine, and tells the chat's feeds; nothing unless it is open and `guard` holds.
 pub(crate) async fn end(
     shared: &Shared,
     workspace: &Workspace,
     chat: &ChatId,
     receipt: Receipt,
-    refused_only: bool,
+    guard: Guard,
 ) -> Result<(), Fault> {
     if !workspace
-        .end_open(chat, receipt, shared.now(), refused_only)
+        .end_open(chat, receipt, shared.now(), guard)
         .await?
     {
         return Ok(());
@@ -152,11 +144,12 @@ pub(crate) async fn end(
     Ok(())
 }
 
-async fn refused(shared: &Shared, asked: &Asked) -> Result<(), Fault> {
+// Whether the refusal of `asked` counts, its attempt being its request's current one.
+async fn refused(shared: &Shared, asked: &Asked) -> Result<bool, Fault> {
     let Some(place) = shared.db.find_workspace(&asked.workspace).await? else {
-        return Ok(());
+        return Ok(false);
     };
-    place.mark_refused(&asked.request).await
+    place.mark_refused(&asked.request, asked.attempt).await
 }
 
 fn warn(shared: &Shared, machine: &MachineId, asked: &Asked, event: &'static str, fault: &Fault) {
@@ -176,16 +169,21 @@ mod tests {
     use crate::test_support::Fixture;
 
     #[tokio::test]
-    async fn a_refusal_of_an_envelope_its_request_has_gone_out_again_since_is_let_be() {
+    async fn a_refusal_of_an_attempt_sent_again_since_changes_nothing_and_keeps_the_link() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let workspace = shared.db.workspace(&id("w1")).await.unwrap();
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
         let sent = Sent::default();
         let machine = id::<MachineId>("mc-1");
+        let request = id::<RequestId>("r-c-1");
         let asked = command("r-c-1", "c-1", "Fix the build");
-        sent.sent(&machine, 7, &asked);
-        sent.sent(&machine, 8, &asked);
+        let first = workspace
+            .begin_attempt(&request, NOW)
+            .await
+            .unwrap()
+            .unwrap();
+        sent.sent(&machine, 7, &asked, first.number);
         let for_now = || {
             Message::Error(ErrorBody {
                 code: weacon_protocol::code!("chat.unavailable"),
@@ -193,37 +191,24 @@ mod tests {
             })
         };
 
+        // Its refusal is matched, then a retry begins before the refusal is kept.
         let older = sent.answered(&machine, 7).unwrap();
-        assert!(!older.current);
+        let second = workspace
+            .begin_attempt(&request, NOW)
+            .await
+            .unwrap()
+            .unwrap();
         take(shared, &machine, older, for_now()).await.unwrap();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
         assert!(open.iter().all(|request| !request.refused), "{open:?}");
+        let later = workspace.refused_before(&id("c-1"), &id("r-2")).await;
+        assert!(!later.unwrap());
+        sent.sent(&machine, 8, &asked, second.number);
         let newer = sent.answered(&machine, 8).unwrap();
-        assert!(newer.current);
-        // Answered, the request is let go of.
-        assert!(sent.kept.lock().unwrap().latest.is_empty());
         take(shared, &machine, newer, for_now()).await.unwrap_err();
-    }
-
-    #[test]
-    fn letting_go_of_a_requests_older_envelope_keeps_its_latest_current() {
-        let sent = Sent::default();
-        let machine = id::<MachineId>("mc-1");
-        let asked = command("r-1", "c-1", "Go");
-        sent.sent(&machine, 1, &asked);
-        sent.sent(&machine, 2, &asked);
-        let others = 3..=u32::try_from(KEPT + 1).unwrap();
-        for envelope in others {
-            sent.sent(
-                &machine,
-                envelope,
-                &command(&format!("r-{envelope}"), "c-1", "Go"),
-            );
-        }
-
-        assert_eq!(sent.answered(&machine, 1), None);
-        assert!(sent.answered(&machine, 2).unwrap().current);
+        let open = workspace.open_requests(&id("c-1")).await.unwrap();
+        assert!(open.iter().all(|request| request.refused), "{open:?}");
     }
 
     #[tokio::test]
@@ -235,7 +220,7 @@ mod tests {
         workspace.break_chat_requests().await;
         let sent = Sent::default();
         let machine = id::<MachineId>("mc-1");
-        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"));
+        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"), 0);
         let refused = Message::Error(ErrorBody {
             code: weacon_protocol::code!("chat.busy"),
             retryable: false,
@@ -256,7 +241,7 @@ mod tests {
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
         let sent = Sent::default();
         let machine = id::<MachineId>("mc-1");
-        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"));
+        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"), 0);
         let for_now = Message::Error(ErrorBody {
             code: weacon_protocol::code!("chat.unavailable"),
             retryable: true,
@@ -266,10 +251,7 @@ mod tests {
         take(shared, &machine, asked, for_now).await.unwrap_err();
 
         let open = workspace.open_requests(&id("c-1")).await.unwrap();
-        assert!(
-            open.iter().all(|request| request.refused && !request.sent),
-            "{open:?}"
-        );
+        assert!(open.iter().all(|request| request.refused), "{open:?}");
         assert_eq!(open.len(), 1);
     }
 
@@ -278,15 +260,16 @@ mod tests {
         let sent = Sent::default();
         let (ours, theirs) = (id::<MachineId>("mc-1"), id::<MachineId>("mc-2"));
         let asked = command("r-1", "c-1", "Go");
-        sent.sent(&ours, 1, &asked);
+        sent.sent(&ours, 1, &asked, 3);
 
         assert_eq!(sent.answered(&theirs, 1), None);
         let answered = sent.answered(&ours, 1).unwrap();
         assert_eq!(answered.request.as_str(), "r-1");
         assert_eq!(answered.chat.as_str(), "c-1");
+        assert_eq!(answered.attempt, 3);
         assert_eq!(sent.answered(&ours, 1), None);
         for envelope in 0..=u32::try_from(KEPT).unwrap() {
-            sent.sent(&ours, envelope, &asked);
+            sent.sent(&ours, envelope, &asked, 1);
         }
         assert_eq!(sent.answered(&ours, 0), None);
         assert!(sent.answered(&ours, 1).is_some());

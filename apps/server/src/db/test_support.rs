@@ -232,6 +232,18 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 }
 
 impl Workspace {
+    /// Marks `request` queued for its machine, or not.
+    pub(crate) async fn mark_sent(&self, request: &RequestId, sent: bool) -> Result<(), Fault> {
+        sqlx::query("UPDATE chat_requests SET sent = ? WHERE workspace_id = ? AND request_id = ?")
+            .bind(sent)
+            .bind(self.id.as_str())
+            .bind(request.as_str())
+            .execute(&self.db.writer)
+            .await
+            .map_err(super::failed)?;
+        Ok(())
+    }
+
     /// Ends `request` to `chat`, as its receipt would.
     pub(crate) async fn close_request(&self, chat: &str, request: &str) {
         let mut writer = self.db.writer.acquire().await.unwrap();
