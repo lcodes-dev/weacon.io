@@ -1,7 +1,7 @@
 /** The shared Noise vectors and what replaying them needs, for this folder's tests only. */
 import { readFileSync } from "node:fs";
 
-import { fromHex } from "../hex.ts";
+import { unhex } from "../hex.ts";
 import type { Ephemeral } from "./noise.ts";
 
 export type Vector = {
@@ -17,11 +17,7 @@ export const vectors = JSON.parse(
 ) as { published: Vector; weacon: Vector };
 
 export function bytes(text: string): Uint8Array<ArrayBuffer> {
-  const read = fromHex(text);
-  if (read === undefined) {
-    throw new RangeError("not hex");
-  }
-  return read;
+  return unhex(text);
 }
 
 /** A fixed ephemeral, as the vectors use; Web Crypto takes a private X25519 key only as PKCS #8. */

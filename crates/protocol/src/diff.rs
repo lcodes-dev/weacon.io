@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{ChatId, RequestId, WorkspaceId};
+use crate::{Asker, ChatId, RequestId, WorkspaceId};
 
 /// From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
 /// `request`.
@@ -11,6 +11,11 @@ pub struct DiffQuery {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub query: DiffQueryKind,
+    /// Who asked, stamped by the server when it relays the query to a machine; a client's own
+    /// value is overwritten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Asker")]
+    pub by: Option<Asker>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -151,30 +156,16 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{Envelope, FrameError, Message};
+    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
-    }
-
-    fn request() -> RequestId {
-        RequestId::try_from("r-1".to_owned()).unwrap()
-    }
-
-    fn workspace() -> WorkspaceId {
-        WorkspaceId::try_from("w-1".to_owned()).unwrap()
-    }
-
-    fn chat() -> ChatId {
-        ChatId::try_from("c-1".to_owned()).unwrap()
-    }
-
-    fn query(query: DiffQueryKind) -> Envelope {
+    fn query(query: DiffQueryKind, by: Option<Asker>) -> Envelope {
         envelope(Message::DiffQuery(DiffQuery {
             request: request(),
             workspace: workspace(),
             chat: chat(),
             query,
+            by,
         }))
     }
 
@@ -203,15 +194,6 @@ mod tests {
         )
     }
 
-    fn travels(envelope: &Envelope, wire: Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), wire);
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
-        assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), *envelope);
-    }
-
     fn file(change: FileChange, content: DiffContent) -> DiffAnswerKind {
         DiffAnswerKind::File {
             files: 2,
@@ -226,9 +208,20 @@ mod tests {
     #[test]
     fn queries_have_a_tagged_shape() {
         travels(
-            &query(DiffQueryKind::Changes),
+            &query(DiffQueryKind::Changes, None),
             wire("diff_query", "query", json!({ "kind": "changes" })),
         );
+    }
+
+    #[test]
+    fn a_relayed_query_says_who_asked() {
+        let by = Asker {
+            account: "a-1".parse().unwrap(),
+            member: "m-1".parse().unwrap(),
+        };
+        let mut wire = wire("diff_query", "query", json!({ "kind": "changes" }));
+        wire["by"] = json!({ "account": "a-1", "member": "m-1" });
+        travels(&query(DiffQueryKind::Changes, Some(by)), wire);
     }
 
     #[test]
@@ -311,8 +304,7 @@ mod tests {
             file_wire(&modified, &text("moved")),
         ];
         for wire in newer {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
+            never_sent(wire);
         }
 
         let known: Envelope = serde_json::from_value(file_wire(&modified, &text("added"))).unwrap();

@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
@@ -42,21 +41,12 @@ pub(crate) fn mail_failed() -> Fault {
     Fault::new(code!("mail.failed"), "The code couldn't be sent")
 }
 
-// Written beside its final name and renamed, so a relay never reads half a letter; one that
-// fails is removed, since it holds a live code.
+// A letter holds a live code, so one that fails must leave nothing behind, even when it failed
+// after landing, as when its folder can't be synced.
 fn post(dir: &Path, name: &str, letter: &Letter<'_>) -> io::Result<()> {
     let json = serde_json::to_vec(letter).map_err(io::Error::other)?;
-    let writing = dir.join(format!("{name}.writing"));
-    let posted = weacon_appkit::private_append(&writing)
-        .and_then(|mut file| {
-            file.write_all(&json)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::rename(&writing, dir.join(format!("{name}.json"))));
-    if posted.is_err() {
-        drop(fs::remove_file(&writing));
-    }
-    posted
+    let path = dir.join(format!("{name}.json"));
+    weacon_appkit::write_private(&path, &json).inspect_err(|_| drop(fs::remove_file(&path)))
 }
 
 #[cfg(test)]
@@ -82,6 +72,10 @@ mod tests {
         let letter: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
 
         assert_eq!(file.extension().unwrap(), "json");
+        assert_ne!(
+            weacon_appkit::is_private(&fs::metadata(file).unwrap()),
+            Some(false)
+        );
         assert_eq!(
             letter,
             serde_json::json!({ "to": "ada@example.com", "code": "123456" })
@@ -99,7 +93,34 @@ mod tests {
         };
 
         post(&dir, "letter", &letter).unwrap_err();
-        assert!(!dir.join("letter.writing").exists());
+        assert_eq!(
+            fs::read_dir(&*dir).unwrap().count(),
+            1,
+            "only the folder is left"
+        );
+    }
+
+    // A folder that can be written but not read takes the letter but can't be synced, except
+    // for root, who reads anything.
+    #[cfg(unix)]
+    #[test]
+    fn a_letter_that_lands_but_cant_be_synced_is_removed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let outbox = dir.join("outbox");
+        fs::create_dir(&outbox).unwrap();
+        fs::set_permissions(&outbox, fs::Permissions::from_mode(0o300)).unwrap();
+        let letter = Letter {
+            to: "ada@example.com",
+            code: "123456",
+        };
+        let posted = post(&outbox, "letter", &letter);
+        let landed = outbox.join("letter.json").exists();
+        fs::set_permissions(&outbox, fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(landed, posted.is_ok());
+        assert_eq!(fs::read_dir(&outbox).unwrap().count(), usize::from(landed));
     }
 
     #[test]

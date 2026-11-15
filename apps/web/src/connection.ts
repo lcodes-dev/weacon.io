@@ -3,7 +3,21 @@ import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 /** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability = "run.stream" | "workspace.feed" | "diff.view" | "chat.send" | "log.forward";
+export type WebCapability =
+  | "run.stream"
+  | "workspace.feed"
+  | "workspace.chats"
+  | "workspace.chat_commands"
+  | "diff.view"
+  | "chat.send"
+  | "chat.events"
+  | "log.forward"
+  | "machine.settings"
+  | "worktree.manage"
+  | "worktree.open_terminal";
+
+/** The hello's envelope id; a connection's requests take the ids after it. */
+export const HELLO_ID = 1;
 
 /** What a connection asks of the server: what it must offer, and what else this app can use. */
 export type Asks = { needs: WebCapability; offers: WebCapability[] };
@@ -41,6 +55,9 @@ export type Status =
 /** Runs `run` once `ms` have passed; injected, so tests can run it at will. */
 export type Later = (run: () => void, ms: number) => void;
 
+/** The browser's own timer, as a `Later`. */
+export const later: Later = (run, ms) => setTimeout(run, ms);
+
 /** Told each change of status, and each message after the welcome. */
 export type Listener = {
   status(status: Status): void;
@@ -64,7 +81,7 @@ export class Connection {
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: 1, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
+      this.#send({ id: HELLO_ID, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);
@@ -86,6 +103,12 @@ export class Connection {
     if (this.#status.state === "live") {
       this.#send(envelope);
     }
+  }
+
+  /** Closes the socket, telling the listener nothing more, as when the page that opened it is gone. */
+  close(): void {
+    this.#listener = { status: () => {}, message: () => {} };
+    this.#socket.close();
   }
 
   #welcome(envelope: Incoming | undefined): void {
@@ -115,11 +138,11 @@ export class Connection {
 }
 
 const ENDINGS: Record<End, string> = {
-  "connection.lost": "The server closed the connection",
-  "connection.refused": "The server can't be reached",
-  "connection.no_answer": "The server didn't answer",
-  "connection.other_protocol": "The server runs another version of Weacon; reload the page",
-  "connection.server_too_old": "The server is too old for this app",
+  "connection.lost": "The server closed the connection.",
+  "connection.refused": "The server can't be reached.",
+  "connection.no_answer": "The server didn't answer.",
+  "connection.other_protocol": "The server runs another version of Weacon. Reload the page.",
+  "connection.server_too_old": "The server is too old for this app.",
 };
 
 /** What the header says about the connection. */

@@ -212,7 +212,7 @@ mod tests {
              echo \"Got $code\"\n",
             ran.display()
         );
-        crate::platform::write_program(&bin.join("claude"), &script);
+        weacon_testing::platform::write_program(&bin.join("claude"), &script).unwrap();
     }
 
     struct Machine {

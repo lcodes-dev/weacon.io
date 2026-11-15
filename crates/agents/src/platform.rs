@@ -5,8 +5,6 @@ mod pty;
 pub(crate) use pty::Pty;
 #[cfg(unix)]
 pub(crate) use unix::links;
-#[cfg(all(test, unix))]
-pub(crate) use unix::write_program;
 #[cfg(unix)]
 use unix::{links_of, open_unfollowed};
 #[cfg(windows)]
@@ -18,7 +16,32 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+/// The terminal's interrupt, caught from now on instead of ending this process.
+#[cfg(unix)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::unix::Signal> {
+    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+}
+
+/// The console's Ctrl-C, caught from now on instead of ending this process.
+#[cfg(windows)]
+pub(crate) fn interrupts() -> io::Result<tokio::signal::windows::CtrlC> {
+    tokio::signal::windows::ctrl_c()
+}
+
+/// How many hard links the file `opened` has.
+///
+/// # Errors
+///
+/// When the system can't say.
+pub fn link_count(opened: &File) -> io::Result<u64> {
+    links_of(opened)
+}
+
 /// `file` opened to read, when it is a regular file with one link and not a symlink.
+///
+/// # Errors
+///
+/// When `file` can't be opened, or is anything else.
 pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
     let opened = open_unfollowed(file)?;
     if opened.metadata()?.is_file() && links_of(&opened)? == 1 {
@@ -35,7 +58,6 @@ pub(crate) fn open_plain(file: &Path) -> io::Result<File> {
 mod unix {
     use std::fs::{File, OpenOptions};
     use std::io;
-    use std::ops::BitOr;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::Path;
 
@@ -46,32 +68,14 @@ mod unix {
 
     /// `file` opened to read, a symlink refused. Non-blocking, so a pipe can't hold the open.
     pub(super) fn open_unfollowed(file: &Path) -> io::Result<File> {
-        let flags = [libc::O_NOFOLLOW, libc::O_NONBLOCK];
         OpenOptions::new()
             .read(true)
-            .custom_flags(flags.into_iter().fold(0, BitOr::bitor))
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(file)
     }
 
     pub(super) fn links_of(opened: &File) -> io::Result<u64> {
         Ok(opened.metadata()?.nlink())
-    }
-
-    /// Writes an executable `script` to `path` from a child shell, so this process never holds a
-    /// write handle that another test's fork could inherit, which makes running it fail as busy.
-    #[cfg(test)]
-    pub(crate) fn write_program(path: &Path, script: &str) {
-        let written = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "printf '%s' \"$1\" > \"$2\" && chmod 755 \"$2\"",
-                "sh",
-                script,
-            ])
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(written.success());
     }
 }
 
@@ -129,8 +133,10 @@ mod tests {
         fs::write(&file, "").unwrap();
 
         assert_eq!(links(&file).unwrap(), 1);
+        assert_eq!(link_count(&File::open(&file).unwrap()).unwrap(), 1);
         fs::hard_link(&file, dir.join("two.md")).unwrap();
         assert_eq!(links(&file).unwrap(), 2);
+        assert_eq!(link_count(&File::open(&file).unwrap()).unwrap(), 2);
         links(&dir.join("missing.md")).unwrap_err();
     }
 

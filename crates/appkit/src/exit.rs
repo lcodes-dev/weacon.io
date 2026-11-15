@@ -1,58 +1,54 @@
 use std::process::ExitCode;
 
-use tokio::runtime::{Builder, Runtime};
-use weacon_observability::{Fault, Field, Logger, Reporter};
-use weacon_protocol::code;
+use weacon_observability::{Fault, Field};
+
+use crate::App;
 
 const FINDINGS: u8 = 1;
 const FAILED: u8 = 2;
 
 /// How a command that ran to the end came out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Outcome {
+pub enum Ending {
     Done,
     /// A check found something, such as a stale anchor.
     Findings,
 }
 
-impl From<()> for Outcome {
+impl From<()> for Ending {
     fn from((): ()) -> Self {
         Self::Done
     }
 }
 
-/// Logs how a command ended, reports a failure, and gives the exit code: 0 when it's done,
-/// 1 when a check found something, 2 when it failed.
-pub fn finish(log: &Logger, reporter: &Reporter, result: Result<Outcome, Fault>) -> ExitCode {
-    let fault = match result {
-        Ok(Outcome::Done) => {
-            log.info("app stopped", &[]);
-            return ExitCode::SUCCESS;
+impl App {
+    /// Logs how the app ended, reports a failure, and gives the exit code: 0 when it's done,
+    /// 1 when a check found something, 2 when it failed.
+    #[must_use]
+    pub fn finish(&self, result: Result<Ending, Fault>) -> ExitCode {
+        match result {
+            Ok(Ending::Done) => {
+                self.log.info("app stopped", &[]);
+                ExitCode::SUCCESS
+            }
+            Ok(Ending::Findings) => {
+                self.log.info("app stopped", &[("findings", true.into())]);
+                ExitCode::from(FINDINGS)
+            }
+            Err(fault) => {
+                self.log
+                    .fatal("app failed", &[("err", Field::error(&fault))]);
+                self.reporter.capture_error(&fault, fault.code(), &self.log);
+                ExitCode::from(FAILED)
+            }
         }
-        Ok(Outcome::Findings) => {
-            log.info("app stopped", &[("findings", true.into())]);
-            return ExitCode::from(FINDINGS);
-        }
-        Err(fault) => fault,
-    };
-    log.fatal("app failed", &[("err", Field::error(&fault))]);
-    reporter.capture_error(&fault, fault.code(), log);
-    ExitCode::from(FAILED)
-}
-
-/// The async runtime `builder` describes, with I/O and timers on.
-///
-/// # Errors
-/// `runtime.failed` when it can't start.
-pub fn runtime(mut builder: Builder) -> Result<Runtime, Fault> {
-    builder.enable_all().build().map_err(|error| {
-        Fault::new(code!("runtime.failed"), "Weacon couldn't start its runtime").because(error)
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use weacon_observability::{Level, Reports};
+    use weacon_protocol::code;
     use weacon_testing::{messages, recording_logger};
 
     use super::*;
@@ -69,15 +65,21 @@ mod tests {
         )
         .ok();
         let (reporter, uploads) = recording_reporter(reports);
+        let app = App {
+            version: weacon_version::Version {
+                name: "weacon-core",
+                version: "0.1.0",
+                commit: "1a2b3c4",
+            },
+            log,
+            reporter: reporter.into(),
+        };
         let fault = Fault::new(code!("store.full"), "The store is full");
 
-        assert_eq!(finish(&log, &reporter, Ok(().into())), ExitCode::SUCCESS);
-        assert_eq!(
-            finish(&log, &reporter, Ok(Outcome::Findings)),
-            ExitCode::from(1)
-        );
+        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(Ending::Findings)), ExitCode::from(1));
         assert!(uploads.lock().unwrap().is_empty());
-        assert_eq!(finish(&log, &reporter, Err(fault)), ExitCode::from(2));
+        assert_eq!(app.finish(Err(fault)), ExitCode::from(2));
         assert_eq!(uploads.lock().unwrap().len(), 1);
         assert_eq!(
             messages(&records),
@@ -87,12 +89,5 @@ mod tests {
         assert_eq!(records[1].fields["findings"], true);
         assert_eq!(records[2].level, Level::Fatal);
         assert_eq!(records[2].fields["err"]["code"], "store.full");
-    }
-
-    #[test]
-    fn a_runtime_runs_what_it_is_given() {
-        let runtime = runtime(Builder::new_current_thread()).unwrap();
-
-        assert_eq!(runtime.block_on(async { 7 }), 7);
     }
 }

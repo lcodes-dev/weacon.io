@@ -75,6 +75,47 @@
   font-size: 1em;
 }
 
-.workspace .page {
+.workspace > section {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.heading {
+  padding: 16px 16px 0;
+}
+
+.heading h1 {
+  margin: 0;
+}
+
+.chats ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chats li button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  border-color: transparent;
+}
+
+.chats li button[aria-current] {
+  border-color: var(--border);
+}
+
+.chats .title {
+  overflow-wrap: anywhere;
+}
+
+.chats li .muted {
+  font-size: 13px;
 }

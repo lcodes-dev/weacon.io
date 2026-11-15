@@ -4,25 +4,38 @@
 //! It does no I/O: the caller reads the files and passes their contents in.
 
 mod anchor;
+mod answers;
 mod area;
-mod cfg;
+mod contracts;
+mod edges;
 mod facts;
 mod fingerprint;
+mod flows;
 mod graph;
 mod index;
 mod louvain;
-mod outline;
 mod paths;
 mod rank;
+mod refs;
+mod search;
+mod symbols;
 mod syntax;
+#[cfg(test)]
+mod test_support;
 
 use std::fmt;
 
 pub use anchor::{Anchor, Finding, Pin};
-pub use area::Area;
+pub use answers::{Churn, fit};
+pub(crate) use area::Area;
+pub use contracts::ContractKind;
+pub(crate) use edges::{Edge, EdgeKind};
+pub use facts::{Facts, Reader, is_mapped};
 pub use fingerprint::Fingerprint;
-pub use index::{Crate, Index, Module, SourceFile, index};
-pub use outline::{Kind, Symbol};
+pub(crate) use flows::Break;
+pub use index::{Crate, Index, Module, SourceFile, assemble, index};
+pub use search::Entry;
+pub use symbols::{Kind, Symbol};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Error {

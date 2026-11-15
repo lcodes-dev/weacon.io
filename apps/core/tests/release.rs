@@ -27,13 +27,17 @@ mod tests {
         format!("weacon-{target}{exe}")
     }
 
-    fn manifest(dir: &Path) -> std::process::Output {
+    // Fixed, so the test reads the same in a copy of the tree with no git.
+    const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    fn manifest(dir: &Path, commit: &str) -> std::process::Output {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
         let base = format!("https://github.com/o/r/releases/download/{tag}");
         Command::new("bash")
             .arg(root.join("scripts/release.sh"))
             .args(["manifest", &tag, dir.to_str().unwrap(), &base])
+            .env("WEACON_COMMIT", commit)
             .output()
             .unwrap()
     }
@@ -49,13 +53,14 @@ mod tests {
             "server",
         )
         .unwrap();
-        let output = manifest(&dir);
+        let output = manifest(&dir, COMMIT);
         assert!(output.status.success(), "{output:?}");
 
         let json = fs::read(dir.join("manifest.json")).unwrap();
         let manifest: ReleaseManifest = serde_json::from_slice(&json).unwrap();
         assert_eq!(manifest.version.to_string(), env!("CARGO_PKG_VERSION"));
         assert_eq!(manifest.published_at, 0);
+        assert_eq!(manifest.commit.as_str(), COMMIT);
         assert_eq!(manifest.builds.len(), TARGETS.len());
         for target in TARGETS {
             let build = manifest.build_for(&BuildTarget::try_from(target.to_owned()).unwrap());
@@ -71,11 +76,54 @@ mod tests {
     }
 
     #[test]
+    fn a_short_commit_has_no_manifest() {
+        let dir = TempDir::new().unwrap();
+        for target in TARGETS {
+            fs::write(dir.join(file_name(target)), target).unwrap();
+        }
+        let output = manifest(&dir, "0123456");
+        assert!(!output.status.success());
+        assert!(!dir.join("manifest.json").exists());
+    }
+
+    #[test]
     fn a_release_missing_a_build_has_no_manifest() {
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("weacon-x86_64-unknown-linux-musl"), "linux").unwrap();
-        let output = manifest(&dir);
+        let output = manifest(&dir, COMMIT);
         assert!(!output.status.success());
         assert!(!dir.join("manifest.json").exists());
+    }
+
+    // The release workflow can't read the script's lists, so its matrices repeat them.
+    #[test]
+    fn the_script_and_the_release_workflow_build_the_same_targets() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let script = "eval \"$(sed -n '/^LINUX_TARGETS=/,/^CORE_TARGETS=/p' scripts/release.sh)\"
+            printf '%s ' \"${CORE_TARGETS[@]}\"; echo; printf '%s ' \"${LINUX_TARGETS[@]}\"";
+        let output = Command::new("bash")
+            .args(["-c", script])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let listed = String::from_utf8(output.stdout).unwrap();
+        let lists: Vec<Vec<_>> = listed
+            .lines()
+            .map(|line| line.split_whitespace().collect())
+            .collect();
+        assert_eq!(lists, [&TARGETS[..], &TARGETS[..2]]);
+
+        let workflow = fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+        let (core, server) = workflow.split_once("\n  server:").unwrap();
+        assert_eq!(matrix(core), lists[0]);
+        assert_eq!(matrix(server), lists[1]);
+    }
+
+    fn matrix(job: &str) -> Vec<&str> {
+        job.lines()
+            .filter_map(|line| line.trim().strip_prefix("- { target: "))
+            .filter_map(|entry| entry.split(',').next())
+            .collect()
     }
 }

@@ -4,19 +4,19 @@ import { test } from "node:test";
 import type { Page } from "playwright-core";
 
 import { atBottom } from "../src/transcript/follow.ts";
-import { fakeServer, start } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, selectInWritingRow, start } from "./harness.ts";
 
 const MESSAGES = 33;
 
 test("text stays selected while the run streams, and following waits for the reader", { timeout: 180_000 }, async (t) => {
-  const harness = await start(fakeServer(100_000, 1));
+  const harness = await start(fakeServer(100_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   // A few more than the selection, so it ends well above the row being written.
   await waitForRows(page, ".row.text", MESSAGES + 6);
 
   // Finished messages show their Markdown; the session has inline code in each pass.
-  assert.ok(await page.evaluate(() => document.querySelector(".row.text p code") !== null));
+  await page.waitForSelector(".row.text p code");
 
   const writing = await page.evaluate(selectInWritingRow);
   await page.waitForFunction(() => !document.querySelector("[data-picked]")?.hasAttribute("data-writing"));
@@ -70,7 +70,7 @@ test("text stays selected while the run streams, and following waits for the rea
 });
 
 test("a reader at the bottom of a finished run is still there after Settings", { timeout: 60_000 }, async (t) => {
-  const harness = await start(fakeServer(20_000, 0));
+  const harness = await start(fakeServer(20_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   await page.waitForSelector(".row.finished");
@@ -184,22 +184,6 @@ async function scrollTo(page: Page, where: "bottom" | "up"): Promise<void> {
 function scrollOf(): { scrollTop: number; scrollHeight: number; clientHeight: number } {
   const view = document.querySelector(".transcript");
   return { scrollTop: view?.scrollTop ?? 0, scrollHeight: view?.scrollHeight ?? 1e9, clientHeight: view?.clientHeight ?? 0 };
-}
-
-// Selects the first piece of the text row still being written, and gives what is selected.
-// Waits for a row being written and selects it in the same frame, before the row can close.
-async function selectInWritingRow(): Promise<string> {
-  for (let frame = 0; frame < 600; frame += 1) {
-    const row = document.querySelector("[data-writing]");
-    const piece = row?.firstChild;
-    if (row !== null && piece) {
-      row.setAttribute("data-picked", "");
-      document.getSelection()?.setBaseAndExtent(piece, 0, piece, piece.textContent?.length ?? 0);
-      return document.getSelection()?.toString() ?? "";
-    }
-    await new Promise(requestAnimationFrame);
-  }
-  throw new Error("no row is being written");
 }
 
 // Selects text rows 1 to `count`, as a drag would. Each function here runs in the page on its own.

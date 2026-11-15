@@ -2,14 +2,16 @@
 //! doing, so a restart can pick them up.
 
 use std::fmt;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, AgentSession, ChatId, RequestId, RunId, RunState, WorkspaceId, code,
 };
+
+use crate::app::{blocking, read_json};
 
 #[derive(Debug)]
 pub(crate) struct Runs {
@@ -17,20 +19,67 @@ pub(crate) struct Runs {
     journal: Journal,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// The journal as it is on disk, where each chat's record is read on its own.
+#[derive(Default, Serialize, Deserialize)]
+struct Stored {
+    issued: u64,
+    chats: Vec<Box<RawValue>>,
+    /// What a newer core keeps beside them, written back as found.
+    #[serde(flatten)]
+    newer: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Default)]
 struct Journal {
     /// How many run ids were ever issued; it only grows, so no id comes back.
     issued: u64,
     chats: Vec<Record>,
+    /// Records this core can't read in full, as a newer one writes; kept as found.
+    newer: Vec<Kept>,
+    /// The rest of the journal that only a newer core knows.
+    newer_fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A record kept as the JSON it was read as, and the chat it is for when that much is known.
+#[derive(Clone)]
+struct Kept {
+    key: Option<ChatKey>,
+    json: Box<RawValue>,
+}
+
+// The JSON holds prompts, which never reach a log line, even through `{:?}`.
+impl fmt::Debug for Kept {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Kept")
+            .field("key", &self.key)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which chat: its workspace and its id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(crate) struct ChatKey {
+    pub(crate) workspace: WorkspaceId,
+    pub(crate) chat: ChatId,
+}
+
+impl ChatKey {
+    pub(crate) fn new(workspace: &WorkspaceId, chat: &ChatId) -> Self {
+        Self {
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+        }
+    }
 }
 
 /// A chat's latest run.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Record {
-    pub(crate) workspace: WorkspaceId,
-    pub(crate) chat: ChatId,
+    #[serde(flatten)]
+    pub(crate) key: ChatKey,
     pub(crate) agent: AgentKind,
-    pub(crate) run: RunId,
+    /// `None` until the chat's first run starts.
+    pub(crate) run: Option<RunId>,
     pub(crate) state: RunState,
     /// The agent's own conversation, once it has named it; the chat's next run resumes it.
     pub(crate) session: Option<AgentSession>,
@@ -65,18 +114,58 @@ impl Runs {
     pub(crate) fn load(state_dir: &Path) -> Result<Self, Fault> {
         let path = state_dir.join("runs.json");
         let unreadable = || Fault::new(code!("runs.unreadable"), "The runs journal can't be read");
-        let journal = match std::fs::read(&path) {
-            Ok(json) => {
-                serde_json::from_slice(&json).map_err(|error| unreadable().because(error))?
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Journal::default(),
-            Err(error) => return Err(unreadable().because(error)),
+        let stored: Stored = read_json(&path)
+            .map_err(|error| unreadable().because(error))?
+            .unwrap_or_default();
+        let mut journal = Journal {
+            issued: stored.issued,
+            newer_fields: stored.newer,
+            ..Journal::default()
         };
+        for json in stored.chats {
+            match serde_json::from_str::<Record>(json.get()) {
+                Ok(record) if !record.is_newer() && reads_whole(&record, &json) => {
+                    journal.chats.push(record);
+                }
+                _ => journal.newer.push(Kept {
+                    key: serde_json::from_str(json.get()).ok(),
+                    json,
+                }),
+            }
+        }
         Ok(Self { path, journal })
     }
 
-    pub(crate) fn of(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<&Record> {
-        self.journal.chats.get(self.position(workspace, chat)?)
+    /// Refuses a chat whose record only a newer core can read, which is left to it.
+    ///
+    /// # Errors
+    /// `runs.newer_record` for such a chat.
+    pub(crate) fn refuse_newer(&self, key: &ChatKey) -> Result<(), Fault> {
+        if self
+            .journal
+            .newer
+            .iter()
+            .any(|kept| kept.key.as_ref() == Some(key))
+        {
+            return Err(Fault::new(
+                code!("runs.newer_record"),
+                "A newer core last ran this chat",
+            ));
+        }
+        Ok(())
+    }
+
+    /// How many records were kept unread: written by a newer core, or damaged.
+    pub(crate) fn kept(&self) -> usize {
+        self.journal.newer.len()
+    }
+
+    pub(crate) fn records(&self) -> impl Iterator<Item = &Record> {
+        self.journal.chats.iter()
+    }
+
+    pub(crate) fn of(&self, key: &ChatKey) -> Option<&Record> {
+        self.journal.chats.get(self.position(key)?)
     }
 
     /// Starts the chat's next run under an id never issued before, keeping the chat's queue and,
@@ -84,18 +173,18 @@ impl Runs {
     /// cancel, like [`Self::update`]: two saves must never overlap.
     pub(crate) async fn begin(
         &mut self,
-        workspace: &WorkspaceId,
-        chat: &ChatId,
+        key: &ChatKey,
         agent: AgentKind,
         now: u64,
     ) -> Result<RunId, Fault> {
         let no_id = || Fault::new(code!("runs.no_id"), "No run id could be made");
+        self.refuse_newer(key)?;
         // Kept even when the save fails, so the id is never tried again.
         self.journal.issued = self.journal.issued.checked_add(1).ok_or_else(no_id)?;
         let run = RunId::try_from(format!("run-{}", self.journal.issued)).map_err(|_| no_id())?;
         let mut next = self.journal.clone();
         let (session, queue) = self
-            .position(workspace, chat)
+            .position(key)
             .map(|at| next.chats.swap_remove(at))
             .map(|record| {
                 (
@@ -105,60 +194,154 @@ impl Runs {
             })
             .unwrap_or_default();
         next.chats.push(Record {
-            workspace: workspace.clone(),
-            chat: chat.clone(),
+            key: key.clone(),
             agent,
-            run: run.clone(),
+            run: Some(run.clone()),
             state: RunState::Starting,
             session,
             turn: None,
             queue,
             active_at: now,
         });
-        self.commit(next).await?;
+        self.save(next).await?;
         Ok(run)
+    }
+
+    /// Queues a prompt for the chat, which gets a record for `agent` when it has none. A
+    /// prompt already queued or running under the same request isn't queued again.
+    pub(crate) async fn enqueue(
+        &mut self,
+        key: &ChatKey,
+        agent: AgentKind,
+        prompt: Queued,
+        now: u64,
+    ) -> Result<(), Fault> {
+        self.refuse_newer(key)?;
+        let mut next = self.journal.clone();
+        let at = self.position(key).unwrap_or(next.chats.len());
+        if at == next.chats.len() {
+            next.chats.push(Record {
+                key: key.clone(),
+                agent,
+                run: None,
+                state: RunState::Sleeping,
+                session: None,
+                turn: None,
+                queue: Vec::new(),
+                active_at: now,
+            });
+        }
+        let Some(record) = next.chats.get_mut(at) else {
+            return Ok(());
+        };
+        let known = record.turn.as_ref() == Some(&prompt.request)
+            || record
+                .queue
+                .iter()
+                .any(|queued| queued.request == prompt.request);
+        if known {
+            return Ok(());
+        }
+        record.queue.push(prompt);
+        self.save(next).await
     }
 
     /// Changes the chat's record and saves it; a change that can't be saved isn't made. Does
     /// nothing when the chat has no record.
     pub(crate) async fn update(
         &mut self,
-        workspace: &WorkspaceId,
-        chat: &ChatId,
+        key: &ChatKey,
         change: impl FnOnce(&mut Record),
     ) -> Result<(), Fault> {
         let mut next = self.journal.clone();
-        let at = self.position(workspace, chat);
+        let at = self.position(key);
         let Some(record) = at.and_then(|at| next.chats.get_mut(at)) else {
             return Ok(());
         };
         change(record);
-        self.commit(next).await
+        self.save(next).await
     }
 
-    /// Whether `run` is the chat's own run and is waiting for a permission answer.
-    pub(crate) fn awaits(&self, workspace: &WorkspaceId, chat: &ChatId, run: &RunId) -> bool {
-        self.of(workspace, chat)
-            .is_some_and(|record| record.run == *run && record.state == RunState::Waiting)
-    }
-
-    fn position(&self, workspace: &WorkspaceId, chat: &ChatId) -> Option<usize> {
+    fn position(&self, key: &ChatKey) -> Option<usize> {
         self.journal
             .chats
             .iter()
-            .position(|record| record.workspace == *workspace && record.chat == *chat)
+            .position(|record| record.key == *key)
     }
 
-    async fn commit(&mut self, next: Journal) -> Result<(), Fault> {
+    /// Makes every save fail, as on a full disk, until [`Runs::unjam`] gets the path back.
+    #[cfg(test)]
+    pub(crate) fn jam(&mut self) -> PathBuf {
+        let dir = self
+            .path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        std::mem::replace(&mut self.path, dir)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn unjam(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
+    async fn save(&mut self, next: Journal) -> Result<(), Fault> {
         let not_saved = || Fault::new(code!("runs.not_saved"), "The runs journal can't be saved");
-        let json = serde_json::to_vec(&next).map_err(|error| not_saved().because(error))?;
+        let json = stored(&next).map_err(|error| not_saved().because(error))?;
         let path = self.path.clone();
-        tokio::task::spawn_blocking(move || weacon_appkit::write_whole(&path, &json))
-            .await
-            .unwrap_or_else(|error| Err(io::Error::other(error)))
-            .map_err(|error| not_saved().because(error))?;
+        blocking(move || {
+            if let Some(dir) = path.parent() {
+                crate::platform::private_dir(dir)?;
+            }
+            weacon_appkit::write_private(&path, &json)
+        })
+        .await
+        .map_err(|error| not_saved().because(error))?;
         self.journal = next;
         Ok(())
+    }
+}
+
+impl Record {
+    const fn is_newer(&self) -> bool {
+        matches!(self.agent, AgentKind::Newer) || matches!(self.state, RunState::Newer)
+    }
+}
+
+// The journal's bytes: the records this core can read, then the kept ones as they were found.
+fn stored(journal: &Journal) -> serde_json::Result<Vec<u8>> {
+    let read = journal.chats.iter().map(serde_json::value::to_raw_value);
+    let mut chats = read.collect::<serde_json::Result<Vec<_>>>()?;
+    chats.extend(journal.newer.iter().map(|kept| kept.json.clone()));
+    let (issued, newer) = (journal.issued, journal.newer_fields.clone());
+    serde_json::to_vec(&Stored {
+        issued,
+        chats,
+        newer,
+    })
+}
+
+// Whether `record` holds every field `json` has, at any depth, so writing it back loses nothing.
+fn reads_whole(record: &Record, json: &RawValue) -> bool {
+    let found = serde_json::from_str::<serde_json::Value>(json.get());
+    let known = serde_json::to_value(record);
+    matches!((found, known), (Ok(found), Ok(known)) if covers(&known, &found))
+}
+
+fn covers(known: &serde_json::Value, found: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (known, found) {
+        (Value::Object(known), Value::Object(found)) => found
+            .iter()
+            .all(|(field, value)| known.get(field).is_some_and(|known| covers(known, value))),
+        (Value::Array(known), Value::Array(found)) => {
+            known.len() == found.len()
+                && known
+                    .iter()
+                    .zip(found)
+                    .all(|(known, found)| covers(known, found))
+        }
+        _ => true,
     }
 }
 
@@ -167,29 +350,31 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::chats::test_support::{run, session};
 
-    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
-
-    fn workspace(id: &str) -> WorkspaceId {
-        WorkspaceId::try_from(id.to_owned()).unwrap()
-    }
-
-    fn chat(id: &str) -> ChatId {
-        ChatId::try_from(id.to_owned()).unwrap()
+    fn key(workspace: &str, chat: &str) -> ChatKey {
+        ChatKey {
+            workspace: WorkspaceId::try_from(workspace.to_owned()).unwrap(),
+            chat: ChatId::try_from(chat.to_owned()).unwrap(),
+        }
     }
 
     async fn begin(runs: &mut Runs, chat_id: &str) -> RunId {
-        runs.begin(&workspace("w-1"), &chat(chat_id), AgentKind::Claude, 100)
+        runs.begin(&key("w-1", chat_id), AgentKind::Claude, 100)
             .await
             .unwrap()
     }
 
     async fn waiting(runs: &mut Runs, chat_id: &str) {
-        runs.update(&workspace("w-1"), &chat(chat_id), |record| {
+        runs.update(&key("w-1", chat_id), |record| {
             record.state = RunState::Waiting;
         })
         .await
         .unwrap();
+    }
+
+    fn latest(runs: &Runs, key: &ChatKey) -> Option<RunId> {
+        runs.of(key)?.run.clone()
     }
 
     #[tokio::test]
@@ -212,21 +397,25 @@ mod tests {
     async fn a_change_that_cant_be_saved_isnt_made_and_its_id_is_never_issued_again() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let (w1, c1) = (workspace("w-1"), chat("c-1"));
-        let asked = begin(&mut runs, "c-1").await;
+        let c1 = key("w-1", "c-1");
+        let first = begin(&mut runs, "c-1").await;
         waiting(&mut runs, "c-1").await;
         std::fs::remove_file(dir.join("runs.json")).unwrap();
         std::fs::create_dir(dir.join("runs.json")).unwrap();
 
-        let begun = runs.begin(&w1, &c1, AgentKind::Claude, 100).await;
+        let begun = runs.begin(&c1, AgentKind::Claude, 100).await;
         let updated = runs
-            .update(&w1, &c1, |record| record.state = RunState::Idle)
+            .update(&c1, |record| record.state = RunState::Idle)
             .await;
         std::fs::remove_dir(dir.join("runs.json")).unwrap();
 
         assert_eq!(begun.unwrap_err().code().as_str(), "runs.not_saved");
         assert_eq!(updated.unwrap_err().code().as_str(), "runs.not_saved");
-        assert!(runs.awaits(&w1, &c1, &asked));
+        let record = runs.of(&c1).unwrap();
+        assert_eq!(
+            (&record.run, record.state),
+            (&Some(first), RunState::Waiting)
+        );
         assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-3");
     }
 
@@ -234,87 +423,76 @@ mod tests {
     async fn another_agent_doesnt_resume_the_first_ones_session() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+        let c1 = key("w-1", "c-1");
         begin(&mut runs, "c-1").await;
-        runs.update(&w1, &c1, |record| {
-            record.session = AgentSession::try_from(SESSION.to_owned()).ok();
+        runs.update(&c1, |record| {
+            record.session = Some(session());
         })
         .await
         .unwrap();
 
-        runs.begin(&w1, &c1, AgentKind::Codex, 100).await.unwrap();
+        runs.begin(&c1, AgentKind::Codex, 100).await.unwrap();
 
-        assert_eq!(runs.of(&w1, &c1).unwrap().session, None);
+        assert_eq!(runs.of(&c1).unwrap().session, None);
     }
 
     #[tokio::test]
-    async fn a_permission_answer_only_reaches_the_run_that_asked() {
+    async fn each_chat_has_its_own_latest_run_and_keeps_it_across_a_restart() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let asked = begin(&mut runs, "c-1").await;
+        let first = begin(&mut runs, "c-1").await;
         let other = begin(&mut runs, "c-2").await;
-        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+        let c1 = key("w-1", "c-1");
 
-        assert!(!runs.awaits(&w1, &c1, &asked), "not waiting yet");
-        waiting(&mut runs, "c-1").await;
-        waiting(&mut runs, "c-2").await;
-
-        assert!(runs.awaits(&w1, &c1, &asked));
-        assert!(!runs.awaits(&w1, &c1, &other));
-        assert!(!runs.awaits(&w1, &chat("c-3"), &asked));
-        assert!(!runs.awaits(&workspace("w-2"), &c1, &asked));
+        assert_eq!(latest(&runs, &c1), Some(first.clone()));
+        assert_eq!(latest(&runs, &key("w-1", "c-2")), Some(other));
+        assert_eq!(latest(&runs, &key("w-1", "c-3")), None);
+        assert_eq!(latest(&runs, &key("w-2", "c-1")), None);
 
         let mut restarted = Runs::load(&dir).unwrap();
-        assert!(restarted.awaits(&w1, &c1, &asked));
+        assert_eq!(latest(&restarted, &c1), Some(first));
         let next = begin(&mut restarted, "c-1").await;
-        waiting(&mut restarted, "c-1").await;
-
-        assert!(!restarted.awaits(&w1, &c1, &asked));
-        assert!(restarted.awaits(&w1, &c1, &next));
+        assert_eq!(latest(&restarted, &c1), Some(next));
     }
 
     #[tokio::test]
     async fn a_chats_next_run_keeps_its_agent_session_and_queue() {
         let dir = TempDir::new().unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+        let c1 = key("w-1", "c-1");
         let queued = Queued {
             request: RequestId::try_from("r-2".to_owned()).unwrap(),
             text: "Then the docs".to_owned(),
         };
         begin(&mut runs, "c-1").await;
-        runs.update(&w1, &c1, |record| {
-            record.session = AgentSession::try_from(SESSION.to_owned()).ok();
+        runs.update(&c1, |record| {
+            record.session = Some(session());
             record.turn = RequestId::try_from("r-1".to_owned()).ok();
             record.queue.push(queued.clone());
         })
         .await
         .unwrap();
-        runs.update(&w1, &chat("c-9"), |record| record.active_at = 0)
+        runs.update(&key("w-1", "c-9"), |record| record.active_at = 0)
             .await
             .unwrap();
 
         let mut restarted = Runs::load(&dir).unwrap();
-        let run = restarted
-            .begin(&w1, &c1, AgentKind::Claude, 200)
-            .await
-            .unwrap();
+        let run = restarted.begin(&c1, AgentKind::Claude, 200).await.unwrap();
 
         assert_eq!(
-            Runs::load(&dir).unwrap().of(&w1, &c1),
+            Runs::load(&dir).unwrap().of(&c1),
             Some(&Record {
-                workspace: w1.clone(),
-                chat: c1.clone(),
+                key: c1.clone(),
                 agent: AgentKind::Claude,
-                run,
+                run: Some(run),
                 state: RunState::Starting,
-                session: AgentSession::try_from(SESSION.to_owned()).ok(),
+                session: Some(session()),
                 turn: None,
                 queue: vec![queued],
                 active_at: 200,
             })
         );
-        assert_eq!(restarted.of(&w1, &chat("c-9")), None);
+        assert_eq!(restarted.of(&key("w-1", "c-9")), None);
     }
 
     #[tokio::test]
@@ -323,14 +501,39 @@ mod tests {
         let last = format!(r#"{{"issued":{},"chats":[]}}"#, u64::MAX - 1);
         std::fs::write(dir.join("runs.json"), last).unwrap();
         let mut runs = Runs::load(&dir).unwrap();
-        let (w1, c1) = (workspace("w-1"), chat("c-1"));
+        let c1 = key("w-1", "c-1");
 
         let last = begin(&mut runs, "c-1").await;
-        let spent = runs.begin(&w1, &c1, AgentKind::Claude, 100).await;
+        let spent = runs.begin(&c1, AgentKind::Claude, 100).await;
 
         assert_eq!(last.as_str(), format!("run-{}", u64::MAX));
         assert_eq!(spent.unwrap_err().code().as_str(), "runs.no_id");
-        assert_eq!(runs.of(&w1, &c1).unwrap().run, last);
+        assert_eq!(runs.of(&c1).unwrap().run, Some(last));
+    }
+
+    #[tokio::test]
+    async fn a_record_keeps_its_workspace_and_chat_at_its_top_level() {
+        let dir = TempDir::new().unwrap();
+        let saved = r#"{"issued":3,"chats":[{"workspace":"w-1","chat":"c-1","agent":"claude",
+            "run":"run-3","state":"idle","session":null,"turn":null,"queue":[],"active_at":5}]}"#;
+        std::fs::write(dir.join("runs.json"), saved).unwrap();
+
+        let mut runs = Runs::load(&dir).unwrap();
+        assert_eq!(
+            latest(&runs, &key("w-1", "c-1")),
+            RunId::try_from("run-3".to_owned()).ok()
+        );
+        begin(&mut runs, "c-1").await;
+
+        let raw = std::fs::read_to_string(dir.join("runs.json")).unwrap();
+        let journal: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let record = &journal["chats"][0];
+        assert_eq!(
+            (&record["workspace"], &record["chat"]),
+            (&"w-1".into(), &"c-1".into())
+        );
+        assert_eq!(record["run"], "run-4");
+        assert!(record.get("key").is_none());
     }
 
     #[test]
@@ -355,5 +558,139 @@ mod tests {
 
         assert!(!format!("{queued:?}").contains("MARKER"));
         assert!(format!("{queued:?}").contains("r-1"));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_is_queued_once_and_a_new_chat_gets_a_record_without_a_run() {
+        let dir = TempDir::new().unwrap();
+        let mut runs = Runs::load(&dir).unwrap();
+        let (c1, c2) = (key("w-1", "c-1"), key("w-1", "c-2"));
+        let queued = |id: &str| Queued {
+            request: RequestId::try_from(id.to_owned()).unwrap(),
+            text: "Hi".to_owned(),
+        };
+        let agent = AgentKind::Codex;
+
+        runs.enqueue(&c1, agent, queued("r-1"), 7).await.unwrap();
+        runs.enqueue(&c1, agent, queued("r-1"), 8).await.unwrap();
+        let record = Runs::load(&dir).unwrap().of(&c1).cloned().unwrap();
+        let fresh = Record {
+            key: c1.clone(),
+            agent,
+            run: None,
+            state: RunState::Sleeping,
+            session: None,
+            turn: None,
+            queue: vec![queued("r-1")],
+            active_at: 7,
+        };
+        assert_eq!(record, fresh);
+        assert_ne!(
+            latest(&runs, &c1).as_ref(),
+            Some(&RunId::try_from("run-1".to_owned()).unwrap())
+        );
+
+        // A prompt on its turn isn't queued again, and another chat's record is left alone.
+        runs.update(&c1, |record| {
+            record.turn = record.queue.pop().map(|queued| queued.request);
+        })
+        .await
+        .unwrap();
+        runs.enqueue(&c1, agent, queued("r-1"), 9).await.unwrap();
+        runs.enqueue(&c1, agent, queued("r-2"), 9).await.unwrap();
+        runs.enqueue(&c2, agent, queued("r-1"), 9).await.unwrap();
+
+        assert_eq!(runs.of(&c1).unwrap().queue, [queued("r-2")]);
+        assert_eq!(runs.of(&c2).unwrap().queue, [queued("r-1")]);
+        assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-1");
+        assert_eq!(runs.of(&c1).unwrap().queue, [queued("r-2")]);
+    }
+
+    // What beginning and queueing for `key`'s record each fail with.
+    async fn refusals(runs: &mut Runs, key: &ChatKey) -> Vec<String> {
+        let queued = Queued {
+            request: RequestId::try_from("r-2".to_owned()).unwrap(),
+            text: "More".to_owned(),
+        };
+        let tries = [
+            runs.begin(key, AgentKind::Claude, 9).await.map(drop),
+            runs.enqueue(key, AgentKind::Claude, queued, 9).await,
+        ];
+        let code = |tried: Result<(), Fault>| tried.unwrap_err().code().as_str().to_owned();
+        tries.into_iter().map(code).collect()
+    }
+
+    // A record a newer core wrote: an agent and a field this core doesn't know.
+    const NEWER: &str = r#"{"workspace":"w-1","chat":"c-9","agent":"gemini","run":"run-2","state":"idle","session":null,"turn":null,"queue":[{"request":"r-1","text":"Hi"}],"active_at":5,"colour":"blue"}"#;
+
+    #[tokio::test]
+    async fn a_record_only_a_newer_core_reads_is_kept_as_found_and_its_chat_left_to_it() {
+        let dir = TempDir::new().unwrap();
+        let broken = r#"{"workspace":"w-1","chat":"c-8","state":"paused"}"#;
+        let nameless = r#"{"shape":"unknown"}"#;
+        let more = r#"{"workspace":"w-1","chat":"c-7","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5,"model":"next"}"#;
+        let agent = r#"{"workspace":"w-1","chat":"c-6","agent":"gemini","run":null,"state":"idle","session":null,"turn":null,"queue":[],"active_at":5}"#;
+        let state = r#"{"workspace":"w-1","chat":"c-5","agent":"claude","run":null,"state":"paused","session":null,"turn":null,"queue":[],"active_at":5}"#;
+        let nested = r#"{"workspace":"w-1","chat":"c-4","agent":"claude","run":null,"state":"idle","session":null,"turn":null,"queue":[{"request":"r-1","text":"Hi","priority":2}],"active_at":5}"#;
+        let journal = format!(
+            r#"{{"issued":3,"chats":[{NEWER},{broken},{nameless},{more},{agent},{state},{nested}],"limits":{{"runs":9}}}}"#
+        );
+        std::fs::write(dir.join("runs.json"), journal).unwrap();
+
+        let mut runs = Runs::load(&dir).unwrap();
+        assert_eq!(runs.kept(), 7);
+        for chat in ["c-9", "c-8", "c-7", "c-6", "c-5", "c-4"] {
+            let kept = key("w-1", chat);
+            assert_eq!(runs.of(&kept), None);
+            assert_eq!(refusals(&mut runs, &kept).await, ["runs.newer_record"; 2]);
+        }
+
+        assert_eq!(begin(&mut runs, "c-1").await.as_str(), "run-4");
+        let raw = std::fs::read_to_string(dir.join("runs.json")).unwrap();
+        for kept in [
+            NEWER,
+            broken,
+            nameless,
+            more,
+            agent,
+            state,
+            nested,
+            r#""limits":{"runs":9}"#,
+        ] {
+            assert!(raw.contains(kept), "{kept} was rewritten");
+        }
+        let restarted = Runs::load(&dir).unwrap();
+        assert_eq!(latest(&restarted, &key("w-1", "c-1")), Some(run("run-4")));
+        assert_eq!(restarted.of(&key("w-1", "c-9")), None);
+    }
+
+    #[test]
+    fn a_kept_record_stays_out_of_debug_output() {
+        let dir = TempDir::new().unwrap();
+        let journal = format!(r#"{{"issued":3,"chats":[{NEWER}]}}"#);
+        std::fs::write(dir.join("runs.json"), journal).unwrap();
+
+        let runs = Runs::load(&dir).unwrap();
+
+        let debug = format!("{runs:?}");
+        assert!(debug.contains("c-9") && !debug.contains("Hi"), "{debug}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_journal_and_a_folder_it_makes_are_readable_only_by_its_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let state = dir.join("state");
+        let mut runs = Runs::load(&state).unwrap();
+
+        begin(&mut runs, "c-1").await;
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            (mode(&state), mode(&state.join("runs.json"))),
+            (0o700, 0o600)
+        );
     }
 }

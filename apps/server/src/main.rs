@@ -5,6 +5,7 @@ mod app;
 mod auth;
 mod cli;
 mod client;
+mod codes;
 mod connections;
 mod db;
 mod docs;
@@ -12,13 +13,20 @@ mod email;
 mod feed;
 mod http;
 mod limit;
+mod links;
 mod outbox;
+mod pairing;
+mod proposals;
+mod relay;
 mod secret;
+mod shared;
 mod sign_in;
 mod sign_up;
+mod socket;
 mod tasks;
 #[cfg(test)]
 mod test_support;
+mod uplink;
 mod web;
 mod workspaces;
 
@@ -31,15 +39,15 @@ use std::time::SystemTime;
 
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast};
+use weacon_appkit::{App, Ending};
 use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
 
-use crate::app::App;
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::http::Shared;
 use crate::outbox::Outbox;
 use crate::secret::Secret;
+use crate::shared::Shared;
 
 /// How many wake-ups a feed may miss before it rereads the database.
 const CHANGES: usize = 256;
@@ -61,8 +69,13 @@ fn main() -> ExitCode {
         Command::Serve(_) => json_lines(io::stdout()),
         Command::Admin(_) => json_lines(io::stderr()),
     };
-    let app = App::start(version, logs, weacon_appkit::http(), dsn.as_deref());
-    std::panic::set_hook(app.panic_hook());
+    let app = app::start(
+        version,
+        logs,
+        weacon_appkit::deliver_over_https(),
+        dsn.as_deref(),
+    );
+    std::panic::set_hook(app.panic_hook(app::panicked));
     let runtime = weacon_appkit::runtime(tokio::runtime::Builder::new_multi_thread());
     let result = runtime.and_then(|runtime| {
         runtime.block_on(async {
@@ -74,7 +87,7 @@ fn main() -> ExitCode {
             }
         })
     });
-    app.finish(result)
+    app.finish(result.map(Ending::from))
 }
 
 /// Serves until Ctrl-C or the system asks the server to stop.
@@ -89,13 +102,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sign_up,
     } = args;
     usable_outbox(outbox.clone()).await?;
-    let signals = weacon_appkit::Signals::new().map_err(|error| {
-        Fault::new(
-            code!("server.signals_failed"),
-            "The server couldn't catch signals",
-        )
-        .because(error)
-    })?;
+    let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
@@ -111,17 +118,30 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         proxies: trusted_proxy.into(),
         sign_up: sign_up.into(),
         connections: Arc::new(Semaphore::new(max_connections)),
-        feed: feed::TIMING,
+        sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
+        unpaired: broadcast::channel(CHANGES).0,
+        links: Arc::default(),
+        relay: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_within: sign_in::FINISH_WITHIN,
-        starts: Arc::new(sign_in::starts()),
-        tries: Arc::new(sign_in::tries()),
+        finish_takes: sign_in::FINISH_TAKES,
+        sign_in_limits: Arc::new(sign_in::limits()),
+        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     http::serve(listener, shared, signals.wait()).await;
     db.close().await;
     Ok(())
+}
+
+fn signals() -> Result<weacon_appkit::Signals, Fault> {
+    weacon_appkit::Signals::new().map_err(|error| {
+        Fault::new(
+            code!("server.signals_failed"),
+            "The server couldn't catch signals",
+        )
+        .because(error)
+    })
 }
 
 /// Checks that `outbox` is a folder; otherwise every sign-in would fail after its answer, and

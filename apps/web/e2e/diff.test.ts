@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Page } from "playwright-core";
 
-import { fakeServer, start } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start } from "./harness.ts";
 
 // The made-up change the fake server sends, as crates/testing/src/fake_diff.rs builds it.
 const FILES = 40;
@@ -22,7 +22,7 @@ const RENAMED = "src/thistle/part_08.rs";
 const ADDED = "src/orchard/part_03.rs";
 
 test("Changes asks for the chat's changes once and shows every file, scrolling to the last", { timeout: 180_000 }, async () => {
-  const harness = await start(fakeServer(1_000, 1), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   try {
     const { page } = harness;
     await page.getByRole("button", { name: "Changes" }).click();
@@ -58,10 +58,12 @@ test("Changes asks for the chat's changes once and shows every file, scrolling t
     const height = page.viewportSize()?.height ?? 0;
     assert.ok(box !== null && box.y < height && box.y + box.height > 0, `the last file is at ${JSON.stringify(box)}`);
     const queries = harness.received().filter((message) => (message as { type?: string }).type === "diff_query");
-    const [query, ...more] = queries as { request: string }[];
+    const [query, ...more] = queries as { id: number; request: string }[];
     assert.deepEqual(more, []);
     assert.match(query?.request ?? "", /^[0-9a-f]{32}$/);
-    assert.deepEqual(query, { id: 2, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
+    // The hello takes id 1; the chat's queries may come first.
+    assert.ok((query?.id ?? 0) > 1);
+    assert.deepEqual(query, { id: query?.id, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
   } finally {
     await harness.close();
   }

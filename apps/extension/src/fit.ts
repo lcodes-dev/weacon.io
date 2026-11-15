@@ -7,9 +7,6 @@ const MAX_HTML = 256 * 1024;
 const MAX_TEXT = 4 * 1024;
 const SMALLEST_SCALE = 1 / 32;
 
-/** A rectangle in CSS pixels, from the top left of the viewport. */
-export type Rect = { x: number; y: number; width: number; height: number };
-
 /**
  * The pick cut to lengths the core takes, with the largest screenshot from `shoot(1)`, halving
  * each time, that fits in one frame; without one when none fits, `shoot` fails or there is none.
@@ -41,34 +38,9 @@ export async function fit(
   throw new Failure("extension.pick_too_large");
 }
 
-/** The part of a `width` × `height` capture, in its pixels, that shows `rect`. */
-export function crop(rect: Rect, ratio: number, width: number, height: number): Rect {
-  const left = clamp(Math.round(rect.x * ratio), width);
-  const top = clamp(Math.round(rect.y * ratio), height);
-  const right = clamp(Math.round((rect.x + rect.width) * ratio), width);
-  const bottom = clamp(Math.round((rect.y + rect.height) * ratio), height);
-  if (right <= left || bottom <= top) {
-    throw new Failure("extension.element_hidden");
-  }
-  return { x: left, y: top, width: right - left, height: bottom - top };
-}
-
-/** `bytes` as base64, in chunks small enough to pass as arguments. */
-export function base64(bytes: Uint8Array): string {
-  let binary = "";
-  for (let at = 0; at < bytes.length; at += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(at, at + 0x8000));
-  }
-  return btoa(binary);
-}
-
 // The core's JSON parser refuses half a surrogate pair, which a page's own text can hold.
 function cut(text: string, length: number): string {
   return text.slice(0, length).toWellFormed();
-}
-
-function clamp(value: number, max: number): number {
-  return Math.min(Math.max(value, 0), max);
 }
 
 function fits(pick: Pick): boolean {

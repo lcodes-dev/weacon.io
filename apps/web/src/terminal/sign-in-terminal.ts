@@ -1,5 +1,5 @@
 import type { Pins } from "../machines/pins.ts";
-import { fromHex, hex } from "../hex.ts";
+import { hex, unhex } from "../hex.ts";
 import type {
   AgentKind,
   Code,
@@ -137,7 +137,7 @@ export class SignInTerminal {
 
   async #open(): Promise<void> {
     const { machine, size, screen } = this.#options;
-    const remote = fromHex(machine.key);
+    const remote = bytesOf(machine.key);
     if (remote === undefined) {
       return this.#close("key_unchecked");
     }
@@ -158,7 +158,7 @@ export class SignInTerminal {
 
   async #accept(handshake: string): Promise<void> {
     const pending = this.#pending;
-    const reply = fromHex(handshake);
+    const reply = bytesOf(handshake);
     this.#pending = undefined;
     if (pending === undefined || reply === undefined) {
       throw new Error("no handshake to finish");
@@ -174,7 +174,7 @@ export class SignInTerminal {
   }
 
   async #opened(sealed: string): Promise<Shown | undefined> {
-    const message = fromHex(sealed);
+    const message = bytesOf(sealed);
     if (this.#channel === undefined || message === undefined) {
       throw new Error("no channel");
     }
@@ -271,7 +271,7 @@ function outputOf(text: string): Shown | undefined {
   }
   const output = parsed as Record<string, unknown>;
   if (output.kind === "output") {
-    const data = typeof output.data === "string" ? fromHex(output.data) : undefined;
+    const data = typeof output.data === "string" ? bytesOf(output.data) : undefined;
     if (data === undefined) {
       throw new Error("not an output");
     }
@@ -282,4 +282,9 @@ function outputOf(text: string): Shown | undefined {
     return { kind: "ended", sign_in: known.includes(output.sign_in) ? (output.sign_in as SignInState) : "unknown" };
   }
   return undefined;
+}
+
+// The bytes `text` spells, if it is lowercase hex.
+function bytesOf(text: string): Uint8Array<ArrayBuffer> | undefined {
+  return /^(?:[0-9a-f]{2})*$/.test(text) ? unhex(text) : undefined;
 }

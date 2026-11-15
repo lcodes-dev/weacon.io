@@ -47,6 +47,11 @@ else
 fi
 cargo test --workspace --all-features --locked --doc
 
+# CI's runner can't hold the coverage build beside the copy the mutation tests build.
+if [ -n "${CI:-}" ]; then
+  rm -rf "${CARGO_TARGET_DIR:-target}/llvm-cov-target"
+fi
+
 # The Rust changes against main, untracked files included.
 changes() {
   local plain=(--no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/)
@@ -66,6 +71,11 @@ else
   changes "$base" >.dev/changes.diff
   if [ -s .dev/changes.diff ]; then
     need mutants
+    if [ -n "${CI:-}" ]; then
+      # A mutant that allocates without end must fail as a test, not kill the runner.
+      host=$(rustc -vV | sed -n 's/^host: //p' | tr 'a-z-' 'A-Z_')
+      export "CARGO_TARGET_${host}_RUNNER=$PWD/scripts/limit-memory.sh"
+    fi
     cargo mutants --in-diff .dev/changes.diff --output .dev --no-shuffle
   else
     step "Skipped: no Rust changes against origin/main"

@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Envelope } from "../src/protocol.ts";
-import { fakeServer, start, waitFor } from "./harness.ts";
+import { FAKE_CHAT, fakeServer, start, waitFor } from "./harness.ts";
 
 test("Enter during a composition neither sends nor clears, and Enter after it sends", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
@@ -39,10 +39,10 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
   const long = "a".repeat(17_000);
   await box.fill(long);
   await box.press("Enter");
-  await page.getByText("Too long to send; shorten it and try again").waitFor();
+  await page.getByText("It's too long to send. Shorten it and try again.").waitFor();
   assert.equal(await box.inputValue(), long);
   await box.press("Backspace");
-  assert.equal(await page.getByText("Too long to send; shorten it and try again").count(), 0);
+  assert.equal(await page.getByText("It's too long to send. Shorten it and try again.").count(), 0);
 
   const send = page.getByRole("button", { name: "Send" });
   await box.fill("   ");
@@ -68,12 +68,12 @@ test("without a chat, the box keeps what is typed and Send stays off", { timeout
 
   assert.equal(await box.inputValue(), "hi");
   assert.equal(await page.getByRole("button", { name: "Send" }).isDisabled(), true);
-  await page.getByText("Pick a chat to send").waitFor();
+  await page.getByText("Pick a chat to send to.").waitFor();
   assert.deepEqual(prompts(harness.received()), []);
 });
 
 test("@ offers people and agents, and a pick stays one mention", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
@@ -138,7 +138,7 @@ test("@ offers people and agents, and a pick stays one mention", { timeout: 120_
 });
 
 test("files come by picker, paste and drop, show before sending, and can be removed", { timeout: 120_000 }, async (t) => {
-  const harness = await start(fakeServer(1_000, 0), { query: "&workspace=w-1&chat=c-1" });
+  const harness = await start(fakeServer(1_000, 0), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });

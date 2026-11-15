@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Incoming } from "./incoming.ts";
-import { Receipts } from "./receipts.ts";
+import { Receipts, settledText } from "./receipts.ts";
 
 const receipt = (request: string, state: "accepted" | "completed" | "interrupted" | "unknown"): Incoming => ({
   id: 2,
@@ -75,6 +75,24 @@ test("an error in answer to a command's envelope refuses it", async () => {
   assert.equal(await other, "lost");
 });
 
+test("a refusal because the machine is offline or the chat detached says so, on time or late", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const offline = all.wait("r-1", 7);
+  const detached = all.wait("r-2", 8);
+  const slow = all.wait("r-3", 9);
+  deadlines[2]?.();
+
+  all.take({ id: 7, type: "error", code: "machine.offline", retryable: true });
+  all.take({ id: 8, type: "error", code: "chat.detached", retryable: false });
+  all.take({ id: 9, type: "error", code: "machine.offline", retryable: true });
+  assert.equal(await offline, "offline");
+  assert.equal(await detached, "detached");
+  assert.equal(await slow, "unsure");
+  assert.deepEqual(late, ["r-3 offline"]);
+});
+
 test("waiting again for a request still waiting shares its end, and its deadline", async () => {
   const { receipts: all, deadlines } = setup();
   const first = all.wait("r-1", 2);
@@ -101,4 +119,75 @@ test("a state this build doesn't know is unsure, whatever its name", async () =>
   const odd = all.wait("r-1", 2);
   all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Incoming);
   assert.equal(await odd, "unsure");
+});
+
+test("a receipt that comes after the wait ran out is heard as late, once", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  const retried = all.wait("r-2", 3);
+  all.wait("r-3", 4);
+  for (const deadline of deadlines.splice(0)) {
+    deadline();
+  }
+  assert.equal(await slow, "unsure");
+  assert.equal(await retried, "unsure");
+  // A retry under the same request waits again, so its receipt settles it, not the late listener.
+  const again = all.wait("r-2", 5);
+
+  all.take(receipt("r-1", "accepted"));
+  all.take(receipt("r-1", "accepted"));
+  all.take(receipt("r-2", "accepted"));
+  all.take({ id: 4, type: "receipt", request: "r-3", state: "failed", code: "run.failed" });
+  all.take(receipt("r-9", "accepted"));
+
+  assert.equal(await again, "accepted");
+  assert.deepEqual(late, ["r-1 accepted", "r-3 refused"]);
+});
+
+test("an error that answers a command after its wait ran out is heard as a late refusal", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  deadlines.shift()?.();
+  assert.equal(await slow, "unsure");
+
+  all.take({ id: 9, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take(receipt("r-1", "accepted"));
+
+  assert.deepEqual(late, ["r-1 refused"]);
+});
+
+test("an error about an overdue envelope doesn't decide a retry that waits", async () => {
+  const deadlines: Array<() => void> = [];
+  const late: string[] = [];
+  const all = new Receipts((run) => deadlines.push(run), (request, settled) => late.push(`${request} ${settled}`));
+  const slow = all.wait("r-1", 2);
+  deadlines.shift()?.();
+  assert.equal(await slow, "unsure");
+  const retry = all.wait("r-1", 5);
+
+  all.take({ id: 2, type: "error", code: "request.conflict", retryable: false });
+  all.take(receipt("r-1", "accepted"));
+
+  assert.equal(await retry, "accepted");
+  assert.deepEqual(late, []);
+});
+
+test("how a command ended is said once for every subject", () => {
+  const subject = { subject: "the answer", refused: "wasn't taken", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes no answers" };
+  const said = (["accepted", "refused", "offline", "detached", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));
+
+  assert.deepEqual(said, [
+    undefined,
+    "The answer wasn't taken.",
+    "The machine is offline, so the answer wasn't sent. Try again once it's back.",
+    "This chat's machine is gone, so it takes no answers.",
+    "The connection closed. The answer may not have been sent.",
+    "The server didn't answer. The answer may not have been sent.",
+  ]);
 });

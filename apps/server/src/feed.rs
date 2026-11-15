@@ -1,22 +1,27 @@
 use std::convert::Infallible;
-use std::time::Duration;
 
 use axum::Extension;
-use axum::extract::ws::{Message as Frame, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::Router;
+use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::response::Response;
-use futures_util::{Sink, SinkExt};
+use axum::routing::get;
 use serde::Deserialize;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
-use tokio::time::{Instant, MissedTickBehavior, interval_at, timeout};
+use tokio::sync::mpsc;
+use tokio::time::timeout;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Capability, Code, Envelope, ErrorBody, Message, WorkspaceChange, WorkspaceId, code,
+    Asker, Capability, Code, Envelope, Message, WorkspaceChange, WorkspaceId, code,
 };
 
-use crate::auth::Member;
+use crate::auth::{Member, Session};
 use crate::connections::Place;
-use crate::http::{Shared, failure};
+use crate::http::failure;
+use crate::proposals::PROPOSALS;
+use crate::relay::{self, Ask, Refusal, SETTINGS};
+use crate::shared::Shared;
+use crate::socket::{Closed, Pings, greet, reply};
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
 const FEED: Code = code!("workspace.feed");
@@ -24,19 +29,9 @@ const FEED: Code = code!("workspace.feed");
 const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
+/// How many answers from machines wait for the client to take them.
+const ANSWERS: usize = 16;
 
-/// How long a feed waits for the client's hello, and how often it checks that the client
-/// answers and its session hasn't ended; a send that takes longer than that ends the feed.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Timing {
-    pub(crate) hello_within: Duration,
-    pub(crate) ping_every: Duration,
-}
-
-pub(crate) const TIMING: Timing = Timing {
-    hello_within: Duration::from_secs(10),
-    ping_every: Duration::from_secs(30),
-};
 const MAX_MESSAGE: usize = 16 * 1024;
 const PAGE: u32 = 500;
 
@@ -46,29 +41,41 @@ pub(crate) struct Since {
     since: u64,
 }
 
+pub(crate) fn routes() -> Router<Shared> {
+    Router::new().route("/api/workspaces/{workspace}/feed", get(feed))
+}
+
 /// `GET /api/workspaces/{workspace}/feed`: a member's WebSocket of the workspace's changes
 /// after `since`, then each new one as it happens.
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
     Extension(place): Extension<Place>,
-    member: Member,
+    (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
     // Subscribed before the backlog is read, so no change falls between the two.
     let changes = shared.changes.subscribe();
     // A member joins a workspace when they first open it.
     match member.workspace.join(&member.id).await {
-        Ok(true) => shared.changed(member.workspace.id()),
+        Ok(true) => shared.wake_feeds(member.workspace.id()),
         Ok(false) => {}
         Err(fault) => return failure(fault),
     }
+    let asker = Asker {
+        account: session.account,
+        member: member.id.clone(),
+    };
+    let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
         _place: place,
         member,
+        asker,
         changes,
         last_seq: since,
-        offers: Offers::default(),
+        offers: Vec::new(),
+        answer_to,
+        answers,
     };
     upgrade
         .max_message_size(MAX_MESSAGE)
@@ -80,23 +87,24 @@ struct Feed {
     /// The feed's place among the open connections.
     _place: Place,
     member: Member,
+    /// Who the feed's client is, for the messages it relays to its machines.
+    asker: Asker,
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
-    offers: Offers,
+    /// What the client offered besides the feed; it hears only of those features' changes.
+    offers: Vec<Capability>,
+    /// Machines' answers to what the client asked them through the relay.
+    answer_to: mpsc::Sender<Envelope>,
+    answers: mpsc::Receiver<Envelope>,
 }
-
-/// Which features the client offered besides the feed; it hears only of their changes.
-#[derive(Default)]
-struct Offers {
-    tasks: bool,
-    docs: bool,
-}
-
-/// The feed has ended: its client left, its member is one no more, or something failed.
-struct Closed;
 
 impl Feed {
+    /// Whether the client offered `feature`.
+    fn hears(&self, feature: Code) -> bool {
+        self.offers.contains(&Capability::new(feature))
+    }
+
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
@@ -134,18 +142,17 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let Timing {
-        hello_within,
-        ping_every,
-    } = shared.feed;
-    feed.offers = timeout(hello_within, greet(socket, shared))
+    let feed_offer = Capability::new(FEED);
+    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
+        .map(Capability::new)
+        .to_vec();
+    let greeted = greet(socket, shared, offered, &feed_offer);
+    let hello = timeout(shared.sockets.hello_within, greeted)
         .await
         .map_err(|_| Closed)??;
+    feed.offers = hello.capabilities;
     catch_up(socket, shared, feed).await?;
-    let mut ping = interval_at(Instant::now() + ping_every, ping_every);
-    // After a stall, one late tick rather than a burst that would count as missed answers.
-    ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    let mut unanswered: u8 = 0;
+    let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
             change = feed.changes.recv() => match change {
@@ -154,20 +161,57 @@ async fn run(
                 Ok(_) | Err(RecvError::Lagged(_)) => catch_up(socket, shared, feed).await?,
                 Err(RecvError::Closed) => return Err(Closed),
             },
-            _ = ping.tick() => {
-                // Two pings unanswered: the client is gone, or its connection is.
-                if unanswered >= 2 {
-                    return Err(Closed);
-                }
+            () = pings.due() => pings.ping(socket, feed.allowed(shared)).await?,
+            Some(answer) = feed.answers.recv() => {
                 feed.allowed(shared).await?;
-                send(socket, ping_every, Frame::Ping(Vec::new().into())).await?;
-                unanswered = unanswered.saturating_add(1);
-            },
-            frame = socket.recv() => match frame {
-                Some(Ok(Frame::Close(_)) | Err(_)) | None => return Err(Closed),
-                Some(Ok(_)) => unanswered = 0,
-            },
+                reply(socket, shared, answer.id, answer.message).await?;
+            }
+            frame = socket.recv() => {
+                let frame = frame.ok_or(Closed)?;
+                pings.heard(&frame)?;
+                if let Ok(Frame::Text(text)) = &frame
+                    && let Ok(envelope) = Envelope::from_json(text.as_bytes())
+                {
+                    received(socket, shared, feed, envelope).await?;
+                }
+            }
         }
+    }
+}
+
+/// Gives what the client sent to the feature it is for, if the client offered that feature;
+/// anything else is dropped.
+async fn received(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &Feed,
+    envelope: Envelope,
+) -> Result<(), Closed> {
+    if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
+        return relay(socket, shared, feed, envelope).await;
+    }
+    Ok(())
+}
+
+/// Relays a message the client sent for one of its machines; the machine answers later, and a
+/// refusal answers at once.
+async fn relay(
+    socket: &mut WebSocket,
+    shared: &Shared,
+    feed: &Feed,
+    envelope: Envelope,
+) -> Result<(), Closed> {
+    feed.allowed(shared).await?;
+    let id = envelope.id;
+    let workspace = feed.member.workspace.id();
+    let ask = Ask {
+        asker: &feed.asker,
+        workspace,
+    };
+    match relay::forward(shared, &ask, envelope, &feed.answer_to).await {
+        Ok(()) => Ok(()),
+        Err(Refusal::Refused(refusal)) => reply(socket, shared, id, Message::Error(refusal)).await,
+        Err(Refusal::Failed(fault)) => Err(feed_failed(shared, workspace, &fault)),
     }
 }
 
@@ -183,8 +227,11 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         for update in page {
             feed.last_seq = update.seq;
             let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.offers.tasks,
-                WorkspaceChange::DocChanged { .. } => feed.offers.docs,
+                WorkspaceChange::TaskChanged { .. } => feed.hears(TASKS),
+                WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
+                WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
+                // No feed offers `workspace.chats` yet.
+                WorkspaceChange::ChatChanged { .. } => false,
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
             if !wanted {
@@ -200,115 +247,34 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
     }
 }
 
-/// Answers the client's hello. The feed goes on only for a client that offers it, and then
-/// says which other features the client offered.
-async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<Offers, Closed> {
-    let Some(Ok(Frame::Text(text))) = socket.recv().await else {
-        return Err(Closed);
-    };
-    let Ok(Envelope {
-        id,
-        message: Message::Hello(hello),
-    }) = Envelope::from_json(text.as_bytes())
-    else {
-        reply(socket, shared, 0, error(code!("handshake.required"))).await?;
-        return Err(Closed);
-    };
-    let offered = [FEED, TASKS, DOCS].map(Capability::from);
-    let answer = hello.answer(shared.app.clone(), offered.to_vec());
-    let offers = |code| hello.capabilities.contains(&Capability::from(code));
-    if !matches!(answer, Message::Welcome(_)) {
-        reply(socket, shared, id, answer).await?;
-        return Err(Closed);
-    }
-    if !offers(FEED) {
-        reply(socket, shared, id, error(code!("capability.missing"))).await?;
-        return Err(Closed);
-    }
-    reply(socket, shared, id, answer).await?;
-    Ok(Offers {
-        tasks: offers(TASKS),
-        docs: offers(DOCS),
-    })
-}
-
-fn error(code: Code) -> Message {
-    Message::Error(ErrorBody {
-        code,
-        retryable: false,
-    })
-}
-
-async fn reply(
-    socket: &mut WebSocket,
-    shared: &Shared,
-    id: u32,
-    message: Message,
-) -> Result<(), Closed> {
-    let json = (Envelope { id, message }).to_json().map_err(|_| Closed)?;
-    let text = Utf8Bytes::try_from(json).map_err(|_| Closed)?;
-    send(socket, shared.feed.ping_every, Frame::Text(text)).await
-}
-
-/// Sends `frame`, or gives up after `within`: a client that stops reading can't hold the feed.
-async fn send<S: Sink<Frame> + Unpin>(
-    socket: &mut S,
-    within: Duration,
-    frame: Frame,
-) -> Result<(), Closed> {
-    timeout(within, socket.send(frame))
-        .await
-        .ok()
-        .and_then(Result::ok)
-        .ok_or(Closed)
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use axum::http::header::AUTHORIZATION;
-    use futures_util::{SinkExt, StreamExt};
-    use serde_json::json;
+    use std::time::Duration;
+
+    use futures_util::SinkExt;
     use tokio::io::AsyncReadExt;
     use tokio::sync::Semaphore;
+    use tokio_tungstenite::tungstenite::Message as Wire;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    use tokio_tungstenite::tungstenite::{self, Message as Wire, Utf8Bytes};
-    use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
-    use weacon_protocol::{Hello, MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
+    use tokio_tungstenite::{MaybeTlsStream, connect_async};
+    use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
-    use weacon_protocol::{DocId, TaskId};
+    use weacon_protocol::{DocId, ProposalChange, ProposalId, TaskId};
 
     use super::*;
     use crate::auth::SESSION_COOKIE;
     use crate::db::Workspace;
-    use crate::email::Email;
     use crate::sign_in::SESSION_LIFETIME;
-    use crate::test_support::{
-        self, Fixture, Running, VERSION, fresh_account, member_id, run, workspace_id,
+    use crate::socket::refusal;
+    use crate::test_support::socket::{
+        Socket, ends, frame, next, open, say, say_as, upgrade_status,
     };
-
-    // For tests whose client stops reading, or that wait on something other than a ping: no
-    // ping comes while they run.
-    const QUIET: Duration = Duration::from_hours(1);
-
-    type Client = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
-
-    // Signs `email` in, and gives the session's token.
-    async fn sign_in(fixture: &Fixture, address: SocketAddr, email: &str) -> String {
-        let (_, body) = test_support::sign_in(fixture, address, email).await;
-        body["token"].as_str().unwrap().to_owned()
-    }
-
-    // A server for `fixture` that ada has signed in to, and her token.
-    async fn signed_in(fixture: &Fixture) -> (Running, String) {
-        let server = run(fixture.shared.clone()).await;
-        let token = sign_in(fixture, server.address, "ada@example.com").await;
-        (server, token)
-    }
+    use crate::test_support::{self, Fixture, PATIENCE, fresh_account, member_id, workspace_id};
 
     fn w1(fixture: &Fixture) -> impl Future<Output = Workspace> {
         let db = fixture.shared.db.clone();
@@ -318,96 +284,26 @@ mod tests {
     // Adds `email` to w1 as member `id`, who signs in and opens the workspace.
     async fn join(fixture: &Fixture, address: SocketAddr, id: &str, email: &str) {
         let workspace = w1(fixture).await;
-        let address_of = Email::parse(email).unwrap();
         workspace
-            .add_member(&member_id(id), &fresh_account(), &address_of)
+            .add_member(
+                &member_id(id),
+                &fresh_account(),
+                &test_support::email(email),
+            )
             .await
             .unwrap();
-        let token = sign_in(fixture, address, email).await;
-        greeted(address, &token, 0).await;
-    }
-
-    async fn open(
-        address: SocketAddr,
-        path: &str,
-        token: &str,
-    ) -> Result<Client, tungstenite::Error> {
-        let mut request = format!("ws://{address}{path}")
-            .into_client_request()
-            .unwrap();
-        request
-            .headers_mut()
-            .insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
-        connect_async(request).await.map(|(client, _)| client)
-    }
-
-    async fn say(client: &mut Client, capabilities: &[&str]) {
-        say_as(client, PROTOCOL, capabilities).await;
-    }
-
-    async fn say_as(client: &mut Client, protocol: u32, capabilities: &[&str]) {
-        let hello = Envelope {
-            id: 1,
-            message: Message::Hello(Hello {
-                protocol,
-                app: weacon_appkit::build(&VERSION),
-                capabilities: serde_json::from_value(json!(capabilities)).unwrap(),
-            }),
-        };
-        let json = String::from_utf8(hello.to_json().unwrap()).unwrap();
-        client.send(Wire::text(json)).await.unwrap();
+        let member = fixture.sign_in_client(address, email).await;
+        greeted(address, &member.token, 0).await;
     }
 
     // A feed of w1 for `token` after `since`, past its welcome.
-    async fn greeted(address: SocketAddr, token: &str, since: u64) -> Client {
+    async fn greeted(address: SocketAddr, token: &str, since: u64) -> Socket {
         let path = format!("/api/workspaces/w1/feed?since={since}");
         let mut client = open(address, &path, token).await.unwrap();
         say(&mut client, &["workspace.feed"]).await;
         let welcome = next(&mut client).await;
         assert!(matches!(welcome, Message::Welcome(_)), "{welcome:?}");
         client
-    }
-
-    // The client's next frame; a feed that sends nothing for this long is broken.
-    async fn frame(client: &mut Client) -> Option<Result<Wire, tungstenite::Error>> {
-        timeout(Duration::from_secs(10), client.next())
-            .await
-            .expect("the feed went quiet")
-    }
-
-    // The client's next message, pings aside: they come every 100 ms.
-    async fn next(client: &mut Client) -> Message {
-        let text = timeout(Duration::from_secs(10), text(client))
-            .await
-            .expect("no message in time");
-        Envelope::from_json(text.as_bytes()).unwrap().message
-    }
-
-    async fn text(client: &mut Client) -> Utf8Bytes {
-        loop {
-            match client.next().await {
-                Some(Ok(Wire::Ping(_))) => {}
-                Some(Ok(Wire::Text(text))) => return text,
-                other => panic!("no message: {other:?}"),
-            }
-        }
-    }
-
-    // Whether the feed ends, pings aside, before it has had ten seconds to.
-    async fn closed(client: &mut Client) -> bool {
-        timeout(Duration::from_secs(10), ends(client))
-            .await
-            .unwrap_or(false)
-    }
-
-    async fn ends(client: &mut Client) -> bool {
-        loop {
-            match client.next().await {
-                Some(Ok(Wire::Ping(_))) => {}
-                None | Some(Ok(Wire::Close(_)) | Err(_)) => return true,
-                Some(Ok(_)) => return false,
-            }
-        }
     }
 
     fn joined(seq: u64, member: &str) -> Message {
@@ -425,14 +321,14 @@ mod tests {
         let mut fixture = Fixture::new().await;
         let room = Arc::new(Semaphore::new(2));
         fixture.shared.connections = Arc::clone(&room);
-        let (server, token) = signed_in(&fixture).await;
-        let client = greeted(server.address, &token, 0).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let client = greeted(server.address, &ada.token, 0).await;
 
         // One place is the feed's, the other is kept for the next connection.
         assert_eq!(room.available_permits(), 0);
         drop(client);
         drop(
-            timeout(Duration::from_secs(10), room.acquire())
+            timeout(PATIENCE, room.acquire())
                 .await
                 .expect("the feed kept its place after it closed"),
         );
@@ -440,10 +336,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_gets_what_they_missed_then_each_change() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        let fixture = Fixture::new().await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say(&mut client, &["workspace.feed"]).await;
@@ -457,7 +352,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS].map(Capability::from)
+            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
@@ -466,8 +361,8 @@ mod tests {
     #[tokio::test]
     async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut plain = greeted(server.address, &token, 0).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
         let first = next(&mut plain).await;
         let task = Task::new(
             TaskId::try_from("t1".to_owned()).unwrap(),
@@ -480,11 +375,11 @@ mod tests {
             .add_task(&task, &attribution)
             .await
             .unwrap();
-        fixture.shared.changed(&workspace_id("w1"));
+        fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_task = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
-        let mut both = open(server.address, path, &token).await.unwrap();
+        let mut both = open(server.address, path, &ada.token).await.unwrap();
         say(&mut both, &["workspace.feed", "workspace.tasks"]).await;
         next(&mut both).await;
 
@@ -505,8 +400,8 @@ mod tests {
     #[tokio::test]
     async fn only_a_client_that_offers_docs_hears_of_doc_changes() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut plain = greeted(server.address, &token, 0).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
         next(&mut plain).await;
         let doc = Doc::new(
             DocId::try_from("d1".to_owned()).unwrap(),
@@ -523,11 +418,11 @@ mod tests {
             .add_doc(&doc, &attribution)
             .await
             .unwrap();
-        fixture.shared.changed(&workspace_id("w1"));
+        fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let after_the_doc = next(&mut plain).await;
         let path = "/api/workspaces/w1/feed";
-        let mut docs = open(server.address, path, &token).await.unwrap();
+        let mut docs = open(server.address, path, &ada.token).await.unwrap();
         say(&mut docs, &["workspace.feed", "workspace.docs"]).await;
         next(&mut docs).await;
 
@@ -546,11 +441,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_a_client_that_offers_proposals_hears_of_proposal_changes() {
+        let fixture = Fixture::new().await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut plain = greeted(server.address, &ada.token, 0).await;
+        next(&mut plain).await;
+        let proposal = ProposalId::try_from("p1".to_owned()).unwrap();
+        let task = ProposalChange::NewTask {
+            title: "Ship".to_owned(),
+        };
+        let proposed = test_support::proposals::proposed("p1", "mc1", task);
+        w1(&fixture).await.propose(&proposed).await.unwrap();
+        fixture.shared.wake_feeds(&workspace_id("w1"));
+        join(&fixture, server.address, "m2", "bo@example.com").await;
+        let after_the_proposal = next(&mut plain).await;
+        let path = "/api/workspaces/w1/feed";
+        let mut proposals = open(server.address, path, &ada.token).await.unwrap();
+        say(&mut proposals, &["workspace.feed", "workspace.proposals"]).await;
+        next(&mut proposals).await;
+
+        let proposal_changed = Message::Workspace(WorkspaceUpdate {
+            workspace: workspace_id("w1"),
+            seq: 2,
+            change: WorkspaceChange::ProposalChanged { proposal },
+        });
+        assert_eq!(after_the_proposal, joined(3, "m2"));
+        assert_eq!(next(&mut proposals).await, joined(1, "m1"));
+        assert_eq!(next(&mut proposals).await, proposal_changed);
+        assert_eq!(next(&mut proposals).await, joined(3, "m2"));
+    }
+
+    #[tokio::test]
     async fn changes_arrive_once_and_in_order_whatever_wakes_the_feed() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        let fixture = Fixture::new().await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let other = WorkspaceId::try_from("w9".to_owned()).unwrap();
         fixture.shared.changes.send(other).unwrap();
@@ -567,37 +492,33 @@ mod tests {
     #[tokio::test]
     async fn without_a_live_token_there_is_no_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let address = server.address;
-        let refused = |result: Result<Client, tungstenite::Error>| match result {
-            Err(tungstenite::Error::Http(response)) => response.status().as_u16(),
-            other => panic!("{:?}", other.map(|_| ())),
-        };
 
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", "wrong").await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", "wrong").await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w9/feed", &token).await),
+            upgrade_status(open(address, "/api/workspaces/w9/feed", &ada.token).await),
             401
         );
         assert_eq!(
-            refused(open(address, "/api/workspaces/w.1/feed", &token).await),
+            upgrade_status(open(address, "/api/workspaces/w.1/feed", &ada.token).await),
             400
         );
         // Signed in, but to an account that isn't a member.
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = test_support::email("bo@example.com");
         let db = &fixture.shared.db;
         db.add_account(&fresh_account(), &bo).await.unwrap();
-        let stranger = sign_in(&fixture, address, "bo@example.com").await;
+        let stranger = fixture.sign_in_client(address, "bo@example.com").await;
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &stranger).await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", &stranger.token).await),
             401
         );
         fixture.advance(SESSION_LIFETIME);
         assert_eq!(
-            refused(open(address, "/api/workspaces/w1/feed", &token).await),
+            upgrade_status(open(address, "/api/workspaces/w1/feed", &ada.token).await),
             401
         );
     }
@@ -605,48 +526,54 @@ mod tests {
     #[tokio::test]
     async fn a_client_must_say_hello_and_offer_the_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let address = server.address;
-        let mut wrong = open(address, "/api/workspaces/w1/feed", &token)
+        let mut wrong = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         wrong
             .send(Wire::text("{\"id\":3,\"type\":\"welcome\"}"))
             .await
             .unwrap();
-        let mut without = open(address, "/api/workspaces/w1/feed", &token)
+        let mut without = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say(&mut without, &[]).await;
-        let mut older = open(address, "/api/workspaces/w1/feed", &token)
+        let mut older = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         say_as(&mut older, PROTOCOL + 1, &["workspace.feed"]).await;
 
-        assert_eq!(next(&mut wrong).await, error(code!("handshake.required")));
-        assert_eq!(next(&mut without).await, error(code!("capability.missing")));
-        assert!(closed(&mut without).await);
-        assert_eq!(next(&mut older).await, error(code!("protocol.unsupported")));
-        assert!(closed(&mut older).await);
+        assert_eq!(next(&mut wrong).await, refusal(code!("handshake.required")));
+        assert_eq!(
+            next(&mut without).await,
+            refusal(code!("capability.missing"))
+        );
+        assert!(ends(&mut without).await);
+        assert_eq!(
+            next(&mut older).await,
+            refusal(code!("protocol.unsupported"))
+        );
+        assert!(ends(&mut older).await);
     }
 
     #[tokio::test]
     async fn a_client_that_says_nothing_is_let_go() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut silent = open(server.address, "/api/workspaces/w1/feed", &token)
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut silent = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
 
-        assert!(closed(&mut silent).await);
+        assert!(ends(&mut silent).await);
     }
 
     #[tokio::test]
     async fn an_oversized_message_ends_the_feed() {
         assert_eq!(MAX_MESSAGE, 16_384);
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         client
@@ -654,14 +581,15 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_client_that_answers_pings_stays_until_its_session_ends() {
-        let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         // Reading answers each ping; five of them outlast the two a silent client gets.
         for _ in 0..5 {
             let got = frame(&mut client).await;
@@ -669,26 +597,24 @@ mod tests {
         }
         fixture.advance(SESSION_LIFETIME);
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_change_reaches_no_feed_whose_member_is_one_no_more() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
+        let fixture = Fixture::new().await;
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
         w1(&fixture).await.unlink(&member_id("m1")).await;
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_member_whose_session_ends_during_a_page_gets_no_more_of_it() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.feed.ping_every = QUIET;
         // The clock reads as usual for `checks` more readings, then past every session.
         let checks = Arc::new(AtomicU64::new(u64::MAX));
         let (left, clock) = (Arc::clone(&checks), Arc::clone(&fixture.shared.clock));
@@ -699,14 +625,14 @@ mod tests {
                 .is_err();
             clock() + past * u32::from(ended)
         }));
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let w1 = w1(&fixture).await;
-        let bo = Email::parse("bo@example.com").unwrap();
+        let bo = test_support::email("bo@example.com");
         w1.add_member(&member_id("m2"), &fresh_account(), &bo)
             .await
             .unwrap();
         w1.join(&member_id("m2")).await.unwrap();
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &token)
+        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
         // A page of two changes, m2's and m1's: the session lasts through the first's check.
@@ -715,42 +641,46 @@ mod tests {
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(next(&mut client).await, joined(1, "m2"));
-        assert!(closed(&mut client).await);
+        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
     async fn a_quiet_feed_ends_when_its_member_is_one_no_more() {
-        let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
-        w1(&fixture).await.unlink(&member_id("m1")).await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
+        // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
+        let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
 
-        assert!(closed(&mut client).await);
-        let again = open(server.address, "/api/workspaces/w1/feed", &token).await;
+        let ((), ended) = tokio::join!(unlink, ends(&mut client));
+        assert!(ended);
+        let again = open(server.address, "/api/workspaces/w1/feed", &ada.token).await;
         again.unwrap_err();
     }
 
     #[tokio::test]
     async fn a_feed_ends_when_its_session_is_signed_out() {
-        let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let mut client = greeted(server.address, &token, 1).await;
-        let bearer = format!("authorization: Bearer {token}\r\n");
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let mut client = greeted(server.address, &ada.token, 1).await;
 
-        test_support::request_with(server.address, "POST /api/sign-out", &bearer, "").await;
+        let sign_out = ada.send("POST /api/sign-out", "");
 
-        assert!(closed(&mut client).await);
+        let (_, ended) = tokio::join!(sign_out, ends(&mut client));
+        assert!(ended);
     }
 
     #[tokio::test]
     async fn a_browsers_cookie_opens_a_feed_from_the_servers_own_page_only() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let open_from = async |origin: &str| {
             let mut request = format!("ws://{}/api/workspaces/w1/feed", server.address)
                 .into_client_request()
                 .unwrap();
-            let cookie = format!("{SESSION_COOKIE}={token}");
+            let cookie = format!("{SESSION_COOKIE}={}", ada.token);
             request
                 .headers_mut()
                 .insert("cookie", cookie.parse().unwrap());
@@ -764,25 +694,22 @@ mod tests {
         let other = open_from("http://other.example").await;
 
         own.unwrap();
-        let Err(tungstenite::Error::Http(refused)) = other else {
-            panic!("{other:?}");
-        };
-        assert_eq!(refused.status().as_u16(), 403);
+        assert_eq!(upgrade_status(other), 403);
     }
 
     #[tokio::test]
     async fn only_a_session_token_opens_a_feed() {
         let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
+        let (server, ada) = fixture.client("ada@example.com").await;
         let upgrade = "connection: upgrade\r\nupgrade: websocket\r\nsec-websocket-version: 13\r\n\
                        sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\n";
         let mut statuses = Vec::new();
         for authorization in [
             String::new(),
             "authorization: Bearer \r\n".to_owned(),
-            format!("authorization: Basic {token}\r\n"),
-            format!("authorization: bearer{token}\r\n"),
-            format!("authorization: Bearer {token}\r\n"),
+            format!("authorization: Basic {}\r\n", ada.token),
+            format!("authorization: bearer{}\r\n", ada.token),
+            format!("authorization: Bearer {}\r\n", ada.token),
         ] {
             let headers = format!("{authorization}{upgrade}");
             let feed = "GET /api/workspaces/w1/feed";
@@ -803,30 +730,19 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn a_send_the_client_never_takes_gives_up() {
-        let mut stuck = futures_util::sink::unfold((), |(), _: Frame| {
-            std::future::pending::<Result<(), Infallible>>()
-        });
-        let mut taken = futures_util::sink::drain();
-        let frame = || Frame::Ping(Vec::new().into());
-
-        assert!(send(&mut stuck, TIMING.ping_every, frame()).await.is_err());
-        assert!(send(&mut taken, TIMING.ping_every, frame()).await.is_ok());
-    }
-
     #[tokio::test]
     async fn a_client_that_stops_answering_is_let_go() {
-        let fixture = Fixture::new().await;
-        let (server, token) = signed_in(&fixture).await;
-        let client = greeted(server.address, &token, 1).await;
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
+        let (server, ada) = fixture.client("ada@example.com").await;
+        let client = greeted(server.address, &ada.token, 1).await;
         // Read below the WebSocket, so nothing answers the pings.
         let MaybeTlsStream::Plain(mut stream) = client.into_inner() else {
             panic!("not plain TCP");
         };
         let mut rest = Vec::new();
 
-        timeout(Duration::from_secs(10), stream.read_to_end(&mut rest))
+        timeout(PATIENCE, stream.read_to_end(&mut rest))
             .await
             .expect("the feed never let go")
             .unwrap();

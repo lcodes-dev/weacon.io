@@ -3,76 +3,106 @@ use std::io::{self, Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use weacon_appkit::Outcome;
-use weacon_codemap::{SourceFile, index};
+use weacon_appkit::Ending;
+use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::code;
+use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
-use crate::cli::MapCommand;
+use crate::cli::{MapCommand, MapSubcommand};
+use crate::codemap::{LARGEST, index_failed, read_failed};
+use crate::mcp::tools;
 
-/// Checks the repository; `Findings` when a pin no longer matches.
+/// Prints what the MCP's tools answer, or checks the repository's pins: `Findings` when one
+/// no longer matches.
 pub(crate) fn run(
     app: &App,
     command: MapCommand,
     input: &mut impl Read,
     out: &mut impl Write,
-) -> Result<Outcome, Fault> {
-    let MapCommand::CheckAnchors { root } = command;
-    let clean = check_anchors(app, &root, input, out)?;
-    Ok(if clean {
-        Outcome::Done
-    } else {
-        Outcome::Findings
-    })
+) -> Result<Ending, Fault> {
+    let MapCommand {
+        command,
+        root,
+        budget,
+    } = command;
+    let text = match command {
+        Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
+        Some(MapSubcommand::Symbol { path }) => {
+            tools::answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
+        }
+        Some(MapSubcommand::Flows) => tools::answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
+        Some(MapSubcommand::Architecture) => tools::answered(&root, budget, Index::architecture)?,
+        Some(MapSubcommand::Contracts) => tools::answered(&root, budget, contracts)?,
+        None => tools::answer(&McpCall::Map(MapArgs { budget }), &root)?,
+    };
+    print(out, &text)?;
+    Ok(Ending::Done)
 }
 
-/// Prints each pin read from `input` that no longer matches the repository at `root`, and
-/// says whether every pin matches.
+/// The code's contracts, or a line saying it declares none.
+fn contracts(map: &Index, budget: usize) -> String {
+    let listed = map.contracts(None, budget);
+    if listed.is_empty() {
+        "No contracts.\n".to_owned()
+    } else {
+        listed
+    }
+}
+
+/// Prints each pin read from `input` that no longer matches the repository at `root`.
 fn check_anchors(
     app: &App,
     root: &Path,
     input: &mut impl Read,
     out: &mut impl Write,
-) -> Result<bool, Fault> {
+) -> Result<Ending, Fault> {
     let mut pins = String::new();
     input.read_to_string(&mut pins).map_err(|error| {
         Fault::new(code!("map.input_failed"), "The anchors couldn't be read").because(error)
     })?;
     let started = Instant::now();
-    let mut files = Vec::new();
-    source_files(root, "", &mut files).map_err(|error| {
-        Fault::new(code!("map.read_failed"), "The repository couldn't be read").because(error)
-    })?;
-    let index = index(&files).map_err(|error| {
-        Fault::new(code!("map.index_failed"), "The code map couldn't be built").because(error)
-    })?;
+    let (index, files) = index_folder(root)?;
     let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     app.log.info(
         "map indexed",
-        &[("files", files.len().into()), ("ms", millis.into())],
+        &[("files", files.into()), ("ms", millis.into())],
     );
     let findings = index.check(&pins);
     let report: String = findings
         .iter()
         .map(|finding| finding.to_string() + "\n")
         .collect();
-    out.write_all(report.as_bytes()).map_err(|error| {
-        Fault::new(
-            code!("map.output_failed"),
-            "The findings couldn't be printed",
-        )
-        .because(error)
-    })?;
-    Ok(findings.is_empty())
+    print(out, &report)?;
+    Ok(if findings.is_empty() {
+        Ending::Done
+    } else {
+        Ending::Findings
+    })
 }
 
-/// Every `Cargo.toml`, and every `.rs` file inside a `src` folder, under `root/folder`, its path
-/// joined with `/`. Hidden entries, links, `node_modules`, Cargo's build folders and files
-/// that aren't UTF-8 are left out.
+fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
+    out.write_all(text.as_bytes()).map_err(|error| {
+        Fault::new(code!("map.output_failed"), "The answer couldn't be printed").because(error)
+    })
+}
+
+/// The code map of the repository at `root`, and how many files it read; it blocks.
+pub(crate) fn index_folder(root: &Path) -> Result<(Index, usize), Fault> {
+    let mut files = Vec::new();
+    source_files(root, "", &mut files).map_err(|error| read_failed().because(error))?;
+    let index = index(&files).map_err(|error| index_failed().because(error))?;
+    Ok((index, files.len()))
+}
+
+/// Every file the code map takes under `root/folder`, its path joined with `/`. Hidden entries,
+/// links, `node_modules`, Cargo's build folders, files over [`LARGEST`] bytes and files that
+/// aren't UTF-8 are left out.
 fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::Result<()> {
     for entry in fs::read_dir(root.join(folder))? {
-        let entry = entry?;
+        let Some(entry) = present(entry)? else {
+            continue;
+        };
         let name = entry.file_name();
         let Some(name) = name.to_str().filter(|name| !name.starts_with('.')) else {
             continue;
@@ -82,11 +112,14 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
         } else {
             format!("{folder}/{name}")
         };
-        let kind = entry.file_type()?;
+        let Some(kind) = present(entry.file_type())? else {
+            continue;
+        };
         if kind.is_dir() && !skipped(&root.join(&path), name) {
-            source_files(root, &path, files)?;
+            present(source_files(root, &path, files))?;
         } else if kind.is_file()
-            && is_source(&path, name)
+            && weacon_codemap::is_mapped(&path)
+            && present(entry.metadata())?.is_some_and(|about| about.len() <= LARGEST)
             && let Some(text) = text_or_skip(fs::read_to_string(root.join(&path)))?
         {
             files.push(SourceFile { path, text });
@@ -95,11 +128,19 @@ fn source_files(root: &Path, folder: &str, files: &mut Vec<SourceFile>) -> io::R
     Ok(())
 }
 
-/// A file's text, or `None` for a file that isn't UTF-8.
+/// A file's text, or `None` for a file that isn't UTF-8 or was removed while the folder was read.
 fn text_or_skip(read: io::Result<String>) -> io::Result<Option<String>> {
     match read {
-        Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(None),
+        read => present(read),
+    }
+}
+
+/// What was read, or `None` for an entry removed while its folder was read.
+fn present<T>(read: io::Result<T>) -> io::Result<Option<T>> {
+    match read {
+        Ok(read) => Ok(Some(read)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
 }
@@ -109,17 +150,12 @@ fn skipped(folder: &Path, name: &str) -> bool {
     name == "node_modules" || folder.join("CACHEDIR.TAG").is_file()
 }
 
-fn is_source(path: &str, name: &str) -> bool {
-    let rust = Path::new(name).extension().is_some_and(|it| it == "rs");
-    name == "Cargo.toml" || (rust && path.split('/').any(|part| part == "src"))
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::app;
+    use crate::test_support::{Broken, app};
 
     fn repo(files: &[(&str, &str)]) -> TempDir {
         let root = TempDir::new().unwrap();
@@ -131,13 +167,15 @@ mod tests {
         root
     }
 
-    fn check(root: &Path, pins: &str) -> (Result<Outcome, Fault>, String) {
+    fn check(root: &Path, pins: &str) -> (Result<Ending, Fault>, String) {
         let mut out = Vec::new();
-        let command = MapCommand::CheckAnchors {
+        let command = MapCommand {
+            command: Some(MapSubcommand::CheckAnchors),
             root: root.to_owned(),
+            budget: None,
         };
-        let outcome = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
-        (outcome, String::from_utf8(out).unwrap())
+        let ending = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
+        (ending, String::from_utf8(out).unwrap())
     }
 
     const CRATE: &[(&str, &str)] = &[
@@ -150,23 +188,24 @@ mod tests {
     fn prints_missing_changed_and_malformed_pins() {
         let root = repo(CRATE);
         let pins = "sym:a::m::go#0000000000000000\nsym:a::gone#0000000000000000\nnot a pin\n";
-        let (outcome, found) = check(&root, pins);
-        assert_eq!(outcome.unwrap(), Outcome::Findings);
+        let (ending, found) = check(&root, pins);
+        assert_eq!(ending.unwrap(), Ending::Findings);
         let lines: Vec<&str> = found.lines().collect();
         assert_eq!(lines.len(), 3, "{found}");
         assert!(lines[0].starts_with("changed sym:a::m::go#"), "{found}");
         assert_eq!(lines[1..], ["missing sym:a::gone", "malformed line 3"]);
 
         let current = lines[0].trim_start_matches("changed ");
-        let (outcome, found) = check(&root, current);
-        assert_eq!((outcome.unwrap(), found), (Outcome::Done, String::new()));
+        let (ending, found) = check(&root, current);
+        assert_eq!((ending.unwrap(), found), (Ending::Done, String::new()));
     }
 
     #[test]
     fn reads_only_crate_sources() {
         let mut files = CRATE.to_vec();
         files.extend([
-            ("a/src/notes.md", "fn hidden() {}"),
+            ("a/src/notes.txt", "fn hidden() {}"),
+            ("a/notes.md", "# Notes\n"),
             (
                 "a/target/CACHEDIR.TAG",
                 "Signature: 8a477f597d28d172789f06886806bc55",
@@ -181,6 +220,9 @@ mod tests {
         ]);
         let root = repo(&files);
         fs::write(root.join("a/src/bad.rs"), [0xff, 0xfe]).unwrap();
+        let largest = usize::try_from(LARGEST).unwrap();
+        fs::write(root.join("a/src/full.rs"), " ".repeat(largest)).unwrap();
+        fs::write(root.join("a/src/huge.rs"), " ".repeat(largest + 1)).unwrap();
         let mut files = Vec::new();
         source_files(&root, "", &mut files).unwrap();
         let mut paths: Vec<String> = files.into_iter().map(|file| file.path).collect();
@@ -189,6 +231,8 @@ mod tests {
             paths,
             [
                 "a/Cargo.toml",
+                "a/notes.md",
+                "a/src/full.rs",
                 "a/src/lib.rs",
                 "a/src/m.rs",
                 "a/src/target/x.rs"
@@ -197,11 +241,153 @@ mod tests {
     }
 
     #[test]
-    fn skips_only_files_that_are_not_utf8() {
-        let skipped = text_or_skip(Err(io::ErrorKind::InvalidData.into())).unwrap();
-        assert_eq!(skipped, None);
+    fn skips_only_files_that_are_not_utf8_or_were_removed_meanwhile() {
+        for kind in [io::ErrorKind::InvalidData, io::ErrorKind::NotFound] {
+            assert_eq!(text_or_skip(Err(kind.into())).unwrap(), None);
+        }
+        assert_eq!(
+            present(Err::<(), _>(io::ErrorKind::NotFound.into())).unwrap(),
+            None
+        );
+        let denied = present(Err::<(), _>(io::ErrorKind::PermissionDenied.into())).unwrap_err();
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
         let failed = text_or_skip(Err(io::ErrorKind::PermissionDenied.into())).unwrap_err();
         assert_eq!(failed.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    fn printed(root: &Path, command: Option<MapSubcommand>, budget: Option<u32>) -> String {
+        let mut out = Vec::new();
+        let command = MapCommand {
+            command,
+            root: root.to_owned(),
+            budget,
+        };
+        let ending = run(&app(None, None), command, &mut io::empty(), &mut out);
+        assert_eq!(ending.unwrap(), Ending::Done);
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn each_view_prints_its_answer_and_the_tools_views_match_them() {
+        let root = repo(CRATE);
+        let empty = TempDir::new().unwrap();
+        let (index, _) = index_folder(&root).unwrap();
+        let tool = |call: McpCall| tools::answer(&call, &root).unwrap();
+        let view = |root: &Path, view| printed(root, Some(view), None);
+
+        let flows = tool(McpCall::Flow(FlowArgs::default()));
+        assert_eq!(view(&root, MapSubcommand::Flows), flows);
+        assert_eq!(
+            view(&root, MapSubcommand::Architecture),
+            index.architecture(6000)
+        );
+        assert_eq!(view(&root, MapSubcommand::Contracts), "No contracts.\n");
+        let serde = repo(&[
+            ("Cargo.toml", "[package]\nname = \"a\"\n"),
+            ("src/lib.rs", "#[derive(Serialize)]\npub struct Reply;\n"),
+        ]);
+        let (declared, _) = index_folder(&serde).unwrap();
+        let contracts = declared.contracts(None, 6000);
+        assert!(!contracts.is_empty());
+        assert_eq!(view(&serde, MapSubcommand::Contracts), contracts);
+        for subcommand in [MapSubcommand::Architecture, MapSubcommand::Contracts] {
+            assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
+        }
+        let none = "Flows pinned in the docs: 0.\n";
+        assert_eq!(view(&empty, MapSubcommand::Flows), none);
+    }
+
+    #[test]
+    fn a_flow_a_doc_pins_reaches_the_flow_tool() {
+        let mut files = CRATE.to_vec();
+        files.push((
+            "docs/run.md",
+            "Runs flow:a::run->a::m::go, then flow:a::run->a::gone.\n",
+        ));
+        let root = repo(&files);
+
+        let flows = tools::answer(&McpCall::Flow(FlowArgs::default()), &root).unwrap();
+
+        assert_eq!(
+            flows,
+            "Flows pinned in the docs: 2.\n- docs/run.md:1  a::run -> a::m::go: holds\n\
+             - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
+        );
+        assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+        let docs_only = repo(&[("docs/run.md", "Runs flow:a::run->a::gone.\n")]);
+        assert_eq!(
+            printed(&docs_only, Some(MapSubcommand::Flows), None),
+            "Flows pinned in the docs: 1.\n- docs/run.md:1  a::run -> a::gone: breaks: no item a::run\n"
+        );
+    }
+
+    fn symbol(path: &str) -> MapSubcommand {
+        let path = path.to_owned();
+        MapSubcommand::Symbol { path }
+    }
+
+    #[test]
+    fn map_and_symbol_print_exactly_what_the_tools_answer() {
+        let root = repo(CRATE);
+        let empty = TempDir::new().unwrap();
+        let tool = |call: McpCall, root: &Path| tools::answer(&call, root).unwrap();
+        let go = || SymbolArgs {
+            path: "a::m::go".into(),
+            budget: None,
+        };
+
+        let outline = printed(&root, None, None);
+        let item = printed(&root, Some(symbol("a::m::go")), None);
+
+        assert_eq!(outline, tool(McpCall::Map(MapArgs::default()), &root));
+        assert_eq!(item, tool(McpCall::Symbol(go()), &root));
+        assert_eq!(
+            item,
+            "fn a::m::go  a/src/m.rs:1\ncalled by fn a::run  a/src/lib.rs:2\n"
+        );
+        let none = tool(McpCall::Map(MapArgs::default()), &empty);
+        assert_eq!(printed(&empty, None, None), none);
+    }
+
+    #[test]
+    fn a_budget_reaches_the_map_tool() {
+        let root = repo(CRATE);
+        for n in 0..60 {
+            let folder = root.join(format!("crate_number_{n}"));
+            fs::create_dir_all(folder.join("src")).unwrap();
+            let manifest = format!("[package]\nname = \"crate_number_{n}\"\n");
+            fs::write(folder.join("Cargo.toml"), manifest).unwrap();
+            fs::write(folder.join("src/lib.rs"), "pub fn run() {}\n").unwrap();
+        }
+        let cut_by_tool = MapArgs { budget: Some(1000) };
+
+        let whole = printed(&root, None, None);
+        let cut = printed(&root, None, Some(1000));
+
+        assert_ne!(cut, whole);
+        assert_eq!(
+            cut,
+            tools::answer(&McpCall::Map(cut_by_tool), &root).unwrap()
+        );
+    }
+
+    #[test]
+    fn a_root_that_cant_be_read_or_an_answer_that_cant_be_printed_is_an_error() {
+        let command = |root: std::path::PathBuf| MapCommand {
+            command: None,
+            root,
+            budget: None,
+        };
+        let run = |command, out: &mut dyn Write| {
+            run(&app(None, None), command, &mut io::empty(), &mut &mut *out).unwrap_err()
+        };
+        let dir = TempDir::new().unwrap();
+
+        let unread = run(command(dir.join("nowhere")), &mut Vec::new());
+        let unprinted = run(command(repo(CRATE).to_path_buf()), &mut Broken);
+
+        assert_eq!(unread.code().as_str(), "map.read_failed");
+        assert_eq!(unprinted.code().as_str(), "map.output_failed");
     }
 
     #[test]
@@ -217,20 +403,6 @@ mod tests {
 
     #[test]
     fn fails_when_it_cant_read_or_print() {
-        struct Broken;
-        impl Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-        }
-        impl Write for Broken {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::ErrorKind::BrokenPipe.into())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
         let root = repo(CRATE);
         let error =
             check_anchors(&app(None, None), &root, &mut Broken, &mut Vec::new()).unwrap_err();

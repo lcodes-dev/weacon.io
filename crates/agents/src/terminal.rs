@@ -2,6 +2,7 @@
 
 use std::{fmt, io};
 
+use tokio::process::Command;
 use tokio::sync::mpsc;
 
 use crate::platform::Pty;
@@ -14,7 +15,7 @@ pub struct Size {
 }
 
 impl Size {
-    /// `None` when either is zero or larger than a console takes.
+    /// `None` when either is zero or larger than a terminal takes on every system.
     #[must_use]
     pub fn new(cols: u32, rows: u32) -> Option<Self> {
         let fits = |count: u32| {
@@ -33,11 +34,11 @@ const MAX_SIDE: u16 = i16::MAX.cast_unsigned();
 
 /// The vendor's sign-in, running. Dropping it ends the sign-in.
 pub struct Terminal {
-    pub(crate) pty: Pty,
+    pty: Pty,
 }
 
 /// What the sign-in does, in order: all it prints, then its end.
-pub struct Events(pub(crate) mpsc::Receiver<Event>);
+pub struct Events(mpsc::Receiver<Event>);
 
 /// One thing the sign-in did. Its `Debug` shows only how much was printed.
 #[derive(PartialEq, Eq)]
@@ -58,6 +59,12 @@ impl fmt::Debug for Event {
 }
 
 impl Terminal {
+    /// Starts `command` in a new terminal of `size`.
+    pub(crate) fn open(command: Command, size: Size) -> io::Result<(Self, Events)> {
+        let (pty, events) = Pty::spawn(command, size)?;
+        Ok((Self { pty }, Events(events)))
+    }
+
     /// Passes on what the person typed. Not safe to cancel: part of `data` may have been
     /// passed on, or may still be.
     ///
@@ -117,21 +124,23 @@ mod tests {
 
         use super::*;
         use crate::Launch;
-        use crate::platform::write_program;
         use crate::test_support::{after_output, next_event, output_until};
+        use weacon_testing::platform::write_program;
 
         fn launch(agent: AgentKind, dir: &Path) -> Launch {
             let program = dir.join("vendor");
             write_program(
                 &program,
                 "#!/bin/sh\necho \"args [$*] claude [$CLAUDE_CONFIG_DIR] codex [$CODEX_HOME] term [$TERM]\"\n",
-            );
+            ).unwrap();
             Launch {
                 agent,
                 program,
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
+                mcp: None,
+                plugin: None,
             }
         }
 
@@ -184,7 +193,7 @@ mod tests {
             assert_eq!(error.code().as_str(), "agent.login_failed");
 
             let waiting = dir.join("waiting");
-            write_program(&waiting, "#!/bin/sh\necho ready\nread line\n");
+            write_program(&waiting, "#!/bin/sh\necho ready\nread line\n").unwrap();
             let launch = Launch {
                 program: waiting,
                 ..launch(AgentKind::Claude, &dir)
@@ -204,7 +213,8 @@ mod tests {
             write_program(
                 &asking,
                 "#!/bin/sh\necho ready\nIFS= read -r line\necho \"got $line\"\nstty size\n",
-            );
+            )
+            .unwrap();
             let launch = Launch {
                 program: asking,
                 ..launch(AgentKind::Claude, &dir)

@@ -1,20 +1,18 @@
-use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::io::{self, Read};
+use std::path::Path;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
-use weacon_appkit::{owner_only, private_append, sync_dir};
+use weacon_appkit::{create_private, is_private, sync_dir};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::code;
+use weacon_protocol::{code, to_hex};
 
-use crate::app::new_id;
 use crate::email::Email;
 
-/// The server's own key, which sign-in codes are hashed with: a stolen database alone can't
-/// be searched for its eight-digit codes.
+/// The server's own key, which sign-in and pairing codes are hashed with and machine tokens
+/// derived from: a stolen database alone can't be searched for its codes.
 pub(crate) struct Secret(Hmac<Sha256>);
 
 impl Secret {
@@ -35,7 +33,7 @@ impl Secret {
 
     fn read(mut file: File, log: &Logger) -> Result<Self, Fault> {
         let metadata = file.metadata().map_err(unreadable)?;
-        match owner_only(&metadata) {
+        match is_private(&metadata) {
             Some(true) => {}
             Some(false) => {
                 return Err(Fault::new(
@@ -64,39 +62,57 @@ impl Secret {
 
     /// What is stored for a code mailed to `email`, which is part of it so that the same code
     /// for two addresses is stored differently; any of the address's challenges can check it.
-    pub(crate) fn code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
-        let mut mac = self.0.clone();
-        mac.update(email.as_str().as_bytes());
+    pub(crate) fn sign_in_code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
         // An address never holds a zero byte, so this keeps the two apart.
-        mac.update(&[0]);
-        mac.update(code.as_bytes());
+        self.mac(&[email.as_str().as_bytes(), &[0], code.as_bytes()])
+    }
+
+    /// What is stored for a pairing's `code`, which is looked up by it. No address is a word
+    /// without an `@`, so no sign-in code is stored the same.
+    pub(crate) fn pairing_code_hash(&self, code: &str) -> [u8; 32] {
+        self.mac(&[b"pairing.code\0", code.as_bytes()])
+    }
+
+    /// The token of the machine whose pairing is claimed with `secret`, the same each time so
+    /// that a core may claim again when an answer was lost.
+    pub(crate) fn machine_token(&self, secret: &str) -> [u8; 32] {
+        self.mac(&[b"machine.token\0", secret.as_bytes()])
+    }
+
+    fn mac(&self, parts: &[&[u8]]) -> [u8; 32] {
+        let mut mac = self.0.clone();
+        for part in parts {
+            mac.update(part);
+        }
         mac.finalize().into_bytes().into()
     }
 }
 
 /// Makes a key at `path`, whole or not at all; a file already there is left as it is.
 fn create(path: &Path) -> Result<(), Fault> {
-    let key = random_bytes()?;
-    let mut new = OsString::from(path);
-    new.push(format!(".{}.new", new_id()));
-    let new = PathBuf::from(new);
-    let made = private_append(&new).and_then(|mut file| {
-        file.write_all(&key)?;
-        file.sync_all()
-    });
-    if made.is_ok() {
-        // Fails when another server made the file first; then its key is the one read.
-        drop(fs::hard_link(&new, path));
+    let key = random::<32>()?;
+    match create_private(path, &key) {
+        // Another server made the file first; then its key is the one read.
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+        made => made.map_err(unreadable),
     }
-    drop(fs::remove_file(&new));
-    made.map_err(unreadable)
 }
 
 /// The operating system's random bytes.
-pub(crate) fn random_bytes() -> Result<[u8; 32], Fault> {
-    let mut bytes = [0; 32];
+fn random<const N: usize>() -> Result<[u8; N], Fault> {
+    let mut bytes = [0; N];
     getrandom::fill(&mut bytes).map_err(|_| random_failed())?;
     Ok(bytes)
+}
+
+/// A token nobody can guess: 32 random bytes, in hex.
+pub(crate) fn random_token() -> Result<String, Fault> {
+    Ok(to_hex(&random::<32>()?))
+}
+
+/// A random number, for a code's letters.
+pub(crate) fn random_u64() -> Result<u64, Fault> {
+    Ok(u64::from_le_bytes(random()?))
 }
 
 pub(crate) fn random_failed() -> Fault {
@@ -122,20 +138,22 @@ impl fmt::Debug for Secret {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    use weacon_appkit::private_append;
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
+    use crate::test_support::email;
 
     fn open(path: &Path) -> Result<Secret, Fault> {
         Secret::open(path, &recording_logger().0)
     }
 
-    fn address(text: &str) -> Email {
-        Email::parse(text).unwrap()
-    }
-
     fn hash(secret: &Secret) -> [u8; 32] {
-        secret.code_hash(&address("ada@example.com"), "12345678")
+        secret.sign_in_code_hash(&email("ada@example.com"), "12345678")
     }
 
     // A private file holding `bytes`.
@@ -155,6 +173,49 @@ mod tests {
     }
 
     #[test]
+    fn pairing_codes_and_machine_tokens_are_keyed_and_kept_apart() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = (
+            open(&dir.join("one")).unwrap(),
+            open(&dir.join("two")).unwrap(),
+        );
+        let email = email("pairing.code@example.com");
+
+        assert_eq!(one.machine_token("s"), one.machine_token("s"));
+        assert_ne!(one.machine_token("s"), one.machine_token("t"));
+        assert_ne!(one.machine_token("s"), two.machine_token("s"));
+        assert_eq!(one.pairing_code_hash("c"), one.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.pairing_code_hash("d"));
+        assert_ne!(one.pairing_code_hash("c"), two.pairing_code_hash("c"));
+        assert_ne!(one.pairing_code_hash("c"), one.machine_token("c"));
+        assert_ne!(
+            one.pairing_code_hash("c"),
+            one.sign_in_code_hash(&email, "c")
+        );
+        assert_ne!(one.machine_token("c"), one.sign_in_code_hash(&email, "c"));
+        Email::parse("pairing.code").unwrap_err();
+        Email::parse("machine.token").unwrap_err();
+    }
+
+    #[test]
+    fn pairing_codes_and_machine_tokens_keep_their_digests() {
+        let dir = TempDir::new().unwrap();
+        let key: Vec<u8> = (0..32).collect();
+        let secret = open(&stored(&dir, "secret", &key)).unwrap();
+        let hex = |digest: [u8; 32]| digest.map(|byte| format!("{byte:02x}")).concat();
+
+        // HMAC-SHA256 of each one's prefix and input, under the bytes 0 to 31.
+        assert_eq!(
+            hex(secret.pairing_code_hash("ABCD-1234")),
+            "a8e23ba6ef0ef2afc01c96adf9a45091de5578f6289c08589434b0809af699d8"
+        );
+        assert_eq!(
+            hex(secret.machine_token("secret")),
+            "dfa64f2eb1af8f2fec07c7fa779c2c8312fbdd7e2ed666a94fded34db17b9c07"
+        );
+    }
+
+    #[test]
     fn a_missing_secret_is_made_once_and_read_after() {
         let dir = TempDir::new().unwrap();
         let first = open(&dir.join("secret")).unwrap();
@@ -163,7 +224,7 @@ mod tests {
         let metadata = fs::metadata(dir.join("secret")).unwrap();
 
         assert_eq!(metadata.len(), 32);
-        assert_ne!(owner_only(&metadata), Some(false));
+        assert_ne!(is_private(&metadata), Some(false));
         assert_eq!(hash(&first), hash(&again));
         assert_ne!(hash(&first), hash(&other));
         assert_eq!(names(&dir), ["other", "secret"]);
@@ -181,6 +242,14 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), [7; 32]);
         assert_eq!(hash(&open(&path).unwrap()), theirs);
         assert_eq!(names(&dir), ["secret"]);
+    }
+
+    #[test]
+    fn a_secret_that_cant_be_made_is_an_error() {
+        let dir = TempDir::new().unwrap();
+        let error = create(&dir.join("missing/secret")).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "server.secret_unreadable");
     }
 
     #[test]
@@ -220,18 +289,22 @@ mod tests {
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&address("bo@example.com"), "12345678")
+            secret.sign_in_code_hash(&email("bo@example.com"), "12345678")
         );
         assert_ne!(
             hash(&secret),
-            secret.code_hash(&address("ada@example.com"), "12345679")
+            secret.sign_in_code_hash(&email("ada@example.com"), "12345679")
         );
         assert_ne!(hash(&secret), hash(&other));
     }
 
     #[test]
-    fn random_bytes_differ() {
-        assert_ne!(random_bytes().unwrap(), random_bytes().unwrap());
+    fn random_values_differ() {
+        assert_ne!(random::<32>().unwrap(), random::<32>().unwrap());
+        assert_ne!(random_u64().unwrap(), random_u64().unwrap());
+        let token = random_token().unwrap();
+        assert_eq!(token.len(), 64);
+        assert_ne!(token, random_token().unwrap());
     }
 
     #[test]
@@ -239,7 +312,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
         Secret::open(&dir.join("secret"), &log).unwrap();
-        let unknown = owner_only(&fs::metadata(dir.join("secret")).unwrap()).is_none();
+        let unknown = is_private(&fs::metadata(dir.join("secret")).unwrap()).is_none();
 
         assert_eq!(messages(&records).contains(&"secret unchecked"), unknown);
     }

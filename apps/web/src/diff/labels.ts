@@ -1,5 +1,5 @@
 import type { DiffContent, FileChange, LineOp } from "../protocol.ts";
-import type { Changes, Row } from "./changes.ts";
+import type { Changes, DiffRow } from "./changes.ts";
 
 /** What the page says above a chat's files, or instead of them. */
 export function summary({ asked, files, total, cut }: Changes): string {
@@ -57,21 +57,30 @@ export function hunkText(old: number, next: number): string {
   return `From ${sides.join(", ")}`;
 }
 
-/** Which lines rows `first` to `last` are: by their new number, or their old one on removed lines. */
-export function linesText(rows: readonly Row[], first: number, last: number): string {
+/**
+ * Which lines rows `first` to `last` are, as a phrase such as "lines 12 to 13": by their new number,
+ * or their old one on removed lines; none when the rows aren't lines.
+ */
+export function linesPhrase(rows: readonly DiffRow[], first: number, last: number): string | undefined {
   const from = rows[first];
   const to = rows[last];
   if (from?.kind !== "line" || to?.kind !== "line") {
-    return "Lines";
+    return undefined;
   }
   if (first === last) {
-    return `Line ${ref(from)}`;
+    return `line ${ref(from)}`;
   }
   // Once a range starts on the old side, an end on the new side says so.
   const side = from.new === undefined && to.new !== undefined ? "new " : "";
-  return `Lines ${ref(from)} to ${side}${ref(to)}`;
+  return `lines ${ref(from)} to ${side}${ref(to)}`;
 }
 
-function ref(row: Row & { kind: "line" }): string {
+/** `linesPhrase` as a label of its own, "Lines" when the rows aren't lines. */
+export function linesText(rows: readonly DiffRow[], first: number, last: number): string {
+  const phrase = linesPhrase(rows, first, last) ?? "lines";
+  return `${phrase.charAt(0).toUpperCase()}${phrase.slice(1)}`;
+}
+
+function ref(row: DiffRow & { kind: "line" }): string {
   return row.new === undefined ? `old ${row.old}` : `${row.new}`;
 }

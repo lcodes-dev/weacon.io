@@ -1,0 +1,78 @@
+import { useEffect, useState } from "react";
+
+import type { ChatRef } from "../chat-ref.ts";
+import { ChatScreen } from "../chat/chat-screen.tsx";
+import { type Asks, Connection, type Status, later, offers, statusText } from "../connection.ts";
+import type { Log } from "../log.ts";
+import { ME } from "../me.ts";
+import { Settings } from "../settings/settings.tsx";
+import { useSocketFor } from "../shell/workspace-socket.ts";
+
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "chat.events", "worktree.manage", "worktree.open_terminal", "log.forward"] };
+// The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
+const FAKE_WORKSPACE = "w-1";
+
+/**
+ * The chat at `chatRef` on the fake server, over a connection of its own behind a workspace
+ * socket, for development and the end-to-end tests. Its one person owns its one chat.
+ */
+export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef: ChatRef | undefined }) {
+  const [status, setStatus] = useState<Status>({ state: "connecting" });
+  const [settings, setSettings] = useState(false);
+  const socket = useSocketFor(chatRef?.workspace ?? FAKE_WORKSPACE);
+  useEffect(() => {
+    let opened: WebSocket;
+    try {
+      opened = new WebSocket(url);
+    } catch {
+      // Only a malformed `?server=` gets here.
+      setStatus({ state: "ended", code: "connection.refused" });
+      return;
+    }
+    const connection = new Connection(
+      opened,
+      ME,
+      {
+        status(next) {
+          setStatus(next);
+          if (next.state === "live") {
+            socket.attach((envelope) => connection.send(envelope), next.capabilities);
+            log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
+          } else if (next.state === "ended") {
+            socket.attach(undefined);
+            log.detach();
+            log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
+          }
+        },
+        message: (envelope) => socket.heard(envelope),
+      },
+      TRANSCRIPT,
+      later,
+    );
+    return () => {
+      socket.attach(undefined);
+      log.detach();
+      connection.close();
+    };
+  }, [url, socket]);
+  return (
+    <div className="app">
+      <header>
+        <span className="status">{statusText(status)}</span>
+        <button type="button" onClick={() => setSettings(!settings)}>
+          {settings ? "Back" : "Settings"}
+        </button>
+      </header>
+      <main>
+        <div className={settings ? "pane away" : "pane"}>
+          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} mine away={settings} />
+        </div>
+        {settings && (
+          <div className="pane">
+            <Settings me={ME} server={status.state === "live" ? status.server : undefined} />
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}

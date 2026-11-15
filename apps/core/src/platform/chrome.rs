@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[cfg(not(windows))]
-use super::{Env, home_dir, var};
+use super::{Env, home_dir, xdg_dir};
 
 /// The name Chrome's extension connects to.
 pub(crate) const CHROME_HOST: &str = "io.weacon.core";
@@ -30,19 +30,18 @@ pub(crate) fn register_chrome_host(
 // Where Chrome and Chromium look for a user's native hosts on macOS and Linux.
 #[cfg(not(windows))]
 fn chrome_host_dirs(env: Env<'_>) -> Option<[PathBuf; 2]> {
-    let home = home_dir(env)?;
     let (chrome, chromium, base) = if cfg!(target_os = "macos") {
         (
             "Google/Chrome",
             "Chromium",
-            home.join("Library/Application Support"),
+            home_dir(env)?.join("Library/Application Support"),
         )
     } else {
-        let config = var(env, "XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|dir| dir.is_absolute())
-            .unwrap_or_else(|| home.join(".config"));
-        ("google-chrome", "chromium", config)
+        (
+            "google-chrome",
+            "chromium",
+            xdg_dir(env, "XDG_CONFIG_HOME", ".config")?,
+        )
     };
     Some([chrome, chromium].map(|browser| base.join(browser).join("NativeMessagingHosts")))
 }
@@ -164,6 +163,10 @@ mod tests {
             Some(PathBuf::from(
                 "/home/ada/.config/google-chrome/NativeMessagingHosts"
             ))
+        );
+        assert_eq!(
+            dirs(&[("XDG_CONFIG_HOME", "/cfg")]).map(|[chrome, _]| chrome),
+            Some(PathBuf::from("/cfg/google-chrome/NativeMessagingHosts"))
         );
         assert_eq!(dirs(&[]), None);
     }

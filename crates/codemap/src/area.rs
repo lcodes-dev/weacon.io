@@ -1,56 +1,48 @@
 use std::collections::BTreeMap;
 
 use crate::Fingerprint;
-use crate::graph::{Links, Node};
+use crate::graph::{Links, ModuleNode};
 use crate::louvain::communities;
-use crate::rank::page_rank;
+use crate::rank::{by_rank, page_rank};
 
 /// Files that name each other more than they name the rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Area {
+pub(crate) struct Area {
     /// Its highest-ranked file's path without `.rs`: `crates/protocol/src/lib`. It holds while
     /// that file stays on top, and changes when another file outranks it.
-    pub id: String,
+    pub(crate) id: String,
     /// Highest page rank first.
-    pub files: Vec<String>,
+    pub(crate) files: Vec<String>,
 }
 
 /// Groups the nodes' files into areas, sorted by id.
-pub(crate) fn areas(nodes: &[Node<'_>], links: &Links) -> Vec<Area> {
+pub(crate) fn areas(nodes: &[ModuleNode<'_>], links: &Links) -> Vec<Area> {
     let mut groups: BTreeMap<usize, Vec<(&str, f64)>> = BTreeMap::new();
     let ranked = nodes.iter().zip(page_rank(links)).zip(communities(links));
-    for (((_, module), rank), community) in ranked {
+    for ((node, rank), community) in ranked {
         groups
             .entry(community)
             .or_default()
-            .push((&module.file, rank));
+            .push((&node.module.file, rank));
     }
     let mut areas: Vec<Area> = groups.into_values().map(area).collect();
     areas.sort_by(|one, other| one.id.cmp(&other.id));
     areas
 }
 
-/// Ranks this close count as a tie, so rounding can't decide which file leads.
-const SAME_RANK: f64 = 1e-9;
-
-fn area(mut files: Vec<(&str, f64)>) -> Area {
-    let rounded = |rank: f64| (rank / SAME_RANK).round();
-    files.sort_by(|(file, rank), (other_file, other_rank)| {
-        rounded(*other_rank)
-            .total_cmp(&rounded(*rank))
-            .then_with(|| file.cmp(other_file))
-    });
-    let top = files.first().map_or("", |(file, _)| file);
+fn area(files: Vec<(&str, f64)>) -> Area {
+    let files = by_rank(files);
+    let top = files.first().copied().unwrap_or_default();
     Area {
         id: top.strip_suffix(".rs").unwrap_or(top).to_owned(),
-        files: files.into_iter().map(|(file, _)| file.to_owned()).collect(),
+        files: files.into_iter().map(str::to_owned).collect(),
     }
 }
 
 impl Area {
     /// Changes when a file joins or leaves the area, not when its files' code changes.
     #[must_use]
-    pub fn fingerprint(&self) -> Fingerprint {
+    pub(crate) fn fingerprint(&self) -> Fingerprint {
         let mut files: Vec<&str> = self.files.iter().map(String::as_str).collect();
         files.sort_unstable();
         Fingerprint::of(files)
@@ -60,7 +52,8 @@ impl Area {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Index, SourceFile, index};
+    use crate::test_support::file;
+    use crate::{Index, index};
 
     fn ids(areas: &[Area]) -> Vec<Vec<&str>> {
         areas
@@ -75,10 +68,6 @@ mod tests {
 
     /// Two crates whose modules use each other, joined by one path, with `extra` added to `a/src/x.rs`.
     fn repo(extra: &str) -> Index {
-        let file = |path: &str, text: &str| SourceFile {
-            path: path.to_owned(),
-            text: text.to_owned(),
-        };
         index(&[
             file("a/Cargo.toml", "[package]\nname = \"a\"\n"),
             file(
@@ -137,10 +126,10 @@ mod tests {
     fn fingerprints_follow_membership_only() {
         let before = repo("");
         let after = repo("pub fn more() { let x = 2; }\n");
-        let print = |index: &Index| index.area("a/src/lib").unwrap().fingerprint();
-        assert_eq!(print(&before), print(&after));
+        let fingerprint_of = |index: &Index| index.area("a/src/lib").unwrap().fingerprint();
+        assert_eq!(fingerprint_of(&before), fingerprint_of(&after));
         assert_ne!(
-            print(&before),
+            fingerprint_of(&before),
             before.area("b/src/lib").unwrap().fingerprint()
         );
         assert!(before.area("a/src/x").is_none());

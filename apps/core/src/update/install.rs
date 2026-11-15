@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use weacon_observability::Fault;
-use weacon_protocol::{Commit, ReleaseBuild, code};
+use weacon_protocol::{Commit, ReleaseBuild, Sha256 as Sha256Hex, code};
 
 use crate::platform;
 
@@ -62,10 +62,8 @@ fn write_checked(file: &Path, body: &mut dyn Read, build: &ReleaseBuild) -> Resu
     let mut body = body.take(build.size.saturating_add(1));
     let size = io::copy(&mut body, &mut out).map_err(download_failed)?;
     out.sync_all().map_err(download_failed)?;
-    let mut hasher = Sha256::new();
-    io::copy(&mut File::open(file).map_err(download_failed)?, &mut hasher)
-        .map_err(download_failed)?;
-    if size != build.size || format!("{:x}", hasher.finalize()) != build.sha256.as_str() {
+    let digest: [u8; 32] = Sha256::digest(fs::read(file).map_err(download_failed)?).into();
+    if size != build.size || build.sha256 != Sha256Hex::from_bytes(digest) {
         return Err(Fault::new(
             code!("update.corrupt"),
             "The downloaded build doesn't match its release",
@@ -161,10 +159,11 @@ fn remove(file: &Path) {
 mod tests {
     use std::io::Cursor;
 
-    use weacon_protocol::{BuildTarget, DownloadUrl, Sha256 as Sha256Hex};
+    use weacon_protocol::{BuildTarget, DownloadUrl};
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::test_support::Broken;
 
     const RELEASE: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -173,7 +172,7 @@ mod tests {
             target: BuildTarget::try_from("x86_64-unknown-linux-musl".to_owned()).unwrap(),
             url: DownloadUrl::try_from("https://example.com/weacon".to_owned()).unwrap(),
             size: u64::try_from(bytes.len()).unwrap(),
-            sha256: Sha256Hex::try_from(format!("{:x}", Sha256::digest(bytes))).unwrap(),
+            sha256: Sha256Hex::from_bytes(Sha256::digest(bytes).into()),
         }
     }
 
@@ -244,6 +243,18 @@ mod tests {
     }
 
     #[test]
+    fn a_download_is_checked_against_its_releases_sha256() {
+        let dir = TempDir::new().unwrap();
+        let paths = installed(&dir);
+        let sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        let build = ReleaseBuild {
+            sha256: Sha256Hex::try_from(sha256.to_owned()).unwrap(),
+            ..build_of(b"abc")
+        };
+        stage(&paths, &mut Cursor::new("abc"), &build).unwrap();
+    }
+
+    #[test]
     fn a_download_that_differs_from_its_release_is_refused_and_removed() {
         let build = build_of(b"new");
         for body in ["nex", "ne", "new!", ""] {
@@ -257,12 +268,6 @@ mod tests {
 
     #[test]
     fn a_failed_download_leaves_nothing_behind() {
-        struct Broken;
-        impl Read for Broken {
-            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-                Err(io::Error::from(io::ErrorKind::ConnectionReset))
-            }
-        }
         let dir = TempDir::new().unwrap();
         let paths = installed(&dir);
         let mut body = Cursor::new("ne").chain(Broken);

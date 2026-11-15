@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AccessLevel, AgentKind, Asker, MachineId, RequestId, WorkspaceId};
+use crate::{AccessLevel, AgentKind, Asker, MachineId, RepoId, RequestId, WorkspaceId};
 
 /// From the owner of `machine` to its core, which offers `machine.settings`: what the machine
 /// keeps for `workspace`. The server relays it only from the machine's owner, and the core
@@ -24,6 +24,9 @@ pub struct MachineSettingsQuery {
 pub enum MachineSettingsQueryKind {
     /// The settings as they are now.
     Current,
+    /// The repositories the owner registered for the workspace, of a core that offers
+    /// `repo.list`; an older core answers `request.unknown`.
+    Repos,
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -79,6 +82,11 @@ pub struct MachineSettingsAnswer {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MachineSettingsAnswerKind {
     Current(MachineSettings),
+    /// The ids of the workspace's repositories, sorted. Where each is on the machine is never
+    /// said: everyone who may ask would see it.
+    Repos {
+        repos: Vec<RepoId>,
+    },
     /// An answer this build doesn't know, from a newer peer; only ever received.
     #[serde(other)]
     #[schemars(skip)]
@@ -143,6 +151,7 @@ impl MachineSettingsAnswerKind {
                             || matches!(sign_in.state, SignInState::Newer)
                     })
             }
+            Self::Repos { .. } => false,
             Self::Newer => true,
         }
     }
@@ -153,31 +162,21 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::{AccountId, Envelope, FrameError, MemberId, Message};
-
-    fn envelope(message: Message) -> Envelope {
-        Envelope { id: 4, message }
-    }
-
-    fn id<T: TryFrom<String>>(id: &str) -> T
-    where
-        T::Error: std::fmt::Debug,
-    {
-        T::try_from(id.to_owned()).unwrap()
-    }
+    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::{Envelope, Message};
 
     fn asker() -> Asker {
         Asker {
-            account: id::<AccountId>("a-1"),
-            member: id::<MemberId>("m-1"),
+            account: "a-1".parse().unwrap(),
+            member: "m-1".parse().unwrap(),
         }
     }
 
     fn query(query: MachineSettingsQueryKind, by: Option<Asker>) -> Envelope {
         envelope(Message::MachineSettingsQuery(MachineSettingsQuery {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             query,
             by,
         }))
@@ -185,9 +184,9 @@ mod tests {
 
     fn command(action: MachineSettingsAction) -> Envelope {
         envelope(Message::MachineSettingsCommand(MachineSettingsCommand {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             action,
             by: Some(asker()),
         }))
@@ -195,9 +194,9 @@ mod tests {
 
     fn answer(answer: MachineSettingsAnswerKind) -> Envelope {
         envelope(Message::MachineSettingsAnswer(MachineSettingsAnswer {
-            request: id("r-1"),
-            machine: id("mc-1"),
-            workspace: id("w-1"),
+            request: request(),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
             answer,
         }))
     }
@@ -207,18 +206,6 @@ mod tests {
                                "machine": "mc-1", "workspace": "w-1" });
         wire[field] = body;
         wire
-    }
-
-    fn travels(envelope: &Envelope, wire: &Value) {
-        assert_eq!(serde_json::to_value(envelope).unwrap(), *wire);
-        assert_eq!(
-            serde_json::from_value::<Envelope>(wire.clone()).unwrap(),
-            *envelope
-        );
-        assert_eq!(
-            Envelope::from_json(&envelope.to_json().unwrap()).unwrap(),
-            *envelope
-        );
     }
 
     fn stamped(mut wire: Value) -> Value {
@@ -243,10 +230,13 @@ mod tests {
             json!({ "kind": "current" }),
         );
 
-        travels(&query(MachineSettingsQueryKind::Current, None), &unstamped);
+        travels(
+            &query(MachineSettingsQueryKind::Current, None),
+            unstamped.clone(),
+        );
         travels(
             &query(MachineSettingsQueryKind::Current, Some(asker())),
-            &stamped(unstamped),
+            stamped(unstamped),
         );
     }
 
@@ -256,21 +246,21 @@ mod tests {
 
         travels(
             &command(MachineSettingsAction::SetReports { send: false }),
-            &action(json!({ "kind": "set_reports", "send": false })),
+            action(json!({ "kind": "set_reports", "send": false })),
         );
         travels(
             &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::Full,
                 team: Some(true),
             }),
-            &action(json!({ "kind": "set_access", "level": "full", "team": true })),
+            action(json!({ "kind": "set_access", "level": "full", "team": true })),
         );
         travels(
             &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::ReadOnly,
                 team: None,
             }),
-            &action(json!({ "kind": "set_access", "level": "read_only" })),
+            action(json!({ "kind": "set_access", "level": "read_only" })),
         );
     }
 
@@ -302,7 +292,7 @@ mod tests {
                     reports,
                     sign_ins.clone(),
                 ))),
-                &wire("machine_settings_answer", "answer", body(reports)),
+                wire("machine_settings_answer", "answer", body(reports)),
             );
         }
         let states = ["signed_out", "unknown"]
@@ -310,12 +300,35 @@ mod tests {
         assert_eq!(states, [SignInState::SignedOut, SignInState::Unknown]);
     }
 
+    #[test]
+    fn the_repos_a_workspace_has_are_asked_for_and_answered_by_id_alone() {
+        travels(
+            &query(MachineSettingsQueryKind::Repos, Some(asker())),
+            stamped(wire(
+                "machine_settings_query",
+                "query",
+                json!({ "kind": "repos" }),
+            )),
+        );
+        let ids = |repos: &[&str]| repos.iter().map(|id| id.parse().unwrap()).collect();
+        for repos in [vec!["api_2", "site"], vec![]] {
+            travels(
+                &answer(MachineSettingsAnswerKind::Repos { repos: ids(&repos) }),
+                wire(
+                    "machine_settings_answer",
+                    "answer",
+                    json!({ "kind": "repos", "repos": repos }),
+                ),
+            );
+        }
+        let path = json!({ "kind": "repos", "repos": ["../site"] });
+        serde_json::from_value::<Envelope>(wire("machine_settings_answer", "answer", path))
+            .unwrap_err();
+    }
+
     // What a newer peer sends: it parses, and is never sent on.
     fn newer(message: &str, field: &str, body: Value) -> Message {
-        let envelope =
-            Envelope::from_json(&serde_json::to_vec(&wire(message, field, body)).unwrap()).unwrap();
-        assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{message}");
-        envelope.message
+        never_sent(wire(message, field, body)).message
     }
 
     fn newer_answer(body: Value) -> MachineSettingsAnswerKind {
@@ -366,7 +379,7 @@ mod tests {
         let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "team": false, "sign_ins": sign_ins });
         let sign_in = |answer: MachineSettingsAnswerKind| match answer {
             MachineSettingsAnswerKind::Current(settings) => settings.sign_ins.first().cloned(),
-            MachineSettingsAnswerKind::Newer => None,
+            MachineSettingsAnswerKind::Repos { .. } | MachineSettingsAnswerKind::Newer => None,
         };
 
         assert_eq!(
