@@ -252,8 +252,7 @@ mod tests {
                 name: "Personal".to_owned(),
                 owner: member_id("owner"),
             },
-            new_account: &fresh_account(),
-            sign_up: false,
+            new_account: None,
         };
         db.finish_sign_in(&attempt).await.unwrap().unwrap();
     }

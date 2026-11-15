@@ -25,7 +25,6 @@ use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, SYMBOLS, WORKTR
 use crate::search::SEARCH;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
-use crate::team::TEAM;
 use crate::terminals::{self, TERMINALS};
 use crate::workspaces::MEMBERS;
 
@@ -40,7 +39,7 @@ const CHATS: Code = code!("workspace.chats");
 /// What the server offers to clients that ask chats' agents.
 const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 17] = [
+const OFFERED: [Code; 16] = [
     FEED,
     TASKS,
     DOCS,
@@ -50,7 +49,6 @@ const OFFERED: [Code; 17] = [
     CHAT_COMMANDS,
     chats::LIVE,
     MEMBERS,
-    TEAM,
     DIFF,
     WORKTREE,
     SESSIONS,
@@ -333,15 +331,15 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
                 WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
                 WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
                 WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
-                WorkspaceChange::MembersChanged => feed.hears(TEAM),
-                WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
+                WorkspaceChange::MemberJoined { .. }
+                | WorkspaceChange::MembersChanged
+                | WorkspaceChange::Newer => true,
             };
-            // Before each one, not each page, even one it doesn't hear of: a member removed
-            // meanwhile gets nothing more.
-            feed.allowed(shared).await?;
             if !wanted {
                 continue;
             }
+            // Before each one, not each page: a member removed meanwhile gets nothing more.
+            feed.allowed(shared).await?;
             reply(socket, shared, 0, Message::Workspace(update)).await?;
         }
         if !more {
@@ -465,7 +463,6 @@ mod tests {
                 CHAT_COMMANDS,
                 chats::LIVE,
                 MEMBERS,
-                TEAM,
                 DIFF,
                 WORKTREE,
                 SESSIONS,

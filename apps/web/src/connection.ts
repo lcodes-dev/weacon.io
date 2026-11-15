@@ -11,7 +11,6 @@ export type WebCapability =
   | "workspace.docs"
   | "workspace.proposals"
   | "workspace.members"
-  | "workspace.team"
   | "workspace.chat_commands"
   | "chat.live"
   | "workspace.search"

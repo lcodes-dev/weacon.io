@@ -998,7 +998,7 @@ export type MemberAction = (
 
 /**
  * Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the
- * workspace; for servers that offer `workspace.team`.
+ * workspace.
  */
 export type MemberCommand = {
   action: MemberAction;
@@ -1011,8 +1011,8 @@ export type MemberId = string;
 
 /**
  * A workspace's members, past ones included, in the order they were added, from the server to
- * clients that have the capability `workspace.members`. Its owner also gets the live
- * invitations, from servers that offer `workspace.team`.
+ * clients that have the capability `workspace.members`. Only its owner gets the live
+ * invitations.
  */
 export type MemberList = {
   invitations?: Array<Invitation>;
@@ -1027,7 +1027,7 @@ export type MemberSummary = {
   id: MemberId;
   name: string;
   /**
-   * Their role, from servers that offer `workspace.team`; left out for a past member.
+   * Their role; left out for a past member.
    */
   role?: WorkspaceRole;
 };
@@ -2052,11 +2052,10 @@ export type WorkspaceCreate = {
 export type WorkspaceId = string;
 
 /**
- * The workspaces the signed-in account is a member of, and, from servers that offer
- * `workspace.team`, the live invitations to its address.
+ * The workspaces the signed-in account is a member of, and the live invitations to its address.
  */
 export type WorkspaceList = {
-  invitations?: Array<InvitationOffer>;
+  invitations: Array<InvitationOffer>;
   workspaces: Array<WorkspaceSummary>;
 };
 

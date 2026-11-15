@@ -56,7 +56,7 @@ export function Landing({
         <NewWorkspace
           api={api}
           made={(made) => {
-            loaded.change((before) => ({ ...before, workspaces: [...(before?.workspaces ?? []), made] }));
+            loaded.change((before) => ({ invitations: before?.invitations ?? [], workspaces: [...(before?.workspaces ?? []), made] }));
             if (listing.current) {
               choose(made.id);
             }

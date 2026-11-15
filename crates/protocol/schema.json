@@ -2445,7 +2445,7 @@
       ]
     },
     "MemberCommand": {
-      "description": "Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the\nworkspace; for servers that offer `workspace.team`.",
+      "description": "Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the\nworkspace.",
       "type": "object",
       "properties": {
         "action": {
@@ -2463,7 +2463,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MemberList": {
-      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`. Its owner also gets the live\ninvitations, from servers that offer `workspace.team`.",
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`. Only its owner gets the live\ninvitations.",
       "type": "object",
       "properties": {
         "invitations": {
@@ -2494,7 +2494,7 @@
           "type": "string"
         },
         "role": {
-          "description": "Their role, from servers that offer `workspace.team`; left out for a past member.",
+          "description": "Their role; left out for a past member.",
           "$ref": "#/$defs/WorkspaceRole"
         }
       },
@@ -4954,7 +4954,7 @@
           ]
         },
         {
-          "description": "Someone was invited, joined, left or was removed, or an invitation ended. Only for\nclients that have the capability `workspace.team`, which read the members again.",
+          "description": "Someone was invited, joined, left or was removed, or an invitation ended; clients read\nthe members again.",
           "type": "object",
           "properties": {
             "kind": {
@@ -5067,7 +5067,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "WorkspaceList": {
-      "description": "The workspaces the signed-in account is a member of, and, from servers that offer\n`workspace.team`, the live invitations to its address.",
+      "description": "The workspaces the signed-in account is a member of, and the live invitations to its address.",
       "type": "object",
       "properties": {
         "invitations": {
@@ -5084,7 +5084,8 @@
         }
       },
       "required": [
-        "workspaces"
+        "workspaces",
+        "invitations"
       ]
     },
     "WorkspaceRole": {

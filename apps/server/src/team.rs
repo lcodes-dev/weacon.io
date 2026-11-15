@@ -16,9 +16,6 @@ use crate::email::Email;
 use crate::http::{Body, Refusals, Refused, failure, invalid, not_found};
 use crate::shared::Shared;
 
-/// What the server offers to clients that manage who is in a workspace and hear it change.
-pub(crate) const TEAM: Code = code!("workspace.team");
-
 struct Team;
 
 impl Refusals for Team {
@@ -53,7 +50,6 @@ pub(crate) async fn command(
         },
         MemberAction::Remove { member: removed } => workspace.remove(by, &removed).await,
         MemberAction::Leave => workspace.leave(by).await,
-        MemberAction::Newer => return invalid(code!("request.invalid")),
     };
     match done {
         Ok(()) => {
@@ -102,8 +98,8 @@ mod tests {
     use serde_json::{Value, json};
     use weacon_protocol::{Message, WorkspaceChange, WorkspaceUpdate};
 
-    use crate::test_support::socket::{Socket, ends, next, open, say};
-    use crate::test_support::{Client, Fixture, Running, ask, email, fresh_account, start_sign_in};
+    use crate::test_support::socket::{Socket, next, open, say};
+    use crate::test_support::{Client, Fixture, Running, ask, email, fresh_account};
 
     // ada, signed in, and the workspace she made, Crew.
     async fn crew(fixture: &Fixture) -> (Running, Client, String) {
@@ -112,6 +108,15 @@ mod tests {
         let (_, made) = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
         let id = made["id"].as_str().unwrap().to_owned();
         (server, ada, id)
+    }
+
+    // `address`, with an account, signed in.
+    async fn signed_in(fixture: &Fixture, address: SocketAddr, email_address: &str) -> Client {
+        let db = &fixture.shared.db;
+        db.add_account(&fresh_account(), &email(email_address))
+            .await
+            .unwrap();
+        fixture.sign_in_client(address, email_address).await
     }
 
     async fn command(who: &Client, workspace: &str, action: Value) -> (String, Value) {
@@ -192,16 +197,14 @@ mod tests {
     async fn an_invited_address_signs_in_takes_it_up_and_the_workspace_hears_it() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        let offers = ["workspace.feed", "workspace.team"];
+        let offers = ["workspace.feed"];
         let mut ada_feed = feed(server.address, &ada.token, &crew, &offers).await;
         let joined = change(&mut ada_feed).await;
         assert!(matches!(joined, WorkspaceChange::MemberJoined { .. }));
 
         command(&ada, &crew, invite("bo@example.com")).await;
         assert_eq!(change(&mut ada_feed).await, WorkspaceChange::MembersChanged);
-        let bo = fixture
-            .sign_in_client(server.address, "bo@example.com")
-            .await;
+        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
         let outside = read(&bo, &format!("/api/workspaces/{crew}")).await;
         let (taken, summary) = accept(&bo, &crew).await;
         let (_, after) = read(&bo, "/api/workspaces").await;
@@ -223,9 +226,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
         command(&ada, &crew, invite("bo@example.com")).await;
-        let bo = fixture
-            .sign_in_client(server.address, "bo@example.com")
-            .await;
+        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
 
         let (_, listed) = read(&bo, "/api/workspaces").await;
 
@@ -238,33 +239,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_an_invitation_gets_an_address_a_code_where_nobody_may_sign_up() {
+    async fn a_removed_member_is_refused_at_once() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
         command(&ada, &crew, invite("bo@example.com")).await;
-
-        start_sign_in(server.address, "di@example.com").await;
-        fixture.settled().await;
-        assert!(fixture.letters().is_empty());
-        start_sign_in(server.address, "bo@example.com").await;
-        let (to, code) = fixture.letter().await;
-        assert_eq!((to.as_str(), code.len()), ("bo@example.com", 9));
-    }
-
-    #[tokio::test]
-    async fn a_removed_member_is_refused_at_once_and_their_feed_ends() {
-        let fixture = Fixture::new().await;
-        let (server, ada, crew) = crew(&fixture).await;
-        command(&ada, &crew, invite("bo@example.com")).await;
-        let bo = fixture
-            .sign_in_client(server.address, "bo@example.com")
-            .await;
+        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
         let (_, summary) = accept(&bo, &crew).await;
         let member = summary["member"].clone();
-        // A feed that hears of no members' changes ends all the same.
-        let mut bo_feed = feed(server.address, &bo.token, &crew, &["workspace.feed"]).await;
-        let joined = change(&mut bo_feed).await;
-        assert!(matches!(joined, WorkspaceChange::MemberJoined { .. }));
 
         let by_member = command(&bo, &crew, invite("cy@example.com")).await;
         let removed = command(&ada, &crew, json!({ "kind": "remove", "member": member })).await;
@@ -274,7 +255,6 @@ mod tests {
         assert_eq!(by_member.1["code"], "member.not_allowed");
         assert_eq!(removed.0, "http/1.1 204 no content");
         assert_eq!(nobody.1["code"], "member.not_found");
-        assert!(ends(&mut bo_feed).await);
         let refused = read(&bo, &format!("/api/workspaces/{crew}")).await;
         assert_eq!(refused.0, "http/1.1 401 unauthorized");
         let left = command(&bo, &crew, json!({ "kind": "leave" })).await;
@@ -288,9 +268,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
         command(&ada, &crew, invite("bo@example.com")).await;
-        let bo = fixture
-            .sign_in_client(server.address, "bo@example.com")
-            .await;
+        let bo = signed_in(&fixture, server.address, "bo@example.com").await;
         let invitation = members(&ada, &crew).await["invitations"][0]["email"].clone();
 
         let revoke = json!({ "kind": "revoke", "email": invitation });

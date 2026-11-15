@@ -6,7 +6,6 @@ import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import type { MemberAction, MemberList, MemberSummary } from "../protocol.ts";
 import type { OpenWorkspace } from "../shell/workspaces.tsx";
-import { useOffers } from "../shell/workspace-socket.ts";
 
 /** Whether other people are in the workspace `list` lists: more than one member now. */
 export function isTeam(list: MemberList): boolean {
@@ -18,11 +17,7 @@ export function isTeam(list: MemberList): boolean {
  * invitations, a form to invite and Remove; each member may leave.
  */
 export function MembersSection({ api, open, members }: { api: Api; open: OpenWorkspace; members: Loading<MemberList> }) {
-  const team = useOffers(open.socket, "workspace.team");
   const changing = useAsk();
-  if (!team) {
-    return null;
-  }
   const { workspace } = open;
   const list = members.value;
   const owner = workspace.role === "owner";

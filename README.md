@@ -226,7 +226,7 @@ target/debug/weacon terminals on
 ```
 
 - **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine.
-- **Teammates**: open a workspace you own, then **Settings**. Under **Members**, type an address and choose **Invite**. The invitation lasts 7 days, and you can revoke it until it's taken up. Once that person signs in with the address, they see the invitation at the foot of the sidebar, or on the page they land on, and choose **Accept**. An invitation lets its address make an account on this server, whatever `--sign-up` says. The owner can remove members, and members can **Leave**. Someone removed loses the workspace at once, and their chats stay in it. Each person signs in with their own email and pairs their own machine.
+- **Teammates**: open a workspace you own, then **Settings**. Under **Members**, type an address and choose **Invite**. The invitation lasts 7 days, and you can revoke it until it's taken up. Once that person signs in with the address, they see the invitation at the foot of the sidebar, or on the page they land on, and choose **Accept**. The owner can remove members, and members can **Leave**. Someone removed loses the workspace, and their chats stay in it. Each person signs in with their own email and pairs their own machine.
 
 The operator can still add a member from the command line, with the server running:
 

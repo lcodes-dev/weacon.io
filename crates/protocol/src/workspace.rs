@@ -58,14 +58,11 @@ pub struct WorkspaceSummary {
     pub member: Option<MemberId>,
 }
 
-/// The workspaces the signed-in account is a member of, and, from servers that offer
-/// `workspace.team`, the live invitations to its address.
+/// The workspaces the signed-in account is a member of, and the live invitations to its address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "Vec<InvitationOffer>")]
-    pub invitations: Option<Vec<InvitationOffer>>,
+    pub invitations: Vec<InvitationOffer>,
 }
 
 /// A member as the workspace's other members see them, under the name the server shows for
@@ -74,15 +71,15 @@ pub struct WorkspaceList {
 pub struct MemberSummary {
     pub id: MemberId,
     pub name: String,
-    /// Their role, from servers that offer `workspace.team`; left out for a past member.
+    /// Their role; left out for a past member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "WorkspaceRole")]
     pub role: Option<WorkspaceRole>,
 }
 
 /// A workspace's members, past ones included, in the order they were added, from the server to
-/// clients that have the capability `workspace.members`. Its owner also gets the live
-/// invitations, from servers that offer `workspace.team`.
+/// clients that have the capability `workspace.members`. Only its owner gets the live
+/// invitations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberList {
     pub members: Vec<MemberSummary>,
@@ -97,8 +94,8 @@ pub struct MemberList {
 pub enum WorkspaceChange {
     /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
-    /// Someone was invited, joined, left or was removed, or an invitation ended. Only for
-    /// clients that have the capability `workspace.team`, which read the members again.
+    /// Someone was invited, joined, left or was removed, or an invitation ended; clients read
+    /// the members again.
     MembersChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
@@ -231,14 +228,14 @@ mod tests {
         let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner", "member": "m-1" });
         let list = WorkspaceList {
             workspaces: vec![summary.clone()],
-            invitations: None,
+            invitations: Vec::new(),
         };
         let create = WorkspaceCreate {
             name: "Team".to_owned(),
         };
 
         round_trips(&summary, wire.clone());
-        round_trips(&list, json!({ "workspaces": [wire] }));
+        round_trips(&list, json!({ "workspaces": [wire], "invitations": [] }));
         round_trips(&create, json!({ "name": "Team" }));
         round_trips(&WorkspaceRole::Owner, json!("owner"));
         round_trips(&WorkspaceRole::Member, json!("member"));

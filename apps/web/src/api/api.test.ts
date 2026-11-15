@@ -86,7 +86,7 @@ test("a refusal carries the server's code, and anything else that goes wrong a c
 test("workspaces are listed and made, and an answer of the wrong shape is refused", async () => {
   const personal = { id: "ws-1", name: "Personal", role: "owner" };
   const { api, sent } = serve(
-    { status: 200, body: { workspaces: [personal] } },
+    { status: 200, body: { workspaces: [personal], invitations: [] } },
     { status: 201, body: { id: "ws-2", name: "Made up", role: "owner" } },
     { status: 422, body: { code: "workspace.name_invalid", retryable: false } },
     { status: 200, body: { workspaces: [{ id: "ws-1", name: "Personal" }] } },
@@ -94,7 +94,7 @@ test("workspaces are listed and made, and an answer of the wrong shape is refuse
     { status: 200, body: { workspaces: [{ ...personal, id: "a/b" }] } },
   );
 
-  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal] } });
+  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal], invitations: [] } });
   assert.deepEqual(await api.createWorkspace("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
   assert.deepEqual(await api.createWorkspace(" "), { ok: false, code: "workspace.name_invalid" });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });

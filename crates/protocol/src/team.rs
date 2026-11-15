@@ -21,7 +21,7 @@ pub struct InvitationOffer {
 }
 
 /// Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the
-/// workspace; for servers that offer `workspace.team`.
+/// workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberCommand {
     pub action: MemberAction,
@@ -39,10 +39,6 @@ pub enum MemberAction {
     Remove { member: MemberId },
     /// Ends the asker's own membership; the owner can't.
     Leave,
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -57,7 +53,7 @@ mod tests {
     }
 
     #[test]
-    fn member_actions_are_tagged_and_a_newer_one_still_parses() {
+    fn member_actions_are_tagged() {
         let actions = [
             (
                 MemberAction::Invite {
@@ -80,13 +76,8 @@ mod tests {
         for (action, wire) in actions {
             round_trips(&MemberCommand { action }, json!({ "action": wire }));
         }
-        let newer = json!({ "action": { "kind": "transfer" } });
-        assert_eq!(
-            serde_json::from_value::<MemberCommand>(newer)
-                .unwrap()
-                .action,
-            MemberAction::Newer
-        );
+        let unknown = json!({ "action": { "kind": "transfer" } });
+        assert!(serde_json::from_value::<MemberCommand>(unknown).is_err());
     }
 
     #[test]

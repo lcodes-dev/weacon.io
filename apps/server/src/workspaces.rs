@@ -69,7 +69,7 @@ pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Resp
         let invitations = account.invitations(shared.now()).await?;
         Ok::<_, Fault>(WorkspaceList {
             workspaces,
-            invitations: Some(invitations),
+            invitations,
         })
     };
     match listed.await {

@@ -12,6 +12,7 @@ async function another(served: Served, email: string): Promise<Page> {
     throw new Error("no browser");
   }
   const page = await context.newPage();
+  await served.admin("add-account", "--email", email);
   await page.goto(served.url);
   await signInAs(served, page, email);
   return page;
@@ -25,7 +26,7 @@ async function invite(page: Page, email: string): Promise<void> {
   await members(page).getByText(`Invited ${email}.`, { exact: false }).waitFor();
 }
 
-test("an owner invites someone, who signs in and joins, then is removed and leaves at once", { timeout: 600_000 }, async (t) => {
+test("an owner invites someone, who signs in and joins, leaves, joins again and is removed", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -37,7 +38,6 @@ test("an owner invites someone, who signs in and joins, then is removed and leav
   await invite(page, "bo@example.com");
   await members(page).getByRole("list", { name: "Invitations" }).getByText("bo@example.com").waitFor();
 
-  // The server lets nobody sign up, but the invitation lets bo in.
   const bo = await another(served, "bo@example.com");
   const offer = bo.getByRole("list", { name: "Invitations" }).getByRole("listitem");
   await offer.getByText("Crew").waitFor();
@@ -59,6 +59,7 @@ test("an owner invites someone, who signs in and joins, then is removed and leav
   await bo.getByText("You left Crew.").waitFor();
   await row.getByText("Past member").waitFor();
   await invite(page, "bo@example.com");
+  await bo.reload();
   await offer.getByRole("button", { name: "Accept" }).click();
   await bo.getByRole("heading", { name: "Crew" }).waitFor();
   await row.getByText("Member", { exact: true }).waitFor();
@@ -66,6 +67,8 @@ test("an owner invites someone, who signs in and joins, then is removed and leav
   await row.getByRole("button", { name: "Remove" }).click();
   await row.getByText("Past member").waitFor();
 
-  await bo.getByText("You're no longer a member of Crew.").waitFor();
+  // The server refuses bo the workspace from now on.
+  await bo.reload();
+  await bo.getByRole("heading", { name: "Workspaces" }).waitFor();
   assert.equal(await bo.getByRole("heading", { name: "Crew" }).count(), 0);
 });

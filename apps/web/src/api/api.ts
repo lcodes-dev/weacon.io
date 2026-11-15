@@ -284,8 +284,7 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
 
 const isOffer = (value: unknown): value is InvitationOffer =>
   fields(value, ["workspace", "name"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
-const isList = (value: unknown): value is WorkspaceList =>
-  listOf("workspaces", isWorkspace)(value) && (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isOffer)(value));
+const isList = (value: unknown): value is WorkspaceList => listOf("workspaces", isWorkspace)(value) && listOf("invitations", isOffer)(value);
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "machine", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
