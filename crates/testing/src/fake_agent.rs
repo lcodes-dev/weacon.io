@@ -42,8 +42,8 @@ fn converse(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
     Ok(())
 }
 
-// Plays `recording` after its prompt: prints the lines it prints, and reads one of `lines` for
-// each it reads, until `lines` ends.
+// Plays `recording` after its prompt: prints the lines it prints, and checks one of `lines`
+// against each it reads, until `lines` ends.
 fn play(
     recording: &str,
     lines: &mut impl Iterator<Item = io::Result<String>>,
@@ -55,8 +55,16 @@ fn play(
                 writeln!(output, "{line}")?;
                 output.flush()?;
             }
-            Step::Reads(_) if lines.next().transpose()?.is_none() => return Ok(()),
-            Step::Reads(_) => {}
+            Step::Reads(expected) => {
+                let Some(sent) = lines.next().transpose()? else {
+                    return Ok(());
+                };
+                if json(&sent) != json(expected) {
+                    return Err(io::Error::other(format!(
+                        "expected {expected}\nbut got {sent}"
+                    )));
+                }
+            }
         }
     }
     Ok(())
@@ -74,10 +82,11 @@ fn recording_for(prompt: &str) -> &'static str {
 }
 
 fn content(line: &str) -> Option<Value> {
-    serde_json::from_str::<Value>(line)
-        .ok()?
-        .pointer("/message/content")
-        .cloned()
+    json(line)?.pointer("/message/content").cloned()
+}
+
+fn json(line: &str) -> Option<Value> {
+    serde_json::from_str(line).ok()
 }
 
 #[cfg(test)]
@@ -119,15 +128,25 @@ mod tests {
         assert_eq!(call(&["--print", "--verbose"], ""), (true, Vec::new()));
     }
 
+    // The lines `recording` reads after its prompt, as its driver sends them.
+    fn answers(recording: &str) -> String {
+        steps(recording)
+            .skip(1)
+            .filter_map(|step| match step.unwrap() {
+                Step::Reads(line) => Some(format!("{line}\n")),
+                Step::Prints(_) => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn each_prompt_plays_the_turn_to_its_end_and_waits_for_the_answer_to_its_prompt() {
-        let allow = "{\"type\":\"control_response\"}\n";
         let until_asked = printed(TURN).into_iter().take(3).collect::<Vec<_>>();
 
         let first = call(&["--print"], &prompt("Fix the tests"));
         let both = call(
             &["--print"],
-            &(prompt("Fix the tests") + allow + &prompt("Again")),
+            &(prompt("Fix the tests") + &answers(TURN) + &prompt("Again")),
         );
 
         assert_eq!(first, (true, until_asked.clone()));
@@ -138,12 +157,33 @@ mod tests {
     fn a_prompt_a_recording_starts_with_plays_that_recording() {
         let [_, deny, interrupt] = RECORDINGS;
 
-        let denied = call(&["--print"], &(prompt("Tidy the readme") + "{}\n{}\n"));
-        let stopped = call(&["--print"], &(prompt("Rewrite the lexer") + "{}\n"));
+        let denied = call(&["--print"], &(prompt("Tidy the readme") + &answers(deny)));
+        let stopped = call(
+            &["--print"],
+            &(prompt("Rewrite the lexer") + &answers(interrupt)),
+        );
         let not_json = call(&["--print"], "Rewrite the lexer\n");
 
         assert_eq!(denied, (true, printed(deny)));
         assert_eq!(stopped, (true, printed(interrupt)));
         assert_eq!(not_json.1, printed(TURN)[..3]);
+    }
+
+    #[test]
+    fn an_answer_the_recording_doesnt_have_is_an_error_that_shows_both() {
+        let args = ["--print".to_owned()];
+        let deny = "{\"type\":\"control_response\",\"response\":{}}";
+        let input = prompt("Fix the tests") + deny + "\n";
+        let mut output = Vec::new();
+
+        let error = answer(&args, input.as_bytes(), &mut output).unwrap_err();
+
+        assert!(error.to_string().ends_with(&format!("\nbut got {deny}")));
+        assert!(
+            error
+                .to_string()
+                .starts_with("expected {\"type\":\"control_response\"")
+        );
+        assert_eq!(String::from_utf8(output).unwrap().lines().count(), 3);
     }
 }

@@ -26,11 +26,16 @@ export type Machine = {
 
 /** Builds the core, the TLS front and the stand-in agent, and gives where each program is. */
 async function build(): Promise<{ core: string; tls: string; agent: string }> {
-  const { stdout } = await run(
-    "cargo",
-    ["build", "--locked", "--quiet", "--message-format=json", "-p", "weacon-core", "-p", "weacon-testing", "--bin", "weacon", "--bin", "dev-tls", "--bin", "fake-agent"],
-    { cwd: REPO, maxBuffer: 1 << 28 },
-  );
+  // Apart, as scripts/dev.sh builds them, so neither changes the other's features.
+  const core = await executables("-p", "weacon-core", "--bin", "weacon");
+  const testing = await executables("-p", "weacon-testing", "--bin", "dev-tls", "--bin", "fake-agent");
+  const at = (built: Map<string, string>, name: string) => built.get(name) ?? fail(`cargo built no ${name}`);
+  return { core: at(core, "weacon"), tls: at(testing, "dev-tls"), agent: at(testing, "fake-agent") };
+}
+
+/** Builds what `args` select, and gives each program's path by its name. */
+async function executables(...args: string[]): Promise<Map<string, string>> {
+  const { stdout } = await run("cargo", ["build", "--locked", "--quiet", "--message-format=json", ...args], { cwd: REPO, maxBuffer: 1 << 28 });
   const built = new Map<string, string>();
   for (const line of stdout.split("\n")) {
     const message = JSON.parse(line || "{}") as { reason?: string; target?: { name: string }; executable?: string | null };
@@ -38,8 +43,7 @@ async function build(): Promise<{ core: string; tls: string; agent: string }> {
       built.set(message.target.name, message.executable);
     }
   }
-  const at = (name: string) => built.get(name) ?? fail(`cargo built no ${name}`);
-  return { core: at("weacon"), tls: at("dev-tls"), agent: at("fake-agent") };
+  return built;
 }
 
 function fail(why: string): never {
@@ -85,14 +89,17 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
   const pairing = started(spawn(programs.core, ["pair", address, "--pin", join(dir, "tls", "cert.pem"), "--name", name], { env, stdio: ["ignore", "pipe", "inherit"] }));
   const code = await firstLine(pairing, 10_000, (line) => /pair this machine: (\S+)$/.exec(line)?.[1]);
   await confirm(served.page, code);
-  const [exit] = (await once(pairing, "exit")) as [number | null];
-  if (exit !== 0) {
+  // It claims the pairing every 2 seconds.
+  await waitFor(() => pairing.exitCode !== null, 30_000);
+  if (pairing.exitCode !== 0) {
     throw new Error("the core didn't pair");
   }
 
   const repo = join(dir, "repo");
-  await run("git", ["init", "--quiet", repo]);
-  await run("git", ["-C", repo, "-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "--quiet", "--allow-empty", "-m", "Start"]);
+  // Without the person's own git settings, such as signing every commit.
+  const git = { env: { ...env, GIT_CONFIG_GLOBAL: join(dir, "gitconfig"), GIT_CONFIG_NOSYSTEM: "1" } };
+  await run("git", ["init", "--quiet", repo], git);
+  await run("git", ["-C", repo, "-c", "user.name=Ada", "-c", "user.email=ada@example.com", "commit", "--quiet", "--allow-empty", "-m", "Start"], git);
   await run(programs.core, ["repo", "add", "--workspace", workspace, "demo", repo], { env });
 
   let daemon: ChildProcess | undefined;
