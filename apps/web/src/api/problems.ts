@@ -16,6 +16,7 @@ const PROBLEMS = new Map<Code, string>([
   ["chat.held", "Someone is using this chat in their own terminal. Try again once they're done."],
   ["chat.repo_conflict", "This chat works in another repository. Start a new chat for this one."],
   ["chat.unavailable", "The machine is busy. Try again."],
+  ["agent.no_such_prompt", "That prompt was already answered."],
   ["message.unsupported", "The machine's core can't do this. Update Weacon on it."],
   ["machine.offline", "This machine isn't connected. Start Weacon on it, then try again."],
   ["machine.no_answer", "The machine didn't answer. Try again."],
