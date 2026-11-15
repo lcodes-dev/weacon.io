@@ -641,7 +641,12 @@ mod tests {
         assert_eq!(names(again), ["a::gone"]);
         assert_eq!(source.trees_read(), 0);
         source.heads_read();
-        assert!(repo.search_head("  ", Looking::Items).await.unwrap().is_empty());
+        assert!(
+            repo.search_head("  ", Looking::Items)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(source.heads_read(), 0);
     }
 

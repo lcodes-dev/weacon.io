@@ -3833,7 +3833,7 @@
     "SymbolsQueryKind": {
       "oneOf": [
         {
-          "description": "The items whose path holds every word, or a word's start, best first.",
+          "description": "The items whose path, or a contract they declare, holds every word, or a word's start,\nbest first.",
           "type": "object",
           "properties": {
             "kind": {
