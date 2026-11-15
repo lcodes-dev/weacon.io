@@ -1,7 +1,9 @@
+mod snippet;
+
 use sqlx::SqliteConnection;
 use weacon_model::{Doc, Task};
 use weacon_observability::Fault;
-use weacon_protocol::{Mark, SearchHit, Snippet};
+use weacon_protocol::SearchHit;
 
 use super::{Workspace, failed, stored, unreadable};
 use crate::search::query::Query;
@@ -9,9 +11,6 @@ use crate::search::query::Query;
 /// The bytes a snippet marks a match with; indexed text holds neither.
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
-/// How many characters a snippet shows before its first match, and in all.
-const BEFORE: usize = 40;
-const SHOWN: usize = 200;
 
 /// What search finds a task or doc by, and when it last changed.
 struct Indexed<'a> {
@@ -124,7 +123,7 @@ impl Workspace {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
             "SELECT search.kind, search.item, search.title,
-                 highlight(search, 3, char(1), char(2)), highlight(search, 4, char(1), char(2))
+                 highlight(search, 3, char(1), char(2)), search.body
              FROM search
              JOIN search_rows AS rows
                  ON rows.workspace_id = search.workspace_id AND rows.row = search.rowid
@@ -145,19 +144,16 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(hit)
+        .map(|row| hit(row, &query.marked))
         .collect()
     }
 }
 
-fn hit((kind, item, title, title_marked, body_marked): HitRow) -> Result<SearchHit, Fault> {
-    // `highlight` marks every match in linear time, where `snippet` scores each against all.
-    let marked = if body_marked.contains(MATCH_START) {
-        body_marked
-    } else {
-        title_marked
-    };
-    let snippet = snippet(&around_first_match(&marked));
+fn hit(
+    (kind, item, title, title_marked, body): HitRow,
+    words: &[String],
+) -> Result<SearchHit, Fault> {
+    let snippet = snippet::of(&body, words, &title_marked);
     match kind.as_str() {
         "task" => Ok(SearchHit::Task {
             task: stored(item)?,
@@ -179,65 +175,10 @@ fn unmarked(text: &str) -> String {
     text.replace([MATCH_START, MATCH_END], " ")
 }
 
-/// [`SHOWN`] characters of `marked` from a word at most [`BEFORE`] before its first match, with
-/// an ellipsis where they are cut; a match the cut ends inside is closed there.
-fn around_first_match(marked: &str) -> String {
-    let chars: Vec<char> = marked.chars().collect();
-    let first = chars.iter().position(|ch| *ch == MATCH_START).unwrap_or(0);
-    let earliest = first.saturating_sub(BEFORE);
-    let start = match chars.get(earliest..first) {
-        Some(before) if earliest > 0 => before
-            .iter()
-            .position(|ch| ch.is_whitespace())
-            .map_or(first, |space| earliest + space + 1),
-        _ => 0,
-    };
-    let end = chars.len().min(start + SHOWN);
-    let shown = chars.get(start..end).unwrap_or_default();
-    let mut text: String = shown.iter().collect();
-    let open = shown
-        .iter()
-        .rev()
-        .find(|ch| matches!(ch, &&MATCH_START | &&MATCH_END));
-    if open == Some(&MATCH_START) {
-        text.push(MATCH_END);
-    }
-    if start > 0 {
-        text.insert_str(0, "… ");
-    }
-    if end < chars.len() {
-        text.push_str(" …");
-    }
-    text
-}
-
-/// A snippet's text and marks, from one with its matches between the marking bytes.
-fn snippet(marked: &str) -> Snippet {
-    let mut snippet = Snippet::default();
-    let mut start = None;
-    for ch in marked.chars() {
-        match ch {
-            MATCH_START => start = Some(utf16_len(&snippet.text)),
-            MATCH_END => {
-                if let Some(start) = start.take() {
-                    let end = utf16_len(&snippet.text);
-                    snippet.marks.push(Mark { start, end });
-                }
-            }
-            ch => snippet.text.push(ch),
-        }
-    }
-    snippet
-}
-
-fn utf16_len(text: &str) -> u32 {
-    u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_model::{Attribution, Doc, DocText, Revision, TaskEdit, Title};
-    use weacon_protocol::{CommitId, DocAnchors, DocId, DocPin, TaskId};
+    use weacon_protocol::{CommitId, DocAnchors, DocId, DocPin, Mark, TaskId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -418,26 +359,6 @@ mod tests {
         assert!(found(&one, "launch _x").await.is_empty());
     }
 
-    #[test]
-    fn a_snippet_marks_its_matches_in_utf16_units() {
-        let marked = "😀 \u{1}ab\u{2}é \u{1}c\u{2}\u{2}d";
-
-        assert_eq!(
-            snippet(marked),
-            Snippet {
-                text: "😀 abé cd".to_owned(),
-                marks: vec![Mark { start: 3, end: 5 }, Mark { start: 7, end: 8 }],
-            }
-        );
-        assert_eq!(
-            snippet("plain"),
-            Snippet {
-                text: "plain".to_owned(),
-                marks: vec![]
-            }
-        );
-    }
-
     async fn marked(workspace: &Workspace, word: &str) -> (String, String) {
         let query = parse(word).unwrap().unwrap();
         let hits = workspace.search(&query, 1).await.unwrap();
@@ -566,23 +487,7 @@ mod tests {
             .unwrap();
 
         let (word, around) = marked(&one, "aaa").await;
-        // The window counts the marking byte before the letters.
-        assert_eq!(word.chars().count(), SHOWN - 1);
+        assert_eq!(word.chars().count(), 200);
         assert_eq!(around, format!("{word} …"));
-    }
-
-    #[test]
-    fn a_snippet_starts_at_a_word_before_the_match_and_closes_a_cut_one() {
-        let match_at = |at: usize| format!("{}\u{1}hit\u{2} tail", "word ".repeat(at));
-
-        assert_eq!(around_first_match("a \u{1}hit\u{2} b"), "a \u{1}hit\u{2} b");
-        assert_eq!(around_first_match("no match here"), "no match here");
-        let cut = around_first_match(&match_at(20));
-        assert!(cut.starts_with("… word word"), "{cut:?}");
-        assert!(cut.contains("\u{1}hit\u{2}"), "{cut:?}");
-        let long = format!("\u{1}{}\u{2}", "a".repeat(SHOWN * 2));
-        let closed = around_first_match(&long);
-        assert!(closed.ends_with("\u{2} …"), "{closed:?}");
-        assert_eq!(closed.chars().filter(|ch| *ch == MATCH_START).count(), 1);
     }
 }

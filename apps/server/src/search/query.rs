@@ -15,6 +15,8 @@ pub(crate) struct Query {
     pub(crate) words: String,
     /// What a row's text must also hold, as patterns for `LIKE … ESCAPE '\'`.
     pub(crate) short: Vec<String>,
+    /// Every word, folded as [`fold`] folds, for a snippet to mark.
+    pub(crate) marked: Vec<String>,
 }
 
 /// Text past [`MAX_TEXT`] bytes or [`MAX_WORDS`] words, or with a word past [`MAX_WORD`]
@@ -33,6 +35,10 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
     if text.len() > MAX_TEXT || words.len() > MAX_WORDS || words.iter().any(too_long) {
         return Err(TooLong);
     }
+    let marked = words
+        .iter()
+        .map(|word| word.chars().map(fold).collect())
+        .collect();
     let (long, short): (Vec<&str>, Vec<&str>) = words
         .into_iter()
         .partition(|word| word.chars().count() >= MIN_WORD);
@@ -47,7 +53,27 @@ pub(crate) fn parse(text: &str) -> Result<Option<Query>, TooLong> {
     Ok(Some(Query {
         words,
         short: short.into_iter().map(pattern).collect(),
+        marked,
     }))
+}
+
+/// `ch` as a snippet compares it: lower case, and a Latin letter without its accent, much as
+/// the index's `remove_diacritics` reads it. One character always folds to one.
+pub(crate) fn fold(ch: char) -> char {
+    let lower = ch.to_lowercase().next().unwrap_or(ch);
+    match lower {
+        'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+        'ç' | 'ć' | 'č' => 'c',
+        'è'..='ë' | 'ē' | 'ę' | 'ě' => 'e',
+        'ì'..='ï' | 'ī' => 'i',
+        'ñ' | 'ń' | 'ň' => 'n',
+        'ò'..='ö' | 'ø' | 'ō' | 'ő' => 'o',
+        'ù'..='ü' | 'ū' | 'ů' | 'ű' => 'u',
+        'ý' | 'ÿ' => 'y',
+        'š' | 'ś' => 's',
+        'ž' | 'ź' | 'ż' => 'z',
+        other => other,
+    }
 }
 
 /// A `LIKE` pattern for text that holds `word` anywhere.
@@ -122,5 +148,13 @@ mod tests {
         parse(&"é".repeat(MAX_WORD)).unwrap().unwrap();
         assert_eq!(parse(&"é".repeat(MAX_WORD + 1)), Err(TooLong));
         assert_eq!(parse(&format!("{} more", words.join(" "))), Err(TooLong));
+    }
+
+    #[test]
+    fn a_letter_folds_to_its_lower_case_without_its_accent() {
+        let folded: String = "ÀÉÎÕÜçñýšžĘŁ1".chars().map(fold).collect();
+
+        assert_eq!(folded, "aeioucnysze\u{142}1");
+        assert_eq!(query("Café ab").marked, ["cafe", "ab"]);
     }
 }
