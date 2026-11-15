@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { componentOf } from "./component.ts";
+import { componentIn, componentOf } from "./component.ts";
 
 // A page whose one element is `element`; the selector it was asked for is kept.
 function page(element: object | null) {
@@ -57,4 +57,14 @@ test("a page without a framework, or a missing element, names nothing, and long 
   assert.deepEqual(componentOf("x", page(long).root), { component: "n".repeat(256) });
   assert.deepEqual(componentOf("x", above(63)), { component: "Deep" });
   assert.equal(componentOf("x", above(64)), null);
+});
+
+test("only the names, as text, are taken from what the page's world answers", () => {
+  const hostile = { component: "Save", source: "src/save.tsx", url: "http://localhost:3000/settings", request: "p-9", html: "<p>" };
+
+  assert.deepEqual(componentIn(hostile), { component: "Save", source: "src/save.tsx" });
+  assert.deepEqual(componentIn({ component: 3, source: ["x"] }), {});
+  for (const odd of [null, undefined, "Save", 7]) {
+    assert.deepEqual(componentIn(odd), {});
+  }
 });

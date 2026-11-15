@@ -20,11 +20,15 @@ function Panel() {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string>();
 
-  useEffect(() => setRef(tab === undefined ? undefined : chosen(localStorage, tab)), [tab]);
+  useEffect(() => {
+    setRef(tab === undefined ? undefined : chosen(localStorage, tab));
+    setPick(undefined);
+  }, [tab]);
 
   const open = async (next: ChatRef | undefined) => {
     setRef(next);
     setFailed(undefined);
+    setPick(undefined);
     if (tab !== undefined && next !== undefined) {
       const tabs = await chrome.tabs.query({});
       choose(localStorage, tab, next, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
@@ -61,7 +65,8 @@ function Panel() {
 
   const ready = live.status.kind === "ready";
   const shown = live.sync !== undefined && ref !== undefined ? live.sync : undefined;
-  const problem = failed ?? live.refused ?? (live.status.kind === "failed" ? live.status.code : undefined);
+  const stale = shown?.chat !== undefined && shown.state.kind === "failed" ? shown.state.code : undefined;
+  const problem = failed ?? live.refused ?? (live.status.kind === "failed" ? live.status.code : stale);
   return (
     <main>
       <header>

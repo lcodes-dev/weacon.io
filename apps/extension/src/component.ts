@@ -40,3 +40,19 @@ export function componentOf(selector: string, root: Pick<Document, "querySelecto
   const options = field(field(element, "__vue__"), "$options");
   return options === undefined ? null : found(field(options, "name"), field(options, "__file"));
 }
+
+/**
+ * Only the names in what `componentOf` answered from the page's own world, which the page
+ * controls: it may answer anything, with any other fields.
+ */
+export function componentIn(answer: unknown): Component {
+  const fields = typeof answer === "object" && answer !== null ? (answer as Record<string, unknown>) : {};
+  const named: Component = {};
+  if (typeof fields["component"] === "string") {
+    named.component = fields["component"];
+  }
+  if (typeof fields["source"] === "string") {
+    named.source = fields["source"];
+  }
+  return named;
+}

@@ -83,19 +83,23 @@ pub(super) async fn route(
     }
 }
 
+/// Removes the picks kept [`PICKS_LAST`](crate::picks::PICKS_LAST) or longer, warning when
+/// some can't be.
+pub(super) async fn sweep(shared: &Shared) {
+    let picks = shared.picks.clone();
+    if let Err(error) = app::blocking(move || picks.sweep(SystemTime::now())).await {
+        let fields = [("err", Field::error(&error))];
+        shared.log.warn("picks not swept", &fields);
+    }
+}
+
 // The receipt for a pick the extension sent, once it is kept; older picks go first.
 async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
+    sweep(shared).await;
     let (picks, request) = (shared.picks.clone(), pick.request.clone());
-    let kept =
-        tokio::task::spawn_blocking(move || (picks.sweep(SystemTime::now()), picks.keep(&pick)))
-            .await
-            .unwrap_or_else(|error| (Ok(()), Err(KeepError::Io(error.into()))));
-    let (swept, kept) = kept;
-    if let Err(error) = swept {
-        shared
-            .log
-            .warn("picks not swept", &[("err", Field::error(&error))]);
-    }
+    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
+        .await
+        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
     let outcome = match kept {
         Ok(()) => {
             let request_id = request.as_str().into();

@@ -59,40 +59,32 @@ impl<A: Agent> Engine<A> {
         if !weacon_agents::takes_images(agent) {
             return self.filed(key, &text, pick).await;
         }
-        let shown = pick
+        // Only a screenshot that is PNG in base64 goes, as the file an agent reads would be.
+        let png = pick
             .screenshot_png
-            .as_ref()
-            .map_or(Shown::Missing, |_| Shown::Attached);
+            .clone()
+            .filter(|png| crate::picks::is_png(png));
+        let shown = png.as_ref().map_or(Shown::Missing, |_| Shown::Attached);
         let text = quote::prompt(&text, &pick, shown);
-        Order::Send {
-            text,
-            png: pick.screenshot_png,
-        }
+        Order::Send { text, png }
     }
 
     // `text` and `pick` quoted, for an agent that reads the screenshot from a file beside it.
     async fn filed(&self, key: &ChatKey, text: &str, pick: Pick) -> Order {
-        let picks = self.picks();
-        let file = blocking(move || picks.screenshot_file(&pick).map(|file| (pick, file)))
-            .await
-            .map_err(unreadable);
-        let text = match file {
-            Ok((pick, path)) => {
-                let path = path.map(|path| path.display().to_string());
-                quote::prompt(
-                    text,
-                    &pick,
-                    path.as_deref().map_or(Shown::Missing, Shown::File),
-                )
-            }
-            Err(fault) => {
-                let [workspace, chat] = chat_about(key);
-                let fields = [workspace, chat, ("err", Field::error(&fault))];
-                self.log.warn("screenshot not written", &fields);
-                text.to_owned()
-            }
-        };
-        Order::Send { text, png: None }
+        let (picks, kept) = (self.picks(), pick.clone());
+        let file = blocking(move || picks.screenshot_file(&kept)).await;
+        let path = file.unwrap_or_else(|error| {
+            let [workspace, chat] = chat_about(key);
+            let fields = [workspace, chat, ("err", Field::error(&unreadable(error)))];
+            self.log.warn("screenshot not written", &fields);
+            None
+        });
+        let path = path.map(|path| path.display().to_string());
+        let shown = path.as_deref().map_or(Shown::Missing, Shown::File);
+        Order::Send {
+            text: quote::prompt(text, &pick, shown),
+            png: None,
+        }
     }
 
     async fn read_pick(&self, request: &RequestId) -> Result<Option<Pick>, Fault> {
@@ -247,6 +239,46 @@ mod tests {
             soon(started.told.recv()).await,
             Some(Told::Send("Second".to_owned()))
         );
+    }
+
+    #[tokio::test]
+    async fn a_pick_unreadable_at_its_turn_leaves_the_text_alone_and_warns() {
+        let mut bench = bench();
+        kept(&bench, "p-1");
+        let release = bench.hold_next_start();
+        bench
+            .command(picking(prompt("r-1", "Go"), "p-1"))
+            .await
+            .unwrap();
+        let file = bench.state_dir().join("picks/pick-p-1.json");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        drop(release);
+
+        assert_eq!(told(&mut bench).await, [Told::Send("Go".to_owned())]);
+        assert!(weacon_testing::messages(&bench.records).contains(&"pick not read"));
+    }
+
+    #[tokio::test]
+    async fn a_screenshot_that_isnt_png_goes_to_no_agent() {
+        let mut bench = bench();
+        let mut picked = kept(&bench, "p-1");
+        picked.request = "p-2".parse().unwrap();
+        picked.screenshot_png = Some("Zm9v".to_owned());
+        Picks::new(bench.state_dir()).keep(&picked).unwrap();
+
+        bench
+            .command(picking(prompt("r-1", "Go"), "p-2"))
+            .await
+            .unwrap();
+        let expected = quoted("Go", &picked, Shown::Missing);
+        assert_eq!(told(&mut bench).await, [Told::Send(expected.clone())]);
+
+        let mut codex = picking(prompt_naming("r-2", "Go", AgentKind::Codex), "p-2");
+        codex.chat = "c-2".parse().unwrap();
+        bench.command(codex).await.unwrap();
+        assert_eq!(told(&mut bench).await, [Told::Send(expected)]);
+        assert!(!bench.state_dir().join("picks/pick-p-2.png").exists());
     }
 
     #[tokio::test]

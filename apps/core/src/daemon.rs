@@ -194,6 +194,7 @@ impl Daemon {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => {
+                    route::sweep(&self.shared).await;
                     self.disk.check(&self.shared.log).await;
                     self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
                 }
@@ -837,8 +838,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_list_whose_log_cant_be_read_is_refused() {
-        use weacon_protocol::{ChatsQuery, ChatsQueryKind};
+    async fn a_chat_whose_log_cant_be_read_is_listed_untitled() {
+        use weacon_protocol::{ChatsAnswerKind, ChatsQuery, ChatsQueryKind};
 
         let dir = TempDir::new().unwrap();
         let root = crate::workspaces::Workspaces::new(&dir, None).root(&"w-1".parse().unwrap());
@@ -853,8 +854,20 @@ mod tests {
         let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
         let records = running.stop().await;
 
-        assert_eq!(error_code(&replies[1]), Some("chat.log_unreadable"));
-        assert!(messages(&records).contains(&"chat request refused"));
+        let Message::ChatsAnswer(answer) = &replies[1] else {
+            panic!("not a list: {:?}", replies[1]);
+        };
+        let ChatsAnswerKind::List { chats } = &answer.answer else {
+            panic!("not a list");
+        };
+        assert_eq!(
+            chats
+                .iter()
+                .map(|chat| chat.title.as_str())
+                .collect::<Vec<_>>(),
+            [""]
+        );
+        assert!(messages(&records).contains(&"chat titles unreadable"));
     }
 
     #[tokio::test]

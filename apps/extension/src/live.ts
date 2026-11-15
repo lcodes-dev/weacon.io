@@ -38,6 +38,8 @@ export function useLive(ref: ChatRef | undefined): Live {
 
   useEffect(() => {
     let current = true;
+    // Envelope ids start again with each connection.
+    commands.current = new Set();
     const port = chrome.runtime.connectNative(HOST);
     const same = shown.current?.ref.workspace === ref?.workspace && shown.current?.ref.chat === ref?.chat;
     const kept = same ? shown.current?.chat : undefined;
@@ -74,8 +76,13 @@ export function useLive(ref: ChatRef | undefined): Live {
           apply(open(ref, kept, opened.next), opened);
         }
         const answer = await opened.ask({ id: opened.next(), type: "chats_query", query: { kind: "list" } });
-        if (current && answer.type === "chats_answer" && answer.answer.kind === "list") {
+        if (!current) {
+          return;
+        }
+        if (answer.type === "chats_answer" && answer.answer.kind === "list") {
           setChats(answer.answer.chats);
+        } else {
+          setStatus({ kind: "failed", code: answer.type === "error" ? answer.code : "extension.unexpected_reply" });
         }
       })
       .catch((error: unknown) => {

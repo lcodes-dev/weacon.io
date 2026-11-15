@@ -1,4 +1,4 @@
-import { type Component, componentOf } from "./component.ts";
+import { type Component, componentIn, componentOf } from "./component.ts";
 import { Failure } from "./core.ts";
 import { fit } from "./fit.ts";
 import { isWebPage } from "./page.ts";
@@ -34,18 +34,18 @@ export async function pickOn(tab: chrome.tabs.Tab): Promise<Pick | undefined> {
   const { rect, ratio, ...page } = picked;
   // Without a screenshot or a component, the rest of the pick still goes.
   const shoot = await shooter(tab.id, tab.windowId, rect, ratio).catch(() => undefined);
-  const component = await named(tab.id, page.selector).catch(() => null);
+  const component = await named(tab.id, page.selector).catch(() => ({}));
   return fit({ request: crypto.randomUUID(), ...page, ...component }, shoot);
 }
 
-async function named(tabId: number, selector: string): Promise<Component | null> {
+async function named(tabId: number, selector: string): Promise<Component> {
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
     func: componentOf,
     args: [selector],
   });
-  return (injection?.result as Component | null | undefined) ?? null;
+  return componentIn(injection?.result);
 }
 
 // Captures the tab and gives the part showing `rect` as a base64 PNG at any scale. Chrome

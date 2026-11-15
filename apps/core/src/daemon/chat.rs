@@ -67,39 +67,43 @@ pub(super) async fn list_chats(shared: &Shared, id: u32, query: ChatsQuery) -> R
         Ok(listed) => listed,
         Err(fault) => return refused(shared, id, &fault),
     };
-    match blocking(move || titled(listed)).await {
-        Ok(chats) => Reply {
-            envelope: Some(Envelope {
-                id,
-                message: Message::ChatsAnswer(ChatsAnswer {
-                    answer: ChatsAnswerKind::List { chats },
-                }),
+    let titled = blocking(move || Ok(titled(listed))).await;
+    let (chats, unreadable) = titled.unwrap_or_else(|error| (Vec::new(), Some(error)));
+    if let Some(error) = unreadable {
+        let fields = [("err", Field::error(&error))];
+        shared.log.warn("chat titles unreadable", &fields);
+    }
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::ChatsAnswer(ChatsAnswer {
+                answer: ChatsAnswerKind::List { chats },
             }),
-            close: false,
-        },
-        Err(error) => {
-            let fault = Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read");
-            refused(shared, id, &fault.because(error))
-        }
+        }),
+        close: false,
     }
 }
 
-fn titled(listed: Vec<Listed>) -> std::io::Result<Vec<LocalChat>> {
-    let mut chats = listed
+// The chats `listed`, newest first, each titled from its log; one whose log can't be read is
+// untitled, and the first such error comes back with them.
+fn titled(listed: Vec<Listed>) -> (Vec<LocalChat>, Option<std::io::Error>) {
+    let mut unreadable = None;
+    let mut chats: Vec<_> = listed
         .into_iter()
-        .map(|listed| {
-            Ok(LocalChat {
-                title: log::title(&listed.root, &listed.key.chat)?,
-                workspace: listed.key.workspace,
-                chat: listed.key.chat,
-                agent: listed.agent,
-                updated_at: i64::try_from(listed.active_at).unwrap_or(i64::MAX),
-                run: listed.run,
-            })
+        .map(|listed| LocalChat {
+            title: log::title(&listed.root, &listed.key.chat).unwrap_or_else(|error| {
+                unreadable.get_or_insert(error);
+                String::new()
+            }),
+            workspace: listed.key.workspace,
+            chat: listed.key.chat,
+            agent: listed.agent,
+            updated_at: i64::try_from(listed.active_at).unwrap_or(i64::MAX),
+            run: listed.run,
         })
-        .collect::<std::io::Result<Vec<_>>>()?;
+        .collect();
     chats.sort_by_key(|chat| std::cmp::Reverse(chat.updated_at));
-    Ok(chats)
+    (chats, unreadable)
 }
 
 fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
