@@ -100,7 +100,6 @@ async fn start(
         workspace.forget_chat(&command.chat).await?;
         return Err(fault);
     }
-    workspace.mark_sent(&command.request, true).await?;
     workspace.chat_made(&command.chat, &member.id).await?;
     shared.wake_feeds(workspace.id());
     Ok(())
@@ -158,7 +157,7 @@ async fn go_on(
         }
         return Err(fault);
     }
-    workspace.mark_sent(&command.request, true).await
+    Ok(())
 }
 
 fn conflict() -> Fault {

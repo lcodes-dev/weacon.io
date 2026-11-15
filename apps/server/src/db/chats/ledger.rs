@@ -81,24 +81,9 @@ impl Workspace {
         Ok(found.is_some())
     }
 
-    /// Takes `request` out of the ledger: it was recorded but never sent, unless another sender
-    /// of it sent it meanwhile.
+    /// Takes `request` out of the ledger: it was recorded but never sent.
     pub(crate) async fn forget_request(&self, request: &RequestId) -> Result<(), Fault> {
-        sqlx::query(
-            "DELETE FROM chat_requests WHERE workspace_id = ? AND request_id = ? AND sent = 0",
-        )
-        .bind(self.id.as_str())
-        .bind(request.as_str())
-        .execute(&self.db.writer)
-        .await
-        .map_err(failed)?;
-        Ok(())
-    }
-
-    /// Marks `request` sent to its machine, or not sent after all.
-    pub(crate) async fn mark_sent(&self, request: &RequestId, sent: bool) -> Result<(), Fault> {
-        sqlx::query("UPDATE chat_requests SET sent = ? WHERE workspace_id = ? AND request_id = ?")
-            .bind(sent)
+        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND request_id = ?")
             .bind(self.id.as_str())
             .bind(request.as_str())
             .execute(&self.db.writer)
@@ -179,7 +164,6 @@ mod tests {
 
     use super::*;
     use crate::db::test_support::{NOW, command, id, make};
-    use crate::db::schema::{database_before, steps};
     use crate::test_support::{member_id, two_teams};
 
     async fn record(
@@ -277,53 +261,6 @@ mod tests {
             ..new
         };
         assert_eq!(two.record_request(&elsewhere).await.unwrap(), Recorded::New);
-    }
-
-    #[tokio::test]
-    async fn the_commands_stored_before_are_sent_but_for_first_prompts_of_unmade_chats() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
-             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
-             INSERT INTO members (workspace_id, member_id, email, account_id)
-                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
-             INSERT INTO chats (workspace_id, chat_id, owner_member, title, machine_id,
-                 machine_name, state, created_at, updated_at) VALUES
-                 ('w1', 'c-1', 'm1', 'Made', 'mc-1', 'Laptop', 'open', 0, 0),
-                 ('w1', 'c-2', 'm1', 'Unmade', 'mc-1', 'Laptop', 'open', 0, 0);
-             INSERT INTO changes (workspace_id, seq, kind, member_id, chat_id)
-                 VALUES ('w1', 1, 'chat_changed', 'm1', 'c-1');
-             INSERT INTO chat_requests (workspace_id, request_id, chat_id, member_id, command,
-                 sent_at) VALUES ('w1', 'r-1', 'c-1', 'm1', '{}', 0),
-                 ('w1', 'r-2', 'c-2', 'm1', '{}', 0)";
-        database_before(&path, steps::REQUESTS_SENT, rows).await;
-        let db = crate::db::Db::open(&path).await.unwrap();
-        let one = db.workspace(&id("w1")).await.unwrap();
-
-        one.forget_request(&id("r-1")).await.unwrap();
-        one.forget_request(&id("r-2")).await.unwrap();
-
-        assert!(one.has_request(&id("r-1")).await.unwrap());
-        assert!(!one.has_request(&id("r-2")).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn a_failed_send_never_forgets_a_request_another_sender_sent() {
-        let dir = TempDir::new().unwrap();
-        let (one, _two) = two_teams(&dir).await;
-        make(&one, "c-1", "m1", NOW).await.unwrap();
-        // The first sender records it; the second finds it and sends it.
-        assert_eq!(record(&one, "r-2", "c-1", "Go", NOW).await, Recorded::New);
-        let again = record(&one, "r-2", "c-1", "Go", NOW).await;
-        assert_eq!(again, Recorded::Same { open: true });
-        one.mark_sent(&id("r-2"), true).await.unwrap();
-
-        // The first sender's send failed.
-        one.forget_request(&id("r-2")).await.unwrap();
-
-        assert!(one.has_request(&id("r-2")).await.unwrap());
-        let open = opened(one.open_requests(&id("c-1")).await.unwrap());
-        assert!(open.iter().any(|(request, _)| request == "r-2"), "{open:?}");
     }
 
     #[tokio::test]

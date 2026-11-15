@@ -92,11 +92,3 @@ FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_chats RENAME TO changes;
 ";
-
-/// Whether each command reached its machine. Those stored before were sent, but for the first
-/// prompts of chats not made yet.
-pub(crate) const REQUESTS_SENT: &str = "
-ALTER TABLE chat_requests ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;
-UPDATE chat_requests SET sent = 1 WHERE EXISTS (SELECT 1 FROM changes AS h
-    WHERE h.workspace_id = chat_requests.workspace_id AND h.chat_id = chat_requests.chat_id);
-";
