@@ -123,7 +123,7 @@ impl Launch {
     ///
     /// # Errors
     /// When this build doesn't know the agent, or the command can't be run or doesn't end.
-    pub async fn sign_in(&self) -> Result<SignIn, Fault> {
+    pub async fn sign_in_status(&self) -> Result<SignIn, Fault> {
         let vendor = self.vendor()?;
         let mut command = self.status_command(vendor);
         command
@@ -153,7 +153,7 @@ impl Launch {
     /// # Errors
     /// `agent.signed_out` when it isn't; the check's own fault when it can't run.
     pub async fn require_sign_in(&self) -> Result<(), Fault> {
-        match self.sign_in().await? {
+        match self.sign_in_status().await? {
             SignIn::SignedIn => Ok(()),
             SignIn::SignedOut => Err(Fault::new(
                 code!("agent.signed_out"),
@@ -211,7 +211,7 @@ impl Launch {
     ///
     /// # Errors
     /// When this build doesn't know the agent, or its program can't be started.
-    pub fn log_in_terminal(&self, size: Size) -> Result<(Terminal, Events), Fault> {
+    pub fn open_login(&self, size: Size) -> Result<(Terminal, Events), Fault> {
         let mut command = self.login_command(self.vendor()?);
         // What the browser's terminal emulates, whatever this process runs under.
         command.env("TERM", "xterm-256color");
@@ -483,7 +483,7 @@ mod tests {
     }
 
     async fn sign_in_code(launch: Launch) -> String {
-        let error = launch.sign_in().await.unwrap_err();
+        let error = launch.sign_in_status().await.unwrap_err();
         error.code().as_str().to_owned()
     }
 
@@ -512,7 +512,7 @@ mod tests {
         ];
 
         for (agent, program, expected) in cases {
-            let answer = with(agent, program).sign_in().await.unwrap();
+            let answer = with(agent, program).sign_in_status().await.unwrap();
             assert_eq!(answer, expected, "{agent:?} {program}");
         }
     }
@@ -523,7 +523,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.join("agent"), "").unwrap();
 
-        let error = launch(AgentKind::Claude, &dir).sign_in().await.unwrap_err();
+        let error = launch(AgentKind::Claude, &dir)
+            .sign_in_status()
+            .await
+            .unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }
@@ -535,7 +538,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let hanging = test_support::launch(AgentKind::Codex, "yes", &dir);
 
-        let error = hanging.sign_in().await.unwrap_err();
+        let error = hanging.sign_in_status().await.unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
     }

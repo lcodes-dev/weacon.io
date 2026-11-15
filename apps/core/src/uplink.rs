@@ -11,9 +11,12 @@ use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AccountId, App, Asker, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message,
-    Outcome, PROTOCOL, Receipt, code,
+    Outcome, PROTOCOL, Receipt, Welcome, code,
 };
 
+use self::chats::{ChatLink, UPLOAD};
+use self::retry::Retry;
+use crate::chats::Chats;
 use crate::machine::{self, Paired};
 use crate::server::{Failure, Server, Socket};
 
@@ -22,11 +25,12 @@ const CONNECT: Code = code!("machine.connect");
 const PATH: &str = "/api/machines/connect";
 /// How often a core that isn't paired looks for a pairing.
 const LOOK_EVERY: Duration = Duration::from_secs(30);
-const FIRST_WAIT: Duration = Duration::from_secs(1);
-const LONGEST_WAIT: Duration = Duration::from_mins(1);
 const HELLO_WITHIN: Duration = Duration::from_secs(10);
 /// How many messages wait to cross between the daemon and the uplink.
 pub(crate) const QUEUE: usize = 64;
+
+mod chats;
+mod retry;
 
 /// How long a connection may stay quiet, and how long it must last to count as steady.
 #[derive(Clone, Copy, Debug)]
@@ -45,8 +49,8 @@ pub(crate) const TIMING: Timing = Timing {
     look_every: LOOK_EVERY,
 };
 
-/// Where the messages from the server that the uplink doesn't handle itself go in the daemon,
-/// such as the owner's chat commands.
+/// Where the messages from the server go in the daemon when neither the uplink nor the chats
+/// take them.
 pub(crate) type ToDaemon = mpsc::Sender<Envelope>;
 /// What the daemon sends the server, while a connection is up.
 pub(crate) type FromDaemon = mpsc::Receiver<Envelope>;
@@ -62,42 +66,6 @@ enum Ended {
     Unwelcome,
 }
 
-/// When to dial again: a wait doubling from a second to a minute, each cut by up to a fifth
-/// at random so that cores don't all dial at once, and back to a second once a connection was
-/// up.
-#[derive(Debug, Default)]
-struct Retry {
-    failures: u32,
-    /// Whether the last try failed, so a run of failures is logged once.
-    failing: bool,
-}
-
-impl Retry {
-    fn after(&mut self, ended: Result<Ended, Fault>, log: &Logger, random: u128) -> Duration {
-        match ended {
-            Ok(Ended::Lost) => {
-                self.failures = 0;
-                self.failing = false;
-                log.info("uplink lost", &[]);
-            }
-            Ok(_) => {}
-            Err(fault) => {
-                if !self.failing {
-                    log.warn("uplink failed", &[("err", Field::error(&fault))]);
-                }
-                self.failing = true;
-            }
-        }
-        let wait = FIRST_WAIT
-            .saturating_mul(1 << self.failures.min(6))
-            .min(LONGEST_WAIT);
-        self.failures = self.failures.saturating_add(1);
-        let fifth = (wait / 5).as_millis().max(1);
-        let cut = u64::try_from(random % fifth).unwrap_or(0);
-        wait.saturating_sub(Duration::from_millis(cut))
-    }
-}
-
 /// Keeps the machine connected to its server for as long as the daemon runs.
 pub(crate) struct Uplink {
     pub(crate) state_dir: PathBuf,
@@ -105,6 +73,7 @@ pub(crate) struct Uplink {
     pub(crate) capabilities: Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
+    pub(crate) chats: Chats,
     pub(crate) timing: Timing,
     /// Random numbers, for the backoff's jitter.
     pub(crate) random: fn() -> u128,
@@ -174,12 +143,17 @@ impl Uplink {
             Err(Failure::Refused(..)) => return Ok(Ended::Unwelcome),
             Err(Failure::Unreachable(fault)) => return Err(fault),
         };
-        if !self.greeted(&mut socket).await {
+        let Some(welcome) = self.greeted(&mut socket).await else {
             return Ok(Ended::Unwelcome);
-        }
+        };
         log.info("uplink connected", &[]);
         let up = Instant::now();
-        if self.serve(&mut socket, paired, from_daemon).await {
+        let uploads = welcome.capabilities.contains(&Capability::new(UPLOAD));
+        let mut chats = ChatLink::new(self.chats.clone(), uploads, log.clone());
+        if self
+            .serve(&mut socket, paired, from_daemon, &mut chats)
+            .await
+        {
             return Ok(Ended::Unpaired);
         }
         let steady = up.elapsed() >= self.timing.steady_after;
@@ -197,6 +171,7 @@ impl Uplink {
         socket: &mut Socket,
         paired: &Paired,
         from_daemon: &mut FromDaemon,
+        chats: &mut ChatLink,
     ) -> bool {
         // Only what the server sends keeps the connection alive, and no send outlasts it.
         let mut quiet_at = Instant::now() + self.timing.quiet_within;
@@ -213,13 +188,14 @@ impl Uplink {
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, &paired.owner) {
+                    match self.answer(frame, &paired.owner, chats) {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
                     }
                 }
                 Some(envelope) = from_daemon.recv() => Some(envelope),
+                Some(up) = chats.next() => Some(up),
             };
             if let Some(envelope) = reply
                 && timeout_at(quiet_at, send(socket, &envelope)).await.is_err()
@@ -229,8 +205,8 @@ impl Uplink {
         }
     }
 
-    /// Says hello, and whether the server welcomed it with the connection.
-    async fn greeted(&self, socket: &mut Socket) -> bool {
+    /// Says hello, and gives the server's welcome if it offers the connection.
+    async fn greeted(&self, socket: &mut Socket) -> Option<Welcome> {
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
@@ -241,21 +217,21 @@ impl Uplink {
         };
         send(socket, &hello).await;
         let Ok(Some(text)) = timeout(HELLO_WITHIN, first_text(socket)).await else {
-            return false;
+            return None;
         };
-        matches!(
-            Envelope::from_json(text.as_bytes()),
-            Ok(Envelope { message: Message::Welcome(welcome), .. })
-                if welcome.capabilities.contains(&Capability::new(CONNECT))
-        )
+        let Message::Welcome(welcome) = Envelope::from_json(text.as_bytes()).ok()?.message else {
+            return None;
+        };
+        let connects = welcome.capabilities.contains(&Capability::new(CONNECT));
+        connects.then_some(welcome)
     }
 }
 
 impl Uplink {
     /// What to do with a frame from the server. Only the machine's owner may ask it to act,
     /// whatever the server allows, and a kind whose asker it can't find is refused; the rest
-    /// goes to the daemon.
-    fn answer(&self, frame: Wire, owner: &AccountId) -> Step {
+    /// goes to the chats or the daemon.
+    fn answer(&self, frame: Wire, owner: &AccountId, chats: &mut ChatLink) -> Step {
         let Wire::Text(text) = frame else {
             return Step::Nothing;
         };
@@ -272,24 +248,17 @@ impl Uplink {
             Asking::NotAnAsk => true,
             Asking::Unknown => return reply(failure(envelope.id, code!("uplink.unknown"))),
         };
-        let command = if let Message::ChatCommand(command) = &envelope.message {
-            Some(command.clone())
-        } else {
-            None
-        };
         if !owners {
-            return reply(command.map_or_else(
-                || failure(envelope.id, code!("machine.not_owner")),
-                |command| refusal(envelope.id, &command, code!("chat.not_owner")),
-            ));
+            if let Message::ChatCommand(command) = &envelope.message {
+                return reply(refusal(envelope.id, command, code!("chat.not_owner")));
+            }
+            return reply(failure(envelope.id, code!("machine.not_owner")));
         }
-        let id = envelope.id;
-        if self.to_daemon.try_send(envelope).is_ok() {
-            return Step::Nothing;
+        if ChatLink::is_for(&envelope.message) {
+            return chats.take(envelope);
         }
-        command.map_or(Step::Nothing, |command| {
-            reply(refusal(id, &command, code!("chat.unavailable")))
-        })
+        drop(self.to_daemon.try_send(envelope));
+        Step::Nothing
     }
 }
 
@@ -316,13 +285,16 @@ fn asking(message: &Message) -> Asking<'_> {
         &command.by
     } else if let Message::TerminalCommand(command) = message {
         &command.by
+    } else if let Message::DiffQuery(query) = message {
+        &query.by
     } else if let Message::WorktreeQuery(query) = message {
         &query.by
     } else if let Message::WorktreeCommand(command) = message {
         &command.by
     } else if let Message::SessionsQuery(query) = message {
         return Asking::By(query.by.as_ref());
-    } else if let Message::Error(_) = message {
+    } else if let Message::Error(_) | Message::ChatQuery(_) = message {
+        // A chat query is the server following a chat it stores.
         return Asking::NotAnAsk;
     } else {
         return Asking::Unknown;
@@ -378,14 +350,21 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// The daemon's uplink, which hands what the server asks to `to_daemon`.
-pub(crate) fn new(app: &crate::app::App, state_dir: &Path, to_daemon: ToDaemon) -> Uplink {
+/// The daemon's uplink, which takes the server's chat messages to `chats` and hands the
+/// rest of what it asks to `to_daemon`.
+pub(crate) fn new(
+    app: &crate::app::App,
+    state_dir: &Path,
+    to_daemon: ToDaemon,
+    chats: Chats,
+) -> Uplink {
     Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
         capabilities: crate::session::CAPABILITIES.to_vec(),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
+        chats,
         timing: TIMING,
         random: weacon_appkit::random_id,
     }
@@ -398,12 +377,14 @@ mod tests {
     use weacon_protocol::{
         ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MachineSettingsAction,
         MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, MemberId,
-        RequestId, SessionsQuery, SessionsQueryKind, TerminalAction, TerminalCommand, TerminalId,
-        Welcome, WorkspaceId, WorktreeAction, WorktreeCommand, WorktreeQuery, WorktreeQueryKind,
+        RequestId, RunEvent, SessionsQuery, SessionsQueryKind, TerminalAction, TerminalCommand,
+        TerminalId, Welcome, WorkspaceId, WorktreeAction, WorktreeCommand, WorktreeQuery,
+        WorktreeQueryKind,
     };
     use weacon_testing::TempDir;
 
     use super::*;
+    use crate::chats::test_support::{brief, soon};
     use crate::machine::Key;
     use crate::test_support::tls::{Tls, answer, nowhere, read_request};
     use crate::test_support::{VERSION, messages, recording_logger};
@@ -436,6 +417,8 @@ mod tests {
             capabilities: vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
+            // A way to an engine that has stopped.
+            chats: crate::chats::test_support::parts().0.chats,
             timing: Timing {
                 quiet_within: Duration::from_secs(10),
                 steady_after: Duration::ZERO,
@@ -536,40 +519,10 @@ mod tests {
         Some((request.as_str(), code.as_str()))
     }
 
-    fn unreachable() -> Result<Ended, Fault> {
-        Err(Fault::new(
-            code!("server.unreachable"),
-            "The server couldn't be reached",
-        ))
-    }
-
-    #[test]
-    fn the_wait_doubles_to_a_minute_less_a_random_fifth_and_resets_once_up() {
-        let (log, records) = recording_logger();
-        let mut retry = Retry::default();
-        let mut waits: Vec<_> = (0..4)
-            .map(|_| retry.after(unreachable(), &log, 0).as_secs())
-            .collect();
-        waits.extend((0..4).map(|_| retry.after(Ok(Ended::Unwelcome), &log, 0).as_secs()));
-        let jittered = retry.after(unreachable(), &log, 11_999);
-        let after_up = retry.after(Ok(Ended::Lost), &log, 0);
-        let failing_again = retry.after(unreachable(), &log, 1_999);
-
-        assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
-        assert_eq!(jittered, Duration::from_millis(48_001));
-        assert_eq!(after_up, Duration::from_secs(1));
-        assert_eq!(failing_again, Duration::from_millis(1_601));
-        assert_eq!(
-            messages(&records),
-            ["uplink failed", "uplink lost", "uplink failed"]
-        );
-    }
-
     #[tokio::test]
-    async fn only_the_owners_commands_reach_the_daemon_and_an_unpairing_ends_it() {
+    async fn only_the_owners_commands_are_taken_and_an_unpairing_ends_it() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let (commands, mut taken) = mpsc::channel(4);
-        let link = with_commands(&dir, commands);
+        let link = uplink(&dir);
         let pairing = paired(&tls);
         let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
         let serve = async {
@@ -604,11 +557,94 @@ mod tests {
                 Some(("r-nobody", "chat.not_owner")),
             ]
         );
-        let Message::ChatCommand(taken_command) = taken.try_recv().unwrap().message else {
-            panic!("not a command");
+    }
+
+    fn the_owner() -> Asker {
+        Asker {
+            account: owner(),
+            member: MemberId::try_from("m-1".to_owned()).unwrap(),
+        }
+    }
+
+    // Has `agent` take a turn that calls a tool, says it is done and finishes.
+    fn take_a_turn_with_a_tool(agent: &crate::chats::test_support::Started) {
+        for said in a_turn_with_a_tool() {
+            agent.say.send(said).unwrap();
+        }
+    }
+
+    fn a_turn_with_a_tool() -> [RunEvent; 3] {
+        let call = RunEvent::ToolCall {
+            call: "t-1".to_owned(),
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "MARKER" }),
         };
-        assert_eq!(taken_command.request.as_str(), "r-owner");
-        taken.try_recv().unwrap_err();
+        let finished = RunEvent::Finished {
+            outcome: Outcome::Completed,
+        };
+        [call, crate::chats::test_support::text("Done"), finished]
+    }
+
+    // What the core sends up, in brief, until a run finishes.
+    async fn until_finished(peer: &mut Peer) -> Vec<String> {
+        let mut briefs = Vec::new();
+        while briefs
+            .last()
+            .is_none_or(|brief: &String| !brief.contains("finished"))
+        {
+            briefs.push(brief(&heard(peer).await));
+        }
+        briefs
+    }
+
+    #[tokio::test]
+    async fn a_server_that_stores_events_follows_a_chat_and_gets_its_messages_only() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let mut bench = crate::chats::test_support::bench();
+        let link = Uplink {
+            chats: bench.chats.clone(),
+            ..uplink(&dir)
+        };
+        let pairing = paired(&tls);
+        let follow = Envelope {
+            id: 3,
+            message: Message::ChatQuery(ChatQuery {
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+                query: ChatQueryKind::Subscribe { after: 0 },
+            }),
+        };
+        let prompt = Envelope {
+            id: 4,
+            message: Message::ChatCommand(ChatCommand {
+                by: Some(the_owner()),
+                ..crate::chats::test_support::prompt("r-1", "Hi")
+            }),
+        };
+        let serve = async {
+            let mut peer = welcoming(&tls, &[CONNECT, code!("chat.upload")]).await;
+            peer.send(text(&follow)).await.unwrap();
+            peer.send(text(&prompt)).await.unwrap();
+            let agent = soon(bench.started.recv()).await.unwrap();
+            take_a_turn_with_a_tool(&agent);
+            until_finished(&mut peer).await
+        };
+
+        let (ended, briefs) = tokio::join!(once(&link, &pairing), serve);
+
+        assert_eq!(ended.unwrap(), Ended::Lost);
+        // Seq 5, the tool's call, stays on the machine.
+        assert_eq!(
+            briefs,
+            [
+                "1 prompt r-1 Hi",
+                "2 receipt r-1 accepted",
+                "3 run-1 is Starting",
+                "4 run-1 is Running",
+                "6 run-1 text Done",
+                "7 run-1 finished completed",
+            ]
+        );
     }
 
     // Each kind the server relays to the machine, asked `by` someone or no one.
@@ -655,11 +691,18 @@ mod tests {
         .collect()
     }
 
-    fn worktree_asks(by: Option<Asker>) -> [Message; 2] {
+    fn worktree_asks(by: Option<Asker>) -> [Message; 3] {
         let request = RequestId::try_from("r-1".to_owned()).unwrap();
         let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
         let chat = ChatId::try_from("c-1".to_owned()).unwrap();
         [
+            Message::DiffQuery(weacon_protocol::DiffQuery {
+                request: request.clone(),
+                workspace: workspace.clone(),
+                chat: chat.clone(),
+                query: weacon_protocol::DiffQueryKind::Changes,
+                by: by.clone(),
+            }),
             Message::WorktreeQuery(WorktreeQuery {
                 request: request.clone(),
                 workspace: workspace.clone(),
@@ -680,7 +723,8 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        let reply = match link.answer(frame, &owner()) {
+        let mut chats = ChatLink::new(link.chats.clone(), false, link.log.clone());
+        let reply = match link.answer(frame, &owner(), &mut chats) {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
             Step::Reply(reply) => *reply,
@@ -694,8 +738,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_ask_but_the_owners_and_every_kind_it_cant_place_is_refused() {
+    #[tokio::test]
+    async fn every_ask_but_the_owners_and_every_kind_it_cant_place_is_refused() {
         let dir = TempDir::new().unwrap();
         let (to_daemon, mut taken) = mpsc::channel(16);
         let link = with_commands(&dir, to_daemon);
@@ -716,44 +760,28 @@ mod tests {
             .map(|ask| answered(&link, ask))
             .collect();
         let error = answered(&link, other_error.clone());
-        // The server reads chats from what cores upload; it never asks a core for one.
+        // A server that doesn't store chats' events may not follow one.
         let chat_query = answered(
             &link,
             Message::ChatQuery(ChatQuery {
                 workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
                 chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query: ChatQueryKind::Snapshot,
+                query: ChatQueryKind::Subscribe { after: 0 },
             }),
         );
 
-        assert_eq!(owners, [None, None, None, None, None, None]);
-        assert_eq!(others, vec![not_owner; 12]);
+        assert_eq!(owners, vec![None; 7]);
+        assert_eq!(others, vec![not_owner; 14]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);
-        assert_eq!(chat_query, Some("uplink.unknown".to_owned()));
+        assert_eq!(chat_query, Some("message.unsupported".to_owned()));
         let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
             .map(|envelope| envelope.message)
             .collect();
         let mut expected = every_ask(Some(&owner()));
         expected.push(other_error);
         assert_eq!(passed, expected);
-    }
-
-    #[tokio::test]
-    async fn an_owners_command_nothing_takes_is_refused_as_unavailable() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = with_commands(&dir, mpsc::channel(1).0);
-        let pairing = paired(&tls);
-        let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
-            asked(&mut peer, &command("r-owner", Some(&owner()))).await
-        };
-
-        let (ended, refused) = tokio::join!(once(&link, &pairing), serve);
-
-        assert_eq!(ended.unwrap(), Ended::Lost);
-        assert_eq!(refusal(&refused), Some(("r-owner", "chat.unavailable")));
     }
 
     #[tokio::test]

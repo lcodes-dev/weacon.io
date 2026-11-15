@@ -3,7 +3,8 @@ import type { AccessLevel, AgentKind, MachineOs, MachineSettings, MachineSetting
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import { type SettingsSocket, change, current } from "./remote-settings.ts";
+import type { MachineSocket } from "./ask-machine.ts";
+import { change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
   ["off", "Off"],
@@ -27,7 +28,7 @@ const STATES = new Map<SignInState | string, string>([
  * What one of the person's machines keeps for the open workspace, asked of its core: error
  * reports, what the workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, socket, later }: { machine: MachineSummary; socket: SettingsSocket; later: Later }) {
+export function MachineSettingsView({ machine, socket, later }: { machine: MachineSummary; socket: MachineSocket; later: Later }) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
   const changing = useAsk();
   const set = (action: MachineSettingsAction) =>

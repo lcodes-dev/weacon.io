@@ -204,23 +204,26 @@ mod tests {
             let padded = |by: usize| format!("{}{own}", " ".repeat(by));
             let script = |number, status: &str, code| status_script(&dir, number, status, code);
 
-            assert_eq!(script(0, own, 0).sign_in().await.unwrap(), SignIn::SignedIn);
             assert_eq!(
-                script(1, own, 1).sign_in().await.unwrap(),
+                script(0, own, 0).sign_in_status().await.unwrap(),
+                SignIn::SignedIn
+            );
+            assert_eq!(
+                script(1, own, 1).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(2, host, 0).sign_in().await.unwrap(),
+                script(2, host, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
             assert_eq!(
-                script(3, &padded(4096), 0).sign_in().await.unwrap(),
+                script(3, &padded(4096), 0).sign_in_status().await.unwrap(),
                 SignIn::SignedIn
             );
             // Past the limit, so the answer is never read.
             let past = padded(70 * 1024);
             assert_eq!(
-                script(4, &past, 0).sign_in().await.unwrap(),
+                script(4, &past, 0).sign_in_status().await.unwrap(),
                 SignIn::SignedOut
             );
         }

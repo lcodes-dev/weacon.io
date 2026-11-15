@@ -8,6 +8,8 @@
 # A `Lines::next` that always returns a line never ends, so every reader spins instead of failing.
 # `depth * 1` in `full_names` isn't equivalent: it never deepens, so a self-nesting subcommand
 # expands until the test is killed for memory, which takes CI's runner with it.
+# A state file hold that's never let go, one that waits while the file is free, or a lock that
+# retries every error leaves a hold waiting for good, so the lock tests hang instead of failing.
 # Windows code isn't built on Linux, where mutation tests run; the Windows CI job tests it.
 # Nor is the macOS pty, macOS's or other systems' `trash`; the rest of macOS's Trash is tested
 # on Linux.
@@ -44,6 +46,8 @@ exclude_re = [
     # A `\\n`-continuation at a word's start is dropped by both `step` and `word_part`, so no word
     # forms either way.
     "word.is_none\\(\\) && self.peek_at\\(1\\) == Some.* with false in Parser::step",
+    "git/state\\.rs:.*: (replace let_go with \\(\\)|replace <impl Drop for Hold>::drop with \\(\\)|delete ! in hold)$",
+    "replace != with == in lock_for_process$",
 ]
 # Some mutants make a blocking client wait out its 5 s read timeout.
 minimum_test_timeout = 60

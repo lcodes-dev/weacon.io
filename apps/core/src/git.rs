@@ -16,11 +16,13 @@ use crate::platform;
 pub(crate) mod branch;
 pub(crate) mod chats;
 pub(crate) mod diff;
+pub(crate) mod launch;
+mod lock;
 mod reads;
 pub(crate) mod removal;
 pub(crate) mod repos;
 pub(crate) mod service;
-mod state;
+pub(crate) mod state;
 mod tree;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
@@ -103,24 +105,6 @@ impl Git {
             })
     }
 
-    /// Locks `worktree` against `git worktree prune`, which would forget it while its folder is
-    /// in the Trash.
-    pub(crate) fn lock(&self, worktree: &Path) -> Result<(), Fault> {
-        run(self
-            .command(worktree)
-            .args(["worktree", "lock", "--reason", "In the Trash"])
-            .arg(worktree))
-        .map(drop)
-    }
-
-    /// Unlocks `worktree` once it's back; one already unlocked stays so.
-    pub(crate) fn unlock(&self, worktree: &Path) {
-        drop(run(self
-            .command(worktree)
-            .args(["worktree", "unlock"])
-            .arg(worktree)));
-    }
-
     /// Every working tree of `repo` that still has its folder, the main one first.
     pub(crate) fn worktrees(&self, repo: &Path) -> Result<Vec<Worktree>, Fault> {
         Ok(self
@@ -138,12 +122,7 @@ impl Git {
         chat: &ChatId,
         path: &Path,
     ) -> Result<Worktree, Fault> {
-        if !repo.is_absolute() || !path.is_absolute() {
-            return Err(Fault::new(
-                code!("git.path_relative"),
-                "Worktrees need absolute paths",
-            ));
-        }
+        absolute(&[repo, path])?;
         let branch = branch(chat);
         let full = format!("refs/heads/{branch}");
         let listed = self.listed(repo)?;
@@ -207,11 +186,7 @@ impl Git {
         branch: &str,
         full: &str,
     ) -> Result<Start, Fault> {
-        // In full: `--short` can say `heads/main` when a tag is also called `main`.
-        let on = run(self.command(repo).args(["symbolic-ref", "--quiet", "HEAD"]))
-            .ok()
-            .and_then(|out| text(out).ok())
-            .and_then(|name| Some(name.trim_end().strip_prefix("refs/heads/")?.to_owned()));
+        let on = self.checked_out(repo);
         let head = self.head(repo)?;
         run(self
             .command(repo)
@@ -231,6 +206,19 @@ impl Git {
         })
     }
 
+    // The branch `repo` has checked out, such as `main`; none when its head is detached. Read in
+    // full: `--short` can say `heads/main` when a tag is also called `main`.
+    fn checked_out(&self, repo: &Path) -> Option<String> {
+        let out = run(self.command(repo).args(["symbolic-ref", "--quiet", "HEAD"]));
+        Some(
+            text(out.ok()?)
+                .ok()?
+                .trim_end()
+                .strip_prefix("refs/heads/")?
+                .to_owned(),
+        )
+    }
+
     // Every worktree git knows of, and whether its folder is missing.
     fn listed(&self, repo: &Path) -> Result<Vec<(Worktree, bool)>, Fault> {
         let listed = text(run(self.command(repo).args([
@@ -239,11 +227,9 @@ impl Git {
             "--porcelain",
             "-z",
         ]))?)?;
-        Ok(listed
-            .split("\0\0")
-            .filter_map(parse_worktree)
+        Ok(records(&listed)
             // A locked worktree's folder can be gone without git calling it prunable.
-            .map(|(tree, prunable)| {
+            .map(|Listed { tree, prunable, .. }| {
                 let gone = matches!(
                     tree.path.symlink_metadata(),
                     Err(error) if error.kind() == io::ErrorKind::NotFound
@@ -269,16 +255,25 @@ impl Git {
     }
 
     fn command(&self, repo: &Path) -> Command {
+        self.command_in(repo, Some(repo))
+    }
+
+    // Git run in `at`; when this git has a worktree's git folder, with that folder and
+    // `work_tree`.
+    fn command_in(&self, at: &Path, work_tree: Option<&Path>) -> Command {
         let mut hooks = OsString::from("core.hooksPath=");
         hooks.push(&self.no_hooks);
         let mut command = Command::new(&self.program);
-        command.arg("-C").arg(repo);
+        command.arg("-C").arg(at);
         if let Some(dir) = &self.folder {
-            let (mut git_dir, mut work_tree) =
-                (OsString::from("--git-dir="), OsString::from("--work-tree="));
+            let mut git_dir = OsString::from("--git-dir=");
             git_dir.push(dir);
-            work_tree.push(repo);
-            command.arg(git_dir).arg(work_tree);
+            command.arg(git_dir);
+            if let Some(work_tree) = work_tree {
+                let mut named = OsString::from("--work-tree=");
+                named.push(work_tree);
+                command.arg(named);
+            }
         }
         command
             .arg("-c")
@@ -348,28 +343,54 @@ fn text(out: Vec<u8>) -> Result<String, Fault> {
     })
 }
 
-// One record of `git worktree list --porcelain -z`, and whether git calls it prunable; none for
-// a bare repository.
-fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
-    let mut path = None;
-    let mut branch = None;
-    let mut prunable = false;
+/// One working tree as `git worktree list` lists it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Listed {
+    pub(super) tree: Worktree,
+    /// Whether git calls it prunable.
+    pub(super) prunable: bool,
+    /// Why it is locked, if it is; empty for a lock given no reason.
+    pub(super) locked: Option<String>,
+}
+
+// Every working tree in the output of `git worktree list --porcelain -z`.
+pub(super) fn records(listing: &str) -> impl Iterator<Item = Listed> + '_ {
+    listing.split("\0\0").filter_map(parse_worktree)
+}
+
+// One record of `git worktree list --porcelain -z`; none for a bare repository.
+fn parse_worktree(record: &str) -> Option<Listed> {
+    let (mut path, mut branch, mut prunable, mut locked) = (None, None, false, None);
     for field in record.split('\0') {
         match field.split_once(' ').unwrap_or((field, "")) {
             ("worktree", value) => path = Some(PathBuf::from(value)),
             ("branch", value) => branch = Some(value.to_owned()),
             ("prunable", _) => prunable = true,
+            ("locked", reason) => locked = Some(reason.to_owned()),
             ("bare", _) => return None,
             _ => {}
         }
     }
-    Some((
-        Worktree {
-            path: path?,
-            branch,
-            start: None,
-        },
+    let tree = Worktree {
+        path: path?,
+        branch,
+        start: None,
+    };
+    Some(Listed {
+        tree,
         prunable,
+        locked,
+    })
+}
+
+// Refuses a path git would read relative to wherever it runs.
+fn absolute(paths: &[&Path]) -> Result<(), Fault> {
+    if paths.iter().all(|path| path.is_absolute()) {
+        return Ok(());
+    }
+    Err(Fault::new(
+        code!("git.path_relative"),
+        "Worktrees need absolute paths",
     ))
 }
 
@@ -600,23 +621,34 @@ mod tests {
 
     #[test]
     fn listed_worktrees_skip_bare_ones_and_mark_missing_ones() {
-        let tree = |path: &str, branch: Option<&str>| Worktree {
-            path: PathBuf::from(path),
-            branch: branch.map(str::to_owned),
-            start: None,
+        let listed = |path: &str, branch: Option<&str>, prunable, locked: Option<&str>| Listed {
+            tree: Worktree {
+                path: PathBuf::from(path),
+                branch: branch.map(str::to_owned),
+                start: None,
+            },
+            prunable,
+            locked: locked.map(str::to_owned),
         };
 
         assert_eq!(
             parse_worktree("worktree /t/a\0HEAD 1234\0branch refs/heads/weacon/a"),
-            Some((tree("/t/a", Some("refs/heads/weacon/a")), false))
+            Some(listed("/t/a", Some("refs/heads/weacon/a"), false, None))
         );
         assert_eq!(
-            parse_worktree("worktree /t/b\0HEAD 1234\0detached"),
-            Some((tree("/t/b", None), false))
+            parse_worktree("worktree /t/b\0HEAD 1234\0detached\0locked"),
+            Some(listed("/t/b", None, false, Some("")))
         );
         assert_eq!(
-            parse_worktree("worktree /t/c\0HEAD 1234\0branch refs/heads/c\0prunable gone"),
-            Some((tree("/t/c", Some("refs/heads/c")), true))
+            parse_worktree(
+                "worktree /t/c\0HEAD 1234\0branch refs/heads/c\0locked In the Trash\0prunable gone"
+            ),
+            Some(listed(
+                "/t/c",
+                Some("refs/heads/c"),
+                true,
+                Some("In the Trash")
+            ))
         );
         assert_eq!(parse_worktree("worktree /t/r.git\0bare"), None);
         assert_eq!(parse_worktree(""), None);

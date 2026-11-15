@@ -190,6 +190,8 @@ pub(crate) enum MapSubcommand {
     Symbol { path: String },
     /// Print the text the MCP's `flow` tool answers: the flows the docs pin.
     Flows,
+    /// Print the text the MCP's `docs_for` tool answers: the doc lines that pin an item.
+    DocsFor { path: String },
     /// Print the areas of the code and how they depend on one another.
     Architecture,
     /// Print the commands, routes and other contracts the code declares.

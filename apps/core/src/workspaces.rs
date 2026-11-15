@@ -3,7 +3,7 @@
 
 pub(crate) mod access;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -138,6 +138,16 @@ impl Workspaces {
         AGENTS.map(|(agent, _)| (agent, self.located(workspace, agent, root.clone()).ok()))
     }
 
+    /// The core's state folder, which holds every workspace's.
+    pub(crate) fn state_dir(&self) -> &Path {
+        &self.state
+    }
+
+    /// The `PATH` vendors' programs, and git, are found on.
+    pub(crate) fn path(&self) -> Option<&OsStr> {
+        self.path.as_deref()
+    }
+
     /// The folder for everything this machine keeps for `workspace` but its settings.
     pub(crate) fn root(&self, workspace: &WorkspaceId) -> PathBuf {
         self.dir.join(folder_name(workspace))
@@ -239,6 +249,30 @@ impl Workspaces {
     }
 }
 
+// `path` with its deepest existing folder resolved, so a missing path compares like an existing
+// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
+pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut base = path;
+    loop {
+        match base.canonicalize() {
+            Ok(found) => {
+                return Some(
+                    missing
+                        .iter()
+                        .rev()
+                        .fold(found, |path, name| path.join(name)),
+                );
+            }
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
+            Err(_) if base.symlink_metadata().is_ok() => return None,
+            Err(_) => {}
+        }
+        missing.push(base.file_name()?);
+        base = base.parent()?;
+    }
+}
+
 // Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
 // for a small machine.
 const AT_ONCE: usize = 8;
@@ -251,7 +285,7 @@ pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<Si
         let checks: Vec<_> = together
             .iter()
             .cloned()
-            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
+            .map(|launch| tokio::spawn(async move { launch.sign_in_status().await }))
             .collect();
         for check in checks {
             answers.push(match check.await {

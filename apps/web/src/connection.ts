@@ -7,12 +7,17 @@ export type WebCapability =
   | "run.stream"
   | "workspace.feed"
   | "workspace.chats"
+  | "workspace.tasks"
+  | "workspace.docs"
+  | "workspace.proposals"
+  | "workspace.members"
   | "workspace.chat_commands"
   | "diff.view"
   | "chat.send"
   | "chat.events"
   | "log.forward"
   | "machine.settings"
+  | "sessions.read"
   | "worktree.manage"
   | "worktree.open_terminal";
 
