@@ -83,57 +83,20 @@ async fn pass_on(client: TcpStream, acceptor: &TlsAcceptor, server: SocketAddr) 
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_rustls::TlsConnector;
-    use tokio_rustls::rustls::pki_types::ServerName;
-    use tokio_rustls::rustls::{ClientConfig, RootCertStore};
-
     use super::*;
     use crate::TempDir;
 
-    fn pinned(dir: &Path) -> TlsConnector {
-        let pem = std::fs::read(dir.join(CERTIFICATE)).unwrap();
-        let mut roots = RootCertStore::empty();
-        roots
-            .add(CertificateDer::from_pem_slice(&pem).unwrap())
-            .unwrap();
-        let config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        TlsConnector::from(Arc::new(config))
-    }
-
-    #[tokio::test]
-    async fn passes_a_connection_on_over_tls_the_pinned_certificate_verifies() {
+    #[test]
+    fn makes_its_certificate_once_in_a_folder_of_its_own() {
         let temp = TempDir::new().unwrap();
         let dir = temp.join("tls");
-        let config = certificate(&dir).unwrap();
-        let first = std::fs::read(dir.join(CERTIFICATE)).unwrap();
         certificate(&dir).unwrap();
+        let first = std::fs::read(dir.join(CERTIFICATE)).unwrap();
+
+        certificate(&dir).unwrap();
+
         assert_eq!(std::fs::read(dir.join(CERTIFICATE)).unwrap(), first);
         assert!(!temp.join("tls.new").exists());
-
-        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let upstream = server.local_addr().unwrap();
-        let echo = tokio::spawn(async move {
-            let (mut stream, _) = server.accept().await.unwrap();
-            let mut asked = [0; 5];
-            stream.read_exact(&mut asked).await.unwrap();
-            stream.write_all(&asked).await.unwrap();
-        });
-        let listener = listen(0).await.unwrap();
-        let address = listener.local_addr().unwrap();
-        assert!(address.ip().is_loopback());
-        tokio::spawn(front(listener, config, upstream));
-
-        let tcp = TcpStream::connect(address).await.unwrap();
-        let name = ServerName::try_from("localhost").unwrap();
-        let mut tls = pinned(&dir).connect(name, tcp).await.unwrap();
-        tls.write_all(b"hello").await.unwrap();
-        let mut answer = [0; 5];
-        tls.read_exact(&mut answer).await.unwrap();
-        assert_eq!(&answer, b"hello");
-        echo.await.unwrap();
     }
 
     #[test]

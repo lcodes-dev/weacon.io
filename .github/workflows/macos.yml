@@ -9,6 +9,7 @@ on:
       - .github/workflows/macos.yml
       - scripts/setup.sh
       - scripts/check.sh
+      - scripts/dev.sh
       - rust-toolchain.toml
       - .node-version
 
@@ -42,3 +43,16 @@ jobs:
       # macOS's own bash, 3.2, as a developer's Mac runs the scripts.
       - run: /bin/bash scripts/setup.sh
       - run: /bin/bash scripts/check.sh --mutants none
+      # The README's walk-through starts Weacon with dev.sh; check it comes up and the core answers.
+      - name: scripts/dev.sh
+        run: |
+          /bin/bash scripts/dev.sh dev@example.com >.dev/dev.out 2>&1 &
+          for _ in $(seq 1 600); do
+            grep -q 'Ctrl-C stops it' .dev/dev.out && break
+            kill -0 $! 2>/dev/null || break
+            sleep 1
+          done
+          cat .dev/dev.out
+          curl -fsS http://localhost:8080/version
+          WEACON_STATE_DIR=.dev/state target/debug/weacon status
+          kill $!

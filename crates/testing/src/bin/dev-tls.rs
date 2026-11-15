@@ -1,12 +1,13 @@
 //! `dev-tls <folder> [port] [server-port]`: answers TLS for `localhost` on `port` of 127.0.0.1,
 //! by default 8443, and passes each connection on to the server on `server-port`, by default
-//! 8080, until stopped. It makes its certificate in `<folder>` the first time; the core pins
-//! `<folder>/cert.pem`.
+//! 8080, until stopped. It makes its certificate in `<folder>` the first time, and prints its
+//! address on one line once it listens; the core pins `<folder>/cert.pem`.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use tokio::io::AsyncWriteExt;
 use weacon_testing::Failure;
 use weacon_testing::dev_tls::{certificate, front, listen};
 
@@ -29,6 +30,10 @@ async fn main() -> ExitCode {
 async fn run(dir: PathBuf, port: u16, server: u16) -> Result<(), Failure> {
     let config = certificate(&dir)?;
     let listener = listen(port).await?;
+    let address = format!("https://localhost:{}\n", listener.local_addr()?.port());
+    let mut stdout = tokio::io::stdout();
+    stdout.write_all(address.as_bytes()).await?;
+    stdout.flush().await?;
     front(
         listener,
         config,
