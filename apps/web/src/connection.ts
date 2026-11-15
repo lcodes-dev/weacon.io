@@ -7,14 +7,19 @@ export type WebCapability =
   | "run.stream"
   | "workspace.feed"
   | "workspace.chats"
+  | "workspace.tasks"
+  | "workspace.docs"
+  | "workspace.proposals"
+  | "workspace.members"
   | "workspace.chat_commands"
+  | "workspace.search"
   | "diff.view"
-  | "chat.send"
-  | "chat.events"
   | "log.forward"
   | "machine.settings"
+  | "sessions.read"
   | "worktree.manage"
-  | "worktree.open_terminal";
+  | "worktree.open_terminal"
+  | "terminal.relay";
 
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;

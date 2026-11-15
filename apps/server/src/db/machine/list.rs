@@ -39,16 +39,17 @@ impl Db {
         .collect()
     }
 
-    /// Keeps the build `core` of `machine` and what it `offers`, as it said when it connected.
+    /// Keeps the build `core` of `machine` and what it `offers`, as it said when it connected;
+    /// with no offers kept, it is never shown lacking any.
     pub(crate) async fn saw_core(
         &self,
         machine: &MachineId,
         core: Option<&App>,
-        offers: &[Capability],
+        offers: Option<&[Capability]>,
     ) -> Result<(), Fault> {
         sqlx::query("UPDATE machines SET core_build = ?, core_offers = ? WHERE machine_id = ?")
             .bind(core.and_then(|core| serde_json::to_string(core).ok()))
-            .bind(serde_json::to_string(offers).ok())
+            .bind(offers.and_then(|offers| serde_json::to_string(offers).ok()))
             .bind(machine.as_str())
             .execute(&self.writer)
             .await

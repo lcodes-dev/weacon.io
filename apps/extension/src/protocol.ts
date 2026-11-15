@@ -385,6 +385,10 @@ export type ChatSummary = {
   id: ChatId;
   machine: MachineName;
   owner: MemberId;
+  /**
+   * What its latest run is doing; left out when it has had none.
+   */
+  run?: RunState;
   state: ChatState;
   title: string;
   updated_at: number;
@@ -420,7 +424,7 @@ export type ClientLog = {
 export type Code = string;
 
 /**
- * A full git commit id: 40 lowercase hex digits.
+ * A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.
  */
 export type Commit = string;
 
@@ -816,9 +820,35 @@ export type MachineSummary = {
 };
 
 /**
+ * The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a
+ * browser counts a string.
+ */
+export type Mark = {
+  end: number;
+  start: number;
+};
+
+/**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
+
+/**
+ * A workspace's members, past ones included, in the order they were added, from the server to
+ * clients that have the capability `workspace.members`.
+ */
+export type MemberList = {
+  members: Array<MemberSummary>;
+};
+
+/**
+ * A member as the workspace's other members see them, under the name the server shows for
+ * them.
+ */
+export type MemberSummary = {
+  id: MemberId;
+  name: string;
+};
 
 /**
  * A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the
@@ -870,10 +900,7 @@ export type OutsideSession = {
   /**
    * The folder it ran in, when its file names one.
    */
-  folder?: (
-    | string
-    | null
-  );
+  folder?: string;
   modified_at: number;
   session: AgentSession;
 };
@@ -981,10 +1008,7 @@ export type Pick = {
    * What the element looked like: a PNG, base64-encoded. None when the page couldn't be
    * captured.
    */
-  screenshot_png?: (
-    | string
-    | null
-  );
+  screenshot_png?: string;
   /**
    * A CSS selector that finds the element on the page.
    */
@@ -1307,6 +1331,51 @@ export type RunUpdate = {
 };
 
 /**
+ * The server's answer to a [`SearchQuery`]: matches in the title first, then the most
+ * recently changed.
+ */
+export type SearchAnswer = {
+  hits: Array<SearchHit>;
+};
+
+/**
+ * One thing a [`SearchQuery`] found, with its title and where it matched.
+ */
+export type SearchHit = (
+  | {
+    kind: "task";
+    snippet: Snippet;
+    task: TaskId;
+    title: string;
+  }
+  | {
+    doc: DocId;
+    kind: "doc";
+    snippet: Snippet;
+    title: string;
+  }
+  | {
+    chat: ChatId;
+    kind: "chat";
+    seq?: number;
+    snippet: Snippet;
+    title: string;
+  }
+);
+
+/**
+ * Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in
+ * the workspace that hold every word of `text`, at most 8 words of at most 64 characters, in
+ * 256 bytes. Words of three or more characters match whatever their case and accents; shorter
+ * ones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.
+ * `limit` is 20 without one, and at most 50.
+ */
+export type SearchQuery = {
+  limit?: number;
+  text: string;
+};
+
+/**
  * The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has
  * `sessions.read`.
  */
@@ -1359,7 +1428,7 @@ export type SessionsQueryKind = (
 );
 
 /**
- * A SHA-256 digest: 64 lowercase hex digits.
+ * A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
  */
 export type Sha256 = string;
 
@@ -1410,6 +1479,14 @@ export type SignInState = (
 export type SignedIn = {
   member: MemberId;
   token: string;
+};
+
+/**
+ * Plain text from around a match, and the parts of it that matched.
+ */
+export type Snippet = {
+  marks: Array<Mark>;
+  text: string;
 };
 
 /**
@@ -1574,6 +1651,18 @@ export type TerminalUpdate = {
   terminal: TerminalId;
   workspace: WorkspaceId;
 };
+
+/**
+ * When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.
+ */
+export type UpdateSchedule = (
+  | (
+    | "off"
+  )
+  | "notify"
+  | "daily"
+  | "weekly"
+);
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

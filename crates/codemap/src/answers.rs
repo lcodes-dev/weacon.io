@@ -1,5 +1,6 @@
 //! Answers about an index as plain text within a byte budget, most central first.
 
+mod docs;
 mod item;
 
 use std::cmp::Reverse;

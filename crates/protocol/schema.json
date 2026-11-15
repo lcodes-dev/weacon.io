@@ -371,7 +371,7 @@
       "description": "A person's account on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "AccountSignInFinish": {
       "description": "Trades the one-time code sent to `email`, and the challenge its [`SignInStarted`] gave,\nfor an [`AccountSignedIn`].",
@@ -592,7 +592,7 @@
       "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "Bytes": {
       "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
@@ -608,7 +608,7 @@
       "description": "One sign-in request, which its code and its tries belong to; 1–64 ASCII letters,\ndigits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatAction": {
       "oneOf": [
@@ -941,7 +941,7 @@
       "description": "A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatList": {
       "description": "A workspace's chats, from the server, to clients that have the capability\n`workspace.chats`.",
@@ -1071,6 +1071,10 @@
         "owner": {
           "$ref": "#/$defs/MemberId"
         },
+        "run": {
+          "description": "What its latest run is doing; left out when it has had none.",
+          "$ref": "#/$defs/RunState"
+        },
         "state": {
           "$ref": "#/$defs/ChatState"
         },
@@ -1143,7 +1147,7 @@
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
     "Commit": {
-      "description": "A full git commit id: 40 lowercase hex digits.",
+      "description": "A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.",
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
@@ -1407,7 +1411,7 @@
       "description": "A doc in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "DocList": {
       "description": "A workspace's docs, from the server.",
@@ -1705,7 +1709,7 @@
       "description": "A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MachineKey": {
       "description": "A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex\ndigits. A browser pins it when the person confirms the pairing.",
@@ -2003,11 +2007,62 @@
         "paired_at"
       ]
     },
+    "Mark": {
+      "description": "The part of a [`Snippet`] from `start` up to `end`, counted in UTF-16 code units as a\nbrowser counts a string.",
+      "type": "object",
+      "properties": {
+        "end": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "start": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ]
+    },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+    },
+    "MemberList": {
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`.",
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemberSummary"
+          }
+        }
+      },
+      "required": [
+        "members"
+      ]
+    },
+    "MemberSummary": {
+      "description": "A member as the workspace's other members see them, under the name the server shows for\nthem.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
     },
     "MergeHunk": {
       "description": "A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the\nwhole body.",
@@ -2134,10 +2189,7 @@
         },
         "folder": {
           "description": "The folder it ran in, when its file names one.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "modified_at": {
           "type": "integer",
@@ -2313,7 +2365,7 @@
       "description": "One pairing of a machine, from its start to its claim; 1–64 ASCII letters, digits, `-`\nor `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "PermissionAnswer": {
       "description": "A person's answer to a [`RunEvent::PermissionAsked`].",
@@ -2350,10 +2402,7 @@
         },
         "screenshot_png": {
           "description": "What the element looked like: a PNG, base64-encoded. None when the page couldn't be\ncaptured.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "selector": {
           "description": "A CSS selector that finds the element on the page.",
@@ -2621,7 +2670,7 @@
       "description": "A proposal in a workspace, chosen by the core that proposes it and kept across\nreconnects: sending it again with the same change is the same proposal, while the same\nid with another change, or from another machine, is refused with `proposal.conflict`.\n1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ProposalList": {
       "description": "A workspace's proposals, newest first, from the server.",
@@ -2988,13 +3037,13 @@
       "description": "A git repository the owner registered for a workspace on their machine, 1–64 ASCII\nletters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RequestId": {
       "description": "A command's id, chosen by the client and kept across reconnects and retries. Sending the\nsame id again returns the first receipt instead of repeating the work; the same id with\ndifferent content is refused with the error `request.conflict`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RunEvent": {
       "description": "What an agent's run reports, in order. Each turn ends with `finished`.",
@@ -3183,7 +3232,7 @@
       "description": "The core's id for one run of an agent process, 1–64 ASCII letters, digits, `-` or `_`.\nPrompts carry it, so an answer only ever reaches the run that asked.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "RunState": {
       "oneOf": [
@@ -3253,6 +3302,121 @@
       "required": [
         "run",
         "event"
+      ]
+    },
+    "SearchAnswer": {
+      "description": "The server's answer to a [`SearchQuery`]: matches in the title first, then the most\nrecently changed.",
+      "type": "object",
+      "properties": {
+        "hits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SearchHit"
+          }
+        }
+      },
+      "required": [
+        "hits"
+      ]
+    },
+    "SearchHit": {
+      "description": "One thing a [`SearchQuery`] found, with its title and where it matched.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "task"
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "task": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "task",
+            "title",
+            "snippet"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
+            "title",
+            "snippet"
+          ]
+        },
+        {
+          "description": "A chat, by its title or by one of the messages its log keeps: a person's prompt or an\nagent's text. `seq` is that message's place in the log.",
+          "type": "object",
+          "properties": {
+            "chat": {
+              "$ref": "#/$defs/ChatId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "chat"
+            },
+            "seq": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "snippet": {
+              "$ref": "#/$defs/Snippet"
+            },
+            "title": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "chat",
+            "title",
+            "snippet"
+          ]
+        }
+      ]
+    },
+    "SearchQuery": {
+      "description": "Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in\nthe workspace that hold every word of `text`, at most 8 words of at most 64 characters, in\n256 bytes. Words of three or more characters match whatever their case and accents; shorter\nones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.\n`limit` is 20 without one, and at most 50.",
+      "type": "object",
+      "properties": {
+        "limit": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
       ]
     },
     "SessionsAnswer": {
@@ -3404,7 +3568,7 @@
       ]
     },
     "Sha256": {
-      "description": "A SHA-256 digest: 64 lowercase hex digits.",
+      "description": "A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.",
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
@@ -3491,6 +3655,25 @@
       "required": [
         "member",
         "token"
+      ]
+    },
+    "Snippet": {
+      "description": "Plain text from around a match, and the parts of it that matched.",
+      "type": "object",
+      "properties": {
+        "marks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Mark"
+          }
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "marks"
       ]
     },
     "TaskChange": {
@@ -3583,7 +3766,7 @@
       "description": "A task in a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "TaskList": {
       "description": "A workspace's tasks in their order, from the server.",
@@ -3784,7 +3967,7 @@
       "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "TerminalInput": {
       "description": "From the browser to the core, only inside the seal.",
@@ -3892,6 +4075,32 @@
         "event"
       ]
     },
+    "UpdateSchedule": {
+      "description": "When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off"
+          ]
+        },
+        {
+          "description": "Look once a day and say when one is out; install only when asked.",
+          "type": "string",
+          "const": "notify"
+        },
+        {
+          "description": "Look once a day and install what's out.",
+          "type": "string",
+          "const": "daily"
+        },
+        {
+          "description": "Look once a week and install what's out.",
+          "type": "string",
+          "const": "weekly"
+        }
+      ]
+    },
     "Welcome": {
       "description": "The answer to a [`Hello`] that speaks the same protocol.",
       "type": "object",
@@ -3977,7 +4186,7 @@
           ]
         },
         {
-          "description": "A chat was made, or its title, state or latest turn changed. Only for clients that have\nthe capability `workspace.chats`, which read the chats again.",
+          "description": "A chat was made, or its title, state, latest turn or latest run changed. Only for clients\nthat have the capability `workspace.chats`, which read the chats again.",
           "type": "object",
           "properties": {
             "chat": {
@@ -4028,7 +4237,7 @@
       "description": "A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
       "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_-]+$"
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "WorkspaceList": {
       "description": "The workspaces the signed-in account is a member of.",

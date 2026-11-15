@@ -107,6 +107,17 @@ other_checks() {
   [ -x apps/web/node_modules/.bin/tsc ] || die "the web app's packages are missing; run scripts/setup.sh"
   npm --prefix apps/web run --silent check
 
+  step "Links"
+  local entry mode blob target
+  while IFS= read -r -d '' entry; do
+    read -r mode blob _ <<<"${entry%%$'\t'*}"
+    [ "$mode" = 120000 ] || continue
+    target=$(git cat-file blob "$blob")
+    case $target in
+      /* | [A-Za-z]:* | \\*) die "${entry#*$'\t'} is a link to an absolute path; a tracked link stays inside the repository" ;;
+    esac
+  done < <(git ls-files -s -z)
+
   step "Shell scripts"
   if command -v shellcheck >/dev/null; then
     shellcheck scripts/*.sh

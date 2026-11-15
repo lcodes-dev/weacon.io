@@ -484,14 +484,19 @@ mod tests {
         };
 
         let before = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), &offered[..1])
+        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered[..1]))
             .await
             .unwrap();
         let older = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), &offered)
+        let earlier_server = db.machines_of(&ada, &offered[..1]).await.unwrap();
+        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered))
             .await
             .unwrap();
         let current = db.machines_of(&ada, &offered).await.unwrap();
+        db.saw_core(&id("mc-p1"), Some(&core), None).await.unwrap();
+        let unrecorded = db.machines_of(&ada, &offered).await.unwrap();
+        db.saw_core(&id("mc-p1"), None, Some(&[])).await.unwrap();
+        let unplain = db.machines_of(&ada, &offered).await.unwrap();
 
         assert_eq!(
             (before[0].core.as_ref(), before[0].missing.len()),
@@ -499,7 +504,14 @@ mod tests {
         );
         assert_eq!(older[0].core.as_ref(), Some(&core));
         assert_eq!(older[0].missing, offered[1..]);
+        assert_eq!(earlier_server[0].missing, []);
         assert_eq!(current[0].missing, []);
+        assert_eq!(unrecorded[0].core.as_ref(), Some(&core));
+        assert_eq!(unrecorded[0].missing, []);
+        assert_eq!(
+            (unplain[0].core.as_ref(), unplain[0].missing.len()),
+            (None, 0)
+        );
     }
 
     #[tokio::test]

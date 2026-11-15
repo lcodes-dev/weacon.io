@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{AgentSession, RunId, RunState, code};
 
 use super::agent::{Agent, RunOf, drive};
@@ -16,7 +16,7 @@ pub(super) struct Launched<A> {
     pub(super) agent: Result<A, Fault>,
 }
 
-fn not_started() -> Fault {
+pub(super) fn not_started() -> Fault {
     Fault::new(code!("agent.not_started"), "The agent couldn't start")
 }
 
@@ -43,6 +43,29 @@ impl<A: Agent> Engine<A> {
         kept
     }
 
+    // Tries again to save every session and turn's end the journal or the log couldn't; one
+    // that still fails stays. A chat whose end is saved goes on to its queued prompt.
+    pub(super) async fn save_pending(&mut self) {
+        let pending: Vec<ChatKey> = (self.open_chats.iter())
+            .filter(|(_, chat)| chat.pending_session.is_some() || chat.pending_end.is_some())
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in pending {
+            let saved = match self.save_pending_session(&key).await {
+                Ok(()) => self.advance(&key).await,
+                failed => failed,
+            };
+            if let Err(fault) = saved {
+                let fields = [
+                    ("workspace_id", key.workspace.as_str().into()),
+                    ("chat_id", key.chat.as_str().into()),
+                    ("err", Field::error(&fault)),
+                ];
+                self.log.warn("chat not saved", &fields);
+            }
+        }
+    }
+
     async fn save_pending_session(&mut self, key: &ChatKey) -> Result<(), Fault> {
         match self.open(key).await?.pending_session.take() {
             Some(session) => self.keep_session(key, session).await,
@@ -55,6 +78,8 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
+        // Read first, so a log that can't be opened leaves no run begun.
+        let repo = self.open(key).await?.events.repo().cloned();
         let run = self.runs.begin(key, kind, self.now()).await?;
         let session = self.runs.of(key).and_then(|record| record.session.clone());
         let run_as = RunAs {
@@ -62,6 +87,7 @@ impl<A: Agent> Engine<A> {
             agent: kind,
             run: run.clone(),
             session,
+            repo,
         };
         self.open(key).await?.launching = Some(run.clone());
         let (start, starts) = (Arc::clone(&self.host.launch), self.starts.clone());
@@ -149,6 +175,9 @@ mod tests {
             .await
             .unwrap();
         on.engine.settle(&key());
+        assert!(on.engine.busy(), "its session is only in memory");
+        on.engine.save_pending().await;
+        assert!(!on.engine.busy(), "its session is saved");
         on.engine
             .command(&key(), prompt("r-2", "More"))
             .await

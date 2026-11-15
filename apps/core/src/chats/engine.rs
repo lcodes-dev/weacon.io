@@ -2,6 +2,7 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 pub(crate) mod agent;
+mod busy;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -21,13 +22,13 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt,
+    AgentKind, AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RepoId,
     RequestId, RunId, RunState, RunStatus, code,
 };
 
 use self::agent::{Agent, Order, Said};
 use self::handle::Ask;
-pub(crate) use self::handle::Chats;
+pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
 use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
 use super::feed::Subscriber;
@@ -46,6 +47,8 @@ pub(crate) struct RunAs {
     pub(crate) agent: AgentKind,
     pub(crate) run: RunId,
     pub(crate) session: Option<AgentSession>,
+    /// The repository the chat's first prompt named, whose worktree it runs in.
+    pub(crate) repo: Option<RepoId>,
 }
 
 type Launcher<A> = Arc<dyn Fn(&RunAs) -> Result<A, Fault> + Send + Sync>;
@@ -165,6 +168,7 @@ impl<A: Agent> Engine<A> {
                         drop(answer.send(self.query(&key, query.query, &client).await));
                         key
                     }
+                    Some(Ask::Busy(answer)) => { self.answer_busy(answer).await; continue; }
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(said) = self.incoming.recv() => {
@@ -455,6 +459,22 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn the_engine_is_busy_only_while_a_live_run_is_on_a_turn() {
+        let mut bench = bench();
+        let mut pushes = watch(&bench).await;
+        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
+
+        let agent = first_turn(&mut bench, &mut pushes).await;
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
+        agent.say.send(done(Outcome::Completed)).unwrap();
+        pushed(&mut pushes, 3).await;
+        assert!(
+            !bench.chats.downgrade().busy().await.unwrap(),
+            "idle between turns"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_prompt_starts_a_run_and_its_turn_is_committed_then_published_in_order() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
@@ -467,6 +487,7 @@ mod tests {
                 agent: AgentKind::Claude,
                 run: run("run-1"),
                 session: None,
+                repo: None,
             }
         );
         let delta = RunEvent::TextDelta {
@@ -854,6 +875,7 @@ mod tests {
 
         let sent = soon(async { Some(bench.chats.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;

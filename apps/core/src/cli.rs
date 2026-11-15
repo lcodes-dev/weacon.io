@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::error::ErrorKind;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, WorkspaceId};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -88,6 +88,9 @@ pub(crate) enum Command {
     NativeHost { origin: String },
     /// Print what the code map says about a repository's code; where to begin, unless asked.
     Map(MapCommand),
+    /// Install the latest release over this binary, checking its signature first, and restart
+    /// the service.
+    Update(UpdateCommand),
     /// Print what an agent's hook adds; the plugin the core gives its runs calls it.
     #[command(subcommand, hide = true)]
     Hook(HookCommand),
@@ -146,18 +149,65 @@ pub(crate) struct MapCommand {
     pub(crate) budget: Option<u32>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Args)]
+pub(crate) struct UpdateCommand {
+    /// Install a release that speaks a new protocol too.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    #[command(subcommand)]
+    pub(crate) action: Option<UpdateAction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum UpdateAction {
+    /// Say whether a newer release is out, without installing it.
+    Check,
+    /// Choose when the daemon looks for releases: off, notify, daily or weekly.
+    Schedule {
+        #[arg(value_parser = schedule)]
+        schedule: UpdateSchedule,
+    },
+}
+
+fn schedule(name: &str) -> Result<UpdateSchedule, &'static str> {
+    serde_json::from_value(name.into())
+        .ok()
+        .filter(|schedule| *schedule != UpdateSchedule::Newer)
+        .ok_or("not a schedule: off, notify, daily or weekly")
+}
+
 #[derive(Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `symbol` tool answers for an item's full path.
     Symbol { path: String },
     /// Print the text the MCP's `flow` tool answers: the flows the docs pin.
     Flows,
+    /// Print the text the MCP's `docs_for` tool answers: the doc lines that pin an item.
+    DocsFor { path: String },
+    /// Print the text the MCP's `hotspots` tool answers: the files that change often and that
+    /// much depends on.
+    Hotspots,
     /// Print the areas of the code and how they depend on one another.
     Architecture,
     /// Print the commands, routes and other contracts the code declares.
-    Contracts,
+    Contracts {
+        /// Only the contracts of this kind.
+        #[arg(long)]
+        kind: Option<ContractFilter>,
+    },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
+}
+
+/// A kind of contract `map contracts` can be limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ContractFilter {
+    Command,
+    Code,
+    Route,
+    Serde,
+    Table,
+    McpTool,
 }
 
 impl Cli {
@@ -183,6 +233,7 @@ impl Command {
             | Self::Resume { .. }
             | Self::ConnectChrome
             | Self::Map(_)
+            | Self::Update(_)
             | Self::Hook(_) => "cli.log",
             Self::NativeHost { .. } => "native-host.log",
         }
@@ -203,6 +254,7 @@ impl Command {
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
             Self::Map(_) => "map",
+            Self::Update(_) => "update",
             Self::Hook(_) => "hook",
         }
     }
@@ -357,8 +409,9 @@ mod tests {
 
         for (name, view) in [
             ("flows", MapSubcommand::Flows),
+            ("hotspots", MapSubcommand::Hotspots),
             ("architecture", MapSubcommand::Architecture),
-            ("contracts", MapSubcommand::Contracts),
+            ("contracts", MapSubcommand::Contracts { kind: None }),
         ] {
             let Some(Cli {
                 command: Command::Map(map),
@@ -369,7 +422,16 @@ mod tests {
             };
             assert_eq!((map.command, map.budget), (Some(view), Some(2000)));
         }
-        assert!(map(&["hotspots"]).is_none());
+        let Some(Cli {
+            command: Command::Map(tools),
+            ..
+        }) = map(&["contracts", "--kind", "mcp-tool"])
+        else {
+            panic!("contracts --kind")
+        };
+        let kind = Some(ContractFilter::McpTool);
+        assert_eq!(tools.command, Some(MapSubcommand::Contracts { kind }));
+        assert!(map(&["contracts", "--kind", "tool"]).is_none());
     }
 
     #[test]
@@ -507,6 +569,44 @@ mod tests {
         for bad in ["yes", "On", "true", ""] {
             run(&["weacon", "reports", bad]).unwrap_err();
         }
+    }
+
+    #[test]
+    fn update_installs_checks_or_sets_a_schedule() {
+        let update = |args: &[&str]| {
+            let Command::Update(update) = run(args).unwrap().command else {
+                panic!("not an update command");
+            };
+            update
+        };
+        let now = update(&["weacon", "update"]);
+        assert_eq!(
+            now,
+            UpdateCommand {
+                yes: false,
+                action: None
+            }
+        );
+        assert!(update(&["weacon", "update", "--yes"]).yes);
+        assert_eq!(
+            update(&["weacon", "update", "check"]).action,
+            Some(UpdateAction::Check)
+        );
+        for (name, schedule) in [
+            ("off", UpdateSchedule::Off),
+            ("notify", UpdateSchedule::Notify),
+            ("daily", UpdateSchedule::Daily),
+            ("weekly", UpdateSchedule::Weekly),
+        ] {
+            let chosen = update(&["weacon", "update", "schedule", name]).action;
+            assert_eq!(chosen, Some(UpdateAction::Schedule { schedule }));
+        }
+        run(&["weacon", "update", "schedule", "hourly"]).unwrap_err();
+        assert_eq!(run(&["weacon", "update"]).unwrap().command.name(), "update");
+        assert_eq!(
+            run(&["weacon", "update"]).unwrap().command.log_name(),
+            "cli.log"
+        );
     }
 
     #[test]

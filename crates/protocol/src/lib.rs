@@ -19,6 +19,8 @@ mod receipt;
 mod release;
 mod repo;
 mod run;
+mod search;
+mod secret;
 mod sessions;
 mod settings;
 mod task;
@@ -65,12 +67,15 @@ pub use proposal::{
 pub use receipt::{Outcome, Receipt, RequestId};
 pub use release::{
     BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
+    UpdateSchedule,
 };
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
 };
+pub use search::{Mark, SearchAnswer, SearchHit, SearchQuery, Snippet};
+pub use secret::Secret;
 pub use sessions::{
     OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
@@ -87,8 +92,8 @@ pub use terminal::{
     TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
 };
 pub use workspace::{
-    Asker, MemberId, WorkspaceChange, WorkspaceCreate, WorkspaceId, WorkspaceList, WorkspaceRole,
-    WorkspaceSummary, WorkspaceUpdate,
+    Asker, MemberId, MemberList, MemberSummary, WorkspaceChange, WorkspaceCreate, WorkspaceId,
+    WorkspaceList, WorkspaceRole, WorkspaceSummary, WorkspaceUpdate,
 };
 pub use worktree::{
     WorktreeAction, WorktreeAnswer, WorktreeAnswerKind, WorktreeCommand, WorktreeQuery,
@@ -104,11 +109,9 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn the_committed_schema_is_current() {
-        // The HTTP bodies, which no `Envelope` carries, are defined beside it; schemars sorts
-        // the definitions, so this order is only for readers.
-        let mut generator = SchemaGenerator::default();
+    // The HTTP bodies, which no `Envelope` carries; schemars sorts the definitions, so this
+    // order is only for readers.
+    fn define_http_bodies(generator: &mut SchemaGenerator) {
         generator.subschema_for::<SignInStart>();
         generator.subschema_for::<SignInStarted>();
         generator.subschema_for::<SignInFinish>();
@@ -129,6 +132,9 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<MemberList>();
+        generator.subschema_for::<SearchQuery>();
+        generator.subschema_for::<SearchAnswer>();
         generator.subschema_for::<ProposalList>();
         generator.subschema_for::<ProposalDecision>();
         generator.subschema_for::<ProposalOutcome>();
@@ -138,9 +144,16 @@ mod tests {
         generator.subschema_for::<TaskChange>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();
+        generator.subschema_for::<UpdateSchedule>();
         generator.subschema_for::<WorkspaceCreate>();
         generator.subschema_for::<WorkspaceSummary>();
         generator.subschema_for::<WorkspaceList>();
+    }
+
+    #[test]
+    fn the_committed_schema_is_current() {
+        let mut generator = SchemaGenerator::default();
+        define_http_bodies(&mut generator);
         let schema = generator.into_root_schema_for::<Envelope>();
         let current = serde_json::to_string_pretty(&schema).unwrap() + "\n";
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.json");
@@ -152,5 +165,28 @@ mod tests {
             fs::read_to_string(&path).is_ok_and(|committed| committed == current),
             "schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p weacon-protocol"
         );
+        assert!(
+            !current.contains(r#""null""#),
+            "an optional field is left out, never null"
+        );
+    }
+
+    #[test]
+    fn a_value_only_ever_received_is_never_written() {
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in fs::read_dir(src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            for line in text
+                .lines()
+                .filter(|line| line.trim_start().starts_with("#[serde(other"))
+            {
+                assert!(
+                    line.contains("#[serde(other, skip_serializing)]"),
+                    "{}: {line}",
+                    path.display()
+                );
+            }
+        }
     }
 }

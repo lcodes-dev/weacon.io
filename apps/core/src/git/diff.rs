@@ -39,9 +39,16 @@ impl Git {
             "-z",
         ]))?)?;
         let changed = name_status(&listed);
+        // A path taken out of the index but left on disk is listed both ways; it is told once,
+        // as git would commit it: removed.
+        let removed: Vec<&str> = changed
+            .iter()
+            .filter(|(change, _)| *change == FileChange::Removed)
+            .map(|(_, path)| path.as_str())
+            .collect();
         let untracked: Vec<&str> = untracked
             .split('\0')
-            .filter(|path| !path.is_empty())
+            .filter(|path| !path.is_empty() && !removed.contains(path))
             .collect();
         if changed.len().saturating_add(untracked.len()) > MAX_FILES {
             return Err(too_many());
@@ -178,14 +185,19 @@ fn content(patch: &str) -> DiffContent {
         return DiffContent::Binary;
     }
     let mut hunks: Vec<Hunk> = Vec::new();
+    // Whether the last hunk is still open: a new file section, as when a file became a link,
+    // ends it, and its own headers are no hunk's lines.
+    let mut open = false;
     for line in patch.split('\n') {
         if let Some(header) = line.strip_prefix("@@ ") {
-            if let Some(hunk) = hunk_start(header) {
-                hunks.push(hunk);
-            }
+            hunks.extend(hunk_start(header));
+            open = true;
             continue;
         }
-        let Some(hunk) = hunks.last_mut() else {
+        if line.starts_with("diff --git ") {
+            open = false;
+        }
+        let Some(hunk) = hunks.last_mut().filter(|_| open) else {
             continue;
         };
         let op = match line.chars().next() {
@@ -710,5 +722,40 @@ mod tests {
             DiffContent::Text { hunks: Vec::new() }
         );
         assert_eq!(added_hunks(""), []);
+    }
+
+    #[test]
+    fn a_second_section_for_one_path_starts_no_lines_of_the_first() {
+        let patch = "diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n\
+                     @@ -1 +0,0 @@\n-old\ndiff --git a/x b/x\nnew file mode 120000\n\
+                     --- /dev/null\n+++ b/x\n@@ -0,0 +1 @@\n+target\n";
+
+        let DiffContent::Text { hunks } = content(patch) else {
+            panic!("not text");
+        };
+
+        let lines: Vec<&DiffLine> = hunks.iter().flat_map(|hunk| &hunk.lines).collect();
+        assert_eq!(
+            lines,
+            [
+                &line(LineOp::Removed, "old"),
+                &line(LineOp::Added, "target")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_out_of_the_index_but_on_disk_is_told_once_as_removed() {
+        let dir = TempDir::new().unwrap();
+        let (git, path, base) = begun(&dir);
+        fixture(&dir, &path, &["rm", "--cached", "--quiet", "lib.rs"]);
+
+        let files = git.changes(&path, &base).unwrap();
+
+        assert_eq!(files.len(), 1, "{files:?}");
+        assert_eq!(
+            (files[0].path.as_str(), &files[0].change),
+            ("lib.rs", &FileChange::Removed)
+        );
     }
 }

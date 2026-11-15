@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Later } from "../connection.ts";
-import type { Incoming } from "../incoming.ts";
 import type { Envelope, MachineSettings } from "../protocol.ts";
-import { type SettingsSocket, NO_ANSWER, RECONNECTING, change, current } from "./remote-settings.ts";
+import { NO_ANSWER, RECONNECTING } from "./ask-machine.ts";
+import { fake } from "./fake-socket.ts";
+import { change, current } from "./remote-settings.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
@@ -13,43 +13,6 @@ const SETTINGS: MachineSettings = {
   team: false,
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
-
-/** A socket to the open workspace `w-1` whose core the test plays, and a clock it runs by hand. */
-function fake(how: { send?: "throws" | "dropped" } = {}) {
-  const sent: Envelope[] = [];
-  const handles = new Set<(message: Incoming) => void>();
-  const timers: Array<() => void> = [];
-  let ids = 10;
-  const socket: SettingsSocket = {
-    workspace: "w-1",
-    send: (envelope) => {
-      if (how.send === "throws") throw new Error("closed");
-      if (how.send === "dropped") return false;
-      sent.push(envelope);
-      return true;
-    },
-    subscribe: (handle) => {
-      handles.add(handle);
-      return () => handles.delete(handle);
-    },
-    nextId: () => ++ids,
-  };
-  const later: Later = (run) => {
-    timers.push(run);
-  };
-  return {
-    socket,
-    later,
-    sent,
-    deliver: (message: Incoming) => {
-      for (const handle of [...handles]) handle(message);
-    },
-    listeners: () => handles.size,
-    expire: () => {
-      for (const run of timers) run();
-    },
-  };
-}
 
 function request(envelope: Envelope | undefined): string {
   assert.ok(envelope !== undefined && "request" in envelope);
