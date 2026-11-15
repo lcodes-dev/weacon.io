@@ -19,7 +19,7 @@ export function listed(hits: SearchHit[]): Listed[] {
             kind: "Chat",
             title: hit.title,
             snippet: hit.snippet,
-            place: hit.seq === undefined ? { view: "chats", chat: hit.chat } : { view: "chats", chat: hit.chat, at: hit.seq },
+            place: { view: "chats", chat: hit.chat, ...(hit.seq !== undefined && { at: hit.seq }) },
           },
         ];
       default:

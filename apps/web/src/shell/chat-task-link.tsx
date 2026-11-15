@@ -2,7 +2,7 @@ import type { TaskId, TaskRecord, WorkspaceId } from "../protocol.ts";
 import { type Place, searchOf } from "./place.ts";
 
 /** The task a chat was made for, by its title as it reads now, linked to it among the tasks; nothing until it is listed. */
-export function ChatTask({ workspace, task, tasks, go }: { workspace: WorkspaceId; task: TaskId; tasks: readonly TaskRecord[] | undefined; go(place: Place): void }) {
+export function ChatTaskLink({ workspace, task, tasks, go }: { workspace: WorkspaceId; task: TaskId; tasks: readonly TaskRecord[] | undefined; go(place: Place): void }) {
   const found = tasks?.find(({ id }) => id === task);
   if (found === undefined) {
     return null;

@@ -33,11 +33,14 @@ export function lines(chat: Chat, names?: Names): Line[] {
 /** The key of the line that shows the message at `seq` in `chat`'s log, once the chat holds it. */
 export function lineAt(chat: Chat, seq: number): string | undefined {
   for (const item of chat.items) {
-    if (item.kind === "prompt" && item.seq === seq) {
-      return `p${seq}`;
+    if (item.kind === "prompt") {
+      if (item.seq === seq) {
+        return `p${seq}`;
+      }
+      continue;
     }
-    const row = item.kind === "turn" ? item.turn.texts.get(seq) : undefined;
-    if (item.kind === "turn" && row !== undefined) {
+    const row = item.turn.texts.get(seq);
+    if (row !== undefined) {
       return `${item.turn.key}.${row}`;
     }
   }

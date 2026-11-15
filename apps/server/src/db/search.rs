@@ -7,7 +7,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatEvent, ChatId, RunEvent, RunUpdate, SearchHit};
 
 use super::chats::Row;
-use super::{Db, Workspace, failed, stored, unreadable};
+use super::{Workspace, failed, stored, unreadable};
 use crate::search::query::{Marks, Query};
 
 /// Control bytes indexed text leaves out, as the schema's backfill does.
@@ -33,14 +33,6 @@ struct Indexed<'a> {
 }
 
 type HitRow = (String, String, String, String);
-
-impl Db {
-    /// Indexes every workspace again when its search rows are missing or behind: a task, doc or
-    /// made chat without one, or rows that don't match the index; gives whether it did.
-    pub(crate) async fn index_if_missing(&self) -> Result<bool, Fault> {
-        rebuild::catch_up(&self.writer).await
-    }
-}
 
 impl Workspace {
     /// Indexes `task` by its title, as changed at `at`.

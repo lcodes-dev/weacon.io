@@ -164,8 +164,7 @@ async fn go_on(
     Ok(())
 }
 
-// Gives the task a chat's first prompt names the title it has now, which is this workspace's
-// to give; `task.not_found` for one it doesn't have.
+/// Gives the task a chat's first prompt names the title it has now in `workspace`.
 async fn stamp(
     workspace: &Workspace,
     command: &mut ChatCommand,

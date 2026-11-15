@@ -82,7 +82,7 @@ pub(crate) fn admit(
         ChatState::Full => return Err(crate::db::chat_quota_full()),
         ChatState::Detached | ChatState::Newer => return Err(detached()),
     }
-    // A chat keeps the task it was made for, as its first prompt sent again names it.
+    // A prompt to a made chat names only the chat's own task, as a first prompt sent again does.
     if let ChatAction::Prompt { task, .. } = &mut command.action
         && task.is_some()
     {

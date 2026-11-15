@@ -20,7 +20,7 @@ import { readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { useTasks } from "../tasks/use-tasks.ts";
-import { ChatTask } from "./chat-task.tsx";
+import { ChatTaskLink } from "./chat-task-link.tsx";
 import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
@@ -373,7 +373,7 @@ function WorkspaceChats({
         ) : (
           open !== undefined && (
             <>
-              {listedChat?.task !== undefined && <ChatTask workspace={workspace.id} task={listedChat.task} tasks={tasks} go={go} />}
+              {listedChat?.task !== undefined && <ChatTaskLink workspace={workspace.id} task={listedChat.task} tasks={tasks} go={go} />}
               <ChatScreen
                 key={open.id}
                 link={socket}

@@ -32,12 +32,12 @@ impl Maps {
         query: MapQuery,
         log: &Logger,
     ) -> Option<String> {
-        let (args, starts) = match query.query {
-            MapQueryKind::Map(args) => (args, false),
-            MapQueryKind::SessionStart(args) => (args, true),
+        let run = grants.find(query.token.expose())?;
+        let (args, task) = match query.query {
+            MapQueryKind::Map(args) => (args, None),
+            MapQueryKind::SessionStart(args) => (args, run.task.clone()),
             MapQueryKind::Newer => return None,
         };
-        let run = grants.find(query.token.expose())?;
         let permit = Arc::clone(&run.calls).try_acquire_owned().ok()?;
         let log = log.child(&[
             ("workspace_id", run.workspace.as_str().into()),
@@ -55,8 +55,7 @@ impl Maps {
         if !same.await.ok()? {
             return None;
         }
-        let (task, workspace) = (run.task.clone().filter(|_| starts), run.workspace.clone());
-        let flows = task.is_some();
+        let (for_task, workspace) = (task.is_some(), run.workspace.clone());
         let read = move |stores: Stores| async move {
             match task {
                 Some(task) => {
@@ -72,7 +71,7 @@ impl Maps {
             .ok()
             .flatten()
             .map(or_empty);
-        let fields = [("stored", text.is_some().into()), ("task", flows.into())];
+        let fields = [("stored", text.is_some().into()), ("task", for_task.into())];
         log.info("hook map answered", &fields);
         text
     }
@@ -118,15 +117,12 @@ impl Stores {
 
 /// The words of `title` a doc may match: those of 3 characters or more, once each.
 fn title_words(title: &str) -> String {
-    let mut words: Vec<&str> = Vec::new();
-    let long = title
+    let mut seen = std::collections::BTreeSet::new();
+    let words: Vec<&str> = title
         .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| word.chars().nth(2).is_some());
-    for word in long {
-        if words.len() < WORDS && !words.contains(&word) {
-            words.push(word);
-        }
-    }
+        .filter(|word| word.chars().nth(2).is_some() && seen.insert(*word))
+        .take(WORDS)
+        .collect();
     words.join(" ")
 }
 
