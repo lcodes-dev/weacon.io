@@ -69,12 +69,17 @@ export async function claim(page: Page, claim: PairClaim): Promise<{ machine: st
 /** Pairs a machine through the page as a person would, then claims it; gives the machine and the core's token. */
 export async function pair(page: Page): Promise<{ machine: string; token: string }> {
   const { pairing, code, secret } = await startPairing(page);
+  await confirm(page, code);
+  return claim(page, { pairing, secret });
+}
+
+/** Confirms the pairing waiting under `code` from Settings, as a person would. */
+export async function confirm(page: Page, code: string): Promise<void> {
   await page.getByLabel("Code").fill(code);
   await page.getByRole("button", { name: "Look up" }).click();
   const confirmed = page.waitForResponse((response) => response.url().endsWith("/api/machines/pair/confirm") && response.ok());
   await page.getByRole("button", { name: "Confirm" }).click();
   await confirmed;
-  return claim(page, { pairing, secret });
 }
 
 /** The build the test cores say they are. */
