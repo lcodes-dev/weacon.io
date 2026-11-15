@@ -28,10 +28,7 @@ pub(crate) async fn take(
         } => {
             let owned = shared.db.machines_of(&asker.account, &[]).await?;
             let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
-                return Err(Fault::new(
-                    code!("machine.not_found"),
-                    "There is no such machine",
-                ));
+                return Err(crate::db::machine_not_found());
             };
             let chat = NewChat {
                 id: &command.chat,

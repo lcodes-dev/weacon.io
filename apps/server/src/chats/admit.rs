@@ -2,10 +2,11 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, ChatAction, ChatCommand, ChatState, Envelope, MachineId, Message, RepoId, code,
+    Asker, ChatAction, ChatCommand, ChatState, MachineId, Message, RepoId, code,
 };
 
 use crate::db::Chat;
+use crate::socket::sendable;
 
 /// The most characters of a chat's title, which is the first line of its first prompt.
 const TITLE_MAX: usize = 80;
@@ -29,9 +30,11 @@ pub(crate) enum Admitted {
 pub(crate) fn admit(
     chat: Option<Chat>,
     by: Asker,
-    mut command: ChatCommand,
+    command: ChatCommand,
 ) -> Result<Admitted, Fault> {
-    sendable(&command)?;
+    let Some(Message::ChatCommand(mut command)) = sendable(Message::ChatCommand(command)) else {
+        return Err(super::unsupported());
+    };
     let machine = match &mut command.action {
         ChatAction::Prompt { text, machine, .. } => {
             if text.trim().is_empty() {
@@ -81,15 +84,6 @@ pub(crate) fn admit(
     }
     command.by = Some(by);
     Ok(Admitted::Existing { chat, command })
-}
-
-// A newer client's command this server can't send on would drop the machine's connection.
-fn sendable(command: &ChatCommand) -> Result<(), Fault> {
-    let probe = Envelope {
-        id: 0,
-        message: Message::ChatCommand(command.clone()),
-    };
-    probe.to_json().map(drop).map_err(|_| super::unsupported())
 }
 
 pub(super) fn not_owner() -> Fault {

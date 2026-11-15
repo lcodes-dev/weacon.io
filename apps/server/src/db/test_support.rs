@@ -65,9 +65,8 @@ pub(crate) struct Making<'a> {
 /// Makes the chat `making` describes, its first prompt sent.
 pub(crate) async fn make_as(workspace: &Workspace, making: &Making<'_>) -> Result<(), Fault> {
     begin_as(workspace, making).await?;
-    workspace
-        .chat_made(&id(making.chat), &member_id(making.owner))
-        .await
+    let (chat, owner) = (id(making.chat), member_id(making.owner));
+    workspace.chat_made(&chat, &owner).await.map(drop)
 }
 
 /// Begins chat `chat` as [`make`] does, its first prompt not yet sent.
@@ -247,7 +246,6 @@ impl Workspace {
         .unwrap();
     }
 
-    /// Leaves the workspace no room for more chat events.
     /// Makes every chat event this workspace stores fail in the database, as a full disk would.
     pub(crate) async fn break_chat_events(&self) {
         sqlx::query(
@@ -258,6 +256,7 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Leaves the workspace no room for more chat events.
     pub(crate) async fn fill_quota(&self) {
         sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")
             .bind(self.id.as_str())

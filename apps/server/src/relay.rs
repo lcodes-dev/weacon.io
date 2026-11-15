@@ -147,12 +147,7 @@ pub(crate) async fn forward(
     let unknown = || refused(code!("relay.unknown"), false);
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
     let needs = machine_needs(&message).ok_or_else(unknown)?;
-    // A newer client's ask this server can't send on would drop the machine's connection.
-    let probe = Envelope { id: 0, message };
-    if probe.to_json().is_err() {
-        return Err(unknown());
-    }
-    let message = probe.message;
+    let message = crate::socket::sendable(message).ok_or_else(unknown)?;
     let machine = machine_for(shared, ask, &asked).await?;
     let relayed = shared.links.next_id();
     let sent_to = Sent {

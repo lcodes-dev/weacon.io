@@ -33,19 +33,17 @@ async fn follow(shared: Shared, mut connected: Receiver<Connected>) {
 }
 
 async fn pick_up(shared: &Shared, connected: &Connected) {
-    let (unsent, failed) = match resend(shared, connected).await {
-        Ok(unsent) => (unsent, None),
-        Err(fault) => (0, Some(fault)),
-    };
     let machine = ("machine_id", connected.machine.as_str().into());
-    if let Some(fault) = failed {
-        let fields = [machine, ("err", Field::error(&fault))];
-        shared.log.warn("chats not picked up", &fields);
-    } else if unsent > 0 {
-        shared.log.warn(
-            "chats not all picked up",
-            &[machine, ("unsent", unsent.into())],
-        );
+    match resend(shared, connected).await {
+        Err(fault) => {
+            let fields = [machine, ("err", Field::error(&fault))];
+            shared.log.warn("chats not picked up", &fields);
+        }
+        Ok(0) => {}
+        Ok(unsent) => {
+            let fields = [machine, ("unsent", unsent.into())];
+            shared.log.warn("chats not all picked up", &fields);
+        }
     }
 }
 
@@ -73,7 +71,8 @@ async fn resend(shared: &Shared, connected: &Connected) -> Result<usize, Fault> 
 
 /// Sends `machine` the first prompts in `workspace` it never got, as when the server stopped
 /// before sending one, and takes back the chats of those not sent within [`RESEND_WITHIN`];
-/// gives how many weren't sent.
+/// gives how many weren't sent. Each chat is made before its prompt is sent, so a first prompt
+/// failing elsewhere meanwhile can't take it back, and one not sent stays to be sent again.
 async fn first_prompts(
     shared: &Shared,
     workspace: &Workspace,
@@ -86,14 +85,13 @@ async fn first_prompts(
             workspace.forget_chat(&chat).await?;
             continue;
         };
-        if link::send(shared, machine, Message::ChatCommand(command)).is_err() {
-            unsent += 1;
+        if !workspace.chat_made(&chat, &owner).await? {
             continue;
         }
-        workspace.chat_made(&chat, &owner).await?;
         shared.wake_feeds(workspace.id());
+        let sent = link::send(shared, machine, Message::ChatCommand(command));
         let followed = link::follow(shared, machine, workspace.id(), &chat, 0);
-        unsent += usize::from(followed.is_err());
+        unsent += usize::from(sent.is_err()) + usize::from(followed.is_err());
     }
     Ok(unsent)
 }
@@ -198,18 +196,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_first_prompt_the_machine_cant_take_is_counted_and_kept_for_next_time() {
+    async fn a_first_prompt_the_machine_cant_take_is_counted_and_sent_again_next_time() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         let workspace = &ada.member.workspace;
         begin(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        let _older = attach(shared, &ada, &["machine.connect"]);
+        let older = attach(shared, &ada, &["machine.connect"]);
 
-        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 1);
+        // Its prompt and its follow.
+        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 2);
 
-        assert!(!workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
+        assert!(workspace.chat(&id("c-1")).await.unwrap().unwrap().made);
+        drop(older);
+        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        assert_eq!(resend(shared, &connected(&ada)).await.unwrap(), 0);
+        assert_eq!(sent(&mut serving), [follow("c-1"), resent("c-1")]);
     }
 
     #[tokio::test]

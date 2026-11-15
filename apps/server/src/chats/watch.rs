@@ -179,7 +179,7 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
     }
     Message::Error(ErrorBody {
         code: code.clone(),
-        retryable: ours || code.as_str() == "machine.offline",
+        retryable: ours || *code == weacon_protocol::code!("machine.offline"),
     })
 }
 

@@ -55,7 +55,7 @@ impl Workspace {
         chat: &NewChat<'_>,
         request: &NewRequest<'_>,
     ) -> Result<(), Fault> {
-        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+        let mut transaction = self.db.write().await?;
         sqlx::query(
             "INSERT INTO chats (workspace_id, chat_id, owner_member, title, repo, machine_id,
                  machine_name, state, created_at, updated_at)
@@ -73,18 +73,30 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.index_chat(&mut transaction, chat.id, chat.title, chat.at)
-            .await?;
         self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }
 
-    /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine.
-    pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<(), Fault> {
-        let mut transaction = self.db.writer.begin().await.map_err(failed)?;
+    /// Tells the feed that `owner` made `chat`, once its first prompt reached its machine, and
+    /// indexes it; gives whether there still was such a chat.
+    pub(crate) async fn chat_made(&self, chat: &ChatId, owner: &MemberId) -> Result<bool, Fault> {
+        let mut transaction = self.db.write().await?;
+        let found = sqlx::query_as::<_, (String, i64)>(
+            "SELECT title, created_at FROM chats WHERE workspace_id = ? AND chat_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        let Some((title, at)) = found else {
+            return Ok(false);
+        };
+        self.index_chat(&mut transaction, chat, &title, at).await?;
         self.record_change(&mut transaction, Versioned::Chat(chat), owner)
             .await?;
-        transaction.commit().await.map_err(failed)
+        transaction.commit().await.map_err(failed)?;
+        Ok(true)
     }
 
     /// Takes back `chat`, made for a first prompt its machine never got, unless it was made
@@ -94,7 +106,6 @@ impl Workspace {
         if self.made(&mut transaction, chat).await? {
             return Ok(());
         }
-        self.unindex_chat(&mut transaction, chat).await?;
         sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
             .bind(chat.as_str())
@@ -206,7 +217,9 @@ impl Workspace {
     pub(crate) async fn chats(&self) -> Result<Vec<ChatSummary>, Fault> {
         sqlx::query_as::<_, SummaryRow>(
             "SELECT chat_id, title, owner_member, machine_name, state, updated_at, run_status
-             FROM chats WHERE workspace_id = ? ORDER BY updated_at DESC, chat_id",
+             FROM chats AS c WHERE workspace_id = ? AND EXISTS (SELECT 1 FROM changes AS h
+                 WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id)
+             ORDER BY updated_at DESC, chat_id",
         )
         .bind(self.id.as_str())
         .fetch_all(&self.db.readers)
@@ -307,6 +320,10 @@ impl Workspace {
         .map(|(chat, core_seq)| Ok((stored(chat)?, count(core_seq)?)))
         .collect()
     }
+}
+
+pub(crate) fn machine_not_found() -> Fault {
+    Fault::new(code!("machine.not_found"), "There is no such machine")
 }
 
 pub(crate) fn chat_not_found() -> Fault {
@@ -482,14 +499,17 @@ mod tests {
         begin(&one, "c-1", "m1", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         make(&one, "c-2", "m1", NOW).await.unwrap();
-        assert_eq!(indexed(&one, "c-1").await, 1);
+        // Not made, so neither listed nor found yet.
+        assert_eq!(indexed(&one, "c-1").await, 0);
+        assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
 
         one.forget_chat(&id("c-1")).await.unwrap();
         one.forget_chat(&id("c-2")).await.unwrap();
 
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
         assert!(!one.has_request(&id("r-c-1")).await.unwrap());
-        assert_eq!(indexed(&one, "c-1").await, 0);
+        assert!(!one.chat_made(&id("c-1"), &member_id("m1")).await.unwrap());
+        assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
         assert_eq!(indexed(&two, "c-1").await, 1);
         assert!(one.chat(&id("c-2")).await.unwrap().is_some());
         assert!(one.has_request(&id("r-c-2")).await.unwrap());
