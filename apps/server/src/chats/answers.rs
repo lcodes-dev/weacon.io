@@ -48,10 +48,11 @@ impl Sent {
         if kept.asked.insert(key.clone(), asked).is_none() {
             kept.order.push_back(key);
         }
-        while kept.order.len() > KEPT {
-            if let Some(oldest) = kept.order.pop_front() {
-                kept.asked.remove(&oldest);
-            }
+        // One is added at a time, so letting go of the oldest keeps at most `KEPT`.
+        if kept.order.len() > KEPT
+            && let Some(oldest) = kept.order.pop_front()
+        {
+            kept.asked.remove(&oldest);
         }
     }
 
@@ -150,6 +151,28 @@ mod tests {
     use super::*;
     use crate::db::test_support::{NOW, command, id, make};
     use crate::test_support::Fixture;
+
+    #[tokio::test]
+    async fn a_refusal_that_cant_be_kept_is_logged_and_keeps_the_link() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let workspace = shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.break_chat_requests().await;
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"));
+        let refused = Message::Error(ErrorBody {
+            code: weacon_protocol::code!("chat.busy"),
+            retryable: false,
+        });
+
+        let asked = sent.answered(&machine, 7).unwrap();
+        take(shared, &machine, asked, refused).await.unwrap();
+
+        let logged = crate::test_support::messages(&fixture.records);
+        assert!(logged.contains(&"chat refusal not kept"), "{logged:?}");
+    }
 
     #[tokio::test]
     async fn a_refusal_for_now_marks_its_command_refused_and_closes_the_link() {

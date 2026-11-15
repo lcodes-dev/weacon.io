@@ -185,13 +185,14 @@ mod tests {
     use crate::db::test_support::{Making, NOW, begin, id, make, make_as};
     use crate::test_support::Fixture;
 
-    // How many messages `attached` takes until its connection ends.
-    async fn taken_all(attached: &mut crate::links::Attached) -> usize {
-        let mut taken = 0_usize;
-        while attached.incoming.recv().await.is_some() {
-            taken += 1;
+    // `attached` once it has taken `count` messages, each within the tests' patience.
+    async fn taken(mut attached: crate::links::Attached, count: usize) -> crate::links::Attached {
+        for _ in 0..count {
+            let next =
+                tokio::time::timeout(crate::test_support::PATIENCE, attached.incoming.recv());
+            next.await.unwrap().unwrap();
         }
-        taken
+        attached
     }
 
     // What `connected` is resent over the connection it has open now.
@@ -372,14 +373,14 @@ mod tests {
             };
             workspace.record_request(&request).await.unwrap();
         }
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
-        let taken = tokio::spawn(async move { taken_all(&mut attached).await });
+        let attached = attach(shared, &ada, &["chat.serve"]);
+        // Its follow, its first prompt and every command after it.
+        let taking = tokio::spawn(taken(attached, crate::links::QUEUE + 2));
 
         assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
 
-        Route::open_now(shared, &ada.machine).unwrap().close(shared);
-        // Its follow, its first prompt and every command after it.
-        assert_eq!(taken.await.unwrap(), crate::links::QUEUE + 2);
+        let mut attached = taking.await.unwrap();
+        assert!(sent(&mut attached).is_empty());
     }
 
     #[tokio::test]
