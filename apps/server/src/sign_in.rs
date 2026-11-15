@@ -18,12 +18,13 @@ use weacon_protocol::{
 use crate::app::{fresh, new_id};
 use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::client::Client;
+use crate::codes::{new_code, normalised, shown};
 use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
 use crate::http::{Body, cross_site, failure, report, too_many, unauthorized};
 use crate::limit::{HOUR, Limit};
 use crate::outbox::mail_failed;
-use crate::secret::{random_failed, random_token, random_u64};
+use crate::secret::{random_failed, random_token};
 use crate::shared::Shared;
 use crate::sign_up;
 use crate::workspaces;
@@ -99,7 +100,7 @@ async fn send_code(
     {
         return Ok(());
     }
-    let code = code_text(random_u64()?);
+    let code = new_code()?;
     let code_hash = shared.secret.sign_in_code_hash(&email, &code);
     let now = shared.now();
     let new = NewChallenge {
@@ -113,7 +114,7 @@ async fn send_code(
         return Ok(());
     }
     let outbox = shared.outbox.clone();
-    let sent = tokio::task::spawn_blocking(move || outbox.send(&email, &code))
+    let sent = tokio::task::spawn_blocking(move || outbox.send(&email, &shown(&code)))
         .await
         .map_err(|error| mail_failed().because(error))
         .and_then(|sent| sent);
@@ -205,7 +206,9 @@ async fn signed_in(
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
-        code_hash: &shared.secret.sign_in_code_hash(&email, body.code.trim()),
+        code_hash: &shared
+            .secret
+            .sign_in_code_hash(&email, &normalised(&body.code)),
         token_hash: &token_hash(&token),
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
@@ -226,11 +229,6 @@ async fn signed_in(
 /// A challenge nobody can guess.
 fn new_challenge() -> Result<ChallengeId, Fault> {
     ChallengeId::try_from(random_token()?).map_err(|_| random_failed())
-}
-
-/// A one-time code: eight digits.
-fn code_text(word: u64) -> String {
-    format!("{:08}", word % 100_000_000)
 }
 
 #[cfg(test)]
@@ -257,9 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn codes_are_eight_digits_and_tokens_are_hex() {
-        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "38076673");
-        assert_eq!(code_text(0), "00000000");
+    fn challenges_are_long_tokens() {
         assert_eq!(new_challenge().unwrap().as_str().len(), 64);
     }
 
@@ -284,7 +280,10 @@ mod tests {
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");
-        assert_eq!(code.len(), 8);
+        // Eight letters and digits, shown in two halves.
+        assert_eq!(code.len(), 9);
+        assert_eq!(code.get(4..5), Some("-"));
+        assert_eq!(normalised(&code).len(), 8);
         assert_eq!(finished, "http/1.1 200 ok");
         assert_eq!(body["email"], "ada@example.com");
         assert_eq!(body.as_object().unwrap().len(), 3);
@@ -292,6 +291,27 @@ mod tests {
         assert_eq!(body["account"].as_str().unwrap().len(), 32);
         assert_eq!(live.unwrap(), Some(member_id("m1")));
         assert_eq!(ended.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_code_signs_in_however_its_letters_are_typed() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
+        let (_, code) = fixture.letter().await;
+        let typed = format!(" {} ", code.replace('-', "").to_lowercase());
+        let last = if code.ends_with('0') { '1' } else { '0' };
+        let wrong = format!("{}{last}", code.get(..code.len() - 1).unwrap());
+
+        let refused = finish_body("ada@example.com", &challenge, &wrong);
+        assert_eq!(
+            finish_with(server.address, &refused).await.0,
+            "http/1.1 401 unauthorized"
+        );
+        let finish = finish_body("ada@example.com", &challenge, &typed);
+        let (finished, body) = finish_with(server.address, &finish).await;
+        assert_eq!(finished, "http/1.1 200 ok");
+        assert_eq!(body["email"], "ada@example.com");
     }
 
     const PAGE: &str = "origin: https://test\r\n";

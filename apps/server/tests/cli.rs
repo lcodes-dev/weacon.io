@@ -207,7 +207,7 @@ mod tests {
         assert!(finished.starts_with("HTTP/1.1 200 OK"), "{finished}");
         assert_eq!(token.len(), 64);
         assert!(logs.contains("request handled"), "{logs}");
-        // A code is eight digits, so it is looked for as a whole JSON string.
+        // A code is short, so it is looked for as a whole JSON string.
         let challenge = challenge.as_str().unwrap();
         for secret in ["ada@example.com", &format!("\"{code}\""), &token, challenge] {
             assert!(!logs.contains(secret), "{logs}");
