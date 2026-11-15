@@ -51,7 +51,7 @@ WEACON_STATE_DIR="$state" "$bin/weacon" daemon >>.dev/core.log 2>&1 &
 core=$!
 
 tries=0
-until curl -fsS -o /dev/null http://localhost:8080/version 2>/dev/null; do
+until curl -fsS --max-time 2 -o /dev/null http://localhost:8080/version 2>/dev/null; do
   tries=$((tries + 1))
   if [ "$tries" -ge 30 ] || ! kill -0 "$server" 2>/dev/null; then
     tail -n 5 .dev/server.log >&2

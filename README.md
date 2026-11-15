@@ -238,6 +238,8 @@ rm -rf .dev/server .dev/state .dev/work
 scripts/dev.sh you@example.com
 ```
 
+If you set `WEACON_STATE_DIR`, remove that folder and the `work` folder beside it too.
+
 ## Development
 
 ### Tests and checks
@@ -279,13 +281,19 @@ scripts/fix.sh
 npm --prefix apps/extension run build
 ```
 
-In Chrome, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and pick `apps/extension/dist`. Then let it reach the core:
+In Chrome, open `chrome://extensions`, turn on **Developer mode**, choose **Load unpacked** and pick `apps/extension/dist`. Chrome starts the core's native host without your shell's variables, so the extension reaches the core in its default state folder, not the one in `.dev/state`. Run a second core there, in a third terminal, without `WEACON_STATE_DIR`:
 
 ```bash
-target/debug/weacon connect-chrome
+unset WEACON_STATE_DIR
+target/debug/weacon daemon
 ```
 
-Chrome starts the core's native host without your shell's variables, so it uses the core's default state folder, not `.dev/state`.
+Then, in another terminal, pair it as a second machine and let Chrome reach it:
+
+```bash
+target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop, Chrome"
+target/debug/weacon connect-chrome
+```
 
 ### The layout
 
@@ -311,7 +319,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 
 ## Troubleshooting
 
-- **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
+- **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev/state`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.

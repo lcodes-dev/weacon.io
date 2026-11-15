@@ -31,8 +31,10 @@ mod tests {
 
     #[test]
     fn a_folder_it_cant_make_is_a_failure_it_names() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.join("file"), "").unwrap();
         let ran = Command::new(env!("CARGO_BIN_EXE_dev-tls"))
-            .arg("/nonexistent/weacon-dev-tls")
+            .arg(temp.join("file/tls"))
             .output()
             .unwrap();
 
