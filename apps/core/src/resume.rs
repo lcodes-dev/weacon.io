@@ -575,9 +575,7 @@ mod tests {
                 },
             );
 
-            let Err(fault) = held(&socket).await else {
-                panic!("held despite {code}");
-            };
+            let fault = held(&socket).await.map(|_| ()).unwrap_err();
 
             assert_eq!(
                 (fault.code().as_str(), fault.to_string().as_str()),
