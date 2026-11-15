@@ -18,7 +18,7 @@ use weacon_protocol::{
 
 use super::branch::{Draft, Gh};
 use super::chats::ChatRepo;
-use super::state::Stores;
+use super::state::{Stores, hold_worktrees};
 use super::{Git, branch, diff};
 use crate::platform::trash::Trashed;
 use crate::runs::ChatKey;
@@ -42,6 +42,8 @@ struct Chat {
     git: Git,
     record: ChatRepo,
     worktree: PathBuf,
+    /// The repository's own folder.
+    repo: PathBuf,
 }
 
 struct Inner {
@@ -157,6 +159,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = self.chat(&query.workspace, &query.chat)?;
         let base = git.base(&worktree, &record.start)?;
         let files = git.changes(&worktree, &base)?;
@@ -182,6 +185,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = self.chat(workspace, chat)?;
         if self
             .stores(workspace)
@@ -219,9 +223,12 @@ impl Inner {
         }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
+        // The Trash locks and unlocks worktrees, which git can fail at while one is added.
+        let hold = || hold_worktrees(self.workspaces.state_dir(), &found.repo);
         match action {
             WorktreeAction::Remove => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
+                let _held = hold()?;
                 if journal.removed(chat)?.is_none() {
                     let now = SystemTime::now();
                     let to_trash = |path: &Path| (self.to_trash)(path, now);
@@ -231,6 +238,7 @@ impl Inner {
             }
             WorktreeAction::Restore => {
                 let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
+                let _held = hold()?;
                 if journal.removed(chat)?.is_some() {
                     journal.restore(chat)?;
                 }
@@ -255,6 +263,7 @@ impl Inner {
             git,
             record,
             worktree,
+            ..
         } = chat;
         let base = record.start.branch.as_deref().ok_or_else(|| {
             Fault::new(code!("pr.no_base"), "The chat's branch began on no branch")
@@ -291,6 +300,7 @@ impl Inner {
             git,
             record,
             worktree,
+            repo: repo.path,
         })
     }
 
@@ -705,6 +715,35 @@ mod tests {
             bench.act(Action::Restore).await.unwrap(),
             state(false, false, false)
         );
+    }
+
+    // A folder where the repository's worktree hold goes, so it can't be taken.
+    fn block_hold(bench: &Bench) -> PathBuf {
+        let repo = bench.dir.join("repo").canonicalize().unwrap();
+        let lock = super::super::state::worktrees_lock(&bench.dir.join("state"), &repo);
+        // A hold taken before leaves its lock file behind.
+        drop(fs::remove_file(&lock));
+        fs::create_dir_all(&lock).unwrap();
+        lock
+    }
+
+    #[tokio::test]
+    async fn the_trash_moves_a_worktree_only_under_its_repositorys_hold() {
+        let bench = bench();
+        let lock = block_hold(&bench);
+
+        let error = bench.act(Action::Remove).await.unwrap_err();
+
+        assert_eq!(code(&error), "git.hold_failed");
+        assert!(bench.worktree.join("README.md").exists());
+        fs::remove_dir(&lock).unwrap();
+        bench.act(Action::Remove).await.unwrap();
+        block_hold(&bench);
+
+        let error = bench.act(Action::Restore).await.unwrap_err();
+
+        assert_eq!(code(&error), "git.hold_failed");
+        assert!(!bench.worktree.exists());
     }
 
     #[tokio::test]

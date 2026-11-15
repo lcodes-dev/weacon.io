@@ -156,8 +156,8 @@ mod tests {
         let bench = bench();
         // A folder where the hold's lock file goes, so the hold can't be taken.
         let repo = bench.stores().repo(&bench.site).unwrap().path;
-        let name = format!("{}.lock", crate::db::LocalRepo::at(&repo).as_str());
-        fs::create_dir_all(bench.dir.join("state/git/worktrees").join(name)).unwrap();
+        let state = bench.dir.join("state");
+        fs::create_dir_all(super::super::state::worktrees_lock(&state, &repo)).unwrap();
 
         let error = bench.tree(&bench.site).unwrap_err();
 

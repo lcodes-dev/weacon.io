@@ -76,10 +76,14 @@ pub(super) fn save<T: Serialize>(file: &Path, items: &[T]) -> io::Result<()> {
 /// The core's hold on adding worktrees to `repo`, for every workspace, since one repository can
 /// be in several: git can fail when two are added to a repository at once.
 pub(super) fn hold_worktrees(state_dir: &Path, repo: &Path) -> Result<Hold, Fault> {
-    let name = format!("{}.lock", LocalRepo::at(repo).as_str());
-    take(&state_dir.join("git/worktrees").join(name)).map_err(|error| {
+    take(&worktrees_lock(state_dir, repo)).map_err(|error| {
         Fault::new(code!("git.hold_failed"), "The worktrees couldn't be held").because(error)
     })
+}
+
+pub(super) fn worktrees_lock(state_dir: &Path, repo: &Path) -> PathBuf {
+    let name = format!("{}.lock", LocalRepo::at(repo).as_str());
+    state_dir.join("git/worktrees").join(name)
 }
 
 /// A hold on changing `file`, once another holding it, in this process or another, lets go.
