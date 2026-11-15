@@ -225,6 +225,7 @@ fn chat_command(key: &ChatKey, action: ChatAction) -> Result<Message, Fault> {
 #[cfg(test)]
 mod tests {
 
+    use std::task::Poll;
     use std::time::Duration;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -589,7 +590,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_daemon_that_never_answers_whether_it_holds_the_chat_is_let_go() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
@@ -597,16 +598,21 @@ mod tests {
             silent: true,
             ..holding()
         };
-        let received = daemon(&socket, silent);
+        let mut received = daemon(&socket, silent);
 
-        let chat = key();
-        let waited = Box::pin(hold(&socket, build(&VERSION), &chat));
-        let answered = tokio::time::timeout(ANSWER_WITHIN * 2, waited).await;
-        let refused = answered.unwrap().map(|_| ());
+        let waiting = tokio::spawn(async move { hold(&socket, build(&VERSION), &key()).await });
+        for _ in ["hello", "Hold", "barrier"] {
+            assert!(bounded(received.recv()).await.is_some());
+        }
+        // Paused only once nothing is in flight on the socket, so the clock can't outrun it.
+        tokio::time::pause();
+        let answered = tokio::time::timeout(ANSWER_WITHIN * 2, waiting).await;
+        let refused = answered.unwrap().unwrap().map(|_| ());
+        tokio::time::resume();
 
         assert_eq!(code_of(refused), "daemon.no_answer");
         // The connection is gone, and the hold with it.
-        assert_eq!(all_sent(received).await.len(), 3);
+        assert!(all_sent(received).await.is_empty());
     }
 
     #[tokio::test]
@@ -642,7 +648,7 @@ mod tests {
     async fn a_daemon_that_hangs_up_meanwhile_is_warned_of_once_and_the_agent_goes_on() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
-        let received = daemon(
+        let _received = daemon(
             &socket,
             Fake {
                 hangs_up: true,
@@ -658,12 +664,11 @@ mod tests {
                 .count()
         };
 
-        // The agent ends once the daemon has hung up; the hang-up comes first.
-        let agent = async {
-            drop(all_sent(received).await);
-            tokio::task::yield_now().await;
-            Ok(())
-        };
+        // Polled again once the hang-up is handled, the agent ends only after the warning.
+        let agent = std::future::poll_fn(|_| match warned() {
+            0 => Poll::Pending,
+            _ => Poll::Ready(Ok(())),
+        });
         let taken = held(&socket).await.unwrap();
         bounded(carry_on(taken, agent, &log)).await.unwrap();
 
