@@ -452,6 +452,7 @@ mod tests {
         };
         let code = |result: Result<String, Fault>| result.unwrap_err().code().as_str().to_owned();
         let long = "x".repeat(MAX_WORD);
+        let message = |result: Result<String, Fault>| result.unwrap_err().to_string();
 
         add(vec![long.clone(); MAX_WORDS]).unwrap();
         assert_eq!(
@@ -471,6 +472,9 @@ mod tests {
             code(add(vec!["one-more".to_owned()])),
             "guard.too_many_additions"
         );
+        assert!(message(add(vec!["x".to_owned()])).contains(&format!("{MAX_ADDITIONS} additions")));
+        let long_one = message(add(vec![format!("{long}x")]));
+        assert!(long_one.contains(&format!("{MAX_WORDS} words of at most {MAX_WORD} bytes")));
         let listed = change(
             &app,
             GuardCommand::List {

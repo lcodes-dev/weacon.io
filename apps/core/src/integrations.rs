@@ -2,7 +2,7 @@
 //! build's version and this program's path filled in, and Codex's hooks in `integrations/codex`.
 
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -86,14 +86,15 @@ impl Plugin {
     /// file already. Codex runs it only once a person has reviewed it there, in Codex's `/hooks`.
     pub(crate) fn give_codex(&self, config: &Path) {
         let file = config.join("hooks.json");
-        // Never over a file already there: it may be the person's own, or a link.
-        let written = match fs::File::create_new(&file) {
-            Ok(mut created) => created.write_all(self.codex.as_bytes()).inspect_err(|_| {
-                drop(fs::remove_file(&file));
-            }),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
-            Err(error) => Err(error),
-        };
+        // Written aside, then linked into place, which never replaces a file already there: it
+        // may be the person's own, a link, or another launch's.
+        let staged = aside(&file, "part");
+        let written =
+            fs::write(&staged, &self.codex).and_then(|()| match fs::hard_link(&staged, &file) {
+                Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+                _ => Ok(()),
+            });
+        drop(fs::remove_file(&staged));
         if let Err(error) = written {
             let fault = failed().because(error);
             self.log
@@ -332,6 +333,10 @@ mod tests {
         let shipped: Value = serde_json::from_str(CODEX_HOOKS).unwrap();
         assert_eq!(hooks["description"], shipped["description"]);
         assert_eq!(fs::read_to_string(own.join("hooks.json")).unwrap(), "{}");
+        // Nothing set aside is left beside either.
+        for folder in [&fresh, &own] {
+            assert_eq!(fs::read_dir(folder).unwrap().count(), 1);
+        }
         assert!(messages(&records).is_empty());
         plugin.give_codex(&missing);
         assert_eq!(messages(&records), ["codex hooks failed"]);
