@@ -552,6 +552,16 @@ mod tests {
         assert_eq!(lifecycle, ["daemon started", "daemon stopped"]);
     }
 
+    #[test]
+    fn a_socket_that_cant_be_removed_is_an_error_and_none_there_is_fine() {
+        let dir = TempDir::new().unwrap();
+        let held = dir.join("held");
+        fs::create_dir(&held).unwrap();
+
+        remove_stale(&dir.join("gone")).unwrap();
+        remove_stale(&held).unwrap_err();
+    }
+
     #[tokio::test]
     async fn one_daemon_per_state_folder_and_a_stale_socket_is_replaced() {
         let dir = TempDir::new().unwrap();
