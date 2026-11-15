@@ -114,9 +114,13 @@ fn apply(
     Ok(())
 }
 
-/// Whether `weacon service install` set up a service for this user.
-pub(crate) fn installed(env: Env<'_>) -> bool {
-    platform::USER_SERVICES && unit_path(env).is_some_and(|path| path.is_file())
+/// Whether `weacon service install` set up this user's service for the binary at `exe` and
+/// `state_dir`; another installation's service is never its to restart.
+pub(crate) fn installed(exe: &Path, state_dir: &Path, env: Env<'_>) -> bool {
+    let Some(text) = unit_path(env).and_then(|path| fs::read_to_string(path).ok()) else {
+        return false;
+    };
+    platform::USER_SERVICES && unit(exe, state_dir).is_ok_and(|ours| ours == text)
 }
 
 /// Restarts the service, so it runs the binary now at its path.
@@ -127,10 +131,10 @@ pub(crate) fn restart(runner: Runner<'_>) -> Result<(), Fault> {
 /// Starts `weacon update` for `state_dir` in a unit of its own, so restarting the service
 /// doesn't stop it; false when no service is installed.
 pub(crate) fn launch_with(state_dir: &Path, env: Env<'_>, runner: Runner<'_>) -> io::Result<bool> {
-    if !installed(env) {
+    let exe = std::env::current_exe()?;
+    if !installed(&exe, state_dir, env) {
         return Ok(false);
     }
-    let exe = std::env::current_exe()?;
     // Both are absolute, so neither reads as an option.
     if !(exe.is_absolute() && state_dir.is_absolute()) {
         return Ok(false);
@@ -277,16 +281,28 @@ mod tests {
         assert_eq!(error.code().as_str(), "service.bad_path");
     }
 
+    // Installs the unit for `exe` and `state` in `dir`'s systemd folder.
+    fn unit_in(dir: &Path, exe: &Path, state: &Path) {
+        fs::create_dir_all(dir.join("systemd/user")).unwrap();
+        fs::write(
+            dir.join("systemd/user").join(UNIT),
+            unit(exe, state).unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn a_service_counts_as_installed_once_its_unit_is_there() {
+    fn a_service_counts_as_installed_only_for_the_binary_and_state_it_runs() {
         let dir = weacon_testing::TempDir::new().unwrap();
         let config = dir.to_str().unwrap();
         let env = env(&[("XDG_CONFIG_HOME", config)]);
-        assert!(!installed(&env));
-        fs::create_dir_all(dir.join("systemd/user")).unwrap();
-        fs::write(dir.join("systemd/user").join(UNIT), "").unwrap();
-        assert_eq!(installed(&env), platform::USER_SERVICES);
-        assert!(!installed(&|_: &str| None));
+        let (exe, state) = (Path::new("/opt/a/weacon"), Path::new("/srv/a"));
+        assert!(!installed(exe, state, &env));
+        unit_in(&dir, exe, state);
+        assert_eq!(installed(exe, state, &env), platform::USER_SERVICES);
+        assert!(!installed(Path::new("/opt/b/weacon"), state, &env));
+        assert!(!installed(exe, Path::new("/srv/b"), &env));
+        assert!(!installed(exe, state, &|_: &str| None));
     }
 
     #[test]
@@ -298,11 +314,10 @@ mod tests {
         assert!(!launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap());
         assert!(calls.is_empty());
 
-        fs::create_dir_all(dir.join("systemd/user")).unwrap();
-        fs::write(dir.join("systemd/user").join(UNIT), "").unwrap();
+        let exe = std::env::current_exe().unwrap();
+        unit_in(&dir, &exe, &state);
         let launched = launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap();
         assert_eq!(launched, platform::USER_SERVICES);
-        let exe = std::env::current_exe().unwrap();
         let expected = format!(
             "systemd-run --user --collect --quiet --setenv=WEACON_STATE_DIR={} -- {} update",
             state.display(),

@@ -41,6 +41,9 @@ const HEALTH_PAUSE: Duration = Duration::from_millis(500);
 /// How often, and how far apart, the update lock is tried before it counts as taken: 1 s.
 const LOCK_TRIES: u32 = 50;
 const LOCK_PAUSE: Duration = Duration::from_millis(20);
+/// How often, and how far apart, a program that is busy being written is tried again.
+const BUSY_TRIES: u32 = 50;
+const BUSY_PAUSE: Duration = Duration::from_millis(10);
 
 /// How long the chat engine has to say whether an agent is busy.
 const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
@@ -82,7 +85,7 @@ pub(crate) fn run(
         target: TARGET,
         exe: exe.clone(),
         version_of: &version_of,
-        restart: service::installed(env).then_some(restart),
+        restart: service::installed(&exe, state_dir, env).then_some(restart),
         healthy: &healthy,
     };
     let own = app.version.version.parse().map_err(|_| {
@@ -239,11 +242,11 @@ fn version_of(binary: &Path) -> io::Result<String> {
 /// What `command` prints, up to 64 KiB, once it ends; it is killed if it takes over `within`.
 /// Its output must end within that time too, even when a process it started holds it open.
 fn output_within(command: &mut Command, within: Duration) -> io::Result<String> {
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    let mut child = when_free(|| command.spawn())?;
     let stdout = child
         .stdout
         .take()
@@ -274,6 +277,20 @@ fn output_within(command: &mut Command, within: Duration) -> io::Result<String> 
         .recv_timeout(left)
         .map_err(|_| io::Error::from(io::ErrorKind::TimedOut))??;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// What `spawn` gives once the program isn't busy. A process another thread forked holds a file
+/// just written open until it starts its own program, as when an agent starts beside an update.
+fn when_free<T>(mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    for _ in 1..BUSY_TRIES {
+        match spawn() {
+            Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(BUSY_PAUSE);
+            }
+            spawned => return spawned,
+        }
+    }
+    spawn()
 }
 
 /// A line saying which newer release the daemon found, if it found one.
@@ -686,19 +703,32 @@ mod tests {
         ));
     }
 
-    // What the script at `path` prints within `within`. A fork in another test may still hold
-    // the script open for writing when it starts, which lasts only until that fork's exec.
-    #[cfg(unix)]
-    fn run(path: &Path, within: Duration) -> io::Result<String> {
-        for _ in 0..1000 {
-            match output_within(&mut Command::new(path), within) {
-                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::yield_now();
-                }
-                answer => return answer,
-            }
-        }
-        Err(io::ErrorKind::ExecutableFileBusy.into())
+    #[test]
+    fn a_program_busy_being_written_is_started_once_it_is_free() {
+        let busy = || io::Error::from(io::ErrorKind::ExecutableFileBusy);
+        let mut tries = 0;
+        let started = when_free(|| {
+            tries += 1;
+            if tries < 3 { Err(busy()) } else { Ok(tries) }
+        });
+        assert_eq!(started.unwrap(), 3);
+
+        let mut tries = 0;
+        let never = when_free(|| -> io::Result<()> {
+            tries += 1;
+            Err(busy())
+        });
+        assert_eq!(never.unwrap_err().kind(), io::ErrorKind::ExecutableFileBusy);
+        assert_eq!(tries, BUSY_TRIES);
+        let mut tries = 0;
+        let other = when_free(|| -> io::Result<()> {
+            tries += 1;
+            Err(io::ErrorKind::NotFound.into())
+        });
+        assert_eq!(
+            (other.unwrap_err().kind(), tries),
+            (io::ErrorKind::NotFound, 1)
+        );
     }
 
     // `answer`'s result, failing the test rather than hanging it when it doesn't come in time.
@@ -717,14 +747,14 @@ mod tests {
         // Far longer than the test waits, so only the deadline can end it in time.
         fs::write(&hangs, "#!/bin/sh\nexec sleep 60\n").unwrap();
         crate::platform::make_runnable(&hangs).unwrap();
-        let error = soon(move || run(&hangs, Duration::ZERO));
+        let error = soon(move || output_within(&mut Command::new(&hangs), Duration::ZERO));
         let error = error.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let fast = answering(&dir, "quick");
-        let printed = run(&fast, Duration::from_secs(30)).unwrap();
+        let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
         assert_eq!(printed, "quick\n");
         let long = answering(&dir, &"x".repeat(5000));
-        let printed = run(&long, Duration::from_secs(30)).unwrap();
+        let printed = output_within(&mut Command::new(&long), Duration::from_secs(30)).unwrap();
         assert_eq!(printed.len(), 5001);
     }
 
@@ -740,7 +770,8 @@ mod tests {
         );
         fs::write(&leaves, script).unwrap();
         crate::platform::make_runnable(&leaves).unwrap();
-        let answer = soon(move || run(&leaves, Duration::from_millis(500)));
+        let answer =
+            soon(move || output_within(&mut Command::new(&leaves), Duration::from_millis(500)));
         let error = answer.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let pid = fs::read_to_string(&left).unwrap();

@@ -55,7 +55,9 @@ impl Settings {
         Ok(())
     }
 
-    pub(crate) fn write(self, file: &Path) -> Result<(), Fault> {
+    pub(crate) fn write(mut self, file: &Path) -> Result<(), Fault> {
+        // A schedule from a newer build has no written form, so it's saved as the one it acts as.
+        self.schedule = self.schedule.effective();
         let write = || {
             if let Some(folder) = file.parent() {
                 platform::private_dir(folder)?;
@@ -77,6 +79,21 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
+
+    #[test]
+    fn a_schedule_from_a_newer_build_is_saved_as_the_one_it_acts_as() {
+        let dir = TempDir::new().unwrap();
+        let file = file(&dir);
+        fs::create_dir_all(dir.join("settings")).unwrap();
+        fs::write(&file, r#"{"schedule":"hourly"}"#).unwrap();
+        let read = Settings::read(&file).unwrap();
+        assert_eq!(read.schedule, UpdateSchedule::Newer);
+        read.write(&file).unwrap();
+        assert_eq!(
+            Settings::read(&file).unwrap().schedule,
+            UpdateSchedule::Notify
+        );
+    }
 
     #[test]
     fn settings_start_at_notify_and_keep_what_is_written() {
