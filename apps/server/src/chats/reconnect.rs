@@ -85,10 +85,9 @@ mod tests {
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         let workspace = &ada.member.workspace;
-        make(workspace, "c-1", "m1", NOW).await.unwrap();
-        make(workspace, "c-2", "m1", NOW - RESEND_WITHIN - 1)
-            .await
-            .unwrap();
+        // Ten minutes is the window: sent 599 seconds ago is sent again, 601 is not.
+        make(workspace, "c-1", "m1", NOW - 599).await.unwrap();
+        make(workspace, "c-2", "m1", NOW - 601).await.unwrap();
         make(workspace, "c-3", "m1", NOW).await.unwrap();
         workspace.close_request("c-3", "r-c-3").await;
         workspace.move_chats_to(&ada.machine).await;
@@ -122,6 +121,9 @@ mod tests {
         };
         assert_eq!(resend(shared, &elsewhere).await.unwrap(), 0);
         assert!(sent(&mut attached).is_empty());
+        pick_up(shared, &connected).await;
+        let warned = crate::test_support::messages(&fixture.records);
+        assert!(!warned.contains(&"chats not all picked up"), "{warned:?}");
     }
 
     #[tokio::test]
@@ -137,7 +139,8 @@ mod tests {
 
         let mut attached = attach(shared, &ada, &["chat.serve"]);
 
-        let first = attached.incoming.recv().await.unwrap();
+        let first = tokio::time::timeout(crate::test_support::PATIENCE, attached.incoming.recv());
+        let first = first.await.unwrap().unwrap();
         assert!(matches!(first.message, Message::ChatQuery(_)), "{first:?}");
         drop(attached);
         let older = attach(shared, &ada, &["machine.connect"]);
