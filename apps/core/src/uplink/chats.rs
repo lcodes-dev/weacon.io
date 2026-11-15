@@ -10,7 +10,7 @@ use weacon_protocol::{
     ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
 };
 
-use super::{QUEUE, Step, failure, refusal, reply};
+use super::{QUEUE, Step, failure, for_now, refusal, reply};
 use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
 use crate::runs::ChatKey;
@@ -72,7 +72,7 @@ impl ChatLink {
                 return reply(refusal(id, &command, code!("message.unsupported")));
             }
             if self.waiting.len() >= QUEUE {
-                return reply(refusal(id, &command, code!("chat.unavailable")));
+                return reply(for_now(id, code!("chat.unavailable")));
             }
             self.queue(Ask::Command(command));
             return Step::Nothing;
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_no_room_left_is_refused_as_unavailable() {
+    fn a_command_with_no_room_left_is_refused_as_unavailable_for_now() {
         let (mut link, _asked, _push) = link(true, 1);
         let interrupt = |request: &str| command(request, "c-1", ChatAction::Interrupt);
 
@@ -567,14 +567,20 @@ mod tests {
 
         assert!(taken.iter().all(|step| matches!(step, Step::Nothing)));
         assert_eq!(link.waiting.len(), QUEUE);
-        assert_eq!(error_code(&refused), Some("chat.unavailable"));
         let Step::Reply(reply) = refused else {
             panic!("not refused");
         };
-        let Message::Receipt(receipt) = reply.message else {
-            panic!("not a receipt");
+        let busy = weacon_protocol::ErrorBody {
+            code: code!("chat.unavailable"),
+            retryable: true,
         };
-        assert_eq!((reply.id, receipt.request.as_str()), (9, "r-2"));
+        assert_eq!(
+            *reply,
+            Envelope {
+                id: 9,
+                message: Message::Error(busy)
+            }
+        );
     }
 
     // Events the server keeps, as they are.

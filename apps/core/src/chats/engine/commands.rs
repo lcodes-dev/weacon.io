@@ -263,7 +263,6 @@ fn never_taken(fault: &Fault) -> bool {
         code!("chat.empty_prompt"),
         code!("chat.agent_conflict"),
         code!("message.unsupported"),
-        code!("chat.held"),
     ]
     .contains(fault.code())
 }

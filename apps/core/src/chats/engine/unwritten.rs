@@ -2,7 +2,7 @@
 //! run on disk never disagrees with what happens. Other chats go on.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Outcome, code};
+use weacon_protocol::{Outcome, RunId, code};
 
 use super::agent::{Agent, FromRun};
 use super::launch::Launched;
@@ -16,27 +16,30 @@ impl<A: Agent> Engine<A> {
         result: Result<T, Fault>,
     ) -> Result<T, Fault> {
         if let Err(fault) = &result {
-            self.end_run(key, fault).await;
+            self.end_run(key, None, fault).await;
         }
         result
     }
 
-    // As `checked`, for the engine's own work: the fault still to be logged, none once ending
-    // the chat's run has logged it.
+    // As `checked`, for the engine's own work, about the run `of` when it is a run's: the fault
+    // still to be logged, none once ending the chat's run has logged it.
     pub(super) async fn unlogged(
         &mut self,
         key: &ChatKey,
+        of: Option<&RunId>,
         result: Result<(), Fault>,
     ) -> Option<Fault> {
         let fault = result.err()?;
-        (!self.end_run(key, &fault).await).then_some(fault)
+        (!self.end_run(key, of, &fault).await).then_some(fault)
     }
 
     // On a failed write, tells the chat's agent to stop and ends its run failed where that can
     // still be written; a turn whose end can't be is ended by the chat's next `advance`.
-    // Whether it ended a run, which it logs.
-    async fn end_run(&mut self, key: &ChatKey, fault: &Fault) -> bool {
-        let Some(run) = self.run_of(key).filter(|_| is_unwritten(fault)) else {
+    // A fault of a run that is no longer the chat's ends nothing. Whether it ended a run, which
+    // it logs.
+    async fn end_run(&mut self, key: &ChatKey, of: Option<&RunId>, fault: &Fault) -> bool {
+        let current = |run: &RunId| is_unwritten(fault) && of.is_none_or(|of| of == run);
+        let Some(run) = self.run_of(key).filter(current) else {
             return false;
         };
         let Some(chat) = self.open_chats.get_mut(key) else {
@@ -63,7 +66,7 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn take_said(&mut self, from: FromRun) -> ChatKey {
         let FromRun { key, run, said } = from;
         let heard = self.hear(&key, &run, said).await;
-        if let Some(fault) = self.unlogged(&key, heard).await {
+        if let Some(fault) = self.unlogged(&key, Some(&run), heard).await {
             self.log
                 .error("run event not committed", &failed(&key, &run, &fault));
         }
@@ -74,7 +77,7 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn take_launched(&mut self, launched: Launched<A>) -> ChatKey {
         let (key, run) = (launched.key.clone(), launched.run.clone());
         let finished = self.finish_launch(launched).await;
-        if let Some(fault) = self.unlogged(&key, finished).await {
+        if let Some(fault) = self.unlogged(&key, Some(&run), finished).await {
             self.log
                 .error("run start not handled", &failed(&key, &run, &fault));
         }
@@ -97,8 +100,8 @@ mod tests {
     use super::super::{Ask, update};
     use super::*;
     use crate::chats::test_support::{
-        FakeAgent, Told, brief, chat, client, command, key, parts, prompt, pushed, run, someone,
-        soon, text,
+        FakeAgent, Told, brief, chat, client, command, key, parts, prompt, pushed, request, run,
+        someone, soon, text,
     };
 
     // Sends `command` as the engine's loop takes it, with its answer.
@@ -261,5 +264,56 @@ mod tests {
         on.engine.take_said(from).await;
 
         assert!(!on.engine.is_live(&key()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_whose_running_state_cant_be_written_never_reaches_the_agent() {
+        let mut on = told().await;
+        let outcome = Outcome::Completed;
+        let finished = RunEvent::Finished { outcome };
+        on.engine
+            .hear(&key(), &run("run-1"), Said::Event(finished))
+            .await
+            .unwrap();
+        let queued = crate::runs::Queued {
+            request: request("r-2"),
+            text: "More".to_owned(),
+        };
+        let agent = weacon_protocol::AgentKind::Claude;
+        on.engine
+            .runs
+            .enqueue(&key(), agent, queued, 0)
+            .await
+            .unwrap();
+        on.engine.open(&key()).await.unwrap().log.jam();
+
+        let advanced = on.engine.advance(&key()).await;
+        let failed = on.engine.checked(&key(), advanced).await;
+
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_write_of_a_finished_runs_last_word_leaves_the_next_run_be() {
+        let mut on = told().await;
+        on.engine
+            .command(&key(), prompt("r-2", "More"))
+            .await
+            .unwrap();
+        on.engine.open(&key()).await.unwrap().log.jam();
+
+        let finished = RunEvent::Finished {
+            outcome: Outcome::Unknown,
+        };
+        let from = FromRun {
+            key: key(),
+            run: run("run-1"),
+            said: Said::Event(finished),
+        };
+        on.engine.take_said(from).await;
+
+        assert_eq!(on.engine.run_of(&key()), Some(run("run-2")));
+        assert!(on.engine.is_launching(&key()));
     }
 }

@@ -95,7 +95,7 @@ impl<A: Agent> Engine<A> {
         for key in released {
             self.log.info("chat released", &chat_about(&key));
             let advanced = self.advance(&key).await;
-            if let Some(fault) = self.unlogged(&key, advanced).await {
+            if let Some(fault) = self.unlogged(&key, None, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -279,20 +279,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_held_chat_fails_its_seventeenth_prompt_without_logging_it() {
-        let (bench, _holder, _pushes) = held_with_a_prompt().await;
+    async fn a_held_chat_refuses_its_seventeenth_prompt_until_it_is_released() {
+        let (bench, holder, _pushes) = held_with_a_prompt().await;
         for at in 2..=HELD_QUEUE {
             let asked = prompt(&format!("r-{at}"), "More");
             bench.command(asked).await.unwrap();
         }
-
-        bench.command(prompt("r-17", "One too many")).await.unwrap();
-
-        let (watcher, mut pushes) = client(2);
+        let (watcher, mut pushes) = client(8);
         let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 32 });
         bench.chats.query(subscribe, &watcher).await.unwrap();
-        let failed = pushed(&mut pushes, 1).await;
-        assert_eq!(failed, ["33 receipt r-17 failed chat.held"]);
+
+        let refused = bench.command(prompt("r-17", "One too many")).await;
+        assert_eq!(code_of(refused), "chat.held");
+        assert_eq!(seq(&bench).await, 32);
+        bench.chats.command(release("h-2"), &holder).await.unwrap();
+        bench.command(prompt("r-17", "One too many")).await.unwrap();
+
+        let logged = pushed(&mut pushes, 4).await;
+        let has = |end: &str| logged.iter().any(|entry| entry.ends_with(end));
+        assert!(
+            has("prompt r-17 One too many") && has("receipt r-17 accepted"),
+            "{logged:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

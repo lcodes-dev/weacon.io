@@ -96,8 +96,11 @@ impl<A: Agent> Engine<A> {
                 record.queue.retain(|queued| queued.request != next.request);
                 record.turn = Some(next.request.clone());
                 record.active_at = now;
+                record.state = RunState::Running;
             })
             .await?;
+        self.tell_state(key, run, RunState::Running).await?;
+        // Sent only once the turn is written, so a run a failed write ended is never told it.
         if !self.order(key, Order::Send(next.text.clone())) {
             // It stopped reading while the journal was saved: the prompt waits for the next run.
             return self
@@ -115,7 +118,7 @@ impl<A: Agent> Engine<A> {
         if stops.len() < before {
             self.order(key, Order::Interrupt);
         }
-        self.set_state(key, run, RunState::Running).await
+        Ok(())
     }
 
     // Brings the journal in line with the log after a failed write, an exit or a restart:
