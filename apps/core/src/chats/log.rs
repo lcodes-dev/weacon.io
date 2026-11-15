@@ -15,6 +15,10 @@ use weacon_protocol::{
 use crate::app::blocking;
 use crate::platform;
 
+mod line;
+
+use line::entry_line;
+
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
 const WINDOW_MAX: usize = MAX_FRAME - (16 << 10);
@@ -80,24 +84,6 @@ fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     weacon_appkit::sync_dir(dir)?;
     weacon_appkit::sync_dir(workspace_root)?;
     Ok(file)
-}
-
-// The entry as one line of the log, if it can be written and fits one frame.
-fn entry_line(entry: &ChatEntry) -> Result<Vec<u8>, Fault> {
-    let mut line = serde_json::to_vec(entry).map_err(|_| {
-        Fault::new(
-            code!("chat.event_unwritable"),
-            "The event holds a part only ever received",
-        )
-    })?;
-    line.push(b'\n');
-    if line.len() > ENTRY_MAX {
-        return Err(Fault::new(
-            code!("chat.event_too_large"),
-            "The event doesn't fit one frame",
-        ));
-    }
-    Ok(line)
 }
 
 fn unreadable(error: io::Error) -> Fault {
