@@ -34,16 +34,22 @@ impl<A: Agent> Engine<A> {
         let installing = self.install.pauses();
         let chat = self.open(key).await?;
         let holder = chat.held.as_ref().filter(|holder| !holder.is_gone());
-        if holder.is_some_and(|holder| holder.is(client)) {
-            return Ok(());
+        if let Some(holder) = holder {
+            if holder.is(client) {
+                return Ok(());
+            }
+            return Err(Fault::new(
+                code!("chat.held"),
+                "Someone else carries this chat on by hand already",
+            ));
         }
         // A live run, a starting one, a session still to save or an install's restart would race
         // the hand's agent.
         let busy = chat.orders.is_some() || chat.is_starting() || installing;
-        if holder.is_some() || busy || chat.pending_session.is_some() {
+        if busy || chat.pending_session.is_some() {
             return Err(Fault::new(
                 code!("chat.busy"),
-                "The chat's agent is running, or someone else holds it",
+                "The chat's agent is running here; carry on once it sleeps",
             ));
         }
         chat.held = Some(client.clone());
@@ -109,7 +115,9 @@ impl<A: Agent> Engine<A> {
 #[cfg(test)]
 mod tests {
     use tokio::sync::mpsc;
-    use weacon_protocol::{AgentKind, ChatAnswerKind, ChatQueryKind, Message, Outcome, RunEvent};
+    use weacon_protocol::{
+        AgentKind, ChatAnswerKind, ChatQueryKind, Message, Outcome, RunEvent, RunState,
+    };
 
     use super::super::IDLE_CHECK;
     use super::*;
@@ -256,7 +264,7 @@ mod tests {
         bench.chats.command(hold("h-2"), &first).await.unwrap();
         let refused = bench.chats.command(hold("h-3"), &second).await;
 
-        assert_eq!(code_of(refused), "chat.busy");
+        assert_eq!(code_of(refused), "chat.held");
     }
 
     #[tokio::test(start_paused = true)]
@@ -303,6 +311,32 @@ mod tests {
             has("prompt r-17 One too many") && has("receipt r-17 accepted"),
             "{logged:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_prompt_after_a_resume_by_hand_carries_on_its_session() {
+        let (mut bench, mut engine) = parts();
+        let runs = &mut engine.runs;
+        runs.begin(&key(), AgentKind::Claude, 100).await.unwrap();
+        let left = |record: &mut crate::runs::Record| {
+            record.state = RunState::Sleeping;
+            record.session = Some(session());
+        };
+        runs.update(&key(), left).await.unwrap();
+        let (holder, _pushes) = client(1);
+        let held = engine.command_from(&key(), hold("h-1"), &holder).await;
+        held.unwrap();
+        engine
+            .command(&key(), prompt("r-1", "Go on"))
+            .await
+            .unwrap();
+        assert!(soon(bench.started.recv()).await.is_none());
+
+        let released = engine.command_from(&key(), release("h-2"), &holder).await;
+        released.unwrap();
+
+        let next = soon(bench.started.recv()).await.unwrap();
+        assert_eq!(next.run_as.session, Some(session()));
     }
 
     #[tokio::test(start_paused = true)]

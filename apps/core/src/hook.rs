@@ -169,7 +169,7 @@ mod tests {
     use std::path::Path;
 
     use weacon_agents::SpawnPolicy;
-    use weacon_protocol::{RunId, WorkspaceId};
+    use weacon_protocol::{AgentKind, RunId, WorkspaceId};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
@@ -291,7 +291,7 @@ mod tests {
 
         fn token(&self, workspace: &WorkspaceId, folder: &Path) -> (String, Revoke) {
             let run = RunId::try_from("run-1".to_owned()).unwrap();
-            let grant = Grant::new(workspace.clone(), run, folder.to_owned());
+            let grant = Grant::new(workspace.clone(), run, AgentKind::Claude, folder.to_owned());
             let (token, revoke) = self.mcp.grants.issue(grant).unwrap();
             (token.as_str().to_owned(), revoke)
         }

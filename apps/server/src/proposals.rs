@@ -1,5 +1,7 @@
 //! Agents' proposals to docs and tasks, which members accept or reject.
 
+pub(crate) mod machines;
+
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

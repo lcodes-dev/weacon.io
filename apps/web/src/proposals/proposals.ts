@@ -1,6 +1,6 @@
 import type { Names } from "../members/names.ts";
 import { STATUSES } from "../tasks/tasks.ts";
-import type { DocAnchors, ProposalOutcome, ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
+import type { DocAnchors, ProposalChange, ProposalOutcome, ProposalRecord, StaleAnchor, TaskEditBody, TaskRecord } from "../protocol.ts";
 
 /** What a proposal is about, in a line: "Edit of the doc “Plan”", or "New task “Ship it”". */
 export function aboutText(proposal: ProposalRecord, tasks: readonly TaskRecord[]): string {
@@ -8,6 +8,9 @@ export function aboutText(proposal: ProposalRecord, tasks: readonly TaskRecord[]
   const title = (id: string) => tasks.find((task) => task.id === id)?.title;
   switch (about.kind) {
     case "doc":
+      if (change?.kind === "needs_update") {
+        return "Code a doc links to changed";
+      }
       return change?.kind === "doc_edit" ? `Edit of the doc “${change.content.title}”` : "Edit of a doc";
     case "task": {
       const named = title(about.task);
@@ -74,4 +77,22 @@ export function pinChanges(before: DocAnchors | undefined, after: DocAnchors | u
   const old = before?.pins ?? [];
   const now = after?.pins ?? [];
   return { added: now.filter((pin) => !old.includes(pin)), removed: old.filter((pin) => !now.includes(pin)) };
+}
+
+/** What a move of the code did to one anchor, in a line: "sym:a::go changed. It was “…”, and is now “…”." */
+export function staleText({ pin, change }: StaleAnchor): string {
+  const anchor = pin.slice(0, pin.lastIndexOf("#"));
+  switch (change.kind) {
+    case "changed":
+      return `${anchor} changed. It was “${change.was}”, and is now “${change.now}”.`;
+    case "gone":
+      return `${anchor} is gone. It was “${change.was}”.`;
+    default:
+      return `${anchor} changed.`;
+  }
+}
+
+/** What to ask an agent in a chat, so that it drafts the update a doc needs. */
+export function askText(change: Extract<ProposalChange, { kind: "needs_update" }>): string {
+  return `To update it, ask your agent in a chat: “Propose an update to the doc ${change.doc} where it describes the code that changed.”`;
 }

@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
     DiffQuery, InstallCommand, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery,
-    MapAnswer, MapQuery, Pick, ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery,
-    SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
-    WorktreeCommand, WorktreeQuery, code,
+    MapAnswer, MapQuery, Pick, ProposalAnswer, ProposalCommand, ProposalQuery, Receipt, RunUpdate,
+    SessionsAnswer, SessionsQuery, SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate,
+    WorkspaceUpdate, WorktreeAnswer, WorktreeCommand, WorktreeQuery, code,
 };
 
 /// The protocol version this build speaks. Only a breaking change raises it; peers must match
@@ -53,6 +53,8 @@ pub enum Message {
     MapAnswer(MapAnswer),
     SymbolsQuery(SymbolsQuery),
     SymbolsAnswer(SymbolsAnswer),
+    ProposalQuery(ProposalQuery),
+    ProposalAnswer(ProposalAnswer),
     InstallCommand(InstallCommand),
     /// A message type this build doesn't know, from a newer peer.
     #[serde(other, skip_serializing)]

@@ -86,7 +86,31 @@ pub(crate) fn listed() -> Vec<Tool> {
             json!({"words": {"type": "string"}, "budget": budget}),
             &["words"],
         ),
+        propose(),
     ]
+}
+
+/// The one tool that writes, and only what a person then accepts.
+fn propose() -> Tool {
+    writes(tool(
+        McpCall::PROPOSE,
+        "Proposes a change to a doc or task of this chat's workspace; nothing changes until \
+         a person accepts it. Only when the person asks. `change` is one of {kind: \
+         new_task, title}, {kind: new_doc, content: {title, body}}, {kind: task_edit, task, \
+         base, edits: [{kind: title, title} or {kind: status, status}]}, {kind: doc_edit, \
+         doc, base, content}.",
+        json!({"change": {"type": "object"}}),
+        &["change"],
+    ))
+}
+
+/// `tool`, as one that writes: what it changes, a person accepts first.
+fn writes(tool: Tool) -> Tool {
+    let hints = ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .open_world(false);
+    tool.annotate(hints)
 }
 
 /// A read-only tool taking an object with `properties`, of which `required` must be given.
@@ -119,7 +143,7 @@ pub(crate) fn answer_from(call: &McpCall, map: &Index, churn: &[Churn]) -> Strin
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
         McpCall::DocsFor(args) => map.docs_for(&args.path, budget(args.budget)),
         // Search answers from the stored map, through `found`.
-        McpCall::Search(_) | McpCall::Newer => String::new(),
+        McpCall::Search(_) | McpCall::Propose(_) | McpCall::Newer => String::new(),
     }
 }
 
@@ -183,7 +207,9 @@ mod tests {
 
         assert_eq!(
             names,
-            ["map", "symbol", "docs_for", "flow", "hotspots", "search"]
+            [
+                "map", "symbol", "docs_for", "flow", "hotspots", "search", "propose"
+            ]
         );
         assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
         assert_eq!(
@@ -194,10 +220,11 @@ mod tests {
                 Some(106),
                 Some(106),
                 Some(117),
-                Some(151)
+                Some(151),
+                Some(341)
             ]
         );
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 2170);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 2726);
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub(crate) struct Fake {
 #[derive(Default)]
 struct State {
     failing: bool,
+    failing_trees: bool,
     head: String,
     commits: BTreeMap<String, BTreeMap<String, String>>,
     changed: Vec<(String, Option<String>)>,
@@ -73,6 +74,11 @@ impl Fake {
     pub(crate) fn fail(&self, failing: bool) {
         self.state.lock().unwrap().failing = failing;
     }
+
+    /// Fails reading a commit's files while its head still reads.
+    pub(crate) fn fail_trees(&self, failing: bool) {
+        self.state.lock().unwrap().failing_trees = failing;
+    }
 }
 
 impl Source for Fake {
@@ -88,6 +94,9 @@ impl Source for Fake {
     fn tree(&self, commit: &CommitId) -> Result<Vec<(String, String)>, Fault> {
         let mut state = self.state.lock().unwrap();
         state.trees_read += 1;
+        if state.failing_trees {
+            return Err(read_failed());
+        }
         let files = state
             .commits
             .get(commit.as_str())
