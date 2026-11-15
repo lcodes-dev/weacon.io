@@ -58,18 +58,18 @@ export async function machine(served: Served, workspace: string, name: string): 
     rmSync(dir, { recursive: true, force: true });
   };
   try {
-    return await setUp(served, workspace, name, dir, children, close);
+    return { ...(await setUp(served, workspace, name, dir, children)), close };
   } catch (error) {
     await close();
     throw error;
   }
 }
 
-async function setUp(served: Served, workspace: string, name: string, dir: string, children: ChildProcess[], close: () => Promise<void>): Promise<Machine> {
+async function setUp(served: Served, workspace: string, name: string, dir: string, children: ChildProcess[]): Promise<Omit<Machine, "close">> {
   const programs = await build();
   const bin = join(dir, "bin");
   mkdirSync(bin);
-  // Only this test's own folder holds a `claude`, and only the core's PATH leads to it.
+  // Ahead of any installed `claude`, for the core's runs only.
   symlinkSync(programs.agent, join(bin, "claude"));
   const home = join(dir, "home");
   mkdirSync(home);
@@ -98,7 +98,7 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
   let daemon: ChildProcess | undefined;
   const log = join(dir, "state", "logs", "daemon.log");
   const connections = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"msg":"uplink connected"')).length : 0);
-  const machine: Machine = {
+  const machine = {
     start: async () => {
       const before = connections();
       const child = started(spawn(programs.core, ["daemon"], { env, stdio: "ignore" }));
@@ -113,7 +113,6 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
         await end(daemon);
       }
     },
-    close,
   };
   await machine.start();
   return machine;

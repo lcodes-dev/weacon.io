@@ -11,7 +11,8 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  const workspace = new URL(page.url()).searchParams.get("workspace") ?? "";
+  const workspace = new URL(page.url()).searchParams.get("workspace");
+  assert.ok(workspace !== null);
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   const studio = await machine(served, workspace, "Studio");
   t.after(() => studio.close());
@@ -40,15 +41,16 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   assert.equal(await page.getByText("Allowed", { exact: true }).count(), 1);
 
   const box = page.getByRole("combobox", { name: "Message" });
+  const send = page.getByRole("button", { name: "Send" });
   await box.fill("Tidy the readme");
-  await page.getByRole("button", { name: "Send" }).click();
+  await send.click();
   await page.getByText("Asks to use Write").waitFor();
   await page.getByRole("button", { name: "Deny" }).click();
   await page.getByText("Denied Write").waitFor();
   await page.getByText("Done", { exact: true }).nth(1).waitFor();
 
   await box.fill("Rewrite the lexer");
-  await page.getByRole("button", { name: "Send" }).click();
+  await send.click();
   await page.getByText("Asks to use Edit").waitFor();
   await page.getByRole("button", { name: "Stop" }).click();
   await page.getByText("Stopped", { exact: true }).waitFor();
@@ -56,11 +58,11 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
 
   await studio.stop();
   await box.fill("Run the parser tests");
-  await page.getByRole("button", { name: "Send" }).click();
+  await send.click();
   await page.getByText("The machine is offline, so the message wasn't sent. Try again once it's back.").waitFor();
   assert.equal(await box.inputValue(), "Run the parser tests");
   await studio.start();
-  await page.getByRole("button", { name: "Send" }).click();
+  await send.click();
   await page.getByText("Asks to use Bash").waitFor();
   await page.getByRole("button", { name: "Allow" }).click();
   await page.getByText("Allowed Bash").waitFor();

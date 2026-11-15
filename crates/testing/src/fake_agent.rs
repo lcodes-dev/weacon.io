@@ -5,6 +5,8 @@ use std::io::{self, BufRead, Write};
 
 use serde_json::Value;
 
+use crate::replay::{Step, steps};
+
 const TURN: &str = include_str!("../../agents/replays/claude/turn.replay");
 const RECORDINGS: [&str; 3] = [
     TURN,
@@ -13,7 +15,7 @@ const RECORDINGS: [&str; 3] = [
 ];
 
 /// What `claude auth status --json` prints for a claude.ai sign-in.
-pub const SIGNED_IN: &str = "{\"authMethod\":\"claude.ai\"}\n";
+const SIGNED_IN: &str = "{\"authMethod\":\"claude.ai\"}\n";
 
 /// Answers one call with `args`: the sign-in status, or a stream-json session on `input` and
 /// `output`. False for any other call, which it doesn't answer.
@@ -21,28 +23,40 @@ pub const SIGNED_IN: &str = "{\"authMethod\":\"claude.ai\"}\n";
 /// # Errors
 /// When `input` or `output` fails.
 pub fn answer(args: &[String], input: impl BufRead, mut output: impl Write) -> io::Result<bool> {
-    match args.first().map(String::as_str) {
-        Some("auth") if args == ["auth", "status", "--json"] => {
-            output.write_all(SIGNED_IN.as_bytes())?;
-            Ok(true)
-        }
-        Some("--print") => converse(input, output).map(|()| true),
-        _ => Ok(false),
+    if args == ["auth", "status", "--json"] {
+        output.write_all(SIGNED_IN.as_bytes())?;
+        Ok(true)
+    } else if args.first().is_some_and(|arg| arg == "--print") {
+        converse(input, output).map(|()| true)
+    } else {
+        Ok(false)
     }
 }
 
-// For each prompt, plays the recording that starts with it, else `TURN`: prints its `< ` lines
-// and reads one line for each `> ` line after the prompt. Ends with `input`.
+// For each prompt, plays the recording that starts with it, else `TURN`. Ends with `input`.
 fn converse(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
     let mut lines = input.lines();
     while let Some(prompt) = lines.next().transpose()? {
-        for step in recording_for(&prompt).lines().skip(1) {
-            if let Some(line) = step.strip_prefix("< ") {
+        play(recording_for(&prompt), &mut lines, &mut output)?;
+    }
+    Ok(())
+}
+
+// Plays `recording` after its prompt: prints the lines it prints, and reads one of `lines` for
+// each it reads, until `lines` ends.
+fn play(
+    recording: &str,
+    lines: &mut impl Iterator<Item = io::Result<String>>,
+    output: &mut impl Write,
+) -> io::Result<()> {
+    for step in steps(recording).skip(1) {
+        match step.map_err(io::Error::other)? {
+            Step::Prints(line) => {
                 writeln!(output, "{line}")?;
                 output.flush()?;
-            } else if step.starts_with("> ") && lines.next().transpose()?.is_none() {
-                return Ok(());
             }
+            Step::Reads(_) if lines.next().transpose()?.is_none() => return Ok(()),
+            Step::Reads(_) => {}
         }
     }
     Ok(())
@@ -52,12 +66,9 @@ fn recording_for(prompt: &str) -> &'static str {
     let asked = content(prompt);
     RECORDINGS
         .into_iter()
-        .find(|recording| {
-            let first = recording
-                .lines()
-                .next()
-                .and_then(|line| line.strip_prefix("> "));
-            first.and_then(content) == asked
+        .find(|recording| match steps(recording).next() {
+            Some(Ok(Step::Reads(first))) => content(first) == asked,
+            _ => false,
         })
         .unwrap_or(TURN)
 }
@@ -86,22 +97,22 @@ mod tests {
         format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n")
     }
 
-    // The `< ` lines of `recording`.
+    // The lines `recording` prints.
     fn printed(recording: &str) -> Vec<String> {
-        recording
-            .lines()
-            .filter_map(|line| line.strip_prefix("< "))
-            .map(str::to_owned)
+        steps(recording)
+            .filter_map(|step| match step.unwrap() {
+                Step::Prints(line) => Some(line.to_owned()),
+                Step::Reads(_) => None,
+            })
             .collect()
     }
 
     #[test]
     fn it_answers_only_the_sign_in_status_and_a_session() {
-        let mut output = Vec::new();
-        let status = ["auth", "status", "--json"].map(str::to_owned);
-
-        assert!(answer(&status, "".as_bytes(), &mut output).unwrap());
-        assert_eq!(output, SIGNED_IN.as_bytes());
+        assert_eq!(
+            call(&["auth", "status", "--json"], ""),
+            (true, vec![SIGNED_IN.trim_end().to_owned()])
+        );
         assert_eq!(call(&["auth", "status"], ""), (false, Vec::new()));
         assert_eq!(call(&["auth", "login"], ""), (false, Vec::new()));
         assert_eq!(call(&[], ""), (false, Vec::new()));
