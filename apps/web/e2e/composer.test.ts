@@ -49,7 +49,7 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
   await box.press("Enter");
   assert.equal(await send.isDisabled(), true);
   await box.fill("Ship it");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Back" }).click();
   await send.click();
   await waitFor(() => prompts(harness.received()).length === 3);

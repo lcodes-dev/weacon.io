@@ -13,7 +13,7 @@ test("a core older than the server shows as outdated in the machines list and it
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { token } = await pair(page);
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await page.getByRole("button", { name: "Back" }).click();
@@ -22,7 +22,7 @@ test("a core older than the server shows as outdated in the machines list and it
   // The list is read again only when the page is.
   const reopen = async () => {
     await page.reload();
-    await page.getByRole("button", { name: "Settings" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
     await row.getByText("Linux, paired").waitFor();
   };
   const outdated = row.getByText("Its weacon is older than this server supports. Run weacon update there.");

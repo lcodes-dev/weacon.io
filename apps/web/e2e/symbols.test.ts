@@ -21,7 +21,7 @@ test("⌘K finds the symbols on the person's machine, and choosing one copies wh
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { token } = await pair(page);
   const machine = await core(page, token, SETTINGS, undefined, SYMBOLS);
   t.after(() => machine.close());
