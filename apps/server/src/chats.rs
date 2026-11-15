@@ -5,6 +5,7 @@ mod command;
 #[cfg(test)]
 mod end_to_end;
 mod link;
+pub(crate) mod live;
 mod read;
 mod reconnect;
 #[cfg(test)]
@@ -13,6 +14,7 @@ pub(crate) mod upload;
 mod watch;
 
 pub(crate) use link::SERVE;
+pub(crate) use live::LIVE;
 pub(crate) use reconnect::follow_machines;
 pub(crate) use watch::Watch;
 
@@ -20,7 +22,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use tokio::sync::broadcast;
-use weacon_protocol::{ChatId, ChatList, Message, WorkspaceId};
+use weacon_protocol::{ChatId, ChatList, ChatLive, Message, WorkspaceId};
 
 use crate::auth::Member;
 use crate::http::failure;
@@ -33,17 +35,22 @@ const PAGE_BYTES: usize = weacon_protocol::MAX_FRAME - (16 << 10);
 
 /// How many chats' new events a socket may fall behind by before it reads them all again.
 const NOTICES: usize = 256;
+/// How many live updates, of every workspace, a socket may fall behind by; those it misses are
+/// let go, and the chat's stored events still come.
+const LIVE_UPDATES: usize = 4096;
 
 /// What the server's connections share of its chats.
 #[derive(Clone, Debug)]
 pub(crate) struct Hub {
     stored: broadcast::Sender<(WorkspaceId, ChatId)>,
+    live: broadcast::Sender<ChatLive>,
 }
 
 impl Default for Hub {
     fn default() -> Self {
         Self {
             stored: broadcast::channel(NOTICES).0,
+            live: broadcast::channel(LIVE_UPDATES).0,
         }
     }
 }
@@ -57,6 +64,16 @@ impl Hub {
 
     pub(crate) fn notices(&self) -> broadcast::Receiver<(WorkspaceId, ChatId)> {
         self.stored.subscribe()
+    }
+
+    /// Passes `live` on to the sockets that follow its chat, keeping none of it.
+    pub(crate) fn live(&self, live: ChatLive) {
+        // No socket follows it: no one to tell.
+        drop(self.live.send(live));
+    }
+
+    pub(crate) fn lives(&self) -> broadcast::Receiver<ChatLive> {
+        self.live.subscribe()
     }
 }
 

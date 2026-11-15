@@ -426,6 +426,19 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chat_live"
+        }
+      },
+      "$ref": "#/$defs/ChatLive",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -1104,6 +1117,32 @@
       },
       "required": [
         "chats"
+      ]
+    },
+    "ChatLive": {
+      "description": "A run's update that a viewer of its chat needs and no one stores: text as it is written, and\nthe tool a permission prompt names, never its input. From a core to the server, and from the\nserver to the feeds that follow the chat, each under `chat.live`.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "The seq of the chat's last event committed before it, in the sender's log: a viewer\nthat holds a later one shows no text from it.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "update": {
+          "$ref": "#/$defs/RunUpdate"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "update"
       ]
     },
     "ChatQuery": {

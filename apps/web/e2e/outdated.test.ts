@@ -6,7 +6,7 @@ import { BUILD, core, dial, pair } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
 
 const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [] };
-const CURRENT = ["machine.connect", "machine.settings", "diff.view", "worktree.manage", "sessions.read", "symbols.search", "workspace.proposals", "chat.serve"];
+const CURRENT = ["machine.connect", "machine.settings", "diff.view", "worktree.manage", "sessions.read", "symbols.search", "workspace.proposals", "chat.serve", "chat.live"];
 
 test("a core older than the server shows as outdated in the machines list and its settings, and a current one doesn't", { timeout: 600_000 }, async (t) => {
   const served = await serve();

@@ -112,6 +112,7 @@ pub(crate) fn offers() -> Vec<Capability> {
         SYMBOLS,
         PROPOSALS,
         chats::SERVE,
+        chats::LIVE,
     ]
     .map(Capability::new)
     .into()
@@ -206,6 +207,7 @@ async fn hand_off(
     match envelope.message {
         Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
+        Message::ChatLive(live) => chats::live::pass(shared, &machine.id, live).await,
         Message::ProposalCommand(command) => {
             let receipt = proposals::command(shared, machine, command).await;
             return Ok(Some(Message::Receipt(receipt)));
@@ -264,6 +266,7 @@ mod tests {
                     SYMBOLS,
                     PROPOSALS,
                     code!("chat.serve"),
+                    code!("chat.live"),
                     code!("chat.upload"),
                 ].map(Capability::new)),
             "{welcome:?}"
@@ -319,6 +322,7 @@ mod tests {
             "symbols.search",
             "workspace.proposals",
             "chat.serve",
+            "chat.live",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }

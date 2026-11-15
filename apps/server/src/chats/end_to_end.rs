@@ -1,8 +1,10 @@
 //! The whole loop over the real server: a member's prompt reaches their machine, and what it
 //! says of the chat is stored and read by the workspace only.
 
+mod live;
+
 use weacon_protocol::{
-    ChatAnswerKind, ChatEntry, ChatEvent, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
+    ChatAnswerKind, ChatEntry, ChatEvent, ChatLive, ChatQuery, ChatQueryKind, ChatUpdate, Envelope,
     ErrorBody, MachineId, Outcome, Receipt, RunEvent, RunState, RunUpdate,
 };
 
@@ -19,10 +21,11 @@ use weacon_protocol::Message;
 
 use crate::db::test_support::id;
 
-const OFFERS: [&str; 3] = [
+const OFFERS: [&str; 4] = [
     "workspace.feed",
     "workspace.chats",
     "workspace.chat_commands",
+    "chat.live",
 ];
 
 async fn token(fixture: &Fixture, server: &Running, address: &str) -> String {

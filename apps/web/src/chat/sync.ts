@@ -53,7 +53,8 @@ export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): 
       if (state.kind !== "asking" || heard.id !== state.snapshot) {
         return { sync, send: [] };
       }
-      const fresh = fromSnapshot(heard.snapshot);
+      // The tools heard live are kept, as no snapshot holds them.
+      const fresh = fromSnapshot(heard.snapshot, chat?.tools);
       const subscribe = ask(ref, id(), { kind: "subscribe", after: fresh.seq });
       return fetchWaiting(fresh, subscribe.id, ref, id, [subscribe]);
     }
@@ -86,7 +87,7 @@ export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): 
       }
       return { sync, send: [] };
     case "run":
-      return chat === undefined ? { sync, send: [] } : { sync: { ...sync, chat: stream(chat, heard.run, heard.event) }, send: [] };
+      return chat === undefined ? { sync, send: [] } : { sync: { ...sync, chat: stream(chat, heard.run, heard.event, heard.after) }, send: [] };
   }
 }
 

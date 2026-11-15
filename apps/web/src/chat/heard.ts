@@ -9,7 +9,7 @@ export type Heard =
   | { kind: "lost"; id: number }
   | { kind: "snapshot"; id: number; snapshot: Snapshot }
   | { kind: "window"; id: number; events: ChatEntry[] }
-  | { kind: "run"; run: RunId; event: RunEvent }
+  | { kind: "run"; run: RunId; event: RunEvent; after?: number }
   | { kind: "refused"; id: number };
 
 /**
@@ -28,6 +28,10 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
   }
   if (message.type === "chat") {
     return { kind: "entry", entry: message.entry };
+  }
+  if (message.type === "chat_live") {
+    const { update, after } = message;
+    return after === undefined ? { kind: "run", run: update.run, event: update.event } : { kind: "run", run: update.run, event: update.event, after };
   }
   const { answer } = message;
   switch (answer.kind) {

@@ -5,15 +5,15 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 export type Incoming = Extract<
   Envelope,
   {
-    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "symbols_answer" | "worktree_answer" | "terminal";
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "symbols_answer" | "worktree_answer" | "terminal" | "chat_live";
   }
 >;
 
 /** A run message, checked. */
 export type RunMessage = Extract<Incoming, { type: "run" }>;
 
-/** A chat's committed event or an answer about its log, checked. */
-export type ChatMessage = Extract<Incoming, { type: "chat" | "chat_answer" }>;
+/** A chat's committed event, an answer about its log, or one of its runs' live updates, checked. */
+export type ChatMessage = Extract<Incoming, { type: "chat" | "chat_answer" | "chat_live" }>;
 
 /** An error, which may answer a query, a command or a diff query. */
 export type ErrorMessage = Extract<Incoming, { type: "error" }>;
@@ -58,6 +58,7 @@ export function route(message: Incoming, to: Routes): void {
       return;
     case "chat":
     case "chat_answer":
+    case "chat_live":
       to.chat?.(message);
       return;
     case "error":
@@ -90,6 +91,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
+  chat_live: (fields) =>
+    text(fields, "workspace") && text(fields, "chat") && isRunUpdate(fields["update"]) && (fields["after"] === undefined || isSeq(fields["after"], 0)),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
   worktree_answer: (fields) =>
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isWorktreeAnswer(fields["answer"]),
@@ -211,10 +214,8 @@ function isEntry(value: unknown): value is ChatEntry {
       return typeof event["text"] === "string";
     case "receipt":
       return typeof record(event["receipt"])?.["state"] === "string";
-    case "run": {
-      const update = record(event["update"]);
-      return typeof update?.["run"] === "string" && isRunEvent(update["event"]);
-    }
+    case "run":
+      return isRunUpdate(event["update"]);
     case "run_status":
       return isStatus(event["status"]);
     default:
@@ -386,4 +387,9 @@ function isOutsideSession(session: unknown): boolean {
     Number.isSafeInteger(fields["modified_at"]) &&
     (fields["folder"] === undefined || text(fields, "folder"))
   );
+}
+
+function isRunUpdate(value: unknown): boolean {
+  const update = record(value);
+  return update !== undefined && text(update, "run") && isRunEvent(update["event"]);
 }

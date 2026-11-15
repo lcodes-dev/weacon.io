@@ -6,8 +6,8 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    Asker, ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatQuery, ChatQueryKind, ChatUpdate,
-    Envelope, ErrorBody, Message, WorkspaceId,
+    Asker, ChatAnswer, ChatAnswerKind, ChatEntry, ChatId, ChatLive, ChatQuery, ChatQueryKind,
+    ChatUpdate, Envelope, ErrorBody, Message, WorkspaceId,
 };
 
 use super::{PAGE, PAGE_BYTES, command, read};
@@ -20,6 +20,8 @@ use crate::socket::Closed;
 pub(crate) struct Watch {
     /// Which chats have new events, for [`Watch::noticed`].
     pub(crate) notices: Receiver<(WorkspaceId, ChatId)>,
+    /// Chats' live updates, for [`Watch::passes`].
+    pub(crate) lives: Receiver<ChatLive>,
     /// Each chat followed, with the last of its events sent.
     following: HashMap<ChatId, u64>,
     /// The chats with events it hasn't sent, served in turn, a page each.
@@ -34,6 +36,7 @@ impl Watch {
         let (again, more) = mpsc::channel(1);
         Self {
             notices: shared.chats.notices(),
+            lives: shared.chats.lives(),
             following: HashMap::new(),
             behind: VecDeque::new(),
             more,
@@ -44,6 +47,22 @@ impl Watch {
     fn lag(&mut self, chat: ChatId) {
         if !self.behind.contains(&chat) {
             self.behind.push_back(chat);
+        }
+    }
+
+    /// What of `live`, from `lives`, goes to the socket: an update of a chat it follows in
+    /// `workspace`. Updates missed are let go, as the chat's stored events still come.
+    pub(crate) fn passes(
+        &self,
+        live: Result<ChatLive, RecvError>,
+        workspace: &WorkspaceId,
+    ) -> Result<Option<Message>, Closed> {
+        match live {
+            Ok(live) if live.workspace == *workspace && self.following.contains_key(&live.chat) => {
+                Ok(Some(Message::ChatLive(live)))
+            }
+            Ok(_) | Err(RecvError::Lagged(_)) => Ok(None),
+            Err(RecvError::Closed) => Err(Closed),
         }
     }
 
@@ -252,6 +271,33 @@ mod tests {
             panic!("not an error: {message:?}");
         };
         (code.as_str(), *retryable)
+    }
+
+    #[tokio::test]
+    async fn a_live_update_goes_only_to_a_socket_following_its_chat_in_its_workspace() {
+        let fixture = Fixture::new().await;
+        let mut watch = Watch::new(&fixture.shared);
+        watch.following.insert(id("c-1"), 0);
+        let live = |workspace: &str, chat: &str| ChatLive {
+            workspace: id(workspace),
+            chat: id(chat),
+            update: weacon_protocol::RunUpdate {
+                run: id("run-1"),
+                event: weacon_protocol::RunEvent::TextDelta {
+                    text: "Wor".to_owned(),
+                },
+            },
+            after: None,
+        };
+        let (w1, w2) = (id::<WorkspaceId>("w1"), id::<WorkspaceId>("w2"));
+
+        let ours = watch.passes(Ok(live("w1", "c-1")), &w1).unwrap();
+
+        assert_eq!(ours, Some(Message::ChatLive(live("w1", "c-1"))));
+        assert_eq!(watch.passes(Ok(live("w1", "c-1")), &w2).unwrap(), None);
+        assert_eq!(watch.passes(Ok(live("w1", "c-2")), &w1).unwrap(), None);
+        assert_eq!(watch.passes(Err(RecvError::Lagged(3)), &w1).unwrap(), None);
+        watch.passes(Err(RecvError::Closed), &w1).unwrap_err();
     }
 
     #[tokio::test]
