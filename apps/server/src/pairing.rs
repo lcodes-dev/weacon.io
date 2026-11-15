@@ -19,18 +19,17 @@ use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::client::Client;
+use crate::codes::{new_code, normalised, shown};
 use crate::db::{Claim, Claiming, Confirmation, NewPairing};
 use crate::http::{Body, error, failure, not_found, too_many};
 use crate::limit::{HOUR, Limit};
-use crate::secret::{random_token, random_u64};
+use crate::secret::random_token;
 use crate::shared::Shared;
 
 /// How long a person has to confirm a pairing, in seconds.
 const PAIRING_LIFETIME: i64 = 600;
 /// How long a core has to claim its machine once the person confirms, in seconds.
 const CLAIM_WITHIN: i64 = 120;
-/// Crockford's base 32: no I, L, O or U, which read like other letters.
-const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 /// How often each client may ask each pairing step.
 pub(crate) struct Limits {
@@ -85,7 +84,7 @@ pub(crate) async fn start(
 }
 
 async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted>, Fault> {
-    let (code, secret) = (code_text(random_u64()?), random_token()?);
+    let (code, secret) = (new_code()?, random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
     let expires_at = now.saturating_add(PAIRING_LIFETIME);
@@ -226,35 +225,6 @@ pub(crate) async fn unpair(
     }
 }
 
-/// A code of eight letters from [`ALPHABET`]: 40 random bits.
-fn code_text(word: u64) -> String {
-    (0..8)
-        .filter_map(|place| {
-            let index = usize::try_from((word >> (5 * place)) & 31).ok()?;
-            ALPHABET.get(index).copied().map(char::from)
-        })
-        .collect()
-}
-
-/// A code as its person reads it: `ABCD-EFGH`.
-fn shown(code: &str) -> String {
-    let (first, second) = code.split_at_checked(4).unwrap_or((code, ""));
-    format!("{first}-{second}")
-}
-
-/// A code as a person typed it, read as its letters: any case, with or without spaces and
-/// dashes, and the letters that look like digits taken for them.
-fn normalised(code: &str) -> String {
-    code.chars()
-        .filter(|letter| !letter.is_whitespace() && *letter != '-')
-        .map(|letter| match letter.to_ascii_uppercase() {
-            'O' => '0',
-            'I' | 'L' => '1',
-            other => other,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -271,16 +241,6 @@ mod tests {
 
     async fn post(address: SocketAddr, path: &str, headers: &str, body: &str) -> (String, Value) {
         ask(address, &format!("POST {path}"), headers, body).await
-    }
-
-    #[test]
-    fn codes_are_eight_letters_read_as_typed() {
-        assert_eq!(code_text(0), "00000000");
-        assert_eq!(code_text(u64::MAX), "ZZZZZZZZ");
-        assert_eq!(code_text(u64::from_le_bytes([1; 8])), "1802G040");
-        assert_eq!(shown("ABCDEFGH"), "ABCD-EFGH");
-        assert_eq!(normalised(" abcd-efgh "), "ABCDEFGH");
-        assert_eq!(normalised("oO iI lL"), "001111");
     }
 
     #[tokio::test]
