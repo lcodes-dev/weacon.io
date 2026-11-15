@@ -106,7 +106,8 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
     ada_chats(&machine, &mut core, &mut ada).await;
     let bo_token = token(&fixture, &server, "bo@example.com").await;
     let mut bo = feed(&server, "w1", &bo_token).await;
-    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 2 });
+    // Followed from before the reply, whose coming back says the follow is in place.
+    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 1 });
     socket::send(
         &mut bo,
         Envelope {
@@ -115,13 +116,14 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
         },
     )
     .await;
+    assert_eq!(chat_event(&mut bo).await.seq, 2);
     let token = token(&fixture, &server, "ada@example.com").await;
     let mut older = open(server.address, "/api/workspaces/w1/feed", &token)
         .await
         .unwrap();
     say(&mut older, &OFFERS[..3]).await;
     assert!(matches!(next(&mut older).await, Message::Welcome(_)));
-    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 2 });
+    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 1 });
     socket::send(
         &mut older,
         Envelope {
@@ -130,6 +132,7 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
         },
     )
     .await;
+    assert_eq!(chat_event(&mut older).await.seq, 2);
     let writing = || RunEvent::TextDelta {
         text: "Wor".to_owned(),
     };

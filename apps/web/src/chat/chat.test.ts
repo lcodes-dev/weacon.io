@@ -336,3 +336,18 @@ test("a fresh snapshot keeps the tools heard live, which no snapshot holds", () 
   const tools = again.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => ask.tool) : []));
   assert.deepEqual(tools, ["Bash"]);
 });
+
+test("the first tool named for a prompt is the one kept, and a turn that closed is named too", () => {
+  const stored = ran(3, "r-1", { event: "permission_asked", run: "r-1", prompt: 1, tool: "", input: null });
+  const named = (tool: string): RunEvent => ({ event: "permission_asked", run: "r-1", prompt: 1, tool, input: null });
+  const events = [said(1, "Fix it"), status(2, "r-1", "running"), stored, finished(4, "r-1")];
+  const tools = (shown: Chat) => shown.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => ask.tool) : []));
+  const closed = chat(events);
+
+  const heard = stream(stream(stream(closed, "r-1", named("")), "r-1", named("Bash")), "r-1", named("Other"));
+
+  assert.deepEqual(tools(heard), ["Bash"]);
+  assert.deepEqual([...heard.tools.values()], ["Bash"]);
+  const again = fromSnapshot({ seq: 4, runs: runs("r-1"), waiting: [], events }, heard.tools);
+  assert.deepEqual(tools(again), ["Bash"]);
+});

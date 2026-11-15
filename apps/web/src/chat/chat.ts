@@ -92,9 +92,13 @@ export function commit(chat: Chat, entry: ChatEntry): Chat | undefined {
  */
 export function stream(chat: Chat, run: RunId, event: RunEvent, after?: number): Chat {
   if (event.event === "permission_asked") {
-    const tools = new Map(chat.tools).set(toolKey(run, event.prompt), event.tool);
+    const key = toolKey(run, event.prompt);
+    if (event.tool === "" || chat.tools.has(key)) {
+      return chat;
+    }
+    const tools = new Map(chat.tools).set(key, event.tool);
     const items = [...chat.items];
-    update(items, run, (turn) => ({ ...turn, asks: turn.asks.map((ask) => (ask.prompt === event.prompt && ask.tool === "" ? { ...ask, tool: event.tool } : ask)) }));
+    changeAsks(items, run, (ask) => (ask.prompt === event.prompt && ask.tool === "" ? { ...ask, tool: event.tool } : ask));
     return { ...chat, items, tools };
   }
   const state = chat.runs.get(run)?.state;
