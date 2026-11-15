@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::error::ErrorKind;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
-use weacon_protocol::{AccessLevel, AgentKind, ChatId, WorkspaceId};
+use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, WorkspaceId};
 use weacon_version::Version;
 
 /// Weacon's core: runs agents for your chats and tasks.
@@ -62,6 +62,9 @@ pub(crate) enum Command {
         #[arg(long)]
         pin: Option<PathBuf>,
     },
+    /// Add a git repository a workspace's chats may work in, or list them.
+    #[command(subcommand)]
+    Repo(RepoCommand),
     /// Choose whether this core sends error reports, or show the answer.
     Reports {
         /// on or off; left out, shows the answer.
@@ -86,7 +89,7 @@ pub(crate) enum Command {
     /// Relay messages between Chrome's extension and the daemon; Chrome starts it.
     #[command(hide = true)]
     NativeHost { origin: String },
-    /// Print the text the MCP's `map` tool answers: where to begin in a repository's code.
+    /// Print what the code map says about a repository's code; where to begin, unless asked.
     Map(MapCommand),
     /// Print what an agent's hook adds; the plugin the core gives its runs calls it.
     #[command(subcommand, hide = true)]
@@ -141,6 +144,26 @@ pub(crate) struct CheckCommand {
     pub(crate) worktree: PathBuf,
 }
 
+#[derive(Debug, PartialEq, Eq, Subcommand)]
+pub(crate) enum RepoCommand {
+    /// Add the repository whose top folder is `path`, as `id`.
+    Add {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+        /// What the workspace calls the repository.
+        id: RepoId,
+        /// The repository's top folder.
+        path: PathBuf,
+    },
+    /// List a workspace's repositories, with their folders.
+    List {
+        /// The workspace's id.
+        #[arg(long)]
+        workspace: WorkspaceId,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Subcommand)]
 pub(crate) enum ServiceCommand {
     /// Install, enable and start the service, and let it run with nobody logged in.
@@ -156,7 +179,7 @@ pub(crate) struct MapCommand {
     /// The repository's root folder.
     #[arg(long, global = true, default_value = ".")]
     pub(crate) root: PathBuf,
-    /// The most bytes the answer may hold, for the map and `symbol`.
+    /// The most bytes the answer may hold.
     #[arg(long, global = true)]
     pub(crate) budget: Option<u32>,
 }
@@ -165,6 +188,12 @@ pub(crate) struct MapCommand {
 pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `symbol` tool answers for an item's full path.
     Symbol { path: String },
+    /// Print the text the MCP's `flow` tool answers: the flows the docs pin.
+    Flows,
+    /// Print the areas of the code and how they depend on one another.
+    Architecture,
+    /// Print the commands, routes and other contracts the code declares.
+    Contracts,
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
 }
@@ -188,6 +217,7 @@ impl Command {
             | Self::Access { .. }
             | Self::Guard(_)
             | Self::Pair { .. }
+            | Self::Repo(_)
             | Self::Reports { .. }
             | Self::Resume { .. }
             | Self::ConnectChrome
@@ -207,6 +237,7 @@ impl Command {
             Self::Access { .. } => "access",
             Self::Guard(_) => "guard",
             Self::Pair { .. } => "pair",
+            Self::Repo(_) => "repo",
             Self::Reports { .. } => "reports",
             Self::Resume { .. } => "resume",
             Self::ConnectChrome => "connect-chrome",
@@ -361,6 +392,27 @@ mod tests {
     }
 
     #[test]
+    fn the_maps_views_are_subcommands() {
+        let map = |args: &[&str]| run(&[["weacon", "map"].as_slice(), args].concat()).ok();
+
+        for (name, view) in [
+            ("flows", MapSubcommand::Flows),
+            ("architecture", MapSubcommand::Architecture),
+            ("contracts", MapSubcommand::Contracts),
+        ] {
+            let Some(Cli {
+                command: Command::Map(map),
+                ..
+            }) = map(&[name, "--budget", "2000"])
+            else {
+                panic!("{name}")
+            };
+            assert_eq!((map.command, map.budget), (Some(view), Some(2000)));
+        }
+        assert!(map(&["hotspots"]).is_none());
+    }
+
+    #[test]
     fn login_takes_a_known_agent_and_a_workspace_id() {
         let login = |agent| run(&["weacon", "login", agent, "--workspace", "w-1"]).unwrap();
 
@@ -385,6 +437,48 @@ mod tests {
         ] {
             run(bad).unwrap_err();
         }
+    }
+
+    #[test]
+    fn repo_adds_by_id_and_path_and_lists_by_workspace() {
+        let add = run(&[
+            "weacon",
+            "repo",
+            "add",
+            "--workspace",
+            "w-1",
+            "site",
+            "/src/site",
+        ])
+        .unwrap();
+        let Command::Repo(RepoCommand::Add {
+            workspace,
+            id,
+            path,
+        }) = add.command
+        else {
+            panic!("not repo add");
+        };
+        assert_eq!((workspace.as_str(), id.as_str()), ("w-1", "site"));
+        assert_eq!(path, PathBuf::from("/src/site"));
+        let list = run(&["weacon", "repo", "list", "--workspace", "w-1"]).unwrap();
+        assert!(matches!(
+            list.command,
+            Command::Repo(RepoCommand::List { .. })
+        ));
+        assert_eq!(list.command.name(), "repo");
+        assert_eq!(list.command.log_name(), "cli.log");
+        run(&[
+            "weacon",
+            "repo",
+            "add",
+            "--workspace",
+            "w-1",
+            "--bad",
+            "/src",
+        ])
+        .unwrap_err();
+        run(&["weacon", "repo", "add", "--workspace", "w-1", "a/b", "/src"]).unwrap_err();
     }
 
     #[test]

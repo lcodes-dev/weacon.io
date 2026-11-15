@@ -1,5 +1,5 @@
 import type { RequestId, RunId } from "../protocol.ts";
-import type { Settled } from "../receipts.ts";
+import { type Settled, type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
 export type Answering = {
@@ -29,7 +29,8 @@ export function sending(
 ): { answers: Answers; request: RequestId } {
   const key = askKey(run, prompt);
   const before = answers.get(key);
-  const request = before !== undefined && before.settled !== "refused" && before.allow === allow ? before.request : fresh();
+  const again = before !== undefined && before.allow === allow && (before.settled === undefined || mayHaveRun(before.settled));
+  const request = again ? before.request : fresh();
   return { answers: new Map(answers).set(key, { run, prompt, allow, request, settled: undefined }), request };
 }
 
@@ -59,24 +60,27 @@ export function settleAnswer(answers: Answers, sent: SentAnswers, request: Reque
   return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
 }
 
-const PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
-  refused: "The answer wasn't taken.",
-  lost: "The connection closed. The answer may not have been sent.",
-  unsure: "The server didn't answer. The answer may not have been sent.",
+const ANSWER: Subject = {
+  subject: "the answer",
+  refused: "wasn't taken",
+  unsent: "wasn't sent",
+  unsure: "may not have been sent",
+  gone: "it takes no answers",
 };
-
-const STOP_PROBLEMS: Record<Exclude<Settled, "accepted">, string> = {
-  refused: "The agent wasn't stopped.",
-  lost: "The connection closed. The agent may not have stopped.",
-  unsure: "The server didn't answer. The agent may not have stopped.",
+const STOP: Subject = {
+  subject: "the agent",
+  refused: "wasn't stopped",
+  unsent: "wasn't stopped",
+  unsure: "may not have stopped",
+  gone: "there's no agent to stop",
 };
 
 /** What Stop says once its interrupt ended as `settled`: nothing when it was taken. */
 export function stopProblem(settled: Settled): string | undefined {
-  return settled === "accepted" ? undefined : STOP_PROBLEMS[settled];
+  return settledText(settled, STOP);
 }
 
 /** What a prompt says about its answer: nothing, or why it may not have been taken. */
 export function answerProblem(answering: Answering | undefined): string | undefined {
-  return answering?.settled === undefined ? undefined : PROBLEMS[answering.settled];
+  return answering?.settled === undefined ? undefined : settledText(answering.settled, ANSWER);
 }

@@ -2,8 +2,37 @@ import type { Later } from "./connection.ts";
 import type { Incoming } from "./incoming.ts";
 import type { RequestId } from "./protocol.ts";
 
-/** How a command ended for its sender; `lost` and `unsure` may or may not have run. */
-export type Settled = "accepted" | "refused" | "lost" | "unsure";
+/**
+ * How a command ended for its sender; `lost` and `unsure` may or may not have run. `offline` and
+ * `detached` are refusals because its machine is away or the chat has none.
+ */
+export type Settled = "accepted" | "refused" | "offline" | "detached" | "lost" | "unsure";
+
+/** Whether a command that ended as `settled` may have run, so sending it again must reuse its request. */
+export function mayHaveRun(settled: Settled): boolean {
+  return settled === "lost" || settled === "unsure";
+}
+
+/**
+ * What a command was about, for saying how it ended: its subject, what didn't happen when it was
+ * refused or never left, what may not have, and what a chat whose machine is gone no longer does.
+ */
+export type Subject = { subject: string; refused: string; unsent: string; unsure: string; gone: string };
+
+const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+
+const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => string> = {
+  refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
+  offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
+  detached: ({ gone }) => `This chat's machine is gone, so ${gone}.`,
+  lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
+  unsure: ({ subject, unsure }) => `The server didn't answer. ${capital(subject)} ${unsure}.`,
+};
+
+/** What a person reads once a command about `about` ended as `settled`: nothing when it was taken. */
+export function settledText(settled: Settled, about: Subject): string | undefined {
+  return settled === "accepted" ? undefined : SETTLED_TEXT[settled](about);
+}
 
 // How long a command waits for the server's word on it.
 const WAIT_MS = 15_000;
@@ -15,6 +44,12 @@ const SETTLED = new Map<string, Settled>([
   ["interrupted", "refused"],
   ["failed", "refused"],
   ["unknown", "unsure"],
+]);
+
+// The refusals a sender words on their own; any other code is `refused`.
+const REFUSALS = new Map<string, Settled>([
+  ["machine.offline", "offline"],
+  ["chat.detached", "detached"],
 ]);
 
 type Waiting = { id: number; settled: Promise<Settled>; resolve: (settled: Settled) => void };
@@ -71,9 +106,10 @@ export class Receipts {
     if (envelope.type !== "error") {
       return;
     }
+    const settled = REFUSALS.get(envelope.code) ?? "refused";
     const refused = [...this.#waiting].find(([, waiting]) => waiting.id === envelope.id);
     if (refused !== undefined) {
-      this.settle(refused[0], "refused");
+      this.settle(refused[0], settled);
       return;
     }
     const overdue = [...this.#overdue].find(([, id]) => id === envelope.id);
@@ -81,7 +117,7 @@ export class Receipts {
     if (overdue !== undefined) {
       this.#overdue.delete(overdue[0]);
       if (!this.#waiting.has(overdue[0])) {
-        this.#late(overdue[0], "refused");
+        this.#late(overdue[0], settled);
       }
     }
   }

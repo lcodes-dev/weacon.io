@@ -8,7 +8,7 @@ use std::time::Duration;
 use weacon_testing::Failure;
 use weacon_testing::fake_core::serve;
 use weacon_testing::platform::listen;
-use weacon_testing::recording::{FakeArgs, SESSION, args, recording};
+use weacon_testing::recording::{FakeArgs, TRANSCRIPT, args, recording};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -22,7 +22,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(dir: &Path, tokens: usize, pace: Duration) -> Result<(), Failure> {
-    let recording = recording(SESSION, tokens)?;
+    let recording = recording(TRANSCRIPT, tokens)?;
     let listener = listen(&dir.join("weacon.sock"))?;
     let stream = listener.accept().await?.0;
     serve(stream, recording, pace).await

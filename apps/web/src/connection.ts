@@ -7,11 +7,14 @@ export type WebCapability =
   | "run.stream"
   | "workspace.feed"
   | "workspace.chats"
+  | "workspace.chat_commands"
   | "diff.view"
   | "chat.send"
   | "chat.events"
   | "log.forward"
-  | "machine.settings";
+  | "machine.settings"
+  | "worktree.manage"
+  | "worktree.open_terminal";
 
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;
@@ -51,6 +54,9 @@ export type Status =
 
 /** Runs `run` once `ms` have passed; injected, so tests can run it at will. */
 export type Later = (run: () => void, ms: number) => void;
+
+/** The browser's own timer, as a `Later`. */
+export const later: Later = (run, ms) => setTimeout(run, ms);
 
 /** Told each change of status, and each message after the welcome. */
 export type Listener = {

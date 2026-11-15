@@ -3,7 +3,9 @@
 mod app;
 mod chats;
 mod cli;
+mod codemap;
 mod daemon;
+mod db;
 mod disk;
 mod doctor;
 #[cfg_attr(
@@ -18,13 +20,6 @@ mod guard;
 mod hook;
 mod integrations;
 mod machine;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the server's uplink, which uses it, comes with pairing"
-    )
-)]
 mod machine_settings;
 mod map;
 mod mcp;
@@ -113,6 +108,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         Command::Pair { server, name, pin } => {
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }
+        Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),

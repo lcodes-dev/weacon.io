@@ -1,8 +1,7 @@
 import { type Command, deliver } from "../chat/commands.ts";
-import { type Status, offers } from "../connection.ts";
 import type { ChatRef } from "../chat-ref.ts";
 import type { Envelope, RequestId } from "../protocol.ts";
-import type { Receipts, Settled } from "../receipts.ts";
+import { type Receipts, type Settled, type Subject, settledText } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
@@ -21,41 +20,44 @@ export function deliverPrompt(command: Command, receipts: Receipts, send: (envel
   return deliver(command, receipts, send);
 }
 
-/** A prompt that may have run, kept with its request so sending it again can't run it twice. */
-export type Retry = { text: string; request: RequestId };
-
-const PROBLEMS: Record<Exclude<Sent, "accepted">, string> = {
-  too_long: "It's too long to send. Shorten it and try again.",
-  refused: "The message wasn't sent.",
-  lost: "The connection closed. The message may not have been sent.",
-  unsure: "The server didn't answer. The message may not have been sent.",
+const MESSAGE: Subject = {
+  subject: "the message",
+  refused: "wasn't sent",
+  unsent: "wasn't sent",
+  unsure: "may not have been sent",
+  gone: "it can be read but takes no messages",
 };
 
-/** What the box holds after a send. */
-export type After = { text: string; problem: string | undefined; retry: Retry | undefined };
-
-/**
- * What the box holds once sending `text` under `request` ended as `sent`: empty when accepted,
- * else the text, why, and the request to retry it under when it may have run.
- */
-export function after(sent: Sent, text: string, request: RequestId): After {
-  if (sent === "accepted") {
-    return { text: "", problem: undefined, retry: undefined };
-  }
-  const retry = sent === "lost" || sent === "unsure" ? { text, request } : undefined;
-  return { text, problem: PROBLEMS[sent], retry };
+/** Why a send that ended as `sent` wasn't taken, or may not have been; nothing when it was. */
+export function sentProblem(sent: Sent): string | undefined {
+  return sent === "too_long" ? "It's too long to send. Shorten it and try again." : settledText(sent, MESSAGE);
 }
 
 /** How a command ended, heard after its wait ran out. */
 export type Late = { request: RequestId; settled: Settled };
 
+/** Hands `listener` each late receipt until the returned function is called, so none is lost in a batch. */
+export type Lates = (listener: (late: Late) => void) => () => void;
+
+/** Late receipts as `Lates`: each one `hear` takes reaches every listener at once. */
+export function lateFeed(): { lates: Lates; hear: (late: Late) => void } {
+  const listeners = new Set<(late: Late) => void>();
+  return {
+    lates: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    hear: (late) => [...listeners].forEach((listener) => listener(late)),
+  };
+}
+
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
-export function blocked(status: Status, chatRef: ChatRef | undefined): string | undefined {
+export function blocked(live: boolean, chatRef: ChatRef | undefined, sends: boolean): string | undefined {
   if (chatRef === undefined) {
     return "Pick a chat to send to.";
   }
-  if (status.state !== "live") {
+  if (!live) {
     return "Messages send once the server is connected.";
   }
-  return offers(status, "chat.send") ? undefined : "This server can't take messages yet.";
+  return sends ? undefined : "This server can't take messages yet.";
 }

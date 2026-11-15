@@ -4,18 +4,15 @@ import { test } from "node:test";
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
 import { chatCommand } from "../chat/commands.ts";
-import { after, blocked, deliverPrompt } from "./prompt.ts";
+import { type Late, blocked, deliverPrompt, lateFeed, sentProblem } from "./prompt.ts";
 
 test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
   const chatRef = { workspace: "w-1", chat: "c-1" };
-  const server = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-  const live = (capabilities: string[]) => ({ state: "live" as const, server, capabilities });
 
-  assert.equal(blocked(live(["chat.send"]), chatRef), undefined);
-  assert.equal(blocked(live(["chat.send"]), undefined), "Pick a chat to send to.");
-  assert.equal(blocked(live(["run.stream"]), chatRef), "This server can't take messages yet.");
-  assert.equal(blocked({ state: "connecting" }, chatRef), "Messages send once the server is connected.");
-  assert.equal(blocked({ state: "ended", code: "connection.lost" }, chatRef), "Messages send once the server is connected.");
+  assert.equal(blocked(true, chatRef, true), undefined);
+  assert.equal(blocked(true, undefined, true), "Pick a chat to send to.");
+  assert.equal(blocked(true, chatRef, false), "This server can't take messages yet.");
+  assert.equal(blocked(false, chatRef, true), "Messages send once the server is connected.");
 });
 
 test("a prompt is sent and waits for its receipt, unless it is over the server's limit", async () => {
@@ -34,24 +31,28 @@ test("a prompt is sent and waits for its receipt, unless it is over the server's
   assert.deepEqual(sent, [fits]);
 });
 
-test("an accepted prompt empties the box; any other keeps it and says why", () => {
-  const retry = { text: "hi", request: "r-1" };
-  assert.deepEqual(after("accepted", "hi", "r-1"), { text: "", problem: undefined, retry: undefined });
-  assert.deepEqual(after("lost", "hi", "r-1"), {
-    text: "hi",
-    problem: "The connection closed. The message may not have been sent.",
-    retry,
-  });
-  assert.deepEqual(after("unsure", "hi", "r-1"), {
-    text: "hi",
-    problem: "The server didn't answer. The message may not have been sent.",
-    retry,
-  });
-  assert.deepEqual(after("refused", "hi", "r-1"), { text: "hi", problem: "The message wasn't sent.", retry: undefined });
-  assert.deepEqual(after("too_long", "hi", "r-1"), {
-    text: "hi",
-    problem: "It's too long to send. Shorten it and try again.",
-    retry: undefined,
-  });
+test("a send says why it wasn't taken, or may not have been, and nothing once it was", () => {
+  assert.equal(sentProblem("accepted"), undefined);
+  assert.equal(sentProblem("lost"), "The connection closed. The message may not have been sent.");
+  assert.equal(sentProblem("unsure"), "The server didn't answer. The message may not have been sent.");
+  assert.equal(sentProblem("refused"), "The message wasn't sent.");
+  assert.equal(sentProblem("offline"), "The machine is offline, so the message wasn't sent. Try again once it's back.");
+  assert.equal(sentProblem("detached"), "This chat's machine is gone, so it can be read but takes no messages.");
+  assert.equal(sentProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });
 
+
+test("every late receipt reaches each listener, two at once included, until it stops listening", () => {
+  const { lates, hear } = lateFeed();
+  const heard: Late[] = [];
+  const stop = lates((late) => heard.push(late));
+  hear({ request: "r-1", settled: "accepted" });
+  hear({ request: "r-2", settled: "refused" });
+  stop();
+  hear({ request: "r-3", settled: "accepted" });
+
+  assert.deepEqual(heard, [
+    { request: "r-1", settled: "accepted" },
+    { request: "r-2", settled: "refused" },
+  ]);
+});

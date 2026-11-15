@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, code};
+use weacon_protocol::{App, ChatId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
@@ -100,12 +100,16 @@ pub(crate) fn work_dir(work_root: Option<&Path>, key: &ChatKey) -> Result<PathBu
             "The chat's working folder couldn't be created",
         )
     };
-    let dir = work_root
-        .ok_or_else(failed)?
-        .join(workspaces::folder_name(&key.workspace))
-        .join(file_stem(&key.chat));
+    let dir = chat_folder(work_root.ok_or_else(failed)?, &key.workspace, &key.chat);
     platform::private_dir(&dir).map_err(|error| failed().because(error))?;
     Ok(dir)
+}
+
+/// The folder a chat's agents work in under `work_root`.
+pub(crate) fn chat_folder(work_root: &Path, workspace: &WorkspaceId, chat: &ChatId) -> PathBuf {
+    work_root
+        .join(workspaces::folder_name(workspace))
+        .join(file_stem(chat))
 }
 
 fn unix_now() -> u64 {
@@ -116,10 +120,10 @@ fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{AgentKind, ChatAnswerKind, ChatEvent, ChatQueryKind, Outcome, Receipt};
+    use weacon_protocol::{AgentKind, ChatEvent, ChatQueryKind, Message, Outcome, Receipt};
     use weacon_testing::{TempDir, recording_logger};
 
-    use super::test_support::{chat, client, key, prompt, query, workspace};
+    use super::test_support::{chat, client, key, prompt, query, soon, workspace};
     use super::*;
     use crate::test_support::VERSION;
 
@@ -273,15 +277,11 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("c-c-1"), b"").unwrap();
 
+        let (watcher, mut pushes) = client(16);
+        let subscribe = query("c-1", ChatQueryKind::Subscribe { after: 0 });
+        chats.query(subscribe, &watcher).await.unwrap();
         chats.command(prompt("r-1", "Hi")).await.unwrap();
 
-        let (anyone, _pushes) = client(1);
-        let snapshot = query("c-1", ChatQueryKind::Snapshot);
-        let Ok(Some(ChatAnswerKind::Snapshot { events, .. })) =
-            chats.query(snapshot, &anyone).await
-        else {
-            panic!("no snapshot");
-        };
         let failed = ChatEvent::Receipt {
             receipt: Receipt {
                 request: prompt("r-1", "Hi").request,
@@ -290,7 +290,13 @@ mod tests {
                 },
             },
         };
-        assert_eq!(events.last().map(|entry| &entry.event), Some(&failed));
+        let mut last = None;
+        while last.as_ref() != Some(&failed)
+            && let Some(Message::Chat(update)) = soon(pushes.recv()).await
+        {
+            last = Some(update.entry.event);
+        }
+        assert_eq!(last, Some(failed));
         let journal = Runs::load(&dir).unwrap();
         let record = journal.of(&key()).unwrap();
         assert!(record.active_at > 1_700_000_000);

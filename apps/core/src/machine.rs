@@ -133,7 +133,7 @@ pub(crate) fn forget(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
     fs::remove_file(file(state_dir)).map_err(|error| not_saved().because(error))
 }
 
-fn unreadable() -> Fault {
+pub(crate) fn unreadable() -> Fault {
     Fault::new(
         code!("machine.unreadable"),
         "This machine's pairing can't be read",

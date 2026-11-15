@@ -1,28 +1,23 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+mod beneath;
 mod chrome;
 mod procs;
 mod programs;
 mod spawn_policy;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "chats remove their worktrees through it once wired in"
-    )
-)]
 pub(crate) mod trash;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
 mod windows;
 
+pub(crate) use beneath::open_beneath;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
-pub(crate) use programs::plant_program;
+pub(crate) use programs::{plant_link, plant_program};
 pub(crate) use spawn_policy::spawn_policy;
 #[cfg(unix)]
 pub(crate) use unix::*;

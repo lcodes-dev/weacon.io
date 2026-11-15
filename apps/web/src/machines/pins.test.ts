@@ -8,6 +8,7 @@ function memoryStore(): PinStore {
   return {
     get: async (machine) => keys.get(machine),
     put: async (machine, key) => {
+      if (keys.has(machine) && keys.get(machine) !== key) throw new Error("another key is pinned");
       keys.set(machine, key);
     },
     delete: async (machine) => {
@@ -31,14 +32,17 @@ test("a key is trusted only once pinned, and only that key", async () => {
   assert.equal(await pins.matches("m-2", KEY), "unpinned");
 });
 
-test("pinning again replaces the key, and unpinning forgets it", async () => {
+test("pinning never replaces another key, and unpinning forgets it", async () => {
   const pins = new Pins(memoryStore());
   await pins.pin("m-1", KEY);
-  await pins.pin("m-1", OTHER);
+  await pins.pin("m-1", KEY);
+  await assert.rejects(pins.pin("m-1", OTHER));
 
-  assert.equal(await pins.matches("m-1", OTHER), "match");
+  assert.equal(await pins.matches("m-1", KEY), "match");
   await pins.unpin("m-1");
-  assert.equal(await pins.matches("m-1", OTHER), "unpinned");
+  assert.equal(await pins.matches("m-1", KEY), "unpinned");
+  await pins.pin("m-1", OTHER);
+  assert.equal(await pins.matches("m-1", OTHER), "match");
 });
 
 test("only a machine key can be pinned", async () => {
