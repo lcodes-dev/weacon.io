@@ -225,7 +225,6 @@ fn chat_command(key: &ChatKey, action: ChatAction) -> Result<Message, Fault> {
 #[cfg(test)]
 mod tests {
 
-    use std::task::Poll;
     use std::time::Duration;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -601,7 +600,7 @@ mod tests {
         let mut received = daemon(&socket, silent);
 
         let waiting = tokio::spawn(async move { hold(&socket, build(&VERSION), &key()).await });
-        for _ in ["hello", "Hold", "barrier"] {
+        for _ in 0..3 {
             assert!(bounded(received.recv()).await.is_some());
         }
         // Paused only once nothing is in flight on the socket, so the clock can't outrun it.
@@ -665,9 +664,12 @@ mod tests {
         };
 
         // Polled again once the hang-up is handled, the agent ends only after the warning.
-        let agent = std::future::poll_fn(|_| match warned() {
-            0 => Poll::Pending,
-            _ => Poll::Ready(Ok(())),
+        let agent = std::future::poll_fn(|_| {
+            if warned() == 0 {
+                std::task::Poll::Pending
+            } else {
+                std::task::Poll::Ready(Ok(()))
+            }
         });
         let taken = held(&socket).await.unwrap();
         bounded(carry_on(taken, agent, &log)).await.unwrap();

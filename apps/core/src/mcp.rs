@@ -630,8 +630,8 @@ mod tests {
     // Whether the server ended `stream`, with nothing more said.
     async fn ended(stream: &mut TcpStream) -> bool {
         let mut rest = Vec::new();
-        let read = tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest));
-        read.await
+        tokio::time::timeout(Duration::from_secs(5), stream.read_to_end(&mut rest))
+            .await
             .is_ok_and(|read| read.map_or(true, |bytes| bytes == 0))
     }
 
@@ -655,8 +655,8 @@ mod tests {
             answered.extend(byte);
         }
 
-        // Past the limit, it waits unaccepted until the listener closes; a new connection could
-        // reach another test's listener on the freed port.
+        // Past the limit, this one waits unaccepted until the listener closes; a fresh connect
+        // could reach another test's listener on the freed port.
         let mut queued = TcpStream::connect(address).await.unwrap();
 
         drop(server);
