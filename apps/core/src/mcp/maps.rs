@@ -18,7 +18,7 @@ use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{McpCall, WorkspaceId, code};
+use weacon_protocol::{McpCall, RepoId, WorkspaceId, code};
 
 use self::moves::Moves;
 use super::grants::{Grant, Grants};
@@ -72,6 +72,7 @@ struct TooSlow;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
     workspace: WorkspaceId,
+    repo: RepoId,
     main: PathBuf,
     worktree: PathBuf,
 }
@@ -110,6 +111,17 @@ impl Maps {
             Ok(None) => NO_MAP.to_owned(),
             Err(TooSlow) => TOO_SLOW.to_owned(),
         }
+    }
+
+    /// The id `grant`'s workspace registered the repository of its folder under, if it did.
+    pub(crate) async fn repo(&self, grant: &Grant, log: &Logger) -> Option<RepoId> {
+        let stores = self.stores(log).await?;
+        let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
+        let found = off_runtime(move || stores.registered(workspace, &folder)).await;
+        let found = found.inspect_err(|fault| {
+            log.warn("mcp repo failed", &[("err", Field::error(fault))]);
+        });
+        Some(found.ok()??.repo)
     }
 
     /// [`Self::answer`]'s answer from the map of the folder in `place`'s workspace when there
@@ -188,12 +200,12 @@ async fn open(
     let db = Db::open(state_dir).await?;
     let git = Git::open(state_dir, path.as_deref())?;
     Ok(Stores {
+        moves: proposals.map(|proposals| Moves::start(proposals, git.clone())),
         db,
         git,
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
         reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
-        moves: proposals.map(Moves::start),
     })
 }
 
@@ -261,9 +273,10 @@ impl Stores {
         let repos = GitStores::new(&self.workspaces, &workspace)
             .repos()
             .list()?;
-        let listed = |repo: &Registered| repo.path == main || repo.path == worktree;
-        Ok(repos.iter().any(listed).then_some(Watched {
+        let listed = |repo: &&Registered| repo.path == main || repo.path == worktree;
+        Ok(repos.iter().find(listed).map(|repo| Watched {
             workspace,
+            repo: repo.id.clone(),
             main,
             worktree,
         }))
@@ -659,6 +672,23 @@ mod tests {
         assert!(linked.iter().all(|watched| watched.main == main));
     }
 
+    #[tokio::test]
+    async fn a_runs_repository_is_the_one_its_workspace_registered_its_folder_under() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let (one, two) = (workspace("one"), workspace("two"));
+        let main = crate_repo(&dir, "one");
+        setup.register(&one, "site", &main);
+        let (log, _records) = recording_logger();
+
+        let repo = setup.maps.repo(&grant(&one, &main.join("src")), &log).await;
+        let elsewhere = setup.maps.repo(&grant(&two, &main), &log).await;
+        let off = Maps::off().repo(&grant(&one, &main), &log).await;
+
+        assert_eq!(repo, Some("site".parse().unwrap()));
+        assert_eq!((elsewhere, off), (None, None));
+    }
+
     async fn until_watched(stores: &Stores) {
         while stores.live().is_empty() {
             tokio::task::yield_now().await;
@@ -728,6 +758,7 @@ mod tests {
                 anchors: Some(weacon_protocol::DocAnchors {
                     commit: "a".repeat(40).parse().unwrap(),
                     pins: vec![pin.parse().unwrap()],
+                    repo: None,
                 }),
             },
         }
@@ -743,7 +774,7 @@ mod tests {
             .unwrap();
         let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");
         let was = facts(&[manifest, ("src/lib.rs", "pub fn go() {}\n")]);
-        let now = facts(&[manifest, ("src/lib.rs", "pub fn went() {}\n")]);
+        let now = facts(&[manifest, ("src/lib.rs", "pub fn went() -> u8 { 1 }\n")]);
         let index = assemble(&was);
         let anchor: weacon_codemap::Anchor = "sym:a::go".parse().unwrap();
         let pin = weacon_codemap::Pin {
@@ -753,6 +784,7 @@ mod tests {
         fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
         let watched = Watched {
             workspace: workspace("one"),
+            repo: "site".parse().unwrap(),
             main: dir.join("main"),
             worktree: dir.join("main"),
         };
@@ -804,6 +836,7 @@ mod tests {
         fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
         let watched = Watched {
             workspace: workspace("one"),
+            repo: "site".parse().unwrap(),
             main: dir.join("main"),
             worktree: dir.join("main"),
         };

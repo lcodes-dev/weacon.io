@@ -46,7 +46,7 @@ pub fn is_mapped(path: &str) -> bool {
 
 /// The version of what a [`Reader`] takes from a file, raised whenever that changes, so facts a
 /// store kept from an older one are read again.
-pub const FACTS_VERSION: u32 = 1;
+pub const FACTS_VERSION: u32 = 2;
 
 /// Reads files into `Facts`, reusing one parser.
 pub struct Reader {
