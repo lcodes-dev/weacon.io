@@ -686,15 +686,24 @@ mod tests {
         ));
     }
 
+    // `answer`'s result, failing the test rather than hanging it when it doesn't come in time.
+    #[cfg(unix)]
+    fn soon<T: Send + 'static>(answer: impl FnOnce() -> T + Send + 'static) -> T {
+        let (sent, answered) = mpsc::channel();
+        std::thread::spawn(move || drop(sent.send(answer())));
+        answered.recv_timeout(Duration::from_secs(10)).unwrap()
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_binary_that_hangs_is_killed() {
         let dir = TempDir::new().unwrap();
         let hangs = dir.join("hangs");
-        // It never ends on its own, so only the deadline ends it.
-        fs::write(&hangs, "#!/bin/sh\nexec tail -f /dev/null\n").unwrap();
+        // Far longer than the test waits, so only the deadline can end it in time.
+        fs::write(&hangs, "#!/bin/sh\nexec sleep 60\n").unwrap();
         crate::platform::make_runnable(&hangs).unwrap();
-        let error = output_within(&mut Command::new(&hangs), Duration::ZERO).unwrap_err();
+        let error = soon(move || output_within(&mut Command::new(&hangs), Duration::ZERO));
+        let error = error.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let fast = answering(&dir, "quick");
         let printed = output_within(&mut Command::new(&fast), Duration::from_secs(30)).unwrap();
@@ -711,13 +720,14 @@ mod tests {
         let leaves = dir.join("leaves");
         let left = dir.join("left");
         let script = format!(
-            "#!/bin/sh\necho started\ntail -f /dev/null &\necho $! > '{}'\n",
+            "#!/bin/sh\necho started\nsleep 60 &\necho $! > '{}'\n",
             left.display()
         );
         fs::write(&leaves, script).unwrap();
         crate::platform::make_runnable(&leaves).unwrap();
-        let error =
-            output_within(&mut Command::new(&leaves), Duration::from_millis(500)).unwrap_err();
+        let answer =
+            soon(move || output_within(&mut Command::new(&leaves), Duration::from_millis(500)));
+        let error = answer.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let pid = fs::read_to_string(&left).unwrap();
         let killed = Command::new("kill").arg(pid.trim()).status().unwrap();
