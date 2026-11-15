@@ -201,6 +201,26 @@ mod tests {
         take(shared, &machine, newer, for_now()).await.unwrap_err();
     }
 
+    #[test]
+    fn letting_go_of_a_requests_older_envelope_keeps_its_latest_current() {
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        let asked = command("r-1", "c-1", "Go");
+        sent.sent(&machine, 1, &asked);
+        sent.sent(&machine, 2, &asked);
+        let others = 3..=u32::try_from(KEPT + 1).unwrap();
+        for envelope in others {
+            sent.sent(
+                &machine,
+                envelope,
+                &command(&format!("r-{envelope}"), "c-1", "Go"),
+            );
+        }
+
+        assert_eq!(sent.answered(&machine, 1), None);
+        assert!(sent.answered(&machine, 2).unwrap().current);
+    }
+
     #[tokio::test]
     async fn a_refusal_that_cant_be_kept_is_logged_and_keeps_the_link() {
         let fixture = Fixture::new().await;

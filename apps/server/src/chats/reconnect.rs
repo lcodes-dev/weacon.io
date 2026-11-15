@@ -596,6 +596,15 @@ mod tests {
 
         let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
         assert!(request.refused && !request.sent, "{request:?}");
+        // One sent before stays sent when sending it again fails.
+        workspace.mark_sent(&id("r-c-1"), true).await.unwrap();
+        let sent_before = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        again(shared, workspace, &route, &chat, sent_before)
+            .await
+            .unwrap_err();
+        let request = workspace.open_requests(&chat).await.unwrap().pop().unwrap();
+        assert!(request.sent, "{request:?}");
+        workspace.mark_refused(&id("r-c-1")).await.unwrap();
         // Sent again by a member meanwhile: its core's answer to that send counts, not this.
         let refusals = workspace.refusals(&id("r-c-1")).await.unwrap();
         workspace.resent(&id("r-c-1"), refusals).await.unwrap();
