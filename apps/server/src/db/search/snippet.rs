@@ -214,4 +214,18 @@ mod tests {
         assert_eq!(found.marks.len(), SHOWN / 4);
         assert!(found.text.ends_with(" …"));
     }
+
+    #[test]
+    fn a_long_title_is_cut_like_a_body_and_a_match_it_cuts_is_closed() {
+        let late = format!("{}\u{1}plan\u{2} {}", "word ".repeat(20), "x".repeat(SHOWN));
+        let open = format!("\u{1}{}\u{2}", "a".repeat(SHOWN * 2));
+
+        let cut_late = of("", &words(&["zzz"]), &late);
+        assert!(cut_late.text.starts_with("… word word"), "{cut_late:?}");
+        assert!(cut_late.text.ends_with(" …"), "{cut_late:?}");
+        assert_eq!(shown(&cut_late).matches("[plan]").count(), 1);
+        let cut_open = of("", &words(&["zzz"]), &open);
+        // The window counts the marking byte the index wrote.
+        assert_eq!(cut_open.marks, [Mark { start: 0, end: 199 }]);
+    }
 }
