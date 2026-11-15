@@ -19,6 +19,7 @@ mod receipt;
 mod release;
 mod repo;
 mod run;
+mod search;
 mod secret;
 mod sessions;
 mod settings;
@@ -72,6 +73,7 @@ pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
 };
+pub use search::{Mark, SearchAnswer, SearchHit, SearchQuery, Snippet};
 pub use secret::Secret;
 pub use sessions::{
     OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
@@ -132,6 +134,8 @@ mod tests {
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
         generator.subschema_for::<MemberList>();
+        generator.subschema_for::<SearchQuery>();
+        generator.subschema_for::<SearchAnswer>();
         generator.subschema_for::<ProposalList>();
         generator.subschema_for::<ProposalDecision>();
         generator.subschema_for::<ProposalOutcome>();
