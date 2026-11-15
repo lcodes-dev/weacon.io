@@ -825,19 +825,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_newer_kind_of_list_is_refused() {
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let mut asked = hello(PROTOCOL);
-        asked.extend(br#"{"id":3,"type":"chats_query","query":{"kind":"search"}}"#);
-        asked.push(b'\n');
-        let (refused, _) = exchange(connect(&running.socket).await, &asked, 2).await;
-        running.stop().await;
-
-        assert_eq!(error_code(&refused[1]), Some("message.unsupported"));
-    }
-
-    #[tokio::test]
     async fn a_chat_whose_log_cant_be_read_is_listed_untitled() {
         use weacon_protocol::{ChatsAnswerKind, ChatsQuery, ChatsQueryKind};
 
@@ -857,9 +844,7 @@ mod tests {
         let Message::ChatsAnswer(answer) = &replies[1] else {
             panic!("not a list: {:?}", replies[1]);
         };
-        let ChatsAnswerKind::List { chats } = &answer.answer else {
-            panic!("not a list");
-        };
+        let ChatsAnswerKind::List { chats } = &answer.answer;
         assert_eq!(
             chats
                 .iter()

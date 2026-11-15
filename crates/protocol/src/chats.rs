@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentKind, ChatId, RunState, WorkspaceId};
 
-/// A local client asks the core which chats it serves, in every workspace, under `chat.list`.
+/// A local client asks the core which chats it serves, in every workspace.
 /// Never relayed by the server, which lists a workspace's chats itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatsQuery {
@@ -15,10 +15,6 @@ pub struct ChatsQuery {
 pub enum ChatsQueryKind {
     /// Every chat this core has run or queued a prompt for, newest first.
     List,
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The core's answer to a [`ChatsQuery`], under the query's envelope id.
@@ -30,13 +26,7 @@ pub struct ChatsAnswer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatsAnswerKind {
-    List {
-        chats: Vec<LocalChat>,
-    },
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
+    List { chats: Vec<LocalChat> },
 }
 
 /// A chat a core serves: `title` is its first prompt's first line, as the server titles it, and
@@ -60,7 +50,7 @@ mod tests {
 
     use super::*;
     use crate::Message;
-    use crate::test_support::{chat, envelope, never_sent, travels, workspace};
+    use crate::test_support::{chat, envelope, travels, workspace};
 
     #[test]
     fn a_list_query_and_its_answer_have_a_tagged_shape() {
@@ -98,11 +88,5 @@ mod tests {
             json!({ "id": 4, "type": "chats_answer",
                     "answer": { "kind": "list", "chats": [waiting, chat] } }),
         );
-    }
-
-    #[test]
-    fn a_newer_peers_query_and_answer_parse_and_are_never_sent() {
-        never_sent(json!({ "id": 4, "type": "chats_query", "query": { "kind": "search" } }));
-        never_sent(json!({ "id": 4, "type": "chats_answer", "answer": { "kind": "page" } }));
     }
 }

@@ -800,7 +800,7 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`pick` names a [`Pick`](crate::Pick) the core keeps, under `chat.pick`, from a local\nclient only; the agent gets it as quoted page content.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`pick` names a [`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as quoted page content.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1370,7 +1370,7 @@
       ]
     },
     "ChatsQuery": {
-      "description": "A local client asks the core which chats it serves, in every workspace, under `chat.list`.\nNever relayed by the server, which lists a workspace's chats itself.",
+      "description": "A local client asks the core which chats it serves, in every workspace.\nNever relayed by the server, which lists a workspace's chats itself.",
       "type": "object",
       "properties": {
         "query": {
@@ -2834,7 +2834,7 @@
       ]
     },
     "Pick": {
-      "description": "An element someone picked in Chrome, from the extension to a core that offers `element.pick`,\nwhich keeps it on the machine for a prompt that names its `request` under `chat.pick`. The\nsender cuts the HTML short and shrinks the screenshot so the message fits in one frame.\nEverything in it comes from the page, so it is untrusted.",
+      "description": "An element someone picked in Chrome, from the extension to a core that offers `element.pick`,\nwhich keeps it on the machine for a prompt that names its `request`. The\nsender cuts the HTML short and shrinks the screenshot so the message fits in one frame.\nEverything in it comes from the page, so it is untrusted.",
       "type": "object",
       "properties": {
         "component": {

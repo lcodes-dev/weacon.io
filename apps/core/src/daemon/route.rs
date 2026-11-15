@@ -7,8 +7,8 @@ use std::time::SystemTime;
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, MapAnswer, Message, Outcome, Pick, Receipt, SessionsQuery,
-    SymbolsQuery, TerminalCommand, code,
+    Asker, ChatsQuery, ChatsQueryKind, Envelope, FrameError, MapAnswer, Message, Outcome, Pick,
+    Receipt, SessionsQuery, SymbolsQuery, TerminalCommand, code,
 };
 
 use super::Shared;
@@ -50,7 +50,9 @@ pub(super) async fn route(
         Message::Pick(pick) => keep(shared, id, pick).await,
         Message::ChatCommand(command) => command_chat(shared, id, command, client).await,
         Message::ChatQuery(query) => query_chat(shared, id, query, client).await,
-        Message::ChatsQuery(query) => list_chats(shared, id, query).await,
+        Message::ChatsQuery(ChatsQuery {
+            query: ChatsQueryKind::List,
+        }) => list_chats(shared, id).await,
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),

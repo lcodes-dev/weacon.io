@@ -5,9 +5,6 @@ import type { App, Envelope } from "./protocol.ts";
 /** The native host's name, as `weacon connect-chrome` registers it. */
 export const HOST = "io.weacon.core";
 
-/** What the panel needs the core to offer. */
-export const NEEDS = ["element.pick", "chat.send", "chat.events", "chat.list", "chat.pick"];
-
 const DEADLINE_MS = 30_000;
 
 /** A failure named by a dotted code, the only part of it that reaches the core's log. */
@@ -40,8 +37,8 @@ export type Link = {
 };
 
 /**
- * Greets the core over `port` as `me`, checking it offers what the panel needs. What no `ask`
- * waits for goes to `heard`, and `closed` is called once the port closes.
+ * Greets the core over `port` as `me`. What no `ask` waits for goes to `heard`, and `closed` is
+ * called once the port closes.
  */
 export async function connect(
   port: Port,
@@ -52,7 +49,7 @@ export async function connect(
 ): Promise<Link> {
   const link = conversation(port, heard, closed);
   try {
-    await greet(link, me, NEEDS, deadline);
+    await greet(link, me, deadline);
   } catch (error: unknown) {
     link.close();
     throw error;
@@ -64,7 +61,7 @@ export async function connect(
 export async function report(port: Port, me: App, code: string, deadline = DEADLINE_MS): Promise<void> {
   const link = conversation(port, () => {}, () => {});
   try {
-    await greet(link, me, [], deadline);
+    await greet(link, me, deadline);
     link.send({ id: link.next(), type: "error", code, retryable: false });
   } catch {
     // With no core to tell, there is nowhere else to send it.
@@ -73,14 +70,11 @@ export async function report(port: Port, me: App, code: string, deadline = DEADL
   }
 }
 
-async function greet(link: Link, me: App, needs: readonly string[], deadline: number): Promise<void> {
+async function greet(link: Link, me: App, deadline: number): Promise<void> {
   const reply = await link.ask({ id: link.next(), type: "hello", protocol: PROTOCOL, app: me }, deadline);
   if (reply.type !== "welcome") {
     const other = reply.type === "error" && reply.code === "protocol.unsupported";
     throw new Failure(other ? "extension.core_other_protocol" : "extension.core_refused");
-  }
-  if (!needs.every((need) => (reply.capabilities ?? []).includes(need))) {
-    throw new Failure("extension.core_too_old");
   }
 }
 

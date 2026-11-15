@@ -2,8 +2,7 @@
 
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatAnswer, ChatCommand, ChatQuery, ChatsAnswer, ChatsAnswerKind, ChatsQuery, ChatsQueryKind,
-    Envelope, LocalChat, Message, code,
+    ChatAnswer, ChatCommand, ChatQuery, ChatsAnswer, ChatsAnswerKind, Envelope, LocalChat, Message,
 };
 
 use super::Shared;
@@ -59,10 +58,7 @@ pub(super) async fn query_chat(
 }
 
 // The chats this core serves, newest first, each titled from its log off the engine's loop.
-pub(super) async fn list_chats(shared: &Shared, id: u32, query: ChatsQuery) -> Reply {
-    let ChatsQueryKind::List = query.query else {
-        return Reply::error(id, code!("message.unsupported"), false);
-    };
+pub(super) async fn list_chats(shared: &Shared, id: u32) -> Reply {
     let listed = match shared.chats.list().await {
         Ok(listed) => listed,
         Err(fault) => return refused(shared, id, &fault),

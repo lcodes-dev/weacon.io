@@ -34,8 +34,7 @@ pub enum ChatAction {
     /// sender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on
     /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
     /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
-    /// `pick` names a [`Pick`](crate::Pick) the core keeps, under `chat.pick`, from a local
-    /// client only; the agent gets it as quoted page content.
+    /// `pick` names a [`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as quoted page content.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]

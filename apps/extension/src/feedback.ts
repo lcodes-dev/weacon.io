@@ -5,7 +5,6 @@ const SAID: Record<string, string> = {
   "extension.pick_too_large": "The element is too large to send.",
   "extension.core_unreachable": "Weacon isn't running on this machine, or Chrome isn't connected to it.",
   "extension.core_no_reply": "Weacon on this machine didn't answer.",
-  "extension.core_too_old": "Update Weacon on this machine.",
   "extension.core_other_protocol": "Update Weacon on this machine.",
   "extension.core_refused": "Weacon on this machine didn't let the extension in.",
   "chat.empty_prompt": "Write something to send.",

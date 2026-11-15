@@ -491,7 +491,7 @@ export type ChatsAnswerKind = (
 );
 
 /**
- * A local client asks the core which chats it serves, in every workspace, under `chat.list`.
+ * A local client asks the core which chats it serves, in every workspace.
  * Never relayed by the server, which lists a workspace's chats itself.
  */
 export type ChatsQuery = {
@@ -1183,7 +1183,7 @@ export type PermissionAnswer = {
 
 /**
  * An element someone picked in Chrome, from the extension to a core that offers `element.pick`,
- * which keeps it on the machine for a prompt that names its `request` under `chat.pick`. The
+ * which keeps it on the machine for a prompt that names its `request`. The
  * sender cuts the HTML short and shrinks the screenshot so the message fits in one frame.
  * Everything in it comes from the page, so it is untrusted.
  */

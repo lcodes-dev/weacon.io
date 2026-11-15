@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { Failure, NEEDS, type Port, connect, report } from "./core.ts";
+import { Failure, type Port, connect, report } from "./core.ts";
 import type { Incoming } from "./incoming.ts";
 import type { Envelope } from "./protocol.ts";
 
@@ -38,12 +38,10 @@ function port(answer: (sent: Envelope) => Array<Envelope | string | typeof HANG_
   return { fake, sent, disconnected: () => disconnected, push: (message: Envelope) => receive(message), hangUp: () => hangUp() };
 }
 
-function welcome(capabilities: string[]): Envelope {
-  return { id: 1, type: "welcome", app: CORE, capabilities };
-}
+const WELCOME: Envelope = { id: 1, type: "welcome", app: CORE };
 
-function core(replies: (sent: Envelope) => Envelope[] | undefined, capabilities = NEEDS) {
-  return port((sent) => (sent.type === "hello" ? [welcome(capabilities)] : replies(sent)));
+function core(replies: (sent: Envelope) => Envelope[] | undefined) {
+  return port((sent) => (sent.type === "hello" ? [WELCOME] : replies(sent)));
 }
 
 async function failure(promise: Promise<unknown>): Promise<string> {
@@ -93,18 +91,16 @@ test("an accepted receipt isn't the end, and a core that goes quiet fails the wa
   assert.equal(await failure(quiet.ask(pick, 10)), "extension.core_no_reply");
 });
 
-test("a core without what the panel needs is told apart from one that isn't there", async () => {
+test("a core that speaks another protocol is told apart from one that isn't there", async () => {
   const other = port(() => [{ id: 1, type: "error", code: "protocol.unsupported", retryable: false }]);
   const refused = port(() => [{ id: 1, type: "error", code: "handshake.required", retryable: false }]);
   const gone = port(() => undefined);
-  const old = core(() => [], NEEDS.slice(1));
 
   assert.equal(await failure(connect(other.fake, ME, () => {}, () => {})), "extension.core_other_protocol");
   assert.equal(await failure(connect(refused.fake, ME, () => {}, () => {})), "extension.core_refused");
   assert.equal(await failure(connect(gone.fake, ME, () => {}, () => {})), "extension.core_unreachable");
-  assert.equal(await failure(connect(old.fake, ME, () => {}, () => {})), "extension.core_too_old");
   assert.equal(await failure(connect(port(() => []).fake, ME, () => {}, () => {}, 10)), "extension.core_no_reply");
-  assert.ok(old.disconnected() && gone.disconnected());
+  assert.ok(other.disconnected() && gone.disconnected());
 });
 
 test("a closed port fails what waits and what is sent after, and says it closed", async () => {
@@ -134,7 +130,7 @@ test("closing the link disconnects and fails what waits", async () => {
 });
 
 test("failures are reported by code after a hello, and quietly dropped without a core", async () => {
-  const told = core(() => [], []);
+  const told = core(() => []);
   const gone = port(() => undefined);
 
   await report(told.fake, ME, "extension.capture_failed");
