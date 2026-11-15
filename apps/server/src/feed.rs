@@ -22,6 +22,7 @@ use crate::connections::Place;
 use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
+use crate::search::SEARCH;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
 use crate::terminals::{self, TERMINALS};
@@ -36,7 +37,7 @@ const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 12] = [
+const OFFERED: [Code; 13] = [
     FEED,
     TASKS,
     DOCS,
@@ -49,6 +50,7 @@ const OFFERED: [Code; 12] = [
     SESSIONS,
     LOG_FORWARD,
     TERMINALS,
+    SEARCH,
 ];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
@@ -443,7 +445,8 @@ mod tests {
                 WORKTREE,
                 SESSIONS,
                 LOG_FORWARD,
-                TERMINALS
+                TERMINALS,
+                SEARCH
             ]
             .map(Capability::new)
         );

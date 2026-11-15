@@ -20,6 +20,7 @@ use crate::docs;
 use crate::feed;
 use crate::pairing;
 use crate::proposals;
+use crate::search;
 use crate::shared::Shared;
 use crate::sign_in;
 use crate::tasks;
@@ -98,6 +99,7 @@ fn router(shared: Shared) -> Router {
         .merge(docs::routes())
         .merge(proposals::routes())
         .merge(chats::routes())
+        .merge(search::routes())
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
