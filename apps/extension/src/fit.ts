@@ -6,6 +6,7 @@ export const MAX_FRAME = 1024 * 1024;
 const MAX_HTML = 256 * 1024;
 const MAX_TEXT = 4 * 1024;
 const MAX_NAME = 256;
+const MAX_ID = 2 ** 32 - 1;
 const SMALLEST_SCALE = 1 / 32;
 
 /**
@@ -51,7 +52,8 @@ function cut(text: string, length: number): string {
 }
 
 function fits(pick: Pick): boolean {
-  return frameSize({ id: 2, type: "pick", ...pick }) < MAX_FRAME;
+  // Measured under the largest id an envelope can have, whichever it is sent under.
+  return frameSize({ id: MAX_ID, type: "pick", ...pick }) < MAX_FRAME;
 }
 
 function frameSize(envelope: Envelope): number {

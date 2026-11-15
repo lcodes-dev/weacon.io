@@ -22,7 +22,7 @@ test("the screenshot halves until the pick fits in a frame", async () => {
 });
 
 test("a pick just under the frame is kept and one at it is shrunk", async () => {
-  const empty = JSON.stringify({ id: 2, type: "pick", ...BASE, screenshot_png: "" }).length;
+  const empty = JSON.stringify({ id: 2 ** 32 - 1, type: "pick", ...BASE, screenshot_png: "" }).length;
   const room = MAX_FRAME - empty;
 
   assert.equal((await fit(BASE, async (scale) => "A".repeat(scale === 1 ? room - 1 : 1))).screenshot_png?.length, room - 1);

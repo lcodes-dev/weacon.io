@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { working } from "./chat.ts";
@@ -19,13 +19,17 @@ function Panel() {
   const [pick, setPick] = useState<Pick>();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string>();
+  // Counts the changes of tab and chat, so a pick begun before one isn't attached after it.
+  const moves = useRef(0);
 
   useEffect(() => {
+    moves.current += 1;
     setRef(tab === undefined ? undefined : chosen(localStorage, tab));
     setPick(undefined);
   }, [tab]);
 
   const open = async (next: ChatRef | undefined) => {
+    moves.current += 1;
     setRef(next);
     setFailed(undefined);
     setPick(undefined);
@@ -34,9 +38,8 @@ function Panel() {
       choose(localStorage, tab, next, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
     }
   };
-  // Runs `work`, showing what stopped it; one at a time.
+  // Runs `work`, showing what stopped it.
   const attempt = async (work: () => Promise<void>) => {
-    setBusy(true);
     setFailed(undefined);
     try {
       await work();
@@ -44,22 +47,29 @@ function Panel() {
       const code = codeOf(error);
       tell(code);
       setFailed(code);
-    } finally {
-      setBusy(false);
     }
   };
+  // As `attempt`, with Send and the picker held until `work` is over; a Stop or an answer
+  // meanwhile doesn't let them go.
+  const alone = async (work: () => Promise<void>) => {
+    setBusy(true);
+    await attempt(work);
+    setBusy(false);
+  };
   const pickElement = () =>
-    attempt(async () => {
+    alone(async () => {
+      const began = moves.current;
       const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
       const picked = active === undefined ? undefined : await pickOn(active);
-      if (picked !== undefined) {
+      if (picked !== undefined && began === moves.current) {
         setPick(picked);
       }
     });
   const send = () =>
-    attempt(async () => {
+    alone(async () => {
       await live.prompt(text, pick);
-      setText("");
+      // What was typed while it was sent stays.
+      setText((now) => (now === text ? "" : now));
       setPick(undefined);
     });
 

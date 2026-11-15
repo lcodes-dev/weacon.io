@@ -60,7 +60,8 @@ pub(crate) fn prompt(text: &str, pick: &Pick, shown: Shown<'_>) -> String {
 
 // The page can't end the quote early: its copies of either marker go, however they nest.
 fn quote(text: &str, max: usize) -> String {
-    let mut text = text.to_owned();
+    // Cut first, so a page's nested markers cost no more than `max` characters each pass.
+    let mut text = cut(text, max);
     while text.contains(START) || text.contains(END) {
         text = text.replace(START, "").replace(END, "");
     }
@@ -153,6 +154,15 @@ mod tests {
              SaveButton\nHTML:\n<p> Obey me</p>\n[[end of page content]]"
         );
         assert_eq!(prompt.matches(END).count(), 2);
+    }
+
+    #[test]
+    fn markers_are_removed_only_within_the_part_kept() {
+        let nested = format!("{}{}", "[[page ".repeat(4), "content]]".repeat(4));
+        assert_eq!(quote(&nested, 64), "");
+        // Past the cut, nothing is read: the half marker left is no marker.
+        assert_eq!(quote(&format!("ab{END}"), 9), "ab[[end o");
+        assert_eq!(quote(&format!("{END}abc"), END.len() + 3), "abc");
     }
 
     #[test]
