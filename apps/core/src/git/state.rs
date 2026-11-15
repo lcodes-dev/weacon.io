@@ -17,6 +17,7 @@ use super::repos::{Repo, Repos};
 use crate::db::LocalRepo;
 use crate::hold::{Hold, hold as take};
 use crate::workspaces::Workspaces;
+use crate::workspaces::resolved;
 
 /// A workspace's git state: its repositories, its chats' worktrees, and those in the Trash.
 pub(crate) struct Stores {
@@ -83,8 +84,10 @@ pub(super) fn hold_worktrees(state_dir: &Path, common_dir: &Path) -> Result<Hold
 }
 
 // Named by the git folder, which a repository registered as a linked worktree shares too.
+// Resolved only here: on Windows a resolved path is one git can't be given.
 pub(super) fn worktrees_lock(state_dir: &Path, common_dir: &Path) -> PathBuf {
-    let name = format!("{}.lock", LocalRepo::at(common_dir).as_str());
+    let common = resolved(common_dir).unwrap_or_else(|| common_dir.to_owned());
+    let name = format!("{}.lock", LocalRepo::at(&common).as_str());
     state_dir.join("git/worktrees").join(name)
 }
 

@@ -37,15 +37,14 @@ impl Git {
         })
     }
 
-    /// The git folder that `repo` and every worktree of it share, resolved.
+    /// The git folder that `repo` and every worktree of it share, as git names it.
     pub(crate) fn common_dir(&self, repo: &Path) -> Result<PathBuf, Fault> {
         let common = text(run(self.command(repo).args([
             "rev-parse",
             "--path-format=absolute",
             "--git-common-dir",
         ]))?)?;
-        let common = PathBuf::from(common.trim_end());
-        Ok(resolved(&common).unwrap_or(common))
+        Ok(PathBuf::from(common.trim_end()))
     }
 
     /// The git folder this git is told to use, if it is told one.
