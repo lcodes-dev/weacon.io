@@ -318,11 +318,11 @@ mod tests {
 
     #[test]
     fn finds_mcp_tools_by_their_literal_names() {
-        let lib = "fn list() -> [Tool; 6] { [Tool::new(\"search\", \"Finds\", schema()),\n\
+        let lib = "fn list() -> [Tool; 6] { [Tool::new(\"se\\x61rch\\n\", \"Finds\", schema()),\n\
                    rmcp::model::Tool::new(r\"fetch\", d, s), Tool::new(NAME, d, s), Other::new(\"x\"),\n\
                    Tool::open(\"y\"), new(\"z\")] }\n\
                    struct Server;\nimpl Server {\n\
-                   #[tool(description = \"Adds\", name = r#\"sum\"#)]\nasync fn add(&self) {}\n\
+                   #[tool(description = \"Adds\", name = r#\"sum\"#)]\nasync fn add(&self) {}\n#[tool(name = \"take\\u{5f}\\\"one\\\"\")]\nfn take(&self) {}\n\
                    #[rmcp::tool(description = \"Echoes\", annotations(name = \"inner\"))]\n\
                    /// Says it again.\nfn echo(&self) {}\n\
                    #[tool]\nfn ping(&self) {}\n#[tooling]\nfn not_a_tool(&self) {} }\n\
@@ -330,11 +330,12 @@ mod tests {
         assert_eq!(
             found(lib),
             [
-                "McpTool echo @a::Server::echo:8",
+                "McpTool echo @a::Server::echo:10",
                 "McpTool fetch @a::list:2",
-                "McpTool ping @a::Server::ping:11",
+                "McpTool ping @a::Server::ping:13",
                 "McpTool search @a::list:1",
                 "McpTool sum @a::Server::add:6",
+                "McpTool take_\"one\" @a::Server::take:8",
             ]
         );
     }

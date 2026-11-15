@@ -2,7 +2,7 @@
 
 use tree_sitter::Node;
 
-use super::{Declared, Declares, declared, literal};
+use super::{Declared, Declares, declared};
 use crate::paths::segments;
 use crate::syntax::{attributes, name, text};
 
@@ -17,7 +17,7 @@ pub(super) fn created(call: Node<'_>, source: &[u8]) -> Option<Declared> {
         .child_by_field_name("arguments")?
         .named_child(0)
         .filter(|tool| is_string(*tool))?;
-    Some(declared(call, Declares::McpTool(literal(tool, source))))
+    Some(declared(call, Declares::McpTool(decoded(tool, source))))
 }
 
 /// The tool a `#[tool]` on the function `item` declares: the `name` it gives, else the
@@ -49,7 +49,7 @@ fn given_name(arguments: Node<'_>, source: &[u8]) -> Option<String> {
         [key, value]
             if key.kind() == "identifier" && text(*key, source) == "name" && is_string(*value) =>
         {
-            Some(literal(*value, source))
+            Some(decoded(*value, source))
         }
         _ => None,
     })
@@ -57,4 +57,31 @@ fn given_name(arguments: Node<'_>, source: &[u8]) -> Option<String> {
 
 fn is_string(node: Node<'_>) -> bool {
     matches!(node.kind(), "string_literal" | "raw_string_literal")
+}
+
+/// A string literal's text with its escapes decoded; an escape a tool's name can't hold is
+/// left out.
+fn decoded(node: Node<'_>, source: &[u8]) -> String {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .filter_map(|part| match part.kind() {
+            "string_content" => Some(text(part, source).to_owned()),
+            "escape_sequence" => unescape(text(part, source)).map(String::from),
+            _ => None,
+        })
+        .collect()
+}
+
+fn unescape(escape: &str) -> Option<char> {
+    let rest = escape.strip_prefix('\\')?;
+    let hex = rest
+        .strip_prefix('x')
+        .or_else(|| rest.strip_prefix("u{")?.strip_suffix('}'));
+    match hex {
+        Some(hex) => char::from_u32(u32::from_str_radix(hex, 16).ok()?),
+        None => rest
+            .chars()
+            .next()
+            .filter(|ch| matches!(ch, '\\' | '"' | '\'')),
+    }
 }

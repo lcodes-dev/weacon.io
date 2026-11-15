@@ -125,7 +125,7 @@ impl Git {
         let out = run(self
             .command(folder)
             .args(["log", "--format=", "--name-only", "-z", "--relative"])
-            .args(["--no-renames", "--no-merges"])
+            .args(["--no-renames", "--no-merges", "--no-show-signature"])
             .arg(format!("--max-count={commits}"))
             .args(["HEAD", "--"]))?;
         let mut churn: BTreeMap<String, u32> = BTreeMap::new();
