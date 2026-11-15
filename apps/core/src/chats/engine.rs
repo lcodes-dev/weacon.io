@@ -466,17 +466,12 @@ mod tests {
         let mut pushes = watch(&bench).await;
 
         let mut agent = first_turn(&mut bench, &mut pushes).await;
+        let run_as = &agent.run_as;
         assert_eq!(
-            agent.run_as,
-            RunAs {
-                key: key(),
-                agent: AgentKind::Claude,
-                run: run("run-1"),
-                session: None,
-                repo: None,
-                task: None,
-            }
+            (&run_as.key, run_as.agent, &run_as.run),
+            (&key(), AgentKind::Claude, &run("run-1"))
         );
+        assert!(run_as.session.is_none() && run_as.repo.is_none() && run_as.task.is_none());
         let delta = RunEvent::TextDelta {
             text: "Hel".to_owned(),
         };

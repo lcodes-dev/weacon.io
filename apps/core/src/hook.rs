@@ -362,9 +362,10 @@ mod tests {
 
     // Docs whose flows a task about release signing finds, among others it doesn't.
     fn flow_docs(dir: &Path) {
-        let pins: String = (0..60)
+        let pins = (0..60)
             .map(|n| format!("flow:crate_number_{n}::item_{n}->crate_number_1::item_1\n"))
-            .collect();
+            .collect::<Vec<_>>()
+            .concat();
         fs::create_dir_all(dir.join("docs")).unwrap();
         let release = format!("# Release signing\n\nHow a release is signed.\n\n{pins}");
         fs::write(dir.join("docs/release.md"), release).unwrap();
@@ -372,8 +373,9 @@ mod tests {
         fs::write(dir.join("docs/storage.md"), other).unwrap();
     }
 
-    #[test]
-    fn a_session_start_gives_its_tasks_flows_first_then_the_map_within_the_same_bytes() {
+    // A running core over a repository with `flow_docs`, and what a session start in it prints
+    // for a chat with a task of each title.
+    fn session_starts(titles: &[Option<&str>]) -> Vec<String> {
         let dir = TempDir::new().unwrap();
         let one = workspace("one");
         let main = repo(&dir);
@@ -384,16 +386,25 @@ mod tests {
         let main = main.canonicalize().unwrap();
         let core = Running::start(&register(&dir, &one, "site", &main));
         let (log, _) = recording_logger();
-        let start = |title: Option<&str>| {
-            let (token, _revoke) = core.token_for(&one, &main, title);
+        let texts = titles.iter().map(|title| {
+            let (token, _revoke) = core.token_for(&one, &main, *title);
             let hook = asking(core.socket.clone(), &token);
             hook.session_start(main.clone(), &log).unwrap()
+        });
+        let texts = texts.collect();
+        let token = core.token(&one, &main).0;
+        core.stop(&token);
+        texts
+    }
+
+    #[test]
+    fn a_session_start_gives_its_tasks_flows_first_then_the_map_within_the_same_bytes() {
+        let started = session_starts(&[None, Some("marker_title_4: speed up release signing")]);
+        let [plain, text] = started.as_slice() else {
+            panic!("{started:?}");
         };
 
-        let plain = start(None);
-        let text = start(Some("marker_title_4: speed up release signing"));
-
-        sized(&plain);
+        sized(plain);
         assert!(text.len() <= 4000 && text.ends_with('\n'), "{}", text.len());
         let (flows, map) = text.split_once("\n\n").unwrap();
         assert!(
@@ -428,11 +439,17 @@ mod tests {
             "{}",
             map.len()
         );
-        assert_eq!(start(Some("Zebra")), plain);
-        assert_eq!(start(Some("Fix the zebra crash")), plain);
-        assert_eq!(start(Some("")), plain);
-        let token = core.token(&one, &main).0;
-        core.stop(&token);
+    }
+
+    #[test]
+    fn a_session_start_without_a_task_or_a_match_prints_the_map_alone() {
+        let started = session_starts(&[None, Some("Zebra"), Some("Fix the zebra crash"), Some("")]);
+
+        sized(&started[0]);
+        assert!(
+            started.iter().all(|text| *text == started[0]),
+            "{started:?}"
+        );
     }
 
     #[test]

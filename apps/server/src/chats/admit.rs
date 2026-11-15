@@ -77,19 +77,27 @@ pub(crate) fn admit(
             "A chat stays on the machine it started on",
         ));
     }
-    match chat.state {
-        ChatState::Open => {}
-        ChatState::Full => return Err(crate::db::chat_quota_full()),
-        ChatState::Detached | ChatState::Newer => return Err(detached()),
+    takes_prompts(chat.state)?;
+    own_task(&chat, &mut command.action);
+    command.by = Some(by);
+    Ok(Admitted::Existing { chat, command })
+}
+
+fn takes_prompts(state: ChatState) -> Result<(), Fault> {
+    match state {
+        ChatState::Open => Ok(()),
+        ChatState::Full => Err(crate::db::chat_quota_full()),
+        ChatState::Detached | ChatState::Newer => Err(detached()),
     }
-    // A prompt to a made chat names only the chat's own task, as a first prompt sent again does.
-    if let ChatAction::Prompt { task, .. } = &mut command.action
+}
+
+// A prompt to a made chat names only the chat's own task, as a first prompt sent again does.
+fn own_task(chat: &Chat, action: &mut ChatAction) {
+    if let ChatAction::Prompt { task, .. } = action
         && task.is_some()
     {
         task.clone_from(&chat.task);
     }
-    command.by = Some(by);
-    Ok(Admitted::Existing { chat, command })
 }
 
 pub(super) fn not_owner() -> Fault {
@@ -175,16 +183,15 @@ mod tests {
             }
             action
         };
-        let task_of = |chat: Chat, action: ChatAction| match admit(
-            Some(chat),
-            asker("m1"),
-            command(action),
-        ) {
-            Ok(Admitted::Existing { command, .. }) => match command.action {
-                ChatAction::Prompt { task, .. } => task,
-                _ => panic!("not a prompt"),
-            },
-            other => panic!("{other:?}"),
+        let task_of = |chat: Chat, action: ChatAction| {
+            let admitted = admit(Some(chat), asker("m1"), command(action));
+            let Ok(Admitted::Existing { command, .. }) = admitted else {
+                panic!("{admitted:?}");
+            };
+            let ChatAction::Prompt { task, .. } = command.action else {
+                panic!("not a prompt");
+            };
+            task
         };
         let with_task = Chat {
             task: Some(named("t-1")),

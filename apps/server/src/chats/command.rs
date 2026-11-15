@@ -175,7 +175,12 @@ async fn stamp(
     else {
         return Ok(None);
     };
-    named.title = workspace.task(&named.id).await?.title.as_str().to_owned();
+    workspace
+        .task(&named.id)
+        .await?
+        .title
+        .as_str()
+        .clone_into(&mut named.title);
     Ok(Some(named.clone()))
 }
 
@@ -255,13 +260,14 @@ mod tests {
     }
 
     fn task_of(message: &Message) -> Option<&ChatTask> {
-        match message {
-            Message::ChatCommand(ChatCommand {
-                action: ChatAction::Prompt { task, .. },
-                ..
-            }) => task.as_ref(),
-            _ => None,
-        }
+        let Message::ChatCommand(ChatCommand {
+            action: ChatAction::Prompt { task, .. },
+            ..
+        }) = message
+        else {
+            return None;
+        };
+        task.as_ref()
     }
 
     #[tokio::test]

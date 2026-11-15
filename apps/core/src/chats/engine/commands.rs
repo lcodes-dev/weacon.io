@@ -370,6 +370,13 @@ mod tests {
         engine.command(&key(), prompt("r-4", "Go")).await.unwrap();
     }
 
+    fn with_task(mut asked: ChatCommand, task: weacon_protocol::ChatTask) -> ChatCommand {
+        if let ChatAction::Prompt { task: named, .. } = &mut asked.action {
+            *named = Some(task);
+        }
+        asked
+    }
+
     #[tokio::test]
     async fn a_run_starts_with_the_task_its_chats_first_prompt_named() {
         let (mut bench, mut engine) = parts();
@@ -377,13 +384,7 @@ mod tests {
             id: id.parse().unwrap(),
             title: "Speed up the build".to_owned(),
         };
-        let for_task = |request: &str, id: &str| {
-            let mut asked = prompt(request, "Hi");
-            if let ChatAction::Prompt { task: named, .. } = &mut asked.action {
-                *named = Some(task(id));
-            }
-            asked
-        };
+        let for_task = |request: &str, id: &str| with_task(prompt(request, "Hi"), task(id));
 
         engine
             .command(&key(), for_task("r-1", "t-1"))

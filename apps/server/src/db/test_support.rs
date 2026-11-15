@@ -97,7 +97,7 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         title,
         machine,
         at,
-        task,
+        ..
     } = *making;
     let request = id::<RequestId>(&format!("r-{chat}"));
     let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
@@ -111,7 +111,7 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         machine_id: &machine_id,
         machine: &machine,
         at,
-        task,
+        task: making.task,
     };
     let asked = command(request.as_str(), chat.as_str(), title);
     let first = NewRequest {
@@ -120,20 +120,9 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         at,
     };
     // Made on its owner's machine, unpaired again unless it was paired before.
-    let paired = sqlx::query(
-        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
-             token_hash, paired_at)
-         SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
-         FROM members WHERE workspace_id = ? AND member_id = ?",
-    )
-    .bind(machine_id.as_str())
-    .bind(workspace.id.as_str())
-    .bind(owner.as_str())
-    .execute(&workspace.db.writer)
-    .await
-    .map_err(super::failed)?;
+    let paired = pair(workspace, &machine_id, &owner).await?;
     let added = workspace.add_chat(&new, &first).await;
-    if paired.rows_affected() > 0 {
+    if paired {
         sqlx::query("DELETE FROM machines WHERE machine_id = ?")
             .bind(machine_id.as_str())
             .execute(&workspace.db.writer)
@@ -141,6 +130,27 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
             .map_err(super::failed)?;
     }
     added
+}
+
+// Pairs `machine` to `owner`'s account, unless it is paired already; whether it wasn't.
+async fn pair(
+    workspace: &Workspace,
+    machine: &MachineId,
+    owner: &weacon_protocol::MemberId,
+) -> Result<bool, Fault> {
+    let paired = sqlx::query(
+        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
+             token_hash, paired_at)
+         SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+         FROM members WHERE workspace_id = ? AND member_id = ?",
+    )
+    .bind(machine.as_str())
+    .bind(workspace.id.as_str())
+    .bind(owner.as_str())
+    .execute(&workspace.db.writer)
+    .await
+    .map_err(super::failed)?;
+    Ok(paired.rows_affected() > 0)
 }
 
 pub(crate) fn status(state: RunState) -> ChatEvent {
