@@ -18,10 +18,13 @@ use self::chats::{ChatLink, UPLOAD};
 use self::retry::Retry;
 use crate::chats::Chats;
 use crate::machine::{self, Paired};
+use crate::proposals;
 use crate::server::{Failure, Server, Socket};
 
 /// What the core must be offered by the server to keep its connection.
 const CONNECT: Code = code!("machine.connect");
+/// What the server offers that takes the core's proposals.
+pub(crate) const PROPOSALS: Code = code!("workspace.proposals");
 const PATH: &str = "/api/machines/connect";
 /// How often a core that isn't paired looks for a pairing.
 const LOOK_EVERY: Duration = Duration::from_secs(30);
@@ -148,10 +151,13 @@ impl Uplink {
         };
         log.info("uplink connected", &[]);
         let up = Instant::now();
-        let uploads = welcome.capabilities.contains(&Capability::new(UPLOAD));
-        let mut chats = ChatLink::new(self.chats.clone(), uploads, log.clone());
+        let offers = |code| welcome.capabilities.contains(&Capability::new(code));
+        let mut link = Link {
+            chats: ChatLink::new(self.chats.clone(), offers(UPLOAD), log.clone()),
+            proposals: offers(PROPOSALS),
+        };
         if self
-            .serve(&mut socket, paired, from_daemon, &mut chats)
+            .serve(&mut socket, paired, from_daemon, &mut link)
             .await
         {
             return Ok(Ended::Unpaired);
@@ -171,7 +177,7 @@ impl Uplink {
         socket: &mut Socket,
         paired: &Paired,
         from_daemon: &mut FromDaemon,
-        chats: &mut ChatLink,
+        link: &mut Link,
     ) -> bool {
         // Only what the server sends keeps the connection alive, and no send outlasts it.
         let mut quiet_at = Instant::now() + self.timing.quiet_within;
@@ -188,14 +194,17 @@ impl Uplink {
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, &paired.owner, chats) {
+                    match self.answer(frame, &paired.owner, &mut link.chats) {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
                     }
                 }
-                Some(envelope) = from_daemon.recv() => Some(envelope),
-                Some(up) = chats.next() => Some(up),
+                // A server that doesn't offer proposals never hears one; its asker gives up.
+                Some(envelope) = from_daemon.recv() => {
+                    (link.proposals || !proposals::asks(&envelope.message)).then_some(envelope)
+                }
+                Some(up) = link.chats.next() => Some(up),
             };
             if let Some(envelope) = reply
                 && timeout_at(quiet_at, send(socket, &envelope)).await.is_err()
@@ -296,6 +305,8 @@ fn asking(message: &Message) -> Asking<'_> {
     } else if let Message::Error(_) | Message::ChatQuery(_) = message {
         // A chat query is the server following a chat it stores.
         return Asking::NotAnAsk;
+    } else if proposals::answers(message) {
+        return Asking::NotAnAsk;
     } else {
         return Asking::Unknown;
     };
@@ -322,6 +333,13 @@ pub(crate) fn refusal(id: u32, command: &ChatCommand, code: Code) -> Envelope {
             outcome: Outcome::Failed { code },
         }),
     }
+}
+
+/// What one connection carries besides its socket.
+struct Link {
+    chats: ChatLink,
+    /// Whether the server offered [`PROPOSALS`].
+    proposals: bool,
 }
 
 enum Step {
@@ -1015,5 +1033,60 @@ mod tests {
         let failed = once(&link, &gone).await;
 
         assert_eq!(failed.unwrap_err().code().as_str(), "server.unreachable");
+    }
+
+    /// What the server hears first when the daemon sends a proposal query, then a marker, to
+    /// a server that offers `offers`, and what reaches the daemon of the server's answer.
+    async fn proposals_through(offers: &[Code]) -> (Message, Option<Message>, Message) {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (to_daemon, mut asks) = mpsc::channel(4);
+        let link = with_commands(&dir, to_daemon);
+        let pairing = paired(&tls);
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let query = Message::ProposalQuery(weacon_protocol::ProposalQuery {
+            request: request.clone(),
+            workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+            query: weacon_protocol::ProposalQueryKind::Pinned { after: None },
+        });
+        let marker = Message::Error(ErrorBody {
+            code: code!("test.marker"),
+            retryable: false,
+        });
+        let (from_daemon, mut sent) = mpsc::channel(4);
+        for message in [query, marker] {
+            from_daemon.send(Envelope { id: 0, message }).await.unwrap();
+        }
+        let answer = Message::ProposalAnswer(weacon_protocol::ProposalAnswer {
+            request,
+            answer: weacon_protocol::ProposalAnswerKind::Pinned {
+                docs: Vec::new(),
+                more: false,
+            },
+        });
+        let serve = async {
+            let mut peer = welcoming(&tls, offers).await;
+            let first = heard(&mut peer).await;
+            let envelope = Envelope {
+                id: 0,
+                message: answer.clone(),
+            };
+            peer.send(text(&envelope)).await.unwrap();
+            let handed = timeout(Duration::from_secs(10), asks.recv()).await.unwrap();
+            (first, handed.map(|envelope| envelope.message))
+        };
+        let (_, (first, handed)) =
+            tokio::join!(link.connection(&pairing, &link.log, &mut sent), serve);
+        (first, handed, answer)
+    }
+
+    #[tokio::test]
+    async fn proposals_reach_only_a_server_that_offers_them_and_its_answers_reach_the_daemon() {
+        let (unoffered, handed, answer) = Box::pin(proposals_through(&[CONNECT])).await;
+        assert!(matches!(unoffered, Message::Error(_)), "{unoffered:?}");
+        assert_eq!(handed, Some(answer));
+
+        let (offered, handed, answer) = Box::pin(proposals_through(&[CONNECT, PROPOSALS])).await;
+        assert!(matches!(offered, Message::ProposalQuery(_)), "{offered:?}");
+        assert_eq!(handed, Some(answer));
     }
 }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ProposalRecord, TaskEditBody, TaskRecord } from "../protocol.ts";
-import { aboutText, conflictText, pinChanges, stateText, taskEditText } from "./proposals.ts";
+import { aboutText, askText, conflictText, pinChanges, staleText, stateText, taskEditText } from "./proposals.ts";
 
 const AUTHOR = { kind: "agent", owner: "m-1" } as const;
 const TASKS: TaskRecord[] = [
@@ -15,6 +15,7 @@ test("a proposal says what it is about, by the title it would have", () => {
   const cases: [Pick<ProposalRecord, "about" | "change">, string][] = [
     [{ about: { kind: "doc", doc: "d-1" }, change: { kind: "doc_edit", doc: "d-1", base: 1, content } }, "Edit of the doc “Recipes”"],
     [{ about: { kind: "doc", doc: "d-1" } }, "Edit of a doc"],
+    [{ about: { kind: "doc", doc: "d-1" }, change: { kind: "needs_update", doc: "d-1", base: 1, anchors: [] } }, "Code a doc links to changed"],
     [{ about: { kind: "task", task: "t-1" } }, "Edit of the task “Buy flour”"],
     [{ about: { kind: "task", task: "t-9" } }, "Edit of a task"],
     [{ about: { kind: "new_doc", doc: "d-2" }, change: { kind: "new_doc", content } }, "New doc “Recipes”"],
@@ -75,4 +76,23 @@ test("a doc edit's pins say which links to code it adds and which it drops", () 
   assert.deepEqual(pinChanges(undefined, pins("flow:x#3333333333333333")), { added: ["flow:x#3333333333333333"], removed: [] });
   assert.deepEqual(pinChanges(pins("sym:a#0000000000000000"), undefined), { added: [], removed: ["sym:a#0000000000000000"] });
   assert.deepEqual(pinChanges(undefined, undefined), { added: [], removed: [] });
+});
+
+test("each anchor a move changed says what it was and is, and the ask names the doc", () => {
+  const pin = "sym:a::go#0123456789abcdef";
+  const anchors = [
+    { pin, change: { kind: "changed", was: "fn a::go  a.rs:1", now: "fn a::go  a.rs:4" } },
+    { pin, change: { kind: "gone", was: "fn a::go  a.rs:1" } },
+    { pin, change: { kind: "moved" } as unknown as { kind: "gone"; was: string } },
+  ] as const;
+
+  assert.deepEqual(anchors.map(staleText), [
+    "sym:a::go changed. It was “fn a::go  a.rs:1”, and is now “fn a::go  a.rs:4”.",
+    "sym:a::go is gone. It was “fn a::go  a.rs:1”.",
+    "sym:a::go changed.",
+  ]);
+  assert.equal(
+    askText({ kind: "needs_update", doc: "d-1", base: 2, anchors: [] }),
+    "To update it, ask your agent in a chat: “Propose an update to the doc d-1 where it describes the code that changed.”",
+  );
 });

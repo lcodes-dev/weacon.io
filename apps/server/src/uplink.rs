@@ -16,6 +16,7 @@ use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message,
 use crate::auth::Machine;
 use crate::connections::Place;
 use crate::links::Connected;
+use crate::proposals::{PROPOSALS, machines as proposals};
 use crate::relay::{self, DIFF, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, refusal, reply, send};
@@ -109,6 +110,7 @@ async fn run(
         Capability::new(DIFF),
         Capability::new(WORKTREE),
         Capability::new(SESSIONS),
+        Capability::new(PROPOSALS),
     ];
     let greeted = greet(socket, shared, offers, &offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
@@ -143,21 +145,43 @@ async fn run(
                 if let Ok(Frame::Text(text)) = &frame
                     && let Ok(envelope) = Envelope::from_json(text.as_bytes())
                 {
-                    hand_off(shared, &link.machine.id, envelope);
+                    let id = envelope.id;
+                    if let Some(answer) = hand_off(shared, &link.machine, envelope).await {
+                        reply(socket, shared, id, answer).await?;
+                    }
                 }
             }
         }
     }
 }
 
-/// Gives what `machine` sent to the feature it is for.
-fn hand_off(shared: &Shared, machine: &MachineId, envelope: Envelope) {
-    if let Message::Terminal(update) = envelope.message {
-        terminals::delivered(shared, machine, update);
-    } else if relay::takes(&envelope.message) {
-        // An error the relay doesn't claim is for no other feature yet.
-        let _claimed = shared.relay.answered(machine, envelope);
+/// Gives what `machine` sent to the feature it is for, and gives what to answer, if anything.
+async fn hand_off(shared: &Shared, machine: &Machine, envelope: Envelope) -> Option<Message> {
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "a machine sends no other message a feature takes"
+    )]
+    match envelope.message {
+        Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
+        Message::ProposalCommand(command) => {
+            let receipt = proposals::command(shared, machine, command).await;
+            return Some(Message::Receipt(receipt));
+        }
+        Message::ProposalQuery(query) => {
+            let answer = proposals::query(shared, machine, query).await;
+            return Some(Message::ProposalAnswer(answer));
+        }
+        message if relay::takes(&message) => {
+            let envelope = Envelope {
+                id: envelope.id,
+                message,
+            };
+            // An error the relay doesn't claim is for no other feature yet.
+            let _claimed = shared.relay.answered(&machine.id, envelope);
+        }
+        _ => {}
     }
+    None
 }
 
 #[cfg(test)]
@@ -185,7 +209,7 @@ mod tests {
         let welcome = next(&mut client).await;
         assert!(
             matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS].map(Capability::new)),
+                if *capabilities == [CONNECT, SETTINGS, DIFF, WORKTREE, SESSIONS, PROPOSALS].map(Capability::new)),
             "{welcome:?}"
         );
         (paired, client)

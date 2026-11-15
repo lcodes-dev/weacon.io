@@ -5,6 +5,8 @@
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
+use crate::ProposalChange;
+
 /// From an agent the core started, to that core's MCP: one tool call, by name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
@@ -17,6 +19,8 @@ pub enum McpCall {
     Flow(FlowArgs),
     /// The doc lines that pin one item.
     DocsFor(SymbolArgs),
+    /// A change to a doc or task of the run's workspace, for a person to accept.
+    Propose(ProposeArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other, skip_serializing)]
     Newer,
@@ -27,6 +31,7 @@ impl McpCall {
     pub const SYMBOL: &str = "symbol";
     pub const FLOW: &str = "flow";
     pub const DOCS_FOR: &str = "docs_for";
+    pub const PROPOSE: &str = "propose";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
     #[must_use]
@@ -36,6 +41,7 @@ impl McpCall {
             Self::Symbol(_) => Some(Self::SYMBOL),
             Self::Flow(_) => Some(Self::FLOW),
             Self::DocsFor(_) => Some(Self::DOCS_FOR),
+            Self::Propose(_) => Some(Self::PROPOSE),
             Self::Newer => None,
         }
     }
@@ -74,6 +80,12 @@ pub struct SymbolArgs {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<u32>,
+}
+
+/// From a run's agent, under `McpCall::Propose`: the change it proposes, in the protocol's form.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProposeArgs {
+    pub change: ProposalChange,
 }
 
 #[cfg(test)]
@@ -119,6 +131,10 @@ mod tests {
             (McpCall::SYMBOL, path),
             (McpCall::FLOW, json!({})),
             (McpCall::DOCS_FOR, json!({"path": "a::b"})),
+            (
+                McpCall::PROPOSE,
+                json!({"change": {"kind": "new_task", "title": "Ship"}}),
+            ),
         ] {
             assert_eq!(call(name, arguments).unwrap().name(), Some(name));
         }

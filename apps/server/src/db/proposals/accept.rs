@@ -52,6 +52,8 @@ enum Change {
         id: TaskId,
         title: Title,
     },
+    /// A person saw that the doc needs an update, which changes nothing.
+    Seen(DocId),
 }
 
 /// A change ready to make once the workspace is locked: a doc edit is merged already, into
@@ -72,6 +74,7 @@ enum Ready {
         id: TaskId,
         title: Title,
     },
+    Seen(DocId),
 }
 
 /// What accepting makes, before it is stored.
@@ -81,6 +84,8 @@ enum Made {
     Task(Vec<Task>),
     NewDoc(Doc),
     NewTask(Task),
+    /// Nothing, by a doc at this version.
+    Seen(Revision),
 }
 
 impl Workspace {
@@ -148,11 +153,11 @@ impl Workspace {
         if state != OPEN {
             return Err(closed());
         }
-        let agent: AgentRef = parsed(&agent)?;
+        let agent: Option<AgentRef> = (!agent.is_empty()).then(|| parsed(&agent)).transpose()?;
         let snapshot = snapshot.as_deref().map(parsed).transpose()?;
         Ok(Open {
             change: checked(parsed(&change)?, snapshot, new_id).ok_or_else(unreadable)?,
-            attribution: Attribution::accepted(stored(owner)?, Some(agent), by.clone(), at),
+            attribution: Attribution::accepted(stored(owner)?, agent, by.clone(), at),
         })
     }
 
@@ -188,6 +193,7 @@ impl Workspace {
             Change::TaskEdit { task, edits, was } => Ready::TaskEdit { task, edits, was },
             Change::NewDoc(doc) => Ready::NewDoc(doc),
             Change::NewTask { id, title } => Ready::NewTask { id, title },
+            Change::Seen(doc) => Ready::Seen(doc),
         };
         Ok(Continue(ready))
     }
@@ -213,6 +219,7 @@ impl Workspace {
                 let order = self.after_last(transaction).await?;
                 Made::NewTask(Task::new(id, title, order))
             }
+            Ready::Seen(doc) => Made::Seen(self.read_doc(transaction, &doc, None).await?.version),
         };
         Ok(Continue(made))
     }
@@ -227,6 +234,7 @@ impl Workspace {
             Made::Revision(doc) => self.store_revision(transaction, doc, attribution).await,
             Made::NewDoc(doc) => self.insert_doc(transaction, doc, attribution).await,
             Made::NewTask(task) => self.insert_task(transaction, task, attribution).await,
+            Made::Seen(_) => Ok(()),
             Made::Task(versions) => {
                 for task in versions {
                     self.store_task(transaction, task, attribution).await?;
@@ -242,6 +250,7 @@ impl Made {
         match self {
             Self::Revision(doc) | Self::NewDoc(doc) => Some(doc.version),
             Self::NewTask(task) => Some(task.version),
+            Self::Seen(version) => Some(*version),
             Self::Task(versions) => versions.last().map(|task| task.version),
         }
     }
@@ -275,6 +284,7 @@ fn checked(
             id: TaskId::try_from(new_id?).ok()?,
             title: Title::try_from(title).ok()?,
         },
+        ProposalChange::NeedsUpdate { doc, .. } => Change::Seen(doc),
         ProposalChange::Newer => return None,
     })
 }
@@ -376,7 +386,7 @@ mod tests {
         let agent = proposed("p1", "mc1", ProposalChange::Newer).agent;
         let author = Author::Agent {
             owner: member_id("m1"),
-            agent: Some(agent),
+            agent,
         };
         assert_eq!(history[0].author, author);
         assert_eq!(

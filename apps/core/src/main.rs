@@ -29,6 +29,7 @@ mod outside;
 mod pair;
 mod picks;
 mod platform;
+mod proposals;
 mod reports;
 mod resume;
 mod runs;

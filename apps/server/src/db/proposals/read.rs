@@ -3,8 +3,8 @@ use weacon_protocol::{ProposalAbout, ProposalId, ProposalRecord, ProposalState};
 
 use super::super::{Workspace, failed, parsed, stored, stored_author, stored_version, unreadable};
 use super::{
-    ACCEPTED, DOC_EDIT, NEW_DOC, NEW_TASK, OPEN, PAGE, REJECTED, SUPERSEDED, TASK_EDIT, WITHDRAWN,
-    not_found,
+    ACCEPTED, DOC_EDIT, NEEDS_UPDATE, NEW_DOC, NEW_TASK, OPEN, PAGE, REJECTED, SUPERSEDED,
+    TASK_EDIT, WITHDRAWN, not_found,
 };
 
 type RecordRow = (
@@ -61,7 +61,9 @@ impl Workspace {
 fn record(row: RecordRow) -> Result<ProposalRecord, Fault> {
     let (id, kind, doc, task, new_id, change, author, agent, state, by, version, at) = row;
     let about = match (kind.as_str(), doc, task, new_id) {
-        (DOC_EDIT, Some(doc), None, None) => ProposalAbout::Doc { doc: stored(doc)? },
+        (DOC_EDIT | NEEDS_UPDATE, Some(doc), None, None) => {
+            ProposalAbout::Doc { doc: stored(doc)? }
+        }
         (TASK_EDIT, None, Some(task), None) => ProposalAbout::Task {
             task: stored(task)?,
         },
@@ -85,7 +87,11 @@ fn record(row: RecordRow) -> Result<ProposalRecord, Fault> {
     Ok(ProposalRecord {
         id: stored(id)?,
         about,
-        author: stored_author("agent", author, Some(&agent))?,
+        author: stored_author(
+            "agent",
+            author,
+            Some(agent.as_str()).filter(|agent| !agent.is_empty()),
+        )?,
         state,
         at,
         change: change.as_deref().map(parsed).transpose()?,

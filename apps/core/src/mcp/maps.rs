@@ -15,17 +15,18 @@ use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{McpCall, WorkspaceId, code};
+use weacon_protocol::{CommitId, McpCall, WorkspaceId, code};
 
 use super::grants::{Grant, Grants};
 use super::tools::{NO_MAP, answer_from};
 use crate::app::WarnOnce;
 use crate::chats::Places;
-use crate::codemap::{Repo, Watch, locate, off_runtime, watch, worktree_index};
+use crate::codemap::{Move, Repo, Watch, locate, off_runtime, watch, worktree_index};
 use crate::db::Db;
 use crate::git::Git;
 use crate::git::repos::Repo as Registered;
 use crate::git::state::Stores as GitStores;
+use crate::proposals::{self, Proposals};
 use crate::workspaces::Workspaces;
 
 /// The longest a call waits for its map; a first read of a large repository can take longer.
@@ -44,6 +45,7 @@ pub(crate) struct Maps {
     path: Option<OsString>,
     stores: Arc<OnceCell<Option<Stores>>>,
     limit: Duration,
+    proposals: Option<Proposals>,
 }
 
 #[derive(Clone, Debug)]
@@ -54,6 +56,10 @@ struct Stores {
     /// The current index of each watched worktree, by its workspace and paths.
     live: Arc<Mutex<HashMap<Watched, Arc<Index>>>>,
     reads: Arc<Semaphore>,
+    /// Where what a move of a base did to docs' anchors is proposed, and the commit each
+    /// repository's base last moved to, by its workspace and main worktree.
+    proposals: Option<Proposals>,
+    moves: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), CommitId>>>,
 }
 
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
@@ -72,7 +78,22 @@ impl Maps {
             path: places.path.clone(),
             stores: Arc::default(),
             limit: LIMIT,
+            proposals: None,
         }
+    }
+
+    /// These maps, proposing what each move of a watched repository's base did to its
+    /// workspace's docs through `proposals`.
+    pub(crate) fn proposing(self, proposals: Proposals) -> Self {
+        Self {
+            proposals: Some(proposals),
+            ..self
+        }
+    }
+
+    /// Where the MCP's proposals go, if anywhere.
+    pub(crate) const fn proposals(&self) -> Option<&Proposals> {
+        self.proposals.as_ref()
     }
 
     /// Maps whose stores can't be opened, which answer that there's no map.
@@ -143,7 +164,7 @@ impl Maps {
     /// The stores, opened at the first use; none, logged once, when either can't be.
     async fn stores(&self, log: &Logger) -> Option<Stores> {
         let opened = self.stores.get_or_init(|| async {
-            open(&self.state_dir, self.path.clone())
+            open(&self.state_dir, self.path.clone(), self.proposals.clone())
                 .await
                 .inspect_err(|fault| log.warn("mcp maps off", &[("err", Field::error(fault))]))
                 .ok()
@@ -152,7 +173,11 @@ impl Maps {
     }
 }
 
-async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault> {
+async fn open(
+    state_dir: &Path,
+    path: Option<OsString>,
+    proposals: Option<Proposals>,
+) -> Result<Stores, Fault> {
     let db = Db::open(state_dir).await?;
     let git = Git::open(state_dir, path.as_deref())?;
     Ok(Stores {
@@ -161,6 +186,8 @@ async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault>
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
         reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
+        proposals,
+        moves: Arc::default(),
     })
 }
 
@@ -252,7 +279,11 @@ impl Stores {
                 )
             });
             let log = log.child(&[("workspace_id", watched.workspace.as_str().into())]);
-            let Some(facts) = watch.check(&log).await else {
+            let facts = watch.check(&log).await;
+            if let Some(moved) = watch.take_move() {
+                self.moved(&watched, moved, &log);
+            }
+            let Some(facts) = facts else {
                 continue;
             };
             match off_runtime(move || Ok(assemble(&facts))).await {
@@ -262,10 +293,42 @@ impl Stores {
         }
     }
 
+    /// Proposes, on a task of its own, what `moved` did to the anchors of `watched`'s
+    /// workspace's docs, once for each commit a repository's base moves to.
+    fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
+        let Some(proposals) = self.proposals.clone() else {
+            return;
+        };
+        let key = (watched.workspace.clone(), watched.main.clone());
+        let mut seen = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
+        if seen.get(&key) == Some(&moved.commit) {
+            return;
+        }
+        seen.insert(key, moved.commit.clone());
+        let (workspace, log) = (watched.workspace.clone(), log.clone());
+        tokio::spawn(async move {
+            match check_move(&proposals, &workspace, moved).await {
+                Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
+                Err(fault) => log.warn("anchors check failed", &[("err", Field::error(&fault))]),
+            }
+        });
+    }
+
     // Only the map is guarded, so a poisoned lock still holds a usable one.
     fn live(&self) -> MutexGuard<'_, HashMap<Watched, Arc<Index>>> {
         self.live.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+/// Proposes what `moved` did to `workspace`'s docs, with the indexes assembled off the runtime.
+async fn check_move(
+    proposals: &Proposals,
+    workspace: &WorkspaceId,
+    moved: Move,
+) -> Result<usize, Fault> {
+    let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
+    let (was, now, commit) = off_runtime(assembled).await?;
+    proposals::moved(proposals, workspace, &was, &now, &commit).await
 }
 
 fn failed() -> Fault {
@@ -278,11 +341,12 @@ mod tests {
 
     use tokio::sync::Semaphore;
     use weacon_protocol::MapArgs;
-    use weacon_testing::{TempDir, recording_logger};
+    use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::test_support::{crate_repo, setup, workspace};
     use super::*;
     use crate::git::fixture;
+    use crate::proposals::fake::Fake;
 
     fn map() -> McpCall {
         McpCall::Map(MapArgs::default())
@@ -290,7 +354,8 @@ mod tests {
 
     fn grant(workspace: &WorkspaceId, folder: &Path) -> Grant {
         let run = weacon_protocol::RunId::try_from("run-1".to_owned()).unwrap();
-        Grant::new(workspace.clone(), run, folder.to_owned())
+        let claude = weacon_protocol::AgentKind::Claude;
+        Grant::new(workspace.clone(), run, claude, folder.to_owned())
     }
 
     fn permit() -> OwnedSemaphorePermit {
@@ -360,7 +425,7 @@ mod tests {
         drop(calls.acquire().await.unwrap());
 
         assert_eq!(late, TOO_SLOW);
-        assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
+        assert_eq!(messages(&records), ["mcp map failed"]);
     }
 
     #[tokio::test]
@@ -488,6 +553,82 @@ mod tests {
                 .await;
             assert_eq!(answer, NO_MAP);
         }
-        assert_eq!(weacon_testing::messages(&records), ["mcp maps off"]);
+        assert_eq!(messages(&records), ["mcp maps off"]);
+    }
+
+    fn facts(files: &[(&str, &str)]) -> Vec<weacon_codemap::Facts> {
+        let mut reader = weacon_codemap::Reader::new().unwrap();
+        files
+            .iter()
+            .filter_map(|(path, text)| {
+                let file = weacon_codemap::SourceFile {
+                    path: (*path).to_owned(),
+                    text: (*text).to_owned(),
+                };
+                reader.facts(&file).unwrap()
+            })
+            .collect()
+    }
+
+    fn pinned_doc(pin: &str) -> weacon_protocol::DocRecord {
+        weacon_protocol::DocRecord {
+            id: "d-1".parse().unwrap(),
+            version: 1,
+            content: weacon_protocol::DocContent {
+                title: "Plan".to_owned(),
+                body: "[go](sym:a::go)\n".to_owned(),
+                anchors: Some(weacon_protocol::DocAnchors {
+                    commit: "a".repeat(40).parse().unwrap(),
+                    pins: vec![pin.parse().unwrap()],
+                }),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn each_move_of_a_repositorys_base_is_checked_once() {
+        let dir = TempDir::new().unwrap();
+        let fake = Fake::default();
+        let path = std::env::var_os("PATH");
+        let stores = open(&dir, path.clone(), Some(fake.connect()))
+            .await
+            .unwrap();
+        let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");
+        let was = facts(&[manifest, ("src/lib.rs", "pub fn go() {}\n")]);
+        let now = facts(&[manifest, ("src/lib.rs", "pub fn went() {}\n")]);
+        let index = assemble(&was);
+        let anchor: weacon_codemap::Anchor = "sym:a::go".parse().unwrap();
+        let pin = weacon_codemap::Pin {
+            fingerprint: index.fingerprint(&anchor).unwrap(),
+            anchor,
+        };
+        fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
+        let watched = Watched {
+            workspace: workspace("one"),
+            main: dir.join("main"),
+            worktree: dir.join("main"),
+        };
+        let moved = |commit: char| Move {
+            was: was.clone(),
+            now: now.clone(),
+            commit: commit.to_string().repeat(40).parse().unwrap(),
+        };
+        let (log, records) = recording_logger();
+
+        stores.moved(&watched, moved('b'), &log);
+        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
+            .await
+            .unwrap();
+        stores.moved(&watched, moved('b'), &log);
+        stores.moved(&watched, moved('c'), &log);
+        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
+            .await
+            .unwrap();
+
+        assert_eq!(fake.commands().len(), 2);
+        assert!(!messages(&records).contains(&"anchors check failed"));
+        let off = open(&dir, path, None).await.unwrap();
+        off.moved(&watched, moved('d'), &log);
+        assert!(off.moves.lock().unwrap().is_empty());
     }
 }

@@ -57,7 +57,26 @@ pub(crate) fn listed() -> Vec<Tool> {
             json!({"budget": budget}),
             &[],
         ),
+        writes(tool(
+            McpCall::PROPOSE,
+            "Proposes a change to a doc or task of this chat's workspace; nothing changes until \
+             a person accepts it. Only when the person asks. `change` is one of {kind: \
+             new_task, title}, {kind: new_doc, content: {title, body}}, {kind: task_edit, task, \
+             base, edits: [{kind: title, title} or {kind: status, status}]}, {kind: doc_edit, \
+             doc, base, content}.",
+            json!({"change": {"type": "object"}}),
+            &["change"],
+        )),
     ]
+}
+
+/// `tool`, as one that writes: what it changes, a person accepts first.
+fn writes(tool: Tool) -> Tool {
+    let hints = ToolAnnotations::new()
+        .read_only(false)
+        .destructive(false)
+        .open_world(false);
+    tool.annotate(hints)
 }
 
 /// A read-only tool taking an object with `properties`, of which `required` must be given.
@@ -88,7 +107,7 @@ pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
         }
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
         McpCall::DocsFor(args) => map.docs_for(&args.path, budget(args.budget)),
-        McpCall::Newer => String::new(),
+        McpCall::Propose(_) | McpCall::Newer => String::new(),
     }
 }
 
@@ -141,10 +160,13 @@ mod tests {
             .map(|tool| tool.description.as_deref().map(str::len))
             .collect();
 
-        assert_eq!(names, ["map", "symbol", "docs_for", "flow"]);
+        assert_eq!(names, ["map", "symbol", "docs_for", "flow", "propose"]);
         assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
-        assert_eq!(sizes, [Some(189), Some(170), Some(106), Some(106)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1455);
+        assert_eq!(
+            sizes,
+            [Some(189), Some(170), Some(106), Some(106), Some(341)]
+        );
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 2011);
     }
 
     #[test]

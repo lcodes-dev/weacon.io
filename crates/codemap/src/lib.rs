@@ -14,6 +14,7 @@ mod flows;
 mod graph;
 mod index;
 mod louvain;
+mod moved;
 mod paths;
 mod rank;
 mod refs;
@@ -34,6 +35,7 @@ pub use facts::{Facts, Reader, is_mapped};
 pub use fingerprint::Fingerprint;
 pub(crate) use flows::Break;
 pub use index::{Crate, Index, Module, SourceFile, assemble, index};
+pub use moved::Moved;
 pub use search::Entry;
 pub use symbols::{Kind, Symbol};
 

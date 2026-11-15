@@ -135,7 +135,7 @@ fn text(content: DocContent) -> Result<DocText, Fault> {
     })
 }
 
-fn record(doc: Doc) -> DocRecord {
+pub(crate) fn record(doc: Doc) -> DocRecord {
     DocRecord {
         id: doc.id,
         version: doc.version.get(),

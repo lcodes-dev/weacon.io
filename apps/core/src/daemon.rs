@@ -24,6 +24,7 @@ use crate::memory;
 use crate::outside::Outside;
 use crate::picks::Picks;
 use crate::platform::{self, Listener, Owner, Stream};
+use crate::proposals;
 use crate::session::{Reply, Session};
 
 mod route;
@@ -73,9 +74,10 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         daemon.shared.outside = app.outside.clone();
         // The daemon's own worktrees, so a relayed removal and a local one share their lock.
         let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
-        daemon
-            .uplink
-            .spawn(route::server(app, state_dir, chats, worktrees));
+        if let Some(proposing) = daemon.proposing.take() {
+            let server = route::server(app, state_dir, chats, worktrees, proposing);
+            daemon.uplink.spawn(server);
+        }
         let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
@@ -102,6 +104,8 @@ pub(crate) struct Daemon {
     memory: memory::Watch,
     engine: JoinHandle<()>,
     uplink: JoinSet<()>,
+    /// What the MCP and the map's watches propose, until the uplink takes it.
+    proposing: Option<proposals::Asks>,
     mcp: mcp::Server,
     // Held for the daemon's life, so a second daemon can't start.
     _lock: File,
@@ -138,7 +142,9 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
-        let (mcp, mcp_server) = mcp::start(&app, &log, mcp::Maps::new(state_dir, &places))?;
+        let (proposals, proposing) = proposals::channel();
+        let maps = mcp::Maps::new(state_dir, &places).proposing(proposals);
+        let (mcp, mcp_server) = mcp::start(&app, &log, maps)?;
         places.mcp = Some(mcp);
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
@@ -149,6 +155,7 @@ impl Daemon {
             socket,
             owner,
             uplink: JoinSet::new(),
+            proposing: Some(proposing),
             engine: tokio::spawn(engine.serve()),
             shared: Shared {
                 app,
@@ -581,9 +588,10 @@ mod tests {
         let app = test_support::app(Some(&dir), None);
         let running = start_as(&dir, |daemon| {
             let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
+            let proposing = daemon.proposing.take().unwrap();
             daemon
                 .uplink
-                .spawn(route::server(&app, &dir, chats, worktrees));
+                .spawn(route::server(&app, &dir, chats, worktrees, proposing));
         })
         .unwrap();
 

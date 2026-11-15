@@ -3,11 +3,12 @@ use sqlx::SqliteConnection;
 use weacon_model::{DocText, Revision, TaskEdit, Title};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, DocContent, DocId, ProposalChange, TaskEditBody, TaskId, TaskStatus, code,
+    AnchorChange, Code, DocContent, DocId, ProposalChange, StaleAnchor, TaskEditBody, TaskId,
+    TaskStatus, code,
 };
 
 use super::super::{Workspace, version_number};
-use super::{DOC_EDIT, NEW_DOC, NEW_TASK, Proposed, TASK_EDIT, invalid};
+use super::{DOC_EDIT, NEEDS_UPDATE, NEW_DOC, NEW_TASK, Proposed, TASK_EDIT, invalid};
 
 /// What a change is to, once checked against what the workspace holds now.
 #[derive(Default)]
@@ -74,8 +75,36 @@ impl Workspace {
                     ..Target::default()
                 })
             }
+            ProposalChange::NeedsUpdate { doc, base, anchors } => {
+                self.stale_target(transaction, doc, *base, anchors).await
+            }
             ProposalChange::Newer => Err(invalid()),
         }
+    }
+
+    /// A "needs an update" proposal's target: anchors that the doc pins at its revision `base`.
+    async fn stale_target<'a>(
+        &self,
+        transaction: &mut SqliteConnection,
+        doc: &'a DocId,
+        base: u64,
+        anchors: &[StaleAnchor],
+    ) -> Result<Target<'a>, Fault> {
+        let base = Revision::new(base);
+        let was = self.read_doc(transaction, doc, Some(base)).await;
+        let was = was.map_err(|fault| invalid_if(fault, &code!("doc.not_found")))?;
+        let pins = was.text.anchors().map_or(&[][..], |anchors| &anchors.pins);
+        let known =
+            |stale: &StaleAnchor| pins.contains(&stale.pin) && stale.change != AnchorChange::Newer;
+        if anchors.is_empty() || !anchors.iter().all(known) {
+            return Err(invalid());
+        }
+        Ok(Target {
+            kind: NEEDS_UPDATE,
+            doc: Some(doc),
+            base: Some(version_number(base, invalid)?),
+            ..Target::default()
+        })
     }
 
     /// A task edit's target, made only from the task's version as it is now;

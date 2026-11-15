@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use weacon_codemap::Facts;
 use weacon_observability::{Fault, Field, Logger};
+use weacon_protocol::CommitId;
 
 use super::{Base, RepoMap, Source};
 use crate::db::BASE;
@@ -15,6 +16,15 @@ pub(crate) struct Watch<S> {
     /// What the worktree's changes were at the last update.
     seen: Option<String>,
     failing: bool,
+    moved: Option<Move>,
+}
+
+/// The base's facts before and after its commit moved, to `commit`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Move {
+    pub(crate) was: Vec<Facts>,
+    pub(crate) now: Vec<Facts>,
+    pub(crate) commit: CommitId,
 }
 
 impl<S: Source> Watch<S> {
@@ -25,7 +35,13 @@ impl<S: Source> Watch<S> {
             base: None,
             seen: None,
             failing: false,
+            moved: None,
         }
+    }
+
+    /// The last move of the base's commit since this was last asked, if the watch saw one.
+    pub(crate) const fn take_move(&mut self) -> Option<Move> {
+        self.moved.take()
     }
 
     /// Updates the worktree's layer when the base's commit or the worktree's changes moved,
@@ -56,9 +72,17 @@ impl<S: Source> Watch<S> {
         let base = match self.base.take() {
             Some(base) if base.commit == head && stored.as_deref() == Some(head.as_str()) => base,
             // Another refresh may have stored a base meanwhile, so this worktree's layer is rebuilt.
-            _ => {
+            was => {
                 self.seen = None;
-                self.repo.base().await?
+                let base = self.repo.base().await?;
+                if let Some(was) = was.filter(|was| was.commit != base.commit) {
+                    self.moved = Some(Move {
+                        was: was.facts,
+                        now: base.facts.clone(),
+                        commit: base.commit.clone(),
+                    });
+                }
+                base
             }
         };
         let base = self.base.insert(base);
@@ -161,5 +185,27 @@ mod tests {
         assert_eq!(watch.check(&log).await, None);
         let expected = ["map update failed", "map updated", "map update failed"];
         assert_eq!(messages(&records), expected);
+    }
+
+    #[tokio::test]
+    async fn a_move_of_the_base_is_kept_until_taken_and_the_first_base_is_none() {
+        let dir = TempDir::new().unwrap();
+        let (mut watch, source) = watch(&dir).await;
+        let (log, _) = recording_logger();
+        source.commit(
+            "c1",
+            &[("Cargo.toml", MANIFEST), ("src/lib.rs", "fn a() {}\n")],
+        );
+        watch.check(&log).await;
+        assert_eq!(watch.take_move(), None);
+
+        source.commit("c2", &[("Cargo.toml", MANIFEST)]);
+        watch.check(&log).await;
+        let moved = watch.take_move().unwrap();
+        watch.check(&log).await;
+
+        assert_eq!(moved.commit, commit_id("c2"));
+        assert_eq!((moved.was.len(), moved.now.len()), (2, 1));
+        assert_eq!(watch.take_move(), None);
     }
 }

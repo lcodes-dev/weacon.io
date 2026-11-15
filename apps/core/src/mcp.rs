@@ -4,6 +4,7 @@
 mod deadline;
 pub(crate) mod grants;
 mod maps;
+mod propose;
 pub(crate) mod tools;
 
 use std::convert::Infallible;
@@ -126,6 +127,7 @@ pub(crate) fn grant(
     let grant = Grant::new(
         run_as.key.workspace.clone(),
         run_as.run.clone(),
+        run_as.agent,
         launch.cwd.clone(),
     );
     let (token, revoke) = mcp.grants.issue(grant)?;
@@ -307,7 +309,12 @@ impl ServerHandler for Handler {
         };
         let started = Instant::now();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = self.maps.answer(&call, &grant, permit, &log).await;
+        let (text, done) = if let McpCall::Propose(args) = call {
+            drop(permit);
+            propose::propose(self.maps.proposals(), &grant, args, &log).await
+        } else {
+            (self.maps.answer(&call, &grant, permit, &log).await, true)
+        };
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let fields: [(&str, Field); 5] = [
             ("workspace_id", grant.workspace.as_str().into()),
@@ -317,7 +324,13 @@ impl ServerHandler for Handler {
             ("ms", millis.into()),
         ];
         self.log.info("mcp answered", &fields);
-        Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into())
+        let blocks = vec![ContentBlock::text(text)];
+        Ok(if done {
+            CallToolResult::success(blocks)
+        } else {
+            CallToolResult::error(blocks)
+        }
+        .into())
     }
 }
 
@@ -424,6 +437,7 @@ mod tests {
         Grant::new(
             WorkspaceId::try_from(workspace.to_owned()).unwrap(),
             RunId::try_from(run.to_owned()).unwrap(),
+            AgentKind::Claude,
             folder,
         )
     }
@@ -797,5 +811,37 @@ mod tests {
         assert_eq!((alone.mcp, no_mcp.is_none()), (None, true));
         drop(revoke);
         assert!(mcp.grants.find(&server.token).is_none());
+    }
+
+    #[tokio::test]
+    async fn propose_answers_from_the_server_and_says_when_it_was_refused() {
+        let dir = TempDir::new().unwrap();
+        let (log, _records) = recording_logger();
+        let fake = crate::proposals::fake::Fake::default();
+        let maps = Maps::off().proposing(fake.connect());
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, maps).unwrap();
+        let (token, _revoke) = mcp
+            .grants
+            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .unwrap();
+        let auth = bearer(&token);
+        let task = call(
+            "propose",
+            json!({"change": {"kind": "new_task", "title": "Ship"}}),
+        );
+
+        let proposed = post(&mcp, &[("Authorization", &auth)], &task).await;
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        let refused = post(&mcp, &[("Authorization", &auth)], &task).await;
+
+        let error = |reply: &Reply| {
+            let message: Value = serde_json::from_str(&reply.body).unwrap();
+            message["result"]["isError"].as_bool()
+        };
+        assert_eq!(answer_text(&proposed), propose::PROPOSED);
+        assert_eq!(error(&proposed), Some(false));
+        assert_eq!(answer_text(&refused), "Not proposed: proposal.too_many.\n");
+        assert_eq!(error(&refused), Some(true));
+        assert_eq!(fake.commands().len(), 2);
     }
 }

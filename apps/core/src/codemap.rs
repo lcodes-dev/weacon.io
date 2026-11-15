@@ -8,7 +8,7 @@ mod repo;
 mod watch;
 
 pub(crate) use repo::{LARGEST, Repo, locate, watch, worktree_index};
-pub(crate) use watch::Watch;
+pub(crate) use watch::{Move, Watch};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;

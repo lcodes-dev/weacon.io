@@ -3,8 +3,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AgentKind, Author, DocContent, DocId, MemberId, RequestId, TaskEditBody, TaskId, WorkspaceId,
+    AgentKind, Author, Code, DocAnchors, DocContent, DocId, DocPin, DocRecord, MemberId, RequestId,
+    TaskEditBody, TaskId, WorkspaceId,
 };
+
+/// The most bytes a proposal's change may take as JSON; a larger one is `proposal.too_large`.
+pub const MAX_PROPOSAL: usize = 512 * 1024;
 
 token_id!(
     /// A proposal in a workspace, chosen by the core that proposes it and kept across
@@ -37,10 +41,20 @@ pub enum ProposalAction {
     },
     /// Withdraws one of the same machine's open proposals.
     Withdraw { proposal: ProposalId },
+    /// Proposes `proposals` together, as the core's own for its owner rather than an agent's:
+    /// what one move of the code did to one doc's anchors. All are stored, or none is.
+    Batch { proposals: Vec<Batched> },
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
+}
+
+/// One proposal of a [`ProposalAction::Batch`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Batched {
+    pub proposal: ProposalId,
+    pub change: ProposalChange,
 }
 
 /// What a proposal would change once a person accepts it.
@@ -63,10 +77,104 @@ pub enum ProposalChange {
     NewDoc { content: DocContent },
     /// A task to do, placed last.
     NewTask { title: String },
+    /// The code that some of the doc's anchors pin changed or went, as of its revision `base`,
+    /// so its text may need an update; accepting it changes nothing but says a person saw it.
+    NeedsUpdate {
+        doc: DocId,
+        base: u64,
+        anchors: Vec<StaleAnchor>,
+    },
     /// A change this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
+}
+
+/// An anchor of a doc whose code a move changed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StaleAnchor {
+    /// The pin as the doc has it.
+    pub pin: DocPin,
+    pub change: AnchorChange,
+}
+
+/// What a move did to an anchor's code, each item described in a line such as
+/// `fn a::run  a/src/lib.rs:3`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AnchorChange {
+    Changed {
+        was: String,
+        now: String,
+    },
+    Gone {
+        was: String,
+    },
+    /// A change this build doesn't know, from a newer peer; only ever received.
+    #[serde(other, skip_serializing)]
+    #[schemars(skip)]
+    Newer,
+}
+
+/// What a core asks a server that offers `workspace.proposals` about its owner's workspace,
+/// to propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProposalQuery {
+    pub request: RequestId,
+    pub workspace: WorkspaceId,
+    pub query: ProposalQueryKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProposalQueryKind {
+    /// The docs that pin code, by id, from the first after `after`.
+    Pinned {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "DocId")]
+        after: Option<DocId>,
+    },
+    /// One doc as it is now.
+    Doc { doc: DocId },
+    /// A query this build doesn't know, from a newer peer; only ever received.
+    #[serde(other, skip_serializing)]
+    #[schemars(skip)]
+    Newer,
+}
+
+/// The server's answer to a [`ProposalQuery`], under its `request`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProposalAnswer {
+    pub request: RequestId,
+    pub answer: ProposalAnswerKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProposalAnswerKind {
+    /// Docs that pin code, by id; `more` when others follow the last.
+    Pinned {
+        docs: Vec<PinnedDoc>,
+        more: bool,
+    },
+    Doc {
+        doc: DocRecord,
+    },
+    Failed {
+        code: Code,
+    },
+    /// An answer this build doesn't know, from a newer peer; only ever received.
+    #[serde(other, skip_serializing)]
+    #[schemars(skip)]
+    Newer,
+}
+
+/// A doc's anchors at its revision `version`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PinnedDoc {
+    pub id: DocId,
+    pub version: u64,
+    pub anchors: DocAnchors,
 }
 
 /// The doc or task a proposal is about; a new one has the id it gets once accepted.
@@ -520,5 +628,139 @@ mod tests {
         );
         let id = serde_json::from_value::<ProposalId>(json!("../p")).unwrap_err();
         assert!(id.to_string().contains("not a proposal id"), "{id}");
+    }
+
+    const PIN: &str = "sym:a::go#0123456789abcdef";
+
+    #[test]
+    fn a_core_proposes_a_batch_for_a_doc_whose_code_moved() {
+        let stale = |change: AnchorChange| StaleAnchor {
+            pin: PIN.parse().unwrap(),
+            change,
+        };
+        let batch = envelope(Message::ProposalCommand(ProposalCommand {
+            request: request(),
+            workspace: workspace(),
+            action: ProposalAction::Batch {
+                proposals: vec![Batched {
+                    proposal: "p-2".parse().unwrap(),
+                    change: ProposalChange::NeedsUpdate {
+                        doc: "d-1".parse().unwrap(),
+                        base: 3,
+                        anchors: vec![
+                            stale(AnchorChange::Changed {
+                                was: "fn a::go  a.rs:1".to_owned(),
+                                now: "fn a::go  a.rs:2".to_owned(),
+                            }),
+                            stale(AnchorChange::Gone {
+                                was: "fn a::go  a.rs:1".to_owned(),
+                            }),
+                        ],
+                    },
+                }],
+            },
+        }));
+        let mut change = json!({ "kind": "needs_update", "doc": "d-1", "base": 3 });
+        change["anchors"] = json!([
+            { "pin": PIN, "change": { "kind": "changed", "was": "fn a::go  a.rs:1", "now": "fn a::go  a.rs:2" } },
+            { "pin": PIN, "change": { "kind": "gone", "was": "fn a::go  a.rs:1" } },
+        ]);
+
+        travels(
+            &batch,
+            command(
+                json!({ "kind": "batch", "proposals": [{ "proposal": "p-2", "change": change }] }),
+            ),
+        );
+        let mut later = json!({ "kind": "needs_update", "doc": "d-1", "base": 3 });
+        later["anchors"] = json!([{ "pin": PIN, "change": { "kind": "renamed" } }]);
+        never_sent(command(
+            json!({ "kind": "batch", "proposals": [{ "proposal": "p-2", "change": later }] }),
+        ));
+    }
+
+    #[test]
+    fn a_core_queries_the_pinned_docs_and_one_doc() {
+        let query = |query: ProposalQueryKind| {
+            envelope(Message::ProposalQuery(ProposalQuery {
+                request: request(),
+                workspace: workspace(),
+                query,
+            }))
+        };
+        let wire = |query: Value| {
+            let mut wire = json!({ "id": 4, "type": "proposal_query", "request": "r-1" });
+            wire["workspace"] = json!("w-1");
+            wire["query"] = query;
+            wire
+        };
+        let after = ProposalQueryKind::Pinned {
+            after: Some("d-1".parse().unwrap()),
+        };
+        let doc = ProposalQueryKind::Doc {
+            doc: "d-1".parse().unwrap(),
+        };
+
+        travels(
+            &query(ProposalQueryKind::Pinned { after: None }),
+            wire(json!({ "kind": "pinned" })),
+        );
+        travels(
+            &query(after),
+            wire(json!({ "kind": "pinned", "after": "d-1" })),
+        );
+        travels(&query(doc), wire(json!({ "kind": "doc", "doc": "d-1" })));
+        never_sent(wire(json!({ "kind": "tasks" })));
+    }
+
+    fn answer(answer: ProposalAnswerKind) -> Envelope {
+        envelope(Message::ProposalAnswer(ProposalAnswer {
+            request: request(),
+            answer,
+        }))
+    }
+
+    fn answered(answer: &Value) -> Value {
+        json!({ "id": 4, "type": "proposal_answer", "request": "r-1", "answer": answer })
+    }
+
+    #[test]
+    fn a_server_answers_with_a_page_of_pins_a_doc_or_a_failure() {
+        let commit = "89abcdef0123456789abcdef0123456789abcdef";
+        let anchors = DocAnchors {
+            commit: commit.parse().unwrap(),
+            pins: vec![PIN.parse().unwrap()],
+        };
+        let page = ProposalAnswerKind::Pinned {
+            docs: vec![PinnedDoc {
+                id: "d-1".parse().unwrap(),
+                version: 2,
+                anchors,
+            }],
+            more: true,
+        };
+        let mut page_wire = json!({ "kind": "pinned", "more": true });
+        page_wire["docs"] =
+            json!([{ "id": "d-1", "version": 2, "anchors": { "commit": commit, "pins": [PIN] } }]);
+        let doc = ProposalAnswerKind::Doc {
+            doc: DocRecord {
+                id: "d-1".parse().unwrap(),
+                version: 2,
+                content: content(),
+            },
+        };
+        let mut doc_wire = json!({ "kind": "doc" });
+        doc_wire["doc"] = json!({ "id": "d-1", "version": 2, "content": content_wire() });
+        let failed = ProposalAnswerKind::Failed {
+            code: crate::code!("proposal.invalid"),
+        };
+
+        travels(&answer(page), answered(&page_wire));
+        travels(&answer(doc), answered(&doc_wire));
+        travels(
+            &answer(failed),
+            answered(&json!({ "kind": "failed", "code": "proposal.invalid" })),
+        );
+        never_sent(answered(&json!({ "kind": "tasks" })));
     }
 }
