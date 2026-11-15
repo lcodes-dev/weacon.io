@@ -242,14 +242,23 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, mut client) = connected(server.address, &fixture).await;
-        let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
-        let account = AccountId::try_from(session["account"].as_str().unwrap().to_owned()).unwrap();
+        // Unpaired without a notice, as by another server, while the client reads on, so it
+        // answers every ping until then.
+        let unpair = async {
+            let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+            let account = session["account"].as_str().unwrap().to_owned();
+            let account = AccountId::try_from(account).unwrap();
+            fixture
+                .shared
+                .db
+                .unpair(&account, &paired.machine_id())
+                .await
+        };
 
-        // Unpaired without a notice, as by another server.
-        let db = &fixture.shared.db;
-        assert!(db.unpair(&account, &paired.machine_id()).await.unwrap());
+        let (unpaired, said) = tokio::join!(unpair, next(&mut client));
 
-        assert_eq!(next(&mut client).await, refusal(code!("machine.unpaired")));
+        assert!(unpaired.unwrap());
+        assert_eq!(said, refusal(code!("machine.unpaired")));
         assert!(ends(&mut client).await);
     }
 

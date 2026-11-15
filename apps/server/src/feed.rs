@@ -402,7 +402,8 @@ mod tests {
 
     #[tokio::test]
     async fn only_a_client_that_offers_docs_hears_of_doc_changes() {
-        let fixture = Fixture::new().await;
+        let mut fixture = Fixture::new().await;
+        fixture.quiet();
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut plain = greeted(server.address, &ada.token, 0).await;
         next(&mut plain).await;
