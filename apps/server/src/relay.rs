@@ -194,14 +194,7 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
             chat.machine
         }
     };
-    let theirs = shared
-        .db
-        .has_machine(&ask.asker.account, &machine)
-        .await
-        .map_err(Refusal::Failed)?;
-    if !theirs {
-        return Err(refused(code!("machine.not_found"), false));
-    }
+    theirs(shared, ask, &machine).await?;
     Ok(machine)
 }
 
@@ -339,7 +332,24 @@ fn sharing(waiting: &HashMap<u32, Waiter>, id: u32) -> usize {
     same.count().saturating_sub(1)
 }
 
-const fn refused(code: Code, retryable: bool) -> Refusal {
+/// Refuses unless `machine` is the asker's own.
+///
+/// # Errors
+/// `machine.not_found`, or the database's failure.
+pub(crate) async fn theirs(
+    shared: &Shared,
+    ask: &Ask<'_>,
+    machine: &MachineId,
+) -> Result<(), Refusal> {
+    let theirs = shared.db.has_machine(&ask.asker.account, machine).await;
+    if theirs.map_err(Refusal::Failed)? {
+        Ok(())
+    } else {
+        Err(refused(code!("machine.not_found"), false))
+    }
+}
+
+pub(crate) const fn refused(code: Code, retryable: bool) -> Refusal {
     Refusal::Refused(ErrorBody { code, retryable })
 }
 

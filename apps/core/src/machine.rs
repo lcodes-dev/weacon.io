@@ -57,8 +57,13 @@ impl Key {
         groups.join(" ")
     }
 
+    /// The private half, the static key of the machine's sealed channels.
+    pub(crate) fn secret(&self) -> StaticSecret {
+        StaticSecret::from(self.0)
+    }
+
     fn public_bytes(&self) -> [u8; 32] {
-        PublicKey::from(&StaticSecret::from(self.0)).to_bytes()
+        PublicKey::from(&self.secret()).to_bytes()
     }
 }
 
@@ -99,6 +104,18 @@ pub(crate) fn read(state_dir: &Path) -> Result<Option<Paired>, Fault> {
         }
         Err(error) => Err(unreadable().because(error)),
     }
+}
+
+/// The pairing as it stands now, read off the async runtime.
+///
+/// # Errors
+/// When there is none, or it can't be read.
+pub(crate) async fn current(state_dir: &Path) -> Result<Paired, Fault> {
+    let dir = state_dir.to_owned();
+    crate::app::blocking(move || Ok(read(&dir)))
+        .await
+        .map_err(|error| unreadable().because(error))??
+        .ok_or_else(|| Fault::new(code!("machine.unpaired"), "This machine isn't paired"))
 }
 
 /// Keeps `paired`, in place of any pairing before it.

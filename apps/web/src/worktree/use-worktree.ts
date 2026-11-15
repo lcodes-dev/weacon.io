@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, unsent, waiting } from "./worktree.ts";
@@ -23,7 +23,7 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
     if (chatRef === undefined) {
       return false;
     }
-    const pending = { id: link.nextId(), request: newRequestId(), ask: what.kind, confirm: what.kind === "state" && what.confirm === true };
+    const pending = { id: link.nextId(), request: newId(), ask: what.kind, confirm: what.kind === "state" && what.confirm === true };
     const sent = link.send(envelopeFor(chatRef, pending.id, pending.request, what));
     setWorktree((before) => (sent ? waiting(before, pending) : unsent(before, what.kind)));
     return sent;

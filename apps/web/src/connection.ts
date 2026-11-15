@@ -17,7 +17,8 @@ export type WebCapability =
   | "machine.settings"
   | "sessions.read"
   | "worktree.manage"
-  | "worktree.open_terminal";
+  | "worktree.open_terminal"
+  | "terminal.relay";
 
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;

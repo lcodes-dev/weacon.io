@@ -107,6 +107,7 @@ impl Fixture {
             unpaired: broadcast::channel(16).0,
             links: Arc::default(),
             relay: Arc::default(),
+            terminals: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_takes: Duration::ZERO,
             sign_in_limits: Arc::new(sign_in::limits()),

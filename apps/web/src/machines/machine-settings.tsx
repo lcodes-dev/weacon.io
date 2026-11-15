@@ -1,9 +1,14 @@
+import { useState } from "react";
+
 import type { Later } from "../connection.ts";
 import type { AccessLevel, AgentKind, MachineOs, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
+import { type LinkSocket, terminalLink } from "../terminal/link.ts";
+import { TerminalView } from "../terminal/terminal-view.tsx";
 import type { MachineSocket } from "./ask-machine.ts";
+import type { Pins } from "./pins.ts";
 import { change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
@@ -24,12 +29,22 @@ const STATES = new Map<SignInState | string, string>([
   ["not_installed", "Not installed"],
 ]);
 
+type Props = {
+  machine: MachineSummary;
+  socket: MachineSocket & LinkSocket;
+  later: Later;
+  pins: Pins;
+  /** Whether the server relays sign-in terminals. */
+  relays: boolean;
+};
+
 /**
  * What one of the person's machines keeps for the open workspace, asked of its core: error
  * reports, what the workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, socket, later }: { machine: MachineSummary; socket: MachineSocket; later: Later }) {
+export function MachineSettingsView({ machine, socket, later, pins, relays }: Props) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
+  const [signingIn, setSigningIn] = useState<AgentKind>();
   const changing = useAsk();
   const set = (action: MachineSettingsAction) =>
     void changing.ask(
@@ -42,13 +57,51 @@ export function MachineSettingsView({ machine, socket, later }: { machine: Machi
       <h3>{machine.name}</h3>
       {settings.loading && <p className="muted">Loading</p>}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
-      {shown !== undefined && <Shown settings={shown} os={machine.os} busy={changing.busy} set={set} />}
+      {shown !== undefined && (
+        <Shown
+          settings={shown}
+          os={machine.os}
+          busy={changing.busy}
+          set={set}
+          signIn={relays && signingIn === undefined ? setSigningIn : undefined}
+        />
+      )}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}
+      {signingIn !== undefined && (
+        <>
+          <TerminalView
+            machine={machine}
+            workspace={socket.workspace}
+            agent={signingIn}
+            pins={pins}
+            {...terminalLink(socket)}
+            onClosed={() => void settings.load()}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              setSigningIn(undefined);
+              void settings.load();
+            }}
+          >
+            Close the sign-in
+          </button>
+        </>
+      )}
     </section>
   );
 }
 
-function Shown({ settings, os, busy, set }: { settings: MachineSettings; os: MachineOs; busy: boolean; set(action: MachineSettingsAction): void }) {
+type ShownProps = {
+  settings: MachineSettings;
+  os: MachineOs;
+  busy: boolean;
+  set(action: MachineSettingsAction): void;
+  /** Opens a sign-in terminal for an agent; none while one is open or none can be. */
+  signIn: ((agent: AgentKind) => void) | undefined;
+};
+
+function Shown({ settings, os, busy, set, signIn }: ShownProps) {
   const { reports, access, team } = settings;
   return (
     <>
@@ -109,7 +162,12 @@ function Shown({ settings, os, busy, set }: { settings: MachineSettings; os: Mac
       <ul aria-label="Sign-ins">
         {settings.sign_ins.map(({ agent, state }) => (
           <li key={agent}>
-            {AGENTS.get(agent) ?? "Another agent"}: {STATES.get(state) ?? "Unknown"}
+            {AGENTS.get(agent) ?? "Another agent"}: {STATES.get(state) ?? "Unknown"}{" "}
+            {signIn !== undefined && AGENTS.has(agent) && state !== "not_installed" && (
+              <button type="button" onClick={() => signIn(agent)}>
+                {state === "signed_in" ? "Sign in again" : "Sign in"}
+              </button>
+            )}
           </li>
         ))}
       </ul>

@@ -24,6 +24,7 @@ use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
+use crate::terminals::{self, TERMINALS};
 use crate::workspaces::MEMBERS;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
@@ -35,7 +36,7 @@ const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 11] = [
+const OFFERED: [Code; 12] = [
     FEED,
     TASKS,
     DOCS,
@@ -47,6 +48,7 @@ const OFFERED: [Code; 11] = [
     WORKTREE,
     SESSIONS,
     LOG_FORWARD,
+    TERMINALS,
 ];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
@@ -159,6 +161,7 @@ fn feed_failed(shared: &Shared, workspace: &WorkspaceId, fault: &Fault) -> Close
 async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
     // However the feed ends, it just ends: the client sees its socket close.
     let Err(Closed) = run(&mut socket, &shared, &mut feed).await;
+    terminals::ended(&shared, &feed.answer_to);
 }
 
 async fn run(
@@ -256,6 +259,17 @@ async fn received(
         feed.allowed(shared).await?;
         let answer = feed.chats.heard(envelope, &feed.member, shared).await;
         return send_chats(socket, shared, feed, answer).await;
+    }
+    if feed.hears(TERMINALS)
+        && let Message::TerminalCommand(command) = envelope.message
+    {
+        feed.allowed(shared).await?;
+        let ask = Ask {
+            asker: &feed.asker,
+            workspace: &feed.member.workspace,
+        };
+        let forwarded = terminals::forward(shared, &ask, command, &feed.answer_to).await;
+        return forwarded.map_err(|fault| feed_failed(shared, ask.workspace.id(), &fault));
     }
     Ok(())
 }
@@ -428,7 +442,8 @@ mod tests {
                 DIFF,
                 WORKTREE,
                 SESSIONS,
-                LOG_FORWARD
+                LOG_FORWARD,
+                TERMINALS
             ]
             .map(Capability::new)
         );
