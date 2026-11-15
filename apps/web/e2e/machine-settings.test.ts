@@ -45,8 +45,20 @@ test("a person reads and changes a machine's settings for the open workspace, th
   const signIns = await settings.getByRole("list", { name: "Sign-ins" }).getByRole("listitem").allInnerTexts();
   assert.deepEqual(
     signIns.map((text) => text.trim()),
-    ["Claude Code: Signed in", "Codex: Not installed"],
+    ["Claude Code: Signed in Sign in again", "Codex: Not installed"],
   );
+  // This core opens no sign-in terminals, so the server closes the one asked for.
+  await settings.getByRole("button", { name: "Sign in again" }).click();
+  await settings.getByText("The machine isn't connected, or its core can't open sign-in terminals.").waitFor();
+  // xterm's own rules apply under the server's policy, which blocks inline styles.
+  const rows = settings.locator(".xterm-rows");
+  assert.equal(await rows.evaluate((element) => getComputedStyle(element).color), "rgb(255, 255, 255)");
+  // The sign-ins are asked again once it closes, and again once the person closes it.
+  await waitFor(() => machine.queries === 2);
+  machine.set({ ...machine.settings, sign_ins: [{ agent: "claude", state: "signed_out" }, { agent: "codex", state: "not_installed" }] });
+  await settings.getByRole("button", { name: "Close the sign-in" }).click();
+  await settings.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  machine.set({ ...machine.settings, sign_ins: START.sign_ins });
 
   const warning = settings.getByText("Full access is on in a team workspace. Its agents change files on this machine without asking.");
   const team = settings.getByLabel("Other people are in this workspace");

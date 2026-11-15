@@ -17,13 +17,15 @@ use weacon_protocol::{
 
 use crate::auth::{Member, Session};
 use crate::chats::{self, Watch};
+use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
-use crate::http::failure;
+use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, WORKTREE};
 use crate::search::SEARCH;
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
+use crate::terminals::{self, TERMINALS};
 use crate::workspaces::MEMBERS;
 
 /// What a client must offer, and the server offers, to get a workspace's changes.
@@ -34,6 +36,22 @@ const TASKS: Code = code!("workspace.tasks");
 const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
+/// What the feed offers; a client hears of the features it offers too.
+const OFFERED: [Code; 13] = [
+    FEED,
+    TASKS,
+    DOCS,
+    SETTINGS,
+    PROPOSALS,
+    CHATS,
+    MEMBERS,
+    DIFF,
+    WORKTREE,
+    SESSIONS,
+    LOG_FORWARD,
+    TERMINALS,
+    SEARCH,
+];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -55,7 +73,7 @@ pub(crate) fn routes() -> Router<Shared> {
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
-    Extension(place): Extension<Place>,
+    (Extension(place), Extension(request)): (Extension<Place>, Extension<RequestTag>),
     (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -74,6 +92,7 @@ pub(crate) async fn feed(
     let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
         _place: place,
+        logs: ClientLogs::new(&shared, &member, &request),
         member,
         asker,
         changes,
@@ -92,6 +111,8 @@ pub(crate) async fn feed(
 struct Feed {
     /// The feed's place among the open connections.
     _place: Place,
+    /// The logs the client forwards, if it offered to.
+    logs: ClientLogs,
     member: Member,
     /// Who the feed's client is, for the messages it relays to its machines.
     asker: Asker,
@@ -142,6 +163,7 @@ fn feed_failed(shared: &Shared, workspace: &WorkspaceId, fault: &Fault) -> Close
 async fn serve(mut socket: WebSocket, shared: Shared, mut feed: Feed) {
     // However the feed ends, it just ends: the client sees its socket close.
     let Err(Closed) = run(&mut socket, &shared, &mut feed).await;
+    terminals::ended(&shared, &feed.answer_to);
 }
 
 async fn run(
@@ -150,11 +172,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [
-        FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS, SEARCH,
-    ]
-    .map(Capability::new)
-    .to_vec();
+    let offered = OFFERED.map(Capability::new).to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -227,6 +245,13 @@ async fn received(
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
+    if let Message::Log(record) = &envelope.message {
+        if feed.hears(LOG_FORWARD) {
+            feed.allowed(shared).await?;
+            feed.logs.take(shared, record);
+        }
+        return Ok(());
+    }
     if let Some(needs) = relay::needs(&envelope.message)
         && feed.hears(needs)
     {
@@ -236,6 +261,17 @@ async fn received(
         feed.allowed(shared).await?;
         let answer = feed.chats.heard(envelope, &feed.member, shared).await;
         return send_chats(socket, shared, feed, answer).await;
+    }
+    if feed.hears(TERMINALS)
+        && let Message::TerminalCommand(command) = envelope.message
+    {
+        feed.allowed(shared).await?;
+        let ask = Ask {
+            asker: &feed.asker,
+            workspace: &feed.member.workspace,
+        };
+        let forwarded = terminals::forward(shared, &ask, command, &feed.answer_to).await;
+        return forwarded.map_err(|fault| feed_failed(shared, ask.workspace.id(), &fault));
     }
     Ok(())
 }
@@ -398,7 +434,18 @@ mod tests {
         assert_eq!(
             welcome.capabilities,
             [
-                FEED, TASKS, DOCS, SETTINGS, PROPOSALS, CHATS, MEMBERS, DIFF, WORKTREE, SESSIONS,
+                FEED,
+                TASKS,
+                DOCS,
+                SETTINGS,
+                PROPOSALS,
+                CHATS,
+                MEMBERS,
+                DIFF,
+                WORKTREE,
+                SESSIONS,
+                LOG_FORWARD,
+                TERMINALS,
                 SEARCH
             ]
             .map(Capability::new)
