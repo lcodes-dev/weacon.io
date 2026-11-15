@@ -45,7 +45,32 @@
   color: #c4372b;
 }
 
-header .problem {
+.toolbar .problem {
   color: #c4372b;
-  align-self: center;
+}
+
+.pane > .chat-screen {
+  height: 100%;
+}
+
+.chat-screen {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panes {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.chat-screen > .toolbar {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
 }

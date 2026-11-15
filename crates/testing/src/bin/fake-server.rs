@@ -11,7 +11,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 use weacon_testing::Failure;
 use weacon_testing::fake_server::serve;
-use weacon_testing::recording::{FakeArgs, SESSION, args, recording};
+use weacon_testing::recording::{FakeArgs, TRANSCRIPT, args, recording};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -25,7 +25,7 @@ async fn main() -> ExitCode {
 }
 
 async fn run(dir: &Path, tokens: usize, pace: Duration) -> Result<(), Failure> {
-    let recording = recording(SESSION, tokens)?;
+    let recording = recording(TRANSCRIPT, tokens)?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let received = dir.join("received.jsonl");

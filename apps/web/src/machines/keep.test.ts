@@ -19,6 +19,7 @@ function store(keys: Map<string, string>, fails: { read?: boolean; write?: boole
     },
     put: async (id, key) => {
       if (fails.write) throw new Error("write failed");
+      if (keys.has(id) && keys.get(id) !== key) throw new Error("another key is pinned");
       keys.set(id, key);
     },
     delete: async (id) => {

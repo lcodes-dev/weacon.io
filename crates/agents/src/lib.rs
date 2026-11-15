@@ -13,6 +13,7 @@ mod terminal;
 #[cfg(test)]
 mod test_support;
 mod transcript;
+mod vendor;
 mod wire;
 
 pub use launch::{Launch, McpServer, SignIn};
@@ -20,3 +21,5 @@ pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;
 pub use terminal::{Event, Events, Size, Terminal};
 pub use transcript::{Step, Transcript};
+
+pub use platform::link_count;

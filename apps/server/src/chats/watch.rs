@@ -1,6 +1,6 @@
 //! A member's chats on their workspace's socket: what they ask, and the chats they follow.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, VecDeque};
 
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::sync::mpsc;
@@ -22,7 +22,8 @@ pub(crate) struct Watch {
     pub(crate) notices: Receiver<(WorkspaceId, ChatId)>,
     /// Each chat followed, with the last of its events sent.
     following: HashMap<ChatId, u64>,
-    behind: HashSet<ChatId>,
+    /// The chats with events it hasn't sent, served in turn, a page each.
+    behind: VecDeque<ChatId>,
     /// Says, after each page, that the next may be waiting, so pages go out one per turn.
     pub(crate) more: mpsc::Receiver<()>,
     again: mpsc::Sender<()>,
@@ -34,9 +35,15 @@ impl Watch {
         Self {
             notices: shared.chats.notices(),
             following: HashMap::new(),
-            behind: HashSet::new(),
+            behind: VecDeque::new(),
             more,
             again,
+        }
+    }
+
+    fn lag(&mut self, chat: ChatId) {
+        if !self.behind.contains(&chat) {
+            self.behind.push_back(chat);
         }
     }
 
@@ -48,13 +55,18 @@ impl Watch {
     ) -> Result<bool, Closed> {
         match notice {
             Ok((place, chat)) if place == *workspace && self.following.contains_key(&chat) => {
-                self.behind.insert(chat);
+                self.lag(chat);
                 Ok(true)
             }
             Ok(_) => Ok(false),
             // A notice missed may have been for any of them.
             Err(RecvError::Lagged(_)) => {
-                self.behind.extend(self.following.keys().cloned());
+                let behind = &self.behind;
+                let missed: Vec<_> = (self.following.keys())
+                    .filter(|chat| !behind.contains(chat))
+                    .cloned()
+                    .collect();
+                self.behind.extend(missed);
                 Ok(true)
             }
             Err(RecvError::Closed) => Err(Closed),
@@ -97,7 +109,7 @@ impl Watch {
                     ChatAnswerKind::EventsLost
                 } else {
                     self.following.insert(query.chat.clone(), after);
-                    self.behind.insert(query.chat);
+                    self.lag(query.chat);
                     return Ok(None);
                 }
             }
@@ -115,18 +127,18 @@ impl Watch {
     /// The next page of events of a chat it follows that is behind; empty once none is.
     /// After a page, [`Self::more`] hears that there may be another.
     pub(crate) async fn next(&mut self, workspace: &Workspace) -> Result<Vec<Message>, Fault> {
-        while let Some(chat) = self.behind.iter().next().cloned() {
+        while let Some(chat) = self.behind.pop_front() {
             let Some(&last) = self.following.get(&chat) else {
-                self.behind.remove(&chat);
                 continue;
             };
             let page = workspace
                 .events_after(&chat, last, PAGE, PAGE_BYTES)
                 .await?;
             let Some(ChatEntry { seq, .. }) = page.last() else {
-                self.behind.remove(&chat);
                 continue;
             };
+            // After the others behind, so a long history holds none of them up.
+            self.behind.push_back(chat.clone());
             self.following.insert(chat.clone(), *seq);
             // One is already waiting if this fails: the next turn takes the next page either way.
             let _waiting = self.again.try_send(());
@@ -164,12 +176,10 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::TaskCreate;
-
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
     use crate::test_support::socket::{self, Socket, next, open, say};
-    use crate::test_support::{self, Fixture, Running, request_with, run};
+    use crate::test_support::{self, Fixture, Running, run};
 
     async fn w1(fixture: &Fixture) -> Workspace {
         fixture.shared.db.workspace(&id("w1")).await.unwrap()
@@ -294,21 +304,9 @@ mod tests {
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
 
         ask(&mut client, 2, query("w1", ChatQueryKind::Snapshot)).await;
-        let create = serde_json::to_string(&TaskCreate {
-            title: "Write".to_owned(),
-            before: None,
-        })
-        .unwrap();
-        let auth = format!("authorization: Bearer {token}\r\n");
-        request_with(
-            server.address,
-            "POST /api/workspaces/w1/tasks",
-            &auth,
-            &create,
-        )
-        .await;
 
-        assert!(matches!(next(&mut client).await, Message::Workspace(_)));
+        // Its ping is taken after the query, so a pong that comes first means no answer came.
+        assert!(socket::pongs(&mut client).await);
     }
 
     #[tokio::test]
@@ -380,12 +378,12 @@ mod tests {
             watch.noticed(Ok((id("w1"), id("c-1"))), &w1),
             Ok(true)
         ));
-        assert_eq!(watch.behind, HashSet::from([id("c-1")]));
+        assert_eq!(watch.behind, [id("c-1")]);
         assert!(matches!(
             watch.noticed(Err(RecvError::Lagged(1)), &w1),
             Ok(true)
         ));
-        assert_eq!(watch.behind, HashSet::from([id("c-1"), id("c-2")]));
+        assert_eq!(watch.behind, [id("c-1"), id("c-2")]);
         assert!(matches!(
             watch.noticed(Err(RecvError::Closed), &w1),
             Err(Closed)
@@ -422,5 +420,44 @@ mod tests {
         for seq in 1..=more {
             assert_eq!(seq_of(&heard(&mut client).await), seq);
         }
+    }
+
+    #[tokio::test]
+    async fn chats_behind_are_served_in_turn_a_page_each() {
+        let fixture = Fixture::new().await;
+        let workspace = w1(&fixture).await;
+        for chat in ["c-1", "c-2"] {
+            make(&workspace, chat, "m1", NOW).await.unwrap();
+        }
+        let long: Vec<_> = (1..=u64::from(PAGE) + 1)
+            .map(|seq| (Some(seq), said("a")))
+            .collect();
+        append(&workspace, "c-1", &long).await.unwrap();
+        append(&workspace, "c-2", &[(Some(1), said("b"))])
+            .await
+            .unwrap();
+        let mut watch = Watch::new(&fixture.shared);
+        for chat in ["c-1", "c-2"] {
+            watch.following.insert(id(chat), 0);
+            watch.lag(id(chat));
+        }
+
+        let served = pages(&mut watch, &workspace).await;
+
+        let page = usize::try_from(PAGE).unwrap();
+        let served: Vec<_> = served.iter().map(|(chat, n)| (chat.as_str(), *n)).collect();
+        assert_eq!(served, [("c-1", page), ("c-2", 1), ("c-1", 1)]);
+    }
+
+    // Each page `watch` sends until none is behind, a few at most: its chat and its length.
+    async fn pages(watch: &mut Watch, workspace: &Workspace) -> Vec<(String, usize)> {
+        let mut pages = Vec::new();
+        while pages.len() < 5
+            && let page = watch.next(workspace).await.unwrap()
+            && let Some(Message::Chat(update)) = page.first()
+        {
+            pages.push((update.chat.as_str().to_owned(), page.len()));
+        }
+        pages
     }
 }

@@ -5,22 +5,30 @@ import type { Page } from "playwright-core";
 
 import type { ChatList, Envelope } from "../src/protocol.ts";
 import { waitFor } from "./harness.ts";
-import { EMAIL, serve, signIn, signInAgain } from "./server.ts";
+import { EMAIL, type Served, serve, signIn, signInAgain } from "./server.ts";
 
 const CHANGE_AFTER_MS = 500;
 
+/** What the feed stand-in does beyond welcoming each socket. */
+type Feed = {
+  /** What to send the nth socket for its workspace, a moment after its welcome. */
+  changes?: (opened: number, workspace: string) => Envelope[];
+  /** Whether to close the nth socket after its changes. */
+  close?: (opened: number) => boolean;
+  /** Capabilities to offer besides the feed and chats. */
+  also?: string[];
+  /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
+  answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
+  /** Whether the nth socket closes once it has answered `sent`. */
+  drop?: (sent: Envelope, opened: number) => boolean;
+};
+
 /**
- * Stands in for every workspace's feed: welcomes it offering chats and `also`, then sends what
- * `changes` gives the nth socket for its workspace, closing it after when `close` says so. Gives the
- * addresses opened and what the page sent after its hellos. Only pages loaded after this have their
- * sockets routed, so it reloads the page.
+ * Stands in for every workspace's feed: welcomes it offering chats and `also`, then does what
+ * `feed` says. Gives the addresses opened and what the page sent after its hellos. Only pages
+ * loaded after this have their sockets routed, so it reloads the page.
  */
-async function serveFeed(
-  page: Page,
-  changes: (opened: number, workspace: string) => Envelope[] = () => [],
-  close: (opened: number) => boolean = () => false,
-  also: string[] = [],
-): Promise<{ opened: string[]; sent: Envelope[] }> {
+async function serveFeed(page: Page, { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {}): Promise<{ opened: string[]; sent: Envelope[] }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
   await page.routeWebSocket(/\/api\/workspaces\/[^/]+\/feed/, (socket) => {
@@ -30,6 +38,11 @@ async function serveFeed(
       const hello = JSON.parse(String(text)) as Envelope;
       if (hello.type !== "hello") {
         sent.push(hello);
+        const reply = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
+        answer(hello, nth, reply).forEach(reply);
+        if (drop(hello, nth)) {
+          void socket.close();
+        }
         return;
       }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
@@ -382,11 +395,10 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   }));
   const change = (workspace: string, seq: number): Envelope => ({ id: 0, type: "workspace", workspace, seq, change: { kind: "chat_changed", chat: "c-9" } });
   // A burst of two changes and one of another workspace, then, once reopened, the same two again and one more.
-  const { opened } = await serveFeed(
-    page,
-    (nth, workspace) => [change(workspace, 7), change(workspace, 8), change("someone-else", 9), ...(nth > 1 ? [change(workspace, 9)] : [])],
-    (nth) => nth === 1,
-  );
+  const { opened } = await serveFeed(page, {
+    changes: (nth, workspace) => [change(workspace, 7), change(workspace, 8), change("someone-else", 9), ...(nth > 1 ? [change(workspace, 9)] : [])],
+    close: (nth) => nth === 1,
+  });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   const chats = page.getByRole("navigation", { name: "Chats" });
@@ -403,7 +415,7 @@ test("the served app forwards its logs and crash reports on a feed that offers i
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, undefined, undefined, ["log.forward"]);
+  const { sent } = await serveFeed(page, { also: ["log.forward"] });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByText("Connected").waitFor();
@@ -417,3 +429,311 @@ test("the served app forwards its logs and crash reports on a feed that offers i
   assert.deepEqual(sent[0], { id: 0, type: "log", level: "info", msg: "app started" });
   assert.doesNotMatch(JSON.stringify(sent), /MARKER/);
 });
+
+// A chat's snapshot as the server answers it: a prompt, and Claude Code's answer so far, waiting
+// on a permission prompt. Each chat's answer says which chat it is.
+function snapshot(asked: Envelope): Envelope[] {
+  if (asked.type !== "chat_query" || asked.query.kind !== "snapshot") {
+    return [];
+  }
+  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const said = asked.chat === "c-1" ? "Sorting the shelves now." : "Watering the plants now.";
+  return [
+    {
+      id: asked.id,
+      type: "chat_answer",
+      workspace: asked.workspace,
+      chat: asked.chat,
+      answer: {
+        kind: "snapshot",
+        seq: 3,
+        runs: [{ run: "r-1", state: "waiting", agent }],
+        waiting: [3],
+        events: [
+          { seq: 1, event: { kind: "prompt", request: "q-1", text: "Sort the pantry." } },
+          { seq: 2, event: { kind: "run", update: { run: "r-1", event: { event: "text", text: said } } } },
+          { seq: 3, event: { kind: "run", update: { run: "r-1", event: { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: {} } } } },
+        ],
+      },
+    },
+  ];
+}
+
+// Answers a chat's snapshot, and takes every command.
+function chatServer(asked: Envelope): Envelope[] {
+  return asked.type === "chat_command" ? [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }] : snapshot(asked);
+}
+
+// The commands the page sent, as the chat each names and what it asked.
+function commands(sent: Envelope[]): Array<{ workspace: string; chat: string; request: string; action: unknown }> {
+  return sent.flatMap((envelope) =>
+    envelope.type === "chat_command" ? [{ workspace: envelope.workspace, chat: envelope.chat, request: envelope.request, action: envelope.action }] : [],
+  );
+}
+
+// The signed-in person's first workspace, and their member in it, as the server says.
+async function firstWorkspace(page: Page): Promise<{ id: string; member: string }> {
+  return page.evaluate(async () => {
+    const answer = (await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ id: string; member?: string }> };
+    return { id: answer.workspaces[0]?.id ?? "", member: answer.workspaces[0]?.member ?? "" };
+  });
+}
+
+// Signs in and opens the first workspace, whose chats are `chats`, each owned by `owner` of its member.
+async function openChats(served: Served, chats: Array<{ id: string; title: string }>, owner: (member: string) => string): Promise<string> {
+  const { page } = served;
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const { id, member } = await firstWorkspace(page);
+  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), machine: "laptop", state: "open" as const, updated_at: 1 })) }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  return id;
+}
+
+const nav = (page: Page) => page.getByRole("navigation", { name: "Chats" });
+
+test("a person's own chat shows its transcript and prompts, and takes their messages and Stop", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  const workspace = await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  await page.getByRole("button", { name: "Allow" }).waitFor();
+  await page.getByRole("combobox", { name: "Message" }).fill("Use the top shelf too.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("button", { name: "Stop" }).click();
+  await waitFor(() => commands(sent).length === 2);
+
+  const [prompt, stop] = commands(sent);
+  assert.deepEqual([prompt?.action, stop?.action], [{ kind: "prompt", text: "Use the top shelf too." }, { kind: "interrupt" }]);
+  for (const command of [prompt, stop]) {
+    assert.equal(command?.workspace, workspace);
+    assert.equal(command?.chat, "c-1");
+  }
+  assert.notEqual(prompt?.request, stop?.request);
+  assert.ok(sent.some((envelope) => envelope.type === "chat_query" && envelope.query.kind === "subscribe"));
+});
+
+test("someone else's chat shows its transcript, without the message box, Stop or the prompts' answers", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: snapshot });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  await page.getByText("Bash").first().waitFor();
+  for (const name of ["Send", "Stop", "Allow", "Deny"]) {
+    assert.equal(await page.getByRole("button", { name }).count(), 0, name);
+  }
+  assert.equal(await page.getByRole("combobox", { name: "Message" }).count(), 0);
+  assert.deepEqual(commands(sent), []);
+});
+
+test("picking another chat shows that one, and sends only to it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  await openChats(
+    served,
+    [
+      { id: "c-1", title: "Sort the pantry" },
+      { id: "c-2", title: "Water the plants" },
+    ],
+    (member) => member,
+  );
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByText("Sorting the shelves now.").waitFor();
+  await nav(page).getByRole("button", { name: /Water the plants/ }).click();
+
+  await page.getByText("Watering the plants now.").waitFor();
+  assert.equal(await page.getByText("Sorting the shelves now.").count(), 0);
+  await page.getByRole("combobox", { name: "Message" }).fill("Only the ferns.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await waitFor(() => commands(sent).length === 1);
+  assert.deepEqual(
+    commands(sent).map(({ chat, action }) => ({ chat, action })),
+    [{ chat: "c-2", action: { kind: "prompt", text: "Only the ferns." } }],
+  );
+
+  // Back on the first chat, its subscription is still the one it had.
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByText("Sorting the shelves now.").waitFor();
+  const subscribed = sent.flatMap((envelope) => (envelope.type === "chat_query" && envelope.query.kind === "subscribe" ? [envelope.chat] : []));
+  assert.deepEqual(subscribed.toSorted(), ["c-1", "c-2"]);
+});
+
+// A changed file of a chat's changes, as a core answers it under `asked`'s request.
+function changedFile(asked: Envelope, path: string): Envelope[] {
+  if (asked.type !== "diff_query") {
+    return [];
+  }
+  const file = { path, change: { kind: "modified" as const }, content: { kind: "binary" as const } };
+  return [{ id: asked.id, type: "diff_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "file", file, files: 2 } }];
+}
+
+test("open changes cut short by a lost connection are asked for again once it is back", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first socket sends one of the two files, then drops; the next sends both.
+  const { sent } = await serveFeed(page, {
+    also: ["diff.view"],
+    answer: (asked, nth) => [...snapshot(asked), ...changedFile(asked, "src/pantry.rs"), ...(nth > 1 ? changedFile(asked, "src/shelves.rs") : [])],
+    drop: (asked, nth) => nth === 1 && asked.type === "diff_query",
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+
+  await page.getByText("src/shelves.rs").waitFor();
+  assert.equal(sent.filter((envelope) => envelope.type === "diff_query").length, 2);
+  await page.getByText("src/pantry.rs").waitFor();
+});
+
+// A worktree as a core answers it: c-1's has uncommitted work, any other chat has none yet.
+function worktreeServer(asked: Envelope): Envelope[] {
+  if (asked.type !== "worktree_query") {
+    return snapshot(asked);
+  }
+  if (asked.chat !== "c-1") {
+    return [{ id: asked.id, type: "error", code: "worktree.none", retryable: false }];
+  }
+  const answer = { kind: "state" as const, removed: false, uncommitted: true, unpushed: false };
+  return [{ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer }];
+}
+
+const WORKTREES = ["diff.view", "worktree.manage", "worktree.open_terminal"];
+
+test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(
+    served,
+    [
+      { id: "c-1", title: "Sort the pantry" },
+      { id: "c-2", title: "Water the plants" },
+    ],
+    (member) => member,
+  );
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByText("Uncommitted changes").waitFor();
+  await bar.getByRole("button", { name: "Open terminal" }).waitFor();
+  const withButtons = (await bar.boundingBox())?.height;
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  assert.equal(await bar.getByLabel("Title").inputValue(), "Sort the pantry");
+
+  await nav(page).getByRole("button", { name: /Water the plants/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  assert.equal(await bar.getByRole("button", { name: "Remove" }).count(), 0);
+  // The bar is as tall without its buttons as with them, so the diff below doesn't move as they come.
+  assert.equal((await bar.boundingBox())?.height, withButtons);
+});
+
+test("someone else's chat shows no worktree bar, and asks nothing of it", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.locator(".chat-changes").waitFor();
+
+  assert.equal(await page.getByRole("region", { name: "Worktree" }).count(), 0);
+  assert.deepEqual(
+    sent.filter((envelope) => envelope.type === "worktree_query" || envelope.type === "worktree_command"),
+    [],
+  );
+});
+
+test("the worktree's state is asked again on each opening of the changes, and after a failure on Try again", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first ask fails, the next finds no worktree yet, and every later one finds the one made since.
+  let asked = 0;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (envelope) => {
+      if (envelope.type !== "worktree_query") {
+        return snapshot(envelope);
+      }
+      asked += 1;
+      if (asked === 1) {
+        return [{ id: envelope.id, type: "error", code: "machine.offline", retryable: true }];
+      }
+      return asked === 2 ? [{ id: envelope.id, type: "error", code: "worktree.none", retryable: false }] : worktreeServer(envelope);
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByRole("alert").getByText("The worktree's state didn't come. Try again.").waitFor();
+  await bar.getByRole("button", { name: "Try again" }).click();
+  await bar.getByText("This chat has no worktree yet.").waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  await bar.getByText("Uncommitted changes").waitFor();
+  assert.equal(asked, 3);
+});
+
+test("a pull request's draft stays until the core opens it, and its answer comes while the changes are closed", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // The first pull request is refused; the second's answer waits until the test sends it.
+  let tries = 0;
+  let later: (() => void) | undefined;
+  await serveFeed(page, {
+    also: WORKTREES,
+    answer: (asked, _nth, reply) => {
+      if (asked.type !== "worktree_command") {
+        return worktreeServer(asked);
+      }
+      tries += 1;
+      if (tries === 1) {
+        return [{ id: asked.id, type: "error", code: "request.unknown", retryable: false }];
+      }
+      const url = "https://example.com/pantry/compare";
+      later = () => reply({ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "pull_request_page", url } });
+      return [];
+    },
+  });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+  await bar.getByRole("button", { name: "Open pull request" }).click();
+  await bar.getByLabel("Description").fill("Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+
+  await bar.getByRole("alert").getByText("The pull request wasn't opened.").waitFor();
+  assert.equal(await bar.getByLabel("Description").inputValue(), "Sorted by aisle.");
+  await bar.getByRole("button", { name: "Open draft pull request" }).click();
+  await waitFor(() => later !== undefined);
+  // What is typed while it is on its way couldn't be sent, so the form takes nothing then.
+  assert.equal(await bar.getByLabel("Description").isDisabled(), true);
+  await page.getByRole("button", { name: "Back" }).click();
+  later?.();
+  await page.getByRole("button", { name: "Changes" }).click();
+
+  const link = bar.getByRole("link", { name: "Open it" });
+  await link.waitFor();
+  assert.equal(await link.getAttribute("href"), "https://example.com/pantry/compare");
+  assert.equal(await bar.getByLabel("Description").count(), 0);
+});
+

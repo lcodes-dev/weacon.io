@@ -6,6 +6,7 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
 use crate::app::{App, runtime, state_unavailable};
+use crate::machine::{self, Paired};
 use crate::workspaces::{Workspaces, sign_ins};
 use crate::{disk, platform};
 
@@ -22,6 +23,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     };
     print(report(app, platform::free_space))?;
     if let Some(dir) = &app.state_dir {
+        print(pairing(&app.log, machine::read(dir)))?;
         let runtime = runtime()?;
         let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
         print(workspaces(
@@ -33,6 +35,22 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
         return Err(state_unavailable());
     }
     Ok(())
+}
+
+/// The paired server and the key's fingerprint, which a person checks against a browser.
+fn pairing(log: &Logger, read: Result<Option<Paired>, Fault>) -> String {
+    match read {
+        Ok(Some(paired)) => format!(
+            "Paired with: {}\nMachine key: {}\n",
+            paired.server,
+            paired.key.fingerprint()
+        ),
+        Ok(None) => String::new(),
+        Err(fault) => {
+            log.warn("pairing unreadable", &[("err", Field::error(&fault))]);
+            "Paired with: unavailable\n".to_owned()
+        }
+    }
 }
 
 // Workspaces that can't be listed are said to be, never left out.
@@ -110,6 +128,47 @@ mod tests {
                 "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
             )
         );
+    }
+
+    #[test]
+    fn prints_the_pairings_server_and_key_but_never_its_token() {
+        let dir = TempDir::new().unwrap();
+        let paired = Paired {
+            server: "https://weacon.example.com".to_owned(),
+            pinned: None,
+            machine: weacon_protocol::MachineId::try_from("mc-1".to_owned()).unwrap(),
+            owner: weacon_protocol::AccountId::try_from("a-1".to_owned()).unwrap(),
+            token: "t0ken-marker".to_owned(),
+            key: machine::Key::from_random([7; 32]),
+        };
+        let fingerprint = paired.key.fingerprint();
+        machine::write(&dir, &paired).unwrap();
+        let mut out = Vec::new();
+
+        run(&app(dir.to_str(), Some("/srv/weacon.log")), &mut out).unwrap();
+
+        let printed = String::from_utf8(out).unwrap();
+        assert!(
+            printed.contains(&format!(
+                "\nPaired with: https://weacon.example.com\nMachine key: {fingerprint}\n"
+            )),
+            "{printed}"
+        );
+        assert!(!printed.contains("t0ken-marker"));
+    }
+
+    #[test]
+    fn says_nothing_before_pairing_and_when_the_pairing_cant_be_read() {
+        let (log, records) = test_support::recording_logger();
+
+        let unreadable = pairing(
+            &log,
+            Err(Fault::new(code!("machine.unreadable"), "Unreadable")),
+        );
+
+        assert_eq!(pairing(&log, Ok(None)), "");
+        assert_eq!(unreadable, "Paired with: unavailable\n");
+        assert_eq!(test_support::messages(&records), ["pairing unreadable"]);
     }
 
     #[test]

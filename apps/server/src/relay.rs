@@ -526,8 +526,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_feed_whose_member_is_one_no_more_relays_nothing_and_ends() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, core, mut browser) = both(
             &fixture,
@@ -552,8 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_member_who_leaves_while_their_machine_answers_hears_nothing_more() {
-        let mut fixture = Fixture::new().await;
-        fixture.quiet();
+        let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (paired, mut core, mut browser) = both(
             &fixture,
