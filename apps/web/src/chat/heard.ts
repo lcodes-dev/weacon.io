@@ -29,6 +29,9 @@ export function heard(message: ChatMessage | RunMessage | ErrorMessage, ref: Cha
   if (message.type === "chat") {
     return { kind: "entry", entry: message.entry };
   }
+  if (message.type === "chat_live") {
+    return { kind: "run", run: message.update.run, event: message.update.event };
+  }
   const { answer } = message;
   switch (answer.kind) {
     case "events_lost":

@@ -298,3 +298,21 @@ test("earlier runs take their agents from the statuses the log holds, by the sna
   assert.deepEqual(widened.runs.get("r-3"), { state: "waiting", agent: claude });
   assert.equal(snapshot.runs.get("r-1"), undefined);
 });
+
+test("a prompt's tool heard live names it whether it comes before its stored prompt or after", () => {
+  const stored = (seq: number, prompt: number) => ran(seq, "r-1", { event: "permission_asked", run: "r-1", prompt, tool: "", input: null });
+  const named = (prompt: number): RunEvent => ({ event: "permission_asked", run: "r-1", prompt, tool: "Bash", input: null });
+  const tools = (shown: Chat) => shown.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => [ask.prompt, ask.tool]) : []));
+  const started = chat([said(1, "Fix it"), status(2, "r-1", "running")]);
+
+  const early = commitAll(stream(started, "r-1", named(1)), [stored(3, 1)]);
+  const late = stream(commitAll(started, [stored(3, 1), stored(4, 2)]), "r-1", named(2));
+
+  assert.deepEqual(tools(early), [[1, "Bash"]]);
+  assert.deepEqual(tools(late), [
+    [1, ""],
+    [2, "Bash"],
+  ]);
+  const other: RunEvent = { event: "permission_asked", run: "r-1", prompt: 2, tool: "Other", input: null };
+  assert.deepEqual(tools(stream(late, "r-1", other)), tools(late));
+});

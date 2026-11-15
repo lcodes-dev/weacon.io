@@ -63,3 +63,13 @@ test("a committed receipt is taken as the receipt of the command it answers, liv
   assert.deepEqual(receiptsIn(answer({ kind: "events_lost", events: null } as never)), []);
   assert.deepEqual(receiptsIn({ id: 6, type: "error", code: "chat.unknown", retryable: false }), []);
 });
+
+test("a run's live update is heard for its own chat only", () => {
+  const event = { event: "text_delta" as const, text: "Wor" };
+  const live = (chat: string): ChatMessage => ({ id: 0, type: "chat_live", workspace: "w-1", chat, update: { run: "r-1", event } });
+
+  assert.deepEqual(heard(live("c-1"), ref), { kind: "run", run: "r-1", event });
+  assert.equal(heard(live("c-2"), ref), undefined);
+  assert.equal(heard({ ...live("c-1"), workspace: "w-2" }, ref), undefined);
+  assert.deepEqual(receiptsIn(live("c-1")), []);
+});

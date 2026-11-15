@@ -102,6 +102,9 @@ export type Envelope = {
   | {
     type: "install_command";
   } & InstallCommand
+  | {
+    type: "chat_live";
+  } & ChatLive
 );
 
 /**
@@ -386,6 +389,17 @@ export type ChatId = string;
  */
 export type ChatList = {
   chats: Array<ChatSummary>;
+};
+
+/**
+ * A run's update that a viewer of its chat needs and no one stores: text as it is written, and
+ * the tool a permission prompt names, never its input. From a core to the server, and from the
+ * server to the feeds that follow the chat, each under `chat.live`.
+ */
+export type ChatLive = {
+  chat: ChatId;
+  update: RunUpdate;
+  workspace: WorkspaceId;
 };
 
 /**

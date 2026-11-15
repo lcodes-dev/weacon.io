@@ -38,8 +38,10 @@ const DOCS: Code = code!("workspace.docs");
 const CHATS: Code = code!("workspace.chats");
 /// What the server offers to clients that ask chats' agents.
 const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
+/// What the server offers to clients that show chats' runs as they happen.
+const CHAT_LIVE: Code = code!("chat.live");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 15] = [
+const OFFERED: [Code; 16] = [
     FEED,
     TASKS,
     DOCS,
@@ -47,6 +49,7 @@ const OFFERED: [Code; 15] = [
     PROPOSALS,
     CHATS,
     CHAT_COMMANDS,
+    CHAT_LIVE,
     MEMBERS,
     DIFF,
     WORKTREE,
@@ -193,6 +196,14 @@ async fn run(
                 Err(RecvError::Closed) => return Err(Closed),
             },
             Some(()) = feed.chats.more.recv() => send_chats(socket, shared, feed, None).await?,
+            live = feed.chats.lives.recv() => {
+                if let Some(live) = feed.chats.passes(live, feed.member.workspace.id())?
+                    && feed.hears(CHAT_LIVE)
+                {
+                    feed.allowed(shared).await?;
+                    reply(socket, shared, 0, live).await?;
+                }
+            }
             notice = feed.chats.notices.recv() => {
                 if feed.chats.noticed(notice, feed.member.workspace.id())? {
                     send_chats(socket, shared, feed, None).await?;
@@ -450,6 +461,7 @@ mod tests {
                 PROPOSALS,
                 CHATS,
                 CHAT_COMMANDS,
+                CHAT_LIVE,
                 MEMBERS,
                 DIFF,
                 WORKTREE,

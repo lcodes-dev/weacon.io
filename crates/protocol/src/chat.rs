@@ -71,6 +71,16 @@ pub struct ChatUpdate {
     pub entry: ChatEntry,
 }
 
+/// A run's update that a viewer of its chat needs and no one stores: text as it is written, and
+/// the tool a permission prompt names, never its input. From a core to the server, and from the
+/// server to the feeds that follow the chat, each under `chat.live`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChatLive {
+    pub workspace: WorkspaceId,
+    pub chat: ChatId,
+    pub update: RunUpdate,
+}
+
 /// An event and its place in its chat's log: `seq` starts at 1 and grows by one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatEntry {

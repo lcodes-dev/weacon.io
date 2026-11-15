@@ -28,6 +28,8 @@ export type Chat = {
   entries: readonly ChatEntry[];
   runs: ReadonlyMap<RunId, Run>;
   items: readonly Item[];
+  /** The tools that permission prompts name, heard live, which their stored events leave out. */
+  tools: ReadonlyMap<string, string>;
 };
 
 /** The parts of a snapshot this file reads. */
@@ -49,6 +51,7 @@ export function fromSnapshot(snapshot: Snapshot): Chat {
     entries,
     runs: logged(snapshot.runs, entries),
     items: [],
+    tools: new Map(),
   };
   return { ...chat, items: fold(chat, entries) };
 }
@@ -76,12 +79,21 @@ export function commit(chat: Chat, entry: ChatEntry): Chat | undefined {
   if (event.kind === "run_status") {
     runs.set(event.status.run, { state: event.status.state, agent: agentOf(event.status, runs) });
   }
-  step(items, entry, true);
+  step(items, entry, true, chat.tools);
   return { ...chat, seq: entry.seq, entries: [...chat.entries, entry], runs, items };
 }
 
-/** `chat` with the text a run streams, when the run is one of the chat's on a turn. */
+/**
+ * `chat` with what a run says live: the text it streams, when the run is one of the chat's on a
+ * turn, and the tool a permission prompt names.
+ */
 export function stream(chat: Chat, run: RunId, event: RunEvent): Chat {
+  if (event.event === "permission_asked") {
+    const tools = new Map(chat.tools).set(toolKey(run, event.prompt), event.tool);
+    const items = [...chat.items];
+    update(items, run, (turn) => ({ ...turn, asks: turn.asks.map((ask) => (ask.prompt === event.prompt && ask.tool === "" ? { ...ask, tool: event.tool } : ask)) }));
+    return { ...chat, items, tools };
+  }
   const state = chat.runs.get(run)?.state;
   if (event.event !== "text_delta" || state === undefined || !ON_TURN.includes(state)) {
     return chat;
@@ -157,13 +169,14 @@ function contiguous(events: readonly ChatEntry[], last: number): ChatEntry[] {
 function fold(chat: Chat, entries: readonly ChatEntry[]): Item[] {
   const items: Item[] = [];
   for (const entry of entries) {
-    step(items, entry, entry.seq > chat.base || chat.waiting.has(entry.seq));
+    step(items, entry, entry.seq > chat.base || chat.waiting.has(entry.seq), chat.tools);
   }
   return items;
 }
 
-// Applies one committed entry to `items`; `waiting` says whether a prompt it asks is open.
-function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
+// Applies one committed entry to `items`; `waiting` says whether a prompt it asks is open, and
+// `tools` names the tools of prompts whose stored event leaves them out.
+function step(items: Item[], entry: ChatEntry, waiting: boolean, tools: ReadonlyMap<string, string>): void {
   const { event } = entry;
   if (event.kind === "prompt" || event.kind === "outside_prompt") {
     items.push({ kind: "prompt", seq: entry.seq, text: event.text });
@@ -180,7 +193,8 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   const { run, event: done } = event.update;
   addTo(items, run, turnKey(entry.seq - 1, run), (turn) => {
     if (done.event === "permission_asked") {
-      const ask: Ask = { prompt: done.prompt, tool: done.tool, at: turn.transcript.rows.length, state: waiting ? "open" : "closed" };
+      const tool = done.tool === "" ? (tools.get(toolKey(run, done.prompt)) ?? "") : done.tool;
+      const ask: Ask = { prompt: done.prompt, tool, at: turn.transcript.rows.length, state: waiting ? "open" : "closed" };
       return { ...turn, asks: [...turn.asks, ask] };
     }
     const transcript = apply(turn.transcript, [done]);
@@ -273,4 +287,9 @@ function logged(runs: ReadonlyMap<RunId, Run>, entries: readonly ChatEntry[]): R
 // A status that names no agent keeps the one the run had.
 function agentOf(status: RunStatus, runs: ReadonlyMap<RunId, Run>): AgentRef | undefined {
   return status.agent ?? runs.get(status.run)?.agent;
+}
+
+// Where `tools` keeps the tool that `run`'s permission prompt `prompt` names.
+function toolKey(run: RunId, prompt: number): string {
+  return `${run} ${prompt}`;
 }

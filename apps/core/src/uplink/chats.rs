@@ -10,6 +10,11 @@ use weacon_protocol::{
     ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
 };
 
+mod live;
+
+pub(super) use live::LIVE;
+
+use self::live::Live;
 use super::{QUEUE, Step, failure, for_now, refusal, reply};
 use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
@@ -42,11 +47,15 @@ pub(super) struct ChatLink {
     waiting: VecDeque<Ask>,
     /// The seq of the last event of each followed chat that came, to follow again after.
     came: HashMap<ChatKey, u64>,
+    live: Live,
+    /// What goes up next, live beside the event that went up last.
+    beside: Option<Envelope>,
 }
 
 impl ChatLink {
-    /// Takes up asks for `chats` in order; `uploads` when the server offered [`UPLOAD`].
-    pub(super) fn new(chats: Chats, uploads: bool, log: Logger) -> Self {
+    /// Takes up asks for `chats` in order; `uploads` when the server offered [`UPLOAD`], and
+    /// `live` when it offered [`LIVE`].
+    pub(super) fn new(chats: Chats, uploads: bool, live: bool, log: Logger) -> Self {
         let (asks, asked) = mpsc::channel(QUEUE);
         let (push, pushes) = mpsc::channel(feed::QUEUE + FOLLOWS_MAX);
         tokio::spawn(take_up(chats, Client { push }, asked, log));
@@ -56,6 +65,8 @@ impl ChatLink {
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
+            live: Live::new(live),
+            beside: None,
         }
     }
 
@@ -121,6 +132,9 @@ impl ChatLink {
     /// The next event to send up, passing on waiting asks as room frees meanwhile; safe to
     /// cancel, since an ask leaves `waiting` only as it is sent.
     pub(super) async fn next(&mut self) -> Option<Envelope> {
+        if let Some(beside) = self.beside.take() {
+            return Some(beside);
+        }
         loop {
             tokio::select! {
                 pushed = self.pushes.recv() => {
@@ -142,14 +156,19 @@ impl ChatLink {
         }
     }
 
-    /// What of `pushed` goes up: a chat's events as the server stores them, and nothing else.
+    /// What of `pushed` goes up: a chat's events as the server stores them, then what of them a
+    /// viewer needs live, and text as it is written.
     /// A chat whose events were lost is followed again after the last that came.
     pub(super) fn upload(&mut self, pushed: Message) -> Option<Envelope> {
         if let Message::Chat(update) = pushed {
             let key = ChatKey::new(&update.workspace, &update.chat);
             self.came.insert(key, update.entry.seq);
+            self.beside = self.live.saw(&update);
             let message = Message::Chat(stored(update)?);
             return Some(Envelope { id: 0, message });
+        }
+        if let Message::Run(update) = pushed {
+            return self.live.of(update);
         }
         if let Message::ChatAnswer(ChatAnswer {
             workspace,
@@ -341,6 +360,8 @@ mod tests {
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
+            live: Live::new(true),
+            beside: None,
         };
         (link, asked, Client { push })
     }
@@ -672,6 +693,15 @@ mod tests {
         assert!(downs.iter().all(Option::is_none), "{downs:?}");
         let cleared = said(ask("", Value::Null));
         assert_eq!(stripped, Some(up(update(3, cleared))));
+        // Beside it, live, the tool it names and never its input.
+        let Some(Envelope {
+            message: Message::ChatLive(beside),
+            ..
+        }) = link.beside.take()
+        else {
+            panic!("no live prompt");
+        };
+        assert_eq!(beside.update.event, ask("Bash", Value::Null));
         assert_eq!(live, None);
         assert_eq!(link.came.get(&key()), Some(&3));
     }
@@ -711,7 +741,7 @@ mod tests {
     async fn a_chat_too_far_behind_to_send_again_at_once_goes_up_a_page_at_a_time() {
         let bench = bench();
         prompts(&bench.chats, 10, 900_000).await;
-        let mut link = ChatLink::new(bench.chats.clone(), true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
 
         drop(link.take(subscribe(0)));
         let mut prompted = Vec::new();
@@ -736,7 +766,7 @@ mod tests {
     async fn a_follow_past_the_logs_end_goes_on_from_there() {
         let bench = bench();
         prompts(&bench.chats, 1, 2).await;
-        let mut link = ChatLink::new(bench.chats.clone(), true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
 
         drop(link.take(subscribe(100)));
         // Passes the follow on, and gives what went up meanwhile, if anything did.
@@ -800,7 +830,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn what_a_connection_left_queued_when_it_ended_is_not_done() {
         let mut bench = bench();
-        let mut link = ChatLink::new(bench.chats.clone(), true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
 
         drop(link.take(told("r-1", "Hi")));
         drop(link);
@@ -829,7 +859,7 @@ mod tests {
     async fn an_ask_the_engine_refuses_is_logged_by_its_ids_alone() {
         let stopped = parts().0.chats;
         let (log, records) = recording_logger();
-        let mut link = ChatLink::new(stopped, true, log);
+        let mut link = ChatLink::new(stopped, true, true, log);
 
         drop(link.take(told("r-1", "MARKER-PROMPT")));
         let fields = logged(&records, "chat ask refused").await;
