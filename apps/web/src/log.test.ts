@@ -4,13 +4,6 @@ import { test } from "node:test";
 import { Log } from "./log.ts";
 import type { Envelope } from "./protocol.ts";
 
-function attached(forwards: boolean): { log: Log; sent: Envelope[] } {
-  const log = new Log();
-  const sent: Envelope[] = [];
-  log.attach((envelope) => sent.push(envelope), forwards);
-  return { log, sent };
-}
-
 test("records wait for the server, then go to it in order", () => {
   const log = new Log();
   log.info("app started");
@@ -28,12 +21,15 @@ test("records wait for the server, then go to it in order", () => {
   ]);
 });
 
-test("a server that doesn't forward logs still gets error reports", () => {
-  const { log, sent } = attached(false);
+test("a server that doesn't forward logs gets neither logs nor error reports, held or new", () => {
+  const log = new Log();
+  log.report("web.crashed");
+  const sent: Envelope[] = [];
+  log.attach((envelope) => sent.push(envelope), false);
   log.info("app started");
   log.report("web.crashed");
 
-  assert.deepEqual(sent, [{ id: 0, type: "error", code: "web.crashed", retryable: false }]);
+  assert.deepEqual(sent, []);
 });
 
 test("only the newest records wait", () => {

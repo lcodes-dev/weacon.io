@@ -110,6 +110,7 @@ test("each message goes to the handlers it may be for; an error to both a prompt
     answers: (message: Incoming) => seen.push(`answers ${message.type}`),
     changes: (message: Incoming) => seen.push(`changes ${message.type}`),
     chat: (message: Incoming) => seen.push(`chat ${message.type}`),
+    worktree: (message: Incoming) => seen.push(`worktree ${message.type}`),
   };
   const messages: Incoming[] = [
     { id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "x" } },
@@ -119,13 +120,14 @@ test("each message goes to the handlers it may be for; an error to both a prompt
     { id: 1, type: "welcome", app },
     { id: 7, type: "chat", workspace: "w-1", chat: "c-1", entry: said },
     { id: 8, type: "chat_answer", workspace: "w-1", chat: "c-1", answer: { kind: "events_lost" } },
+    { id: 9, type: "worktree_answer", request: "r-3", workspace: "w-1", chat: "c-1", answer: { kind: "terminal_opened" } },
   ];
   for (const message of messages) {
     route(message, routes);
   }
 
   assert.deepEqual(seen, ["run run", "answers receipt", "changes diff_answer", "answers error", "changes error", "chat error",
-    "chat chat", "chat chat_answer"]);
+    "worktree error", "chat chat", "chat chat_answer", "worktree worktree_answer"]);
 });
 
 test("a chat's events pass with the fields this app reads, and a newer kind keeps its place", () => {
@@ -281,4 +283,19 @@ test("a diff answer passes only with every field the diff view reads", () => {
   for (const body of malformed) {
     assert.equal(parse(answer(body)), undefined, JSON.stringify(body));
   }
+});
+
+test("a worktree answer passes with the fields the review bar reads, and a newer kind passes to be ignored", () => {
+  const worktree = (answer: unknown) => frame({ id: 6, type: "worktree_answer", request: "r-1", workspace: "w-1", chat: "c-1", answer });
+  const state = { kind: "state", removed: false, uncommitted: true, unpushed: false };
+  const good = [state, { kind: "pull_request_opened", url: "https://example.com/pr/1" }, { kind: "pull_request_page", url: "https://example.com/compare" }, { kind: "terminal_opened" }, { kind: "later" }];
+  const bad = [null, { removed: false }, { ...state, removed: "no" }, { ...state, unpushed: undefined }, { kind: "pull_request_page" }, { kind: "pull_request_opened", url: 3 }, { kind: "pull_request_page", url: "javascript:alert(1)" }, { kind: "pull_request_opened", url: "http://example.com/pr/1" }, { kind: "pull_request_page", url: "not a url" }];
+
+  for (const answer of good) {
+    assert.equal(parse(worktree(answer))?.type, "worktree_answer", JSON.stringify(answer));
+  }
+  for (const answer of bad) {
+    assert.equal(parse(worktree(answer)), undefined, JSON.stringify(answer));
+  }
+  assert.equal(parse(frame({ id: 6, type: "worktree_answer", workspace: "w-1", chat: "c-1", answer: state })), undefined);
 });

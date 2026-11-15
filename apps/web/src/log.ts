@@ -16,7 +16,6 @@ const KEEP = 200;
 export class Log {
   #held: Envelope[] = [];
   #send: ((envelope: Envelope) => void) | undefined;
-  #forwards = false;
 
   info(event: Event, ids: Ids = {}): void {
     this.#record({ id: 0, type: "log", level: "info", msg: event, ...ids });
@@ -31,10 +30,10 @@ export class Log {
     this.#record({ id: 0, type: "error", code, retryable: false });
   }
 
-  /** Sends what's held, and from now on each record, through `send`; logs only if `forwards`. */
+  /** Sends what's held, and from now on each record, through `send`, if the server `forwards` them; else drops them. */
   attach(send: (envelope: Envelope) => void, forwards: boolean): void {
-    this.#send = send;
-    this.#forwards = forwards;
+    // A server that doesn't forward them would take a report for an error in answer to a request.
+    this.#send = forwards ? send : () => {};
     const held = this.#held;
     this.#held = [];
     held.forEach((envelope) => this.#record(envelope));
@@ -48,7 +47,7 @@ export class Log {
   #record(envelope: Envelope): void {
     if (this.#send === undefined) {
       this.#held = [...this.#held, envelope].slice(-KEEP);
-    } else if (envelope.type !== "log" || this.#forwards) {
+    } else {
       this.#send(envelope);
     }
   }

@@ -1,8 +1,8 @@
 /** Lines picked in one file: rows `anchor` to `focus` of its rows, either way round. */
 export type Selection = { path: string; anchor: number; focus: number };
 
-/** A comment on rows `first` to `last` of a file's rows, which were lines `where` when it was made. */
-export type Comment = { id: number; path: string; first: number; last: number; where: string; text: string };
+/** A comment on rows `first` to `last` of a file's rows, which were the `linesPhrase` `where` when it was made. */
+export type Comment = { id: number; path: string; first: number; last: number; where: string | undefined; text: string };
 
 /** The first and last rows `selection` covers. */
 export function span({ anchor, focus }: Selection): { first: number; last: number } {
@@ -15,7 +15,7 @@ export function selectRows(selection: Selection | undefined, path: string, row: 
 }
 
 /** `comments` with one saying `text` on `selection`, the lines `where`, after the others. */
-export function addComment(comments: readonly Comment[], selection: Selection, where: string, text: string): readonly Comment[] {
+export function addComment(comments: readonly Comment[], selection: Selection, where: string | undefined, text: string): readonly Comment[] {
   const id = Math.max(0, ...comments.map((comment) => comment.id)) + 1;
   return [...comments, { id, path: selection.path, ...span(selection), where, text }];
 }

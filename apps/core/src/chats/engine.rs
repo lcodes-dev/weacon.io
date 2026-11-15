@@ -109,7 +109,7 @@ pub(crate) struct Engine<A> {
     asked: mpsc::Receiver<Ask>,
     incoming: mpsc::Receiver<Said>,
     says: mpsc::Sender<Said>,
-    /// Set while the disk is full: prompts are queued and no new turn starts.
+    /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
     starts: mpsc::UnboundedSender<Launched<A>>,
