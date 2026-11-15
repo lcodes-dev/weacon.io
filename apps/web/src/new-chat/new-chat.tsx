@@ -86,8 +86,10 @@ export function NewChat({
     if (machine === undefined || chosenRepo === undefined) {
       return "refused";
     }
-    // The server gives the task its title, so a task picked before the list loaded still goes.
-    const choice = { machine: machine.id, repo: chosenRepo, agent, ...(taskId !== undefined && { task: { id: taskId, title: forTask?.title ?? "" } }) };
+    // The server gives the task its title, so a task picked before the list loaded still goes;
+    // one the loaded list doesn't have doesn't.
+    const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
+    const choice = { machine: machine.id, repo: chosenRepo, agent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
     const start = starts.begin(request, socket.workspace, text, choice, newId);
     const sent = await commands.start(start.chatRef, start.action, request);
     const chat = starts.end(request, sent);

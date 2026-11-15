@@ -204,21 +204,25 @@ impl Index {
         text.finish()
     }
 
-    /// The flows pinned by the `docs` docs that hold the most of `words`, whatever their case,
-    /// best first, each doc's in its order, as [`Self::flows`] lists them without its heading.
+    /// The flows pinned by the `docs` docs that hold the most of `words` as whole words, whatever
+    /// their case, best first, each doc's in its order, as [`Self::flows`] lists them without its
+    /// heading.
     #[must_use]
-    pub fn flows_matching(&self, words: &[&str], docs: usize) -> Vec<String> {
-        let words: Vec<String> = words.iter().map(|word| word.to_lowercase()).collect();
+    pub fn flows_matching(&self, words: &[impl AsRef<str>], docs: usize) -> Vec<String> {
+        let words: BTreeSet<String> = words
+            .iter()
+            .map(|word| word.as_ref().to_lowercase())
+            .collect();
         let pinning: BTreeSet<&str> = self.flows.iter().map(|flow| flow.file.as_str()).collect();
         let mut ranked: Vec<(usize, &str)> = pinning
             .into_iter()
             .filter_map(|file| {
                 let text = self.docs.get(file)?.to_lowercase();
-                let held = words
-                    .iter()
-                    .filter(|word| text.contains(word.as_str()))
-                    .count();
-                (held > 0).then_some((held, file))
+                let held: BTreeSet<&str> = text
+                    .split(|ch: char| !ch.is_alphanumeric())
+                    .filter(|word| words.contains(*word))
+                    .collect();
+                (!held.is_empty()).then_some((held.len(), file))
             })
             .collect();
         ranked.sort_by_key(|(held, _)| Reverse(*held));
@@ -357,6 +361,7 @@ mod tests {
             ),
             ("docs/c.md", "Runs: flow:lib::keep->lib::keep\n"),
             ("docs/d.md", "Keeping runs, with no flow.\n"),
+            ("docs/e.md", "Safekeeping reruns: flow:lib::run->lib::run\n"),
         ]))
         .unwrap();
 
@@ -373,7 +378,7 @@ mod tests {
         );
         assert_eq!(index.flows_matching(&["runs"], 5).len(), 2);
         assert!(index.flows_matching(&["zebra"], 5).is_empty());
-        assert!(index.flows_matching(&[], 5).is_empty());
+        assert!(index.flows_matching(&[] as &[&str], 5).is_empty());
     }
 
     #[test]

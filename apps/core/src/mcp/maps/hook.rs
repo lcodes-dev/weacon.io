@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use weacon_codemap::fit;
+use weacon_model::Title;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{ChatTask, MapQuery, MapQueryKind, McpCall, WorkspaceId};
 
@@ -16,8 +17,6 @@ use crate::mcp::tools::{budget, or_empty};
 const FLOWS_TENTHS: usize = 3;
 /// How many of the docs that best match a task's title give their flows.
 const DOCS: usize = 5;
-/// The most bytes of a task's title a session start quotes.
-const TITLE_MAX: usize = 200;
 /// The most words of a task's title its docs are searched by, each of 4 characters or more,
 /// so that short words such as "the" don't match every doc.
 const WORDS: usize = 8;
@@ -90,8 +89,14 @@ impl Stores {
         let Some((_, index)) = self.index(workspace, folder).await? else {
             return Ok(None);
         };
-        let found = index.flows_matching(&title_words(&task.title), DOCS);
-        let flows = task_flows(&task.title, found, bytes * FLOWS_TENTHS / 10);
+        // A title that isn't one a task may have gives no flows.
+        let flows = Title::try_from(task.title.clone()).map_or_else(
+            |_| String::new(),
+            |title| {
+                let found = index.flows_matching(&title_words(title.as_str()), DOCS);
+                task_flows(&title, found, bytes * FLOWS_TENTHS / 10)
+            },
+        );
         let rest = bytes.saturating_sub(flows.len());
         let start = if index.crates.is_empty() {
             String::new()
@@ -102,23 +107,26 @@ impl Stores {
     }
 }
 
-/// The words of `title` a doc may match: those of 4 characters or more, once each.
-fn title_words(title: &str) -> Vec<&str> {
+/// The words of `title` a doc may match, in lower case: those of 4 characters or more, once each.
+fn title_words(title: &str) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();
     title
+        .to_lowercase()
         .split(|ch: char| !ch.is_alphanumeric())
-        .filter(|word| word.chars().nth(3).is_some() && seen.insert(*word))
+        .filter(|word| word.chars().nth(3).is_some() && seen.insert(word.to_owned()))
         .take(WORDS)
+        .map(str::to_owned)
         .collect()
 }
 
 /// `flows` under a line that quotes `title`, a person's words, within `share` bytes and ending
 /// in a blank line; nothing without flows.
-fn task_flows(title: &str, flows: Vec<String>, share: usize) -> String {
+fn task_flows(title: &Title, flows: Vec<String>, share: usize) -> String {
     if flows.is_empty() {
         return String::new();
     }
-    let title = quoted(title);
+    // A title is one line; quoted, it reads as the person's words.
+    let title = serde_json::to_string(title.as_str()).unwrap_or_default();
     let head = [
         format!("This chat is for the task a person titled {title}."),
         format!(
@@ -127,22 +135,6 @@ fn task_flows(title: &str, flows: Vec<String>, share: usize) -> String {
         ),
     ];
     fit(head.into_iter().chain(flows), share.saturating_sub(1)) + "\n"
-}
-
-/// `title` as a quoted string on one line, cut to [`TITLE_MAX`] bytes between characters.
-fn quoted(title: &str) -> String {
-    let mut kept = String::new();
-    let flat = title
-        .chars()
-        .map(|ch| if ch.is_control() { ' ' } else { ch });
-    for ch in flat {
-        if kept.len() + ch.len_utf8() > TITLE_MAX {
-            kept.push('…');
-            break;
-        }
-        kept.push(ch);
-    }
-    serde_json::to_string(&kept).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -160,14 +152,11 @@ mod tests {
             "alpha bravo charlie delta echoes foxtrot golfer hotel"
         );
         assert_eq!(words("née déjà vu"), "déjà");
+        assert_eq!(words("Build: speed up the BUILD"), "build speed");
     }
 
-    #[test]
-    fn a_title_is_quoted_on_one_line_and_cut_between_characters() {
-        assert_eq!(quoted("Say \"hi\"\nthen go"), r#""Say \"hi\" then go""#);
-        let long = "é".repeat(150);
-        let cut = quoted(&long);
-        assert_eq!(cut, format!("\"{}…\"", "é".repeat(100)));
+    fn title(text: &str) -> Title {
+        Title::try_from(text.to_owned()).unwrap()
     }
 
     #[test]
@@ -176,7 +165,7 @@ mod tests {
             .map(|n| format!("- docs/a.md:{n}  a::x -> a::y: holds"))
             .collect();
 
-        let text = task_flows("Speed up the build", flows.clone(), 1200);
+        let text = task_flows(&title("Speed up the build"), flows.clone(), 1200);
 
         assert!(text.len() <= 1200, "{}", text.len());
         assert!(text.len() > 1100, "{}", text.len());
@@ -191,8 +180,9 @@ mod tests {
         );
         assert_eq!(lines.next(), Some("- docs/a.md:0  a::x -> a::y: holds"));
         assert!(text.ends_with(" more lines\n\n"), "{text}");
-        let few = task_flows("Go", flows[..1].to_vec(), 1200);
+        let few = task_flows(&title("Say \"go\""), flows[..1].to_vec(), 1200);
         assert!(few.ends_with(": holds\n\n"), "{few}");
-        assert_eq!(task_flows("Go", Vec::new(), 1200), "");
+        assert!(few.starts_with("This chat is for the task a person titled \"Say \\\"go\\\"\"."));
+        assert_eq!(task_flows(&title("Go"), Vec::new(), 1200), "");
     }
 }
