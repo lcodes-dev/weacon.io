@@ -385,6 +385,10 @@ export type ChatSummary = {
   id: ChatId;
   machine: MachineName;
   owner: MemberId;
+  /**
+   * What its latest run is doing; left out when it has had none.
+   */
+  run?: RunState;
   state: ChatState;
   title: string;
   updated_at: number;
@@ -810,6 +814,23 @@ export type MachineSummary = {
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type MemberId = string;
+
+/**
+ * A workspace's members, past ones included, in the order they were added, from the server to
+ * clients that have the capability `workspace.members`.
+ */
+export type MemberList = {
+  members: Array<MemberSummary>;
+};
+
+/**
+ * A member as the workspace's other members see them, under the name the server shows for
+ * them.
+ */
+export type MemberSummary = {
+  id: MemberId;
+  name: string;
+};
 
 /**
  * A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the

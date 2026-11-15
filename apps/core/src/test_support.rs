@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use weacon_observability::Reporter;
@@ -50,6 +50,7 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         log_file: log_file.map(Path::to_path_buf),
         spawn: weacon_agents::SpawnPolicy::default(),
         path: None,
+        outside: crate::outside::Outside::default(),
     }
 }
 
@@ -100,4 +101,23 @@ pub(crate) fn error_code(message: &Message) -> Option<&str> {
         return None;
     };
     Some(body.code.as_str())
+}
+
+/// The session [`claude_home`] holds.
+pub(crate) const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+
+/// A person's own Claude Code folder under `dir`, holding [`SESSION`], which ran in `folder`
+/// and opens with `prompt`.
+pub(crate) fn claude_home(dir: &Path, folder: &str, prompt: &str) -> PathBuf {
+    let home = dir.join("claude");
+    let project = home.join("projects").join("-work");
+    std::fs::create_dir_all(&project).unwrap();
+    let line =
+        serde_json::json!({ "type": "user", "cwd": folder, "message": { "content": prompt } });
+    std::fs::write(
+        project.join(format!("{SESSION}.jsonl")),
+        format!("{line}\n"),
+    )
+    .unwrap();
+    home
 }

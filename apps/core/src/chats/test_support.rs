@@ -10,14 +10,16 @@ use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AgentKind, AgentSession, ChatAction, ChatAnswerKind, ChatCommand, ChatEvent, ChatId, ChatQuery,
-    ChatQueryKind, Message, Outcome, PermissionAnswer, RequestId, RunEvent, RunId, WorkspaceId,
-    code,
+    ChatQueryKind, Message, Outcome, PermissionAnswer, RepoId, RequestId, RunEvent, RunId,
+    WorkspaceId, code,
 };
 use weacon_testing::{Records, TempDir, recording_logger};
 
 use super::engine::agent::Agent;
 use super::engine::{Chats, Engine, Host, RunAs};
 use super::feed::Client;
+use crate::git::Git;
+use crate::git::state::Stores;
 use crate::runs::{ChatKey, Runs};
 use crate::workspaces::Workspaces;
 
@@ -80,10 +82,30 @@ pub(crate) struct Bench {
     /// The next agent's start blocks, as a slow one does, until this is sent to.
     gate: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
     pub(crate) records: Records,
-    _dir: TempDir,
+    dir: TempDir,
 }
 
 impl Bench {
+    /// Registers a new, empty repository as `id` in the chats' workspace.
+    pub(crate) fn register(&self, id: &str) -> RepoId {
+        let folder = self.dir.join("repos").join(id);
+        std::fs::create_dir_all(&folder).unwrap();
+        let init = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .arg(&folder)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let path = std::env::var_os("PATH");
+        let git = Git::open(&self.dir, path.as_deref()).unwrap();
+        let repo = RepoId::try_from(id.to_owned()).unwrap();
+        Stores::new(&Workspaces::new(&self.dir, None), &workspace())
+            .repos()
+            .add(&git, repo.clone(), &folder)
+            .unwrap();
+        repo
+    }
+
     /// Holds up the next agent's start until the returned sender is sent to or dropped.
     pub(crate) fn hold_next_start(&self) -> std::sync::mpsc::Sender<()> {
         let (release, held) = std::sync::mpsc::channel();
@@ -141,7 +163,7 @@ pub(crate) fn parts() -> (Bench, Engine<FakeAgent>) {
         broken,
         gate,
         records,
-        _dir: dir,
+        dir,
     };
     (bench, engine)
 }
@@ -232,6 +254,15 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
             agent: None,
         },
     )
+}
+
+/// A prompt under `request` that names the repository `repo`.
+pub(crate) fn prompt_in(request: &str, text: &str, repo: &RepoId) -> ChatCommand {
+    let mut asked = prompt(request, text);
+    if let ChatAction::Prompt { repo: named, .. } = &mut asked.action {
+        *named = Some(repo.clone());
+    }
+    asked
 }
 
 /// A prompt under `request` that names `agent`.

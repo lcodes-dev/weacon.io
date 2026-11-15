@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::token::token_id;
 use crate::{
     AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
-    RequestId, RunStatus, RunUpdate, WorkspaceId,
+    RequestId, RunState, RunStatus, RunUpdate, WorkspaceId,
 };
 
 token_id!(
@@ -185,6 +185,10 @@ pub struct ChatSummary {
     pub machine: MachineName,
     pub state: ChatState,
     pub updated_at: i64,
+    /// What its latest run is doing; left out when it has had none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "RunState")]
+    pub run: Option<RunState>,
 }
 
 /// What can still happen to a chat.
@@ -538,11 +542,12 @@ mod tests {
                 machine: "Ada's laptop".parse().unwrap(),
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
+                run: Some(RunState::Waiting),
             }],
         };
         let wire = json!({ "chats": [{
             "id": "c-1", "title": "Fix the build", "owner": "m-1", "machine": "Ada's laptop",
-            "state": "full", "updated_at": 1_700_000_000,
+            "state": "full", "updated_at": 1_700_000_000, "run": "waiting",
         }] });
 
         assert_eq!(serde_json::to_value(&list).unwrap(), wire);
@@ -557,6 +562,14 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<ChatState>(json!("archived")).unwrap(),
             ChatState::Newer
+        );
+        let mut never_ran = list.chats[0].clone();
+        never_ran.run = None;
+        let wire = serde_json::to_value(&never_ran).unwrap();
+        assert!(wire.get("run").is_none(), "{wire}");
+        assert_eq!(
+            serde_json::from_value::<ChatSummary>(wire).unwrap(),
+            never_ran
         );
     }
 }

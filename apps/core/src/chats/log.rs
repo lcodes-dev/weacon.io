@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RequestId, RunEvent,
-    RunUpdate, code,
+    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RepoId, RequestId,
+    RunEvent, RunUpdate, code,
 };
 
 use crate::app::blocking;
@@ -37,6 +37,8 @@ pub(crate) struct ChatLog {
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
+    /// The repository the chat's first prompt named, if it named one.
+    repo: Option<RepoId>,
     runs: ChatRuns,
 }
 
@@ -123,6 +125,7 @@ impl ChatLog {
                 requests: HashMap::new(),
                 broken: false,
                 agent: None,
+                repo: None,
                 runs: ChatRuns::default(),
             };
             if !path.try_exists()? {
@@ -168,11 +171,18 @@ impl ChatLog {
     fn keep(&mut self, entry: &ChatEntry, len: usize) {
         self.runs.apply(entry);
         match &entry.event {
-            ChatEvent::Prompt { request, agent, .. } => {
+            ChatEvent::Prompt {
+                request,
+                agent,
+                repo,
+                ..
+            } => {
                 self.requests.entry(request.clone()).or_default().prompt = Some(entry.seq);
-                self.agent = self
-                    .agent
-                    .or_else(|| Some(agent.unwrap_or(AgentKind::Claude)));
+                // The first prompt names the chat's agent and repository; later ones can't.
+                if self.agent.is_none() {
+                    self.agent = Some(agent.unwrap_or(AgentKind::Claude));
+                    self.repo.clone_from(repo);
+                }
             }
             ChatEvent::Receipt { receipt } => {
                 let commanded = self.requests.entry(receipt.request.clone()).or_default();
@@ -195,6 +205,11 @@ impl ChatLog {
     /// The chat's agent, once a prompt is in the log.
     pub(crate) const fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// The repository the chat works in, once a prompt naming one is first in the log.
+    pub(crate) const fn repo(&self) -> Option<&RepoId> {
+        self.repo.as_ref()
     }
 
     /// Where the chat's runs stand, as its entries say.
@@ -492,6 +507,30 @@ mod tests {
             open(&dir).await.window(4, 9).await.unwrap(),
             [first, second, third]
         );
+    }
+
+    #[tokio::test]
+    async fn a_chats_repository_is_the_one_its_first_prompt_named() {
+        let dir = TempDir::new().unwrap();
+        let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
+            request: request(id),
+            text: "Go".to_owned(),
+            repo: Some(RepoId::try_from(repo.to_owned()).unwrap()),
+            agent: None,
+        };
+        let mut log = open(&dir).await;
+        assert_eq!(log.repo(), None);
+
+        log.append(prompt("r-1", "site")).await.unwrap();
+        log.append(prompt("r-2", "other")).await.unwrap();
+
+        let site = RepoId::try_from("site".to_owned()).unwrap();
+        assert_eq!(log.repo(), Some(&site));
+        assert_eq!(open(&dir).await.repo(), Some(&site));
+        let mut plain = ChatLog::open(&dir, &chat("c-2")).await.unwrap();
+        plain.append(logged_prompt("r-1", "Hi")).await.unwrap();
+        plain.append(prompt("r-2", "site")).await.unwrap();
+        assert_eq!(plain.repo(), None);
     }
 
     #[tokio::test]
