@@ -51,14 +51,14 @@ test("text stays selected while the run streams, and following waits for the rea
   assertStill(up, await page.evaluate(shownTop));
 
   // A visit to Settings keeps the reader's place.
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await waitForRows(page, ".row", (await rowCount(page)) + 50);
   await page.getByRole("button", { name: "Back" }).click();
   assertStill(up, await page.evaluate(shownTop));
 
   // Selecting all in Settings doesn't stop a reader at the bottom from following.
   await scrollTo(page, "bottom");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.keyboard.press("ControlOrMeta+A");
   await waitForRows(page, ".row", (await rowCount(page)) + 50);
   await page.evaluate(() => document.getSelection()?.removeAllRanges());
@@ -90,7 +90,7 @@ test("a reader at the bottom of a finished run is still there after Settings", {
   await page.evaluate(settled);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "a scroll the browser made stopped the view following");
   await page.evaluate(() => document.querySelector<HTMLElement>(".transcript")?.style.removeProperty("height"));
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("button", { name: "Back" }).click();
   await page.evaluate(settled);
   assert.ok(atBottom(await page.evaluate(scrollOf)), "the message box hid the end of the run");

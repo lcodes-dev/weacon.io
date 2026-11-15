@@ -241,14 +241,14 @@ test("Settings shows the account and this build, and signs out from there", { ti
   const release = await holdCreate(page);
   await page.getByLabel("Name").fill("Made in passing");
   await page.getByRole("button", { name: "Create" }).click();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await release();
   await page.getByRole("button", { name: "Back" }).click();
   await page.getByRole("button", { name: "Made in passing" }).waitFor();
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
 
   await page.getByLabel("Name").fill("Half typed");
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: "Account" }).waitFor();
   assert.equal(await email.innerText(), EMAIL);
   await page.getByRole("heading", { name: "About" }).waitFor();
@@ -259,18 +259,18 @@ test("Settings shows the account and this build, and signs out from there", { ti
   assert.equal(await page.getByLabel("Name").inputValue(), "Half typed");
   assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
 
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.route("**/api/sign-out", (route) => route.abort());
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("alert").getByText("The server can't be reached.").waitFor();
   assert.equal(await email.innerText(), EMAIL);
   await page.getByRole("button", { name: "Back" }).click();
   assert.equal(await page.getByRole("alert").count(), 0);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.unroute("**/api/sign-out");
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Settings" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Settings", exact: true }).count(), 0);
 });
 
 test("an address with no account gets the same answer and no code", { timeout: 600_000 }, async (t) => {

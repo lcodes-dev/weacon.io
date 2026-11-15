@@ -1,5 +1,5 @@
 use futures_util::TryStreamExt as _;
-use sqlx::SqliteConnection;
+use sqlx::{Sqlite, SqliteConnection, Transaction};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
@@ -18,10 +18,6 @@ const WAITING_MAX: usize = 1000;
 
 /// An event to store, with its place in its machine's log, when it came from there.
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "events are stored as a machine uploads them")
-)]
 pub(crate) struct Incoming<'a> {
     pub(crate) core_seq: Option<u64>,
     pub(crate) event: &'a ChatEvent,
@@ -36,16 +32,12 @@ impl Workspace {
     /// with none stored. So do events that would leave more than [`WAITING_MAX`] prompts
     /// waiting, as `chat.too_many_waiting`. An event over [`EVENT_MAX`] is
     /// `chat.event_too_large`.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "events are stored as a machine uploads them")
-    )]
-    pub(crate) async fn append_events(
+    pub(super) async fn append(
         &self,
+        mut transaction: Transaction<'static, Sqlite>,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
-        let mut transaction = self.db.write().await?;
         let (seq, core_seq, state, owner) = sqlx::query_as::<_, (i64, i64, String, String)>(
             "SELECT seq, core_seq, state, owner_member FROM chats
              WHERE workspace_id = ? AND chat_id = ?",
@@ -378,9 +370,13 @@ fn ended(event: &ChatEvent) -> Option<&RequestId> {
     (!matches!(receipt.outcome, Outcome::Accepted)).then_some(&receipt.request)
 }
 
-/// Whether `event` begins a turn, a prompt, or ends one, a receipt that ends its command.
+/// Whether `event` begins a turn, a prompt from Weacon or from outside it, or ends one, a
+/// receipt that ends its command.
 pub(crate) fn turns(event: &ChatEvent) -> bool {
-    matches!(event, ChatEvent::Prompt { .. }) || ended(event).is_some()
+    matches!(
+        event,
+        ChatEvent::Prompt { .. } | ChatEvent::OutsidePrompt { .. }
+    ) || ended(event).is_some()
 }
 
 fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
@@ -652,6 +648,21 @@ mod tests {
         let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
         append(&one, "c-1", &elsewhere).await.unwrap();
         assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
+
+        let before = changed_chats(&one).await.len();
+        let typed = ChatEvent::OutsidePrompt {
+            text: "Go on".to_owned(),
+        };
+        let outside = Incoming {
+            core_seq: Some(11),
+            event: &typed,
+            at: NOW + 90,
+        };
+        one.append_events(&id("c-1"), &[outside]).await.unwrap();
+        assert_eq!(changed_chats(&one).await.len(), before + 1);
+        assert_eq!(updated_at(&one).await, NOW + 90);
+        let listed = one.chats().await.unwrap();
+        assert_eq!(listed.first().map(|chat| chat.id.as_str()), Some("c-1"));
     }
 
     #[tokio::test]

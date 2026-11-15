@@ -8,7 +8,7 @@ test("Settings shows this build and the server's, and the page's logs reach the 
   t.after(() => harness.close());
   const { page } = harness;
   await page.getByText("Connected").waitFor();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const about = await page.locator("dl").innerText();
   // An uncaught error reaches the page's handler, which reports only its fixed code.
   await page.evaluate(() =>

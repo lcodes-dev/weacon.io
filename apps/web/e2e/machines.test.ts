@@ -10,7 +10,7 @@ test("a person pairs a machine by its code after checking its fingerprint, then 
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.getByText("No machines yet. Run weacon pair on one, then enter the code it shows.").waitFor();
 
   await page.getByLabel("Code").fill("nothing-here");
@@ -33,7 +33,7 @@ test("a person pairs a machine by its code after checking its fingerprint, then 
   assert.equal(await pinned(page, paired.machine), KEY);
 
   await page.reload();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await row.getByText("Linux, paired").waitFor();
   await row.getByRole("button", { name: "Unpair" }).click();
@@ -55,7 +55,7 @@ test("a confirmed key that isn't the one shown is never pinned", { timeout: 600_
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { code } = await startPairing(page);
   const other = "cd".repeat(32);
   const swapped: MachineSummary = { id: "mc-swapped", name: "Studio", os: "linux", key: other, paired_at: 1_763_000_000 };
@@ -80,7 +80,7 @@ test("another browser trusts a machine's key once the person checks its fingerpr
   t.after(() => served.close());
   const { page } = served;
   await signIn(served);
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   const { machine } = await pair(page);
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
   await row.waitFor();
@@ -91,7 +91,7 @@ test("another browser trusts a machine's key once the person checks its fingerpr
 
   await setPin(page, machine, undefined);
   await page.reload();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await step.getByText(FINGERPRINT).waitFor();
   assert.equal(await pinned(page, machine), undefined);
   await step.getByRole("button", { name: "It matches" }).click();
@@ -101,7 +101,7 @@ test("another browser trusts a machine's key once the person checks its fingerpr
   // A browser that trusts another key never offers to replace it.
   await setPin(page, machine, "cd".repeat(32));
   await page.reload();
-  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
   await row.getByText("This browser trusts another key for Studio. If you didn't pair it again, unpair it.").waitFor();
   assert.equal(await step.count(), 0);
 });

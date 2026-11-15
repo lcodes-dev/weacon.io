@@ -34,16 +34,19 @@ const FEED: Code = code!("workspace.feed");
 const TASKS: Code = code!("workspace.tasks");
 /// What the server offers to clients that read and revise docs.
 const DOCS: Code = code!("workspace.docs");
-/// What the server offers to clients that read chats and ask their agents.
+/// What the server offers to clients that read chats.
 const CHATS: Code = code!("workspace.chats");
+/// What the server offers to clients that ask chats' agents.
+const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 14] = [
+const OFFERED: [Code; 15] = [
     FEED,
     TASKS,
     DOCS,
     SETTINGS,
     PROPOSALS,
     CHATS,
+    CHAT_COMMANDS,
     MEMBERS,
     DIFF,
     WORKTREE,
@@ -258,9 +261,14 @@ async fn received(
     {
         return relay(socket, shared, feed, envelope).await;
     }
-    if feed.hears(CHATS) && chats::carries(&envelope.message) {
+    let reads = feed.hears(CHATS) && chats::carries(&envelope.message);
+    let asks = feed.hears(CHAT_COMMANDS) && chats::asks(&envelope.message);
+    if reads || asks {
         feed.allowed(shared).await?;
-        let answer = feed.chats.heard(envelope, &feed.member, shared).await;
+        let answer = feed
+            .chats
+            .heard(envelope, &feed.member, &feed.asker, shared)
+            .await;
         return send_chats(socket, shared, feed, answer).await;
     }
     if feed.hears(TERMINALS)
@@ -441,6 +449,7 @@ mod tests {
                 SETTINGS,
                 PROPOSALS,
                 CHATS,
+                CHAT_COMMANDS,
                 MEMBERS,
                 DIFF,
                 WORKTREE,

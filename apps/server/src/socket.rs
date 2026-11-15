@@ -23,6 +23,7 @@ pub(crate) const TIMING: Timing = Timing {
 };
 
 /// The socket has ended: its client left, may have it no more, or something failed.
+#[derive(Debug)]
 pub(crate) struct Closed;
 
 /// A web socket's pings, which end it once two go unanswered: the client is gone, or its
@@ -127,6 +128,13 @@ pub(crate) async fn hear(
     Ok((hello, PendingWelcome { id, answer }))
 }
 
+/// `message`, unless it holds what this server can't send on, as a newer client's may: sent,
+/// it would drop the peer's connection.
+pub(crate) fn sendable(message: Message) -> Option<Message> {
+    let probe = Envelope { id: 0, message };
+    probe.to_json().is_ok().then_some(probe.message)
+}
+
 pub(crate) fn refusal(code: Code) -> Message {
     Message::Error(ErrorBody {
         code,
@@ -191,9 +199,9 @@ mod tests {
         let failed = Err(axum::Error::new("gone"));
         let text = Ok(Frame::Text("hi".into()));
 
-        assert!(pings.heard(&close).is_err());
-        assert!(pings.heard(&failed).is_err());
-        assert!(pings.heard(&text).is_ok());
+        pings.heard(&close).unwrap_err();
+        pings.heard(&failed).unwrap_err();
+        pings.heard(&text).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -205,6 +213,6 @@ mod tests {
         let frame = || Frame::Ping(Vec::new().into());
 
         assert!(send(&mut stuck, TIMING.ping_every, frame()).await.is_err());
-        assert!(send(&mut taken, TIMING.ping_every, frame()).await.is_ok());
+        send(&mut taken, TIMING.ping_every, frame()).await.unwrap();
     }
 }
