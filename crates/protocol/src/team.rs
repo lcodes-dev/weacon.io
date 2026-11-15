@@ -77,7 +77,7 @@ mod tests {
             round_trips(&MemberCommand { action }, json!({ "action": wire }));
         }
         let unknown = json!({ "action": { "kind": "transfer" } });
-        assert!(serde_json::from_value::<MemberCommand>(unknown).is_err());
+        serde_json::from_value::<MemberCommand>(unknown).unwrap_err();
     }
 
     #[test]
