@@ -8,7 +8,7 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Order};
 use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
-use crate::chats::log::Seen;
+use crate::chats::log::{Seen, digest};
 use crate::runs::Queued;
 
 impl<A: Agent> Engine<A> {
@@ -27,12 +27,15 @@ impl<A: Agent> Engine<A> {
                 "That request id was used for another command",
             )),
             Seen::Never | Seen::Pending => {
+                let digest = digest(&action);
                 match self.act(key, request.clone(), action, seen).await {
                     // Its receipt ends it, so asking again changes nothing.
                     Err(fault) if never_taken(&fault) => {
                         let code = fault.code().clone();
                         let refused = Outcome::Failed { code };
-                        self.commit_receipt(key, &request, refused).await
+                        self.commit_receipt(key, &request, refused).await?;
+                        self.open(key).await?.log.refused(&request, digest);
+                        Ok(())
                     }
                     acted => acted,
                 }

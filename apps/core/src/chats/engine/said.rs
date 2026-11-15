@@ -58,7 +58,8 @@ impl<A: Agent> Engine<A> {
                 self.permission_asked(key, run, prompt, committed).await
             }
             RunEvent::PermissionWithdrawn { prompt, .. } => {
-                self.permission_withdrawn(key, run, prompt).await
+                let withdrawn = self.permission_withdrawn(key, run, prompt).await;
+                committed.map(drop).and(withdrawn)
             }
             // An agent that leaves its turn unknown is exiting; nothing more goes to it.
             RunEvent::Finished {
@@ -324,8 +325,9 @@ mod tests {
             prompt: 1,
         };
 
-        hear(&mut on.engine, withdrawn).await.unwrap();
+        let failed = hear(&mut on.engine, withdrawn).await;
 
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
         assert!(waiting_in(&mut on.engine).await.is_empty());
         let refused = on.engine.command(&key(), allow_one("r-2").0).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");

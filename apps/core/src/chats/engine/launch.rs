@@ -80,6 +80,10 @@ impl<A: Agent> Engine<A> {
     pub(super) async fn finish_launch(&mut self, launched: Launched<A>) -> Result<(), Fault> {
         let Launched { key, run, agent } = launched;
         let chat = self.open(&key).await?;
+        // Let go after a failed write, it is dropped; the chat's prompts may go on now.
+        if chat.let_go.take_if(|let_go| *let_go == run).is_some() {
+            return self.advance(&key).await;
+        }
         if chat.launching.as_ref() != Some(&run) {
             return Ok(());
         }

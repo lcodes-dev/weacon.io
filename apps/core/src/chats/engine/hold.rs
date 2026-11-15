@@ -36,9 +36,8 @@ impl<A: Agent> Engine<A> {
         if holder.is_some_and(|holder| holder.is(client)) {
             return Ok(());
         }
-        // A live run, a starting one or a session still to save would race the hand's agent;
-        // a live run covers a turn, and a turn without one is over.
-        let busy = chat.orders.is_some() || chat.launching.is_some();
+        // A live run, a starting one or a session still to save would race the hand's agent.
+        let busy = chat.orders.is_some() || chat.is_starting();
         if holder.is_some() || busy || chat.pending_session.is_some() {
             return Err(Fault::new(
                 code!("chat.busy"),
@@ -66,13 +65,17 @@ impl<A: Agent> Engine<A> {
     pub(super) fn is_held(&self, key: &ChatKey) -> bool {
         self.open_chats
             .get(key)
-            .is_some_and(|chat| chat.held.is_some())
+            .and_then(|chat| chat.held.as_ref())
+            .is_some_and(|holder| !holder.is_gone())
     }
 
     // Refuses a prompt a held chat has no room to queue.
     pub(super) fn has_room(&self, key: &ChatKey) -> Result<(), Fault> {
+        if !self.is_held(key) {
+            return Ok(());
+        }
         let queued = self.runs.of(key).map_or(0, |record| record.queue.len());
-        if self.is_held(key) && queued >= HELD_QUEUE {
+        if queued >= HELD_QUEUE {
             return Err(Fault::new(
                 code!("chat.held"),
                 "The chat is carried on by hand and can't queue more prompts",
@@ -92,7 +95,7 @@ impl<A: Agent> Engine<A> {
         for key in released {
             self.log.info("chat released", &chat_about(&key));
             let advanced = self.advance(&key).await;
-            if let Err(fault) = self.checked(&key, advanced).await {
+            if let Some(fault) = self.unlogged(&key, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -356,5 +359,29 @@ mod tests {
         engine.close_unused().await;
 
         assert!(!engine.open_chats.contains_key(&key()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_chat_whose_holder_hung_up_takes_more_prompts_before_it_is_closed() {
+        let (_bench, mut engine) = parts();
+        let (holder, gone) = client(1);
+        engine
+            .command_from(&key(), hold("h-1"), &holder)
+            .await
+            .unwrap();
+        for at in 1..=HELD_QUEUE {
+            let asked = prompt(&format!("r-{at}"), "More");
+            engine.command(&key(), asked).await.unwrap();
+        }
+        drop(gone);
+
+        engine
+            .command(&key(), prompt("r-17", "Next"))
+            .await
+            .unwrap();
+
+        let log = &engine.open(&key()).await.unwrap().log;
+        assert!(!log.has_ended(&request("r-17")));
+        assert!(engine.is_launching(&key()));
     }
 }

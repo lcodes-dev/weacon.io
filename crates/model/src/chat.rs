@@ -91,10 +91,10 @@ impl ChatRuns {
     }
 
     fn said(&mut self, run: &RunId, event: &RunEvent, seq: u64) {
-        let another = self.run.as_ref().is_some_and(|latest| latest.run != *run);
         match event {
-            // Another run than the latest can't be answered; the engine never logs one asking.
-            RunEvent::PermissionAsked { .. } if another => {}
+            // Another run than the latest can't be answered.
+            RunEvent::PermissionAsked { .. }
+                if self.run.as_ref().is_some_and(|latest| latest.run != *run) => {}
             RunEvent::PermissionAsked { prompt, .. } => self.waiting.push(Waiting {
                 run: run.clone(),
                 prompt: *prompt,

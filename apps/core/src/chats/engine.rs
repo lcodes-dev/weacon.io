@@ -78,6 +78,8 @@ struct Chat {
     orders: Option<mpsc::UnboundedSender<Order>>,
     /// The run whose agent is starting, off the engine's loop.
     launching: Option<RunId>,
+    /// A run let go after a failed write whose agent is still starting.
+    let_go: Option<RunId>,
     pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
     /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
@@ -96,10 +98,15 @@ impl Chat {
         self.held.take_if(|holder| holder.is_gone()).is_some()
     }
 
+    // Whether an agent is starting for the chat, even one let go after a failed write.
+    const fn is_starting(&self) -> bool {
+        self.launching.is_some() || self.let_go.is_some()
+    }
+
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
-            && self.launching.is_none()
+            && !self.is_starting()
             && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
             && self.pending_answers.is_empty()
@@ -324,6 +331,7 @@ impl<A: Agent> Engine<A> {
                 subscribers: Vec::new(),
                 orders: None,
                 launching: None,
+                let_go: None,
                 pending_answers: Vec::new(),
                 pending_end: None,
                 pending_interrupts: Vec::new(),
@@ -541,9 +549,11 @@ mod tests {
         for _ in 0..2 {
             bench.command(prompt("r-2", " \n")).await.unwrap();
         }
+        let other = bench.command(prompt("r-2", "Deploy")).await;
         bench.command(prompt("r-3", "Next")).await.unwrap();
 
         assert_eq!(code_of(conflict), "request.conflict");
+        assert_eq!(code_of(other), "request.conflict");
         assert_eq!(
             pushed(&mut pushes, 2).await,
             [

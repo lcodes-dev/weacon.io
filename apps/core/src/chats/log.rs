@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
+use std::hash::{DefaultHasher, Hasher};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +49,8 @@ struct Commanded {
     stage: Stage,
     /// A receipt said it failed.
     failed: bool,
+    /// The digest of the command refused for good, while the log stays open.
+    refused: Option<u64>,
 }
 
 /// How far a command got, as its receipts say; a later receipt never moves it back.
@@ -70,6 +73,13 @@ pub(crate) enum Seen {
     Same,
     /// With other content.
     Other,
+}
+
+/// A digest of `action`, to tell a command sent again from another under the same id.
+pub(crate) fn digest(action: &ChatAction) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(&serde_json::to_vec(action).unwrap_or_default());
+    hasher.finish()
 }
 
 // Opens a log file to append, creating it and its folder private and synced when missing.
@@ -283,7 +293,10 @@ impl ChatLog {
             return Ok(Seen::Never);
         };
         let Some(seq) = commanded.prompt else {
-            let same = commanded.failed || !matches!(action, ChatAction::Prompt { .. });
+            let same = commanded.refused.map_or_else(
+                || commanded.failed || !matches!(action, ChatAction::Prompt { .. }),
+                |refused| refused == digest(action),
+            );
             return Ok(if same { Seen::Same } else { Seen::Other });
         };
         let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
@@ -306,6 +319,13 @@ impl ChatLog {
             (true, Stage::Accepted | Stage::Ended) => Seen::Same,
             (false, _) => Seen::Other,
         })
+    }
+
+    /// Keeps the digest of the command refused for good under `request`, its receipt in.
+    pub(crate) fn refused(&mut self, request: &RequestId, digest: u64) {
+        if let Some(commanded) = self.requests.get_mut(request) {
+            commanded.refused = Some(digest);
+        }
     }
 
     /// Whether a receipt that ends the command under `request` is in the log.

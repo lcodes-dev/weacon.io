@@ -24,7 +24,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         for key in idle {
             let slept = self.sleep(&key).await;
-            if let Err(fault) = self.checked(&key, slept).await {
+            if let Some(fault) = self.unlogged(&key, slept).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
             self.close_if_unused(&key);
@@ -73,7 +73,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         for key in queued {
             let advanced = self.advance(&key).await;
-            if let Err(fault) = self.checked(&key, advanced).await {
+            if let Some(fault) = self.unlogged(&key, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -108,7 +108,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         for (key, recent) in awake {
             let picked = self.pick_up(&key, recent).await;
-            if let Err(fault) = self.checked(&key, picked).await {
+            if let Some(fault) = self.unlogged(&key, picked).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }

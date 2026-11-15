@@ -28,24 +28,26 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
     let (agent, _) = asleep(state_dir, &key)?;
     let cwd = chats::work_dir(app.work_root.as_deref(), &key)?;
     let launch = Workspaces::new(state_dir, app.path.clone()).launch(workspace, agent, cwd)?;
-    let rt = runtime()?;
-    let held = rt.block_on(hold(&socket_path(state_dir), build(&app.version), &key))?;
-    // Read again under the hold: until it was taken, the daemon could have started the agent.
-    let session = match asleep(state_dir, &key) {
-        Ok((_, session)) => session,
-        Err(fault) => {
-            if let Some(held) = held {
-                rt.block_on(held.release());
-            }
-            return Err(fault);
-        }
-    };
     let log = app.log.child(&[
         ("workspace_id", workspace.as_str().into()),
         ("chat_id", chat.as_str().into()),
     ]);
-    log.info("resume started", &[]);
-    rt.block_on(carry_on(held, launch.resume_by_hand(&session), &log))?;
+    let (dir, again) = (state_dir.to_owned(), key.clone());
+    let agent = async {
+        // Read again under the hold: until it was taken, the daemon could have started the agent.
+        let (_, session) = crate::app::blocking(move || Ok(asleep(&dir, &again)))
+            .await
+            .map_err(|error| {
+                Fault::new(code!("runs.unreadable"), "The runs journal can't be read")
+                    .because(error)
+            })??;
+        log.info("resume started", &[]);
+        launch.resume_by_hand(&session).await
+    };
+    runtime()?.block_on(async {
+        let held = hold(&socket_path(state_dir), build(&app.version), &key).await?;
+        carry_on(held, agent, &log).await
+    })?;
     log.info("resume ended", &[]);
     Ok(())
 }
@@ -201,7 +203,6 @@ fn chat_command(key: &ChatKey, action: ChatAction) -> Result<Message, Fault> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration;
 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::mpsc;
@@ -415,13 +416,6 @@ mod tests {
             .collect()
     }
 
-    // Waits, a millisecond at a time, until `done`.
-    async fn until(done: impl Fn() -> bool) {
-        while !done() {
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }
-
     // A fake daemon on its own thread, since `run` makes its own runtime; it gives back all it
     // was sent once the client hangs up.
     fn daemon_apart(socket: PathBuf, fake: Fake) -> std::thread::JoinHandle<Vec<Message>> {
@@ -507,7 +501,7 @@ mod tests {
     async fn a_daemon_that_hangs_up_meanwhile_is_warned_of_once_and_the_agent_goes_on() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
-        let _received = daemon(
+        let received = daemon(
             &socket,
             Fake {
                 hangs_up: true,
@@ -523,15 +517,15 @@ mod tests {
                 .count()
         };
 
-        // The agent ends only once the person was warned.
+        // The agent ends once the daemon has hung up; the hang-up comes first.
         let agent = async {
-            until(|| warned() > 0).await;
+            drop(all_sent(received).await);
+            tokio::task::yield_now().await;
             Ok(())
         };
         let taken = held(&socket).await.unwrap();
-        let ran = tokio::time::timeout(Duration::from_secs(5), carry_on(taken, agent, &log)).await;
+        carry_on(taken, agent, &log).await.unwrap();
 
-        assert!(matches!(ran, Ok(Ok(()))), "{ran:?}");
         assert_eq!(warned(), 1);
     }
 

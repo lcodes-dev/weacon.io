@@ -172,13 +172,7 @@ mod tests {
 
         assert_eq!(error_code(&unknown), Some("message.unsupported"));
         assert!(!unknown.close);
-        assert_eq!(
-            error,
-            Reply {
-                envelope: None,
-                close: false
-            }
-        );
+        assert_eq!(error, Reply::NOTHING);
     }
 
     #[test]

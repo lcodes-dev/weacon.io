@@ -6,7 +6,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{Outcome, RunId, RunState, RunStatus};
 
 use super::agent::{Agent, Order};
-use super::{ChatKey, Engine, PendingEnd};
+use super::{Chat, ChatKey, Engine, PendingEnd};
 use crate::runs::Queued;
 
 impl<A: Agent> Engine<A> {
@@ -75,7 +75,8 @@ impl<A: Agent> Engine<A> {
             return Ok(());
         };
         // A run still starting takes the turn once it is up; a full disk or a hold takes none.
-        if self.is_launching(key) || *self.disk.borrow() || self.is_held(key) {
+        let starting = self.open_chats.get(key).is_some_and(Chat::is_starting);
+        if starting || *self.disk.borrow() || self.is_held(key) {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
