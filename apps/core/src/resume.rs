@@ -668,12 +668,10 @@ mod tests {
 
         // Polled again once the hang-up is handled, the agent ends only after the warning, with
         // a fault of its own so its end is seen.
-        let agent = std::future::poll_fn(|_| {
-            if warned() == 0 {
-                std::task::Poll::Pending
-            } else {
-                std::task::Poll::Ready(Err(Fault::new(code!("agent.ended"), "Ended")))
-            }
+        let ended = || Fault::new(code!("agent.ended"), "Ended");
+        let agent = std::future::poll_fn(|_| match warned() {
+            0 => std::task::Poll::Pending,
+            _ => std::task::Poll::Ready(Err(ended())),
         });
         let taken = held(&socket).await.unwrap();
         let ran = bounded(carry_on(taken, agent, &log)).await;
