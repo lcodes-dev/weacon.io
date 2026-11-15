@@ -3,6 +3,7 @@
 
 mod deadline;
 pub(crate) mod grants;
+mod maps;
 pub(crate) mod tools;
 
 use std::convert::Infallible;
@@ -32,6 +33,7 @@ use weacon_protocol::{McpCall, code};
 
 use deadline::Deadline;
 use grants::{Grant, Grants, Revoke};
+pub(crate) use maps::Maps;
 use weacon_agents::{Launch, McpServer};
 use weacon_protocol::App;
 
@@ -62,14 +64,19 @@ pub(crate) struct Mcp {
 
 type Body = BoxBody<Bytes, Infallible>;
 
-/// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted; must run
-/// inside a tokio runtime.
-pub(crate) fn start(app: &App, log: &Logger) -> Result<(Mcp, Server), Fault> {
-    listen(app, log, LIMITS)
+/// Listens on a free port of 127.0.0.1 and serves until the returned task is aborted, answering
+/// from `maps`, or with no map without them; must run inside a tokio runtime.
+pub(crate) fn start(app: &App, log: &Logger, maps: Option<Maps>) -> Result<(Mcp, Server), Fault> {
+    listen(app, log, maps, LIMITS)
 }
 
 /// [`start`], within `limits`.
-fn listen(app: &App, log: &Logger, limits: Limits) -> Result<(Mcp, Server), Fault> {
+fn listen(
+    app: &App,
+    log: &Logger,
+    maps: Option<Maps>,
+    limits: Limits,
+) -> Result<(Mcp, Server), Fault> {
     let failed = |error| {
         Fault::new(code!("mcp.start_failed"), "The local MCP couldn't start").because(error)
     };
@@ -81,6 +88,7 @@ fn listen(app: &App, log: &Logger, limits: Limits) -> Result<(Mcp, Server), Faul
     let log = log.child(&[("component", "mcp".into())]);
     let handler = Handler {
         version: app.version.clone(),
+        maps,
         log,
     };
     handler
@@ -269,6 +277,7 @@ fn empty(status: StatusCode) -> Response<Body> {
 #[derive(Clone)]
 struct Handler {
     version: String,
+    maps: Option<Maps>,
     log: Logger,
 }
 
@@ -303,11 +312,14 @@ impl ServerHandler for Handler {
             return Ok(CallToolResult::error(vec![busy]).into());
         };
         let started = Instant::now();
-        let folder = grant.folder.clone();
         let log = self.log.child(&[("run_id", grant.run.as_str().into())]);
-        let text = tokio::task::spawn_blocking(move || tools::answer_or_none(&call, &folder, &log))
-            .await
-            .map_err(|_| ErrorData::internal_error("The tool failed", None))?;
+        let text = match &self.maps {
+            Some(maps) => {
+                maps.answer(&call, &grant.workspace, &grant.folder, &log)
+                    .await
+            }
+            None => tools::NO_MAP.to_owned(),
+        };
         let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let fields: [(&str, Field); 5] = [
             ("workspace_id", grant.workspace.as_str().into()),
@@ -433,18 +445,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_token_reads_only_its_own_runs_folder() {
+    async fn each_token_reads_only_its_own_runs_registered_repository() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let maps::tests::Setup {
+            maps, workspace, ..
+        } = maps::tests::setup(&dir).await;
+        let one = maps::tests::crate_repo(&dir, "one");
+        let two = maps::tests::crate_repo(&dir.join("b"), "two");
+        maps::tests::register(&maps, &workspace, "one", &one);
+        let build = weacon_appkit::build(&VERSION);
+        let (mcp, _server) = start(&build, &log, Some(maps)).unwrap();
         let (first, _a) = mcp
             .grants
-            .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
+            .issue(run_grant(workspace.as_str(), "run-1", one))
             .unwrap();
-        let (second, _b) = mcp
-            .grants
-            .issue(run_grant("w-2", "run-2", repo(&dir, "two")))
-            .unwrap();
+        // Another workspace's run in a repository only `one` registered.
+        let (second, _b) = mcp.grants.issue(run_grant("w-2", "run-2", two)).unwrap();
         let map = call("map", json!({}));
 
         let one = post(&mcp, &[("Authorization", &bearer(&first))], &map).await;
@@ -456,18 +473,14 @@ mod tests {
             "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
              - fn one::run  src/lib.rs:1\nCrates:\n- one  .  1 items\n"
         );
-        assert_eq!(
-            answer_text(&two),
-            "Start here: 1 crates, 1 items.\nEntry points:\nMost central items:\n\
-             - fn two::run  src/lib.rs:1\nCrates:\n- two  .  1 items\n"
-        );
+        assert_eq!(answer_text(&two), tools::NO_MAP);
     }
 
     #[tokio::test]
     async fn a_missing_unknown_or_ended_token_is_refused_and_never_logged() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let (ended, revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -496,7 +509,7 @@ mod tests {
     async fn another_host_an_origin_or_a_large_body_is_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -523,14 +536,14 @@ mod tests {
         assert_eq!(host.status, 403);
         assert_eq!(origin.status, 403);
         assert_eq!(too_large.status, 413);
-        assert_eq!(answer_text(&large_enough), "No item has this path.\n");
+        assert_eq!(answer_text(&large_enough), tools::NO_MAP);
     }
 
     #[tokio::test]
     async fn a_run_gets_only_so_many_calls_at_once_and_bad_arguments_are_refused() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -568,7 +581,7 @@ mod tests {
     async fn it_names_itself_and_lists_its_tools() {
         let dir = TempDir::new().unwrap();
         let (log, _records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))
@@ -601,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_server_stops_it_and_its_open_connections() {
         let (log, _records) = recording_logger();
-        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let address = address(&mcp);
         let mut open = TcpStream::connect(address).await.unwrap();
         let request = format!("POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: 0\r\n\r\n");
@@ -652,6 +665,7 @@ mod tests {
         let (mcp, _server) = listen(
             &weacon_appkit::build(&VERSION),
             &log,
+            None,
             Limits {
                 stall: quick,
                 ..LIMITS
@@ -685,7 +699,7 @@ mod tests {
             stall: Duration::from_millis(300),
             connections: 1,
         };
-        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, limits).unwrap();
+        let (mcp, _server) = listen(&weacon_appkit::build(&VERSION), &log, None, limits).unwrap();
         // Accepted first, it holds the only place until it stalls out.
         let _idle = TcpStream::connect(address(&mcp)).await.unwrap();
         let started = Instant::now();
@@ -703,6 +717,7 @@ mod tests {
         let (mcp, _server) = listen(
             &weacon_appkit::build(&VERSION),
             &log,
+            None,
             Limits {
                 stall: quick,
                 ..LIMITS
@@ -722,7 +737,7 @@ mod tests {
     #[tokio::test]
     async fn a_connection_is_warned_about_once_however_often_it_is_refused() {
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let address = address(&mcp);
         let body = call("map", json!({}));
         let request = |close: &str| {
@@ -750,7 +765,7 @@ mod tests {
     async fn refusals_warn_once_across_connections_until_a_request_is_let_in() {
         let dir = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log).unwrap();
+        let (mcp, _server) = start(&weacon_appkit::build(&VERSION), &log, None).unwrap();
         let (token, _revoke) = mcp
             .grants
             .issue(run_grant("w-1", "run-1", repo(&dir, "one")))

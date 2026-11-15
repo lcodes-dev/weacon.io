@@ -86,6 +86,14 @@ pub(crate) async fn folder_index(
     off_runtime(move || Ok(weacon_codemap::assemble(&facts))).await
 }
 
+/// The canonical path of the main worktree of `folder`'s repository; it blocks.
+///
+/// # Errors
+/// When `folder` isn't in a git repository.
+pub(crate) fn main_worktree(git: &Git, folder: &Path) -> Result<PathBuf, Fault> {
+    locate(git, folder).map(|(main, _)| main)
+}
+
 /// The canonical paths of the main worktree of `folder`'s repository and of the worktree
 /// `folder` is in.
 fn locate(git: &Git, folder: &Path) -> Result<(PathBuf, PathBuf), Fault> {

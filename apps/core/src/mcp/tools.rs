@@ -1,21 +1,16 @@
 //! The MCP's tools: the list agents see, and the plain text each call answers.
 
-use std::path::Path;
-
 use rmcp::model::{JsonObject, Tool, ToolAnnotations};
 use serde_json::{Value, json};
 use weacon_codemap::Index;
-use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::McpCall;
-
-use crate::map::index_folder;
 
 /// The answer's size when a call names none, and the bounds a named one is kept within.
 const BUDGET: u32 = 6000;
 const LEAST: u32 = 1000;
 const MOST: u32 = 16_000;
 
-const NO_MAP: &str = "No code map for this folder.\n";
+pub(crate) const NO_MAP: &str = "No code map for this folder.\n";
 
 /// Longer than any item's path, and too long to echo back within a budget.
 const LONGEST_PATH: usize = 500;
@@ -85,54 +80,8 @@ fn tool(
     Tool::new(name, description, schema).annotate(hints)
 }
 
-/// The answer to `call` from the code in `folder`; it reads the folder, so it blocks.
-///
-/// # Errors
-/// When the folder can't be read.
-pub(crate) fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
-    index_folder(folder).map(|(map, _)| answer_from(call, &map))
-}
-
-/// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
-///
-/// # Errors
-/// When the folder can't be read.
-pub(crate) fn answered(
-    folder: &Path,
-    budget: Option<u32>,
-    answer: impl FnOnce(&Index, usize) -> String,
-) -> Result<String, Fault> {
-    let (map, _) = index_folder(folder)?;
-    Ok(if map.crates.is_empty() {
-        NO_MAP.to_owned()
-    } else {
-        answer(&map, self::budget(budget))
-    })
-}
-
-/// [`answer`], or nothing when the folder has no code map.
-///
-/// # Errors
-/// When the folder can't be read.
-pub(crate) fn map_or_empty(call: &McpCall, folder: &Path) -> Result<String, Fault> {
-    let (map, _) = index_folder(folder)?;
-    Ok(if map.crates.is_empty() {
-        String::new()
-    } else {
-        answer_from(call, &map)
-    })
-}
-
-/// [`answer`], with a folder that can't be read logged and answered as having no map.
-pub(crate) fn answer_or_none(call: &McpCall, folder: &Path, log: &Logger) -> String {
-    answer(call, folder).unwrap_or_else(|fault| {
-        log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-        NO_MAP.to_owned()
-    })
-}
-
 // Docs can pin flows in a folder with no crate, so `flow` answers even without a code map.
-fn answer_from(call: &McpCall, map: &Index) -> String {
+pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
     match call {
         McpCall::Flow(args) => map.flows(budget(args.budget)),
         _ if map.crates.is_empty() => NO_MAP.to_owned(),
@@ -144,7 +93,7 @@ fn answer_from(call: &McpCall, map: &Index) -> String {
 }
 
 /// The bytes an answer may hold when `asked` for.
-fn budget(asked: Option<u32>) -> usize {
+pub(crate) fn budget(asked: Option<u32>) -> usize {
     let bytes = asked.map_or(BUDGET, |asked| asked.clamp(LEAST, MOST));
     usize::try_from(bytes).unwrap_or(usize::MAX)
 }
@@ -153,7 +102,6 @@ fn budget(asked: Option<u32>) -> usize {
 mod tests {
     use weacon_codemap::{SourceFile, index};
     use weacon_protocol::{FlowArgs, MapArgs, SymbolArgs};
-    use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
 
@@ -219,19 +167,6 @@ mod tests {
             close,
             "No item S::go.\nItems with that name:\n- fn a_b::m::S::go  src/m.rs:2\n"
         );
-    }
-
-    #[test]
-    fn a_folder_without_crates_has_no_map_and_one_that_cant_be_read_says_so_once() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.join("notes.md"), "# Notes\n").unwrap();
-        let (log, records) = recording_logger();
-
-        assert_eq!(answer_or_none(&map(None), &dir, &log), NO_MAP);
-        assert_eq!(answer_or_none(&map(None), &dir.join("gone"), &log), NO_MAP);
-        let gone = answer(&map(None), &dir.join("gone")).unwrap_err();
-        assert_eq!(gone.code().as_str(), "map.read_failed");
-        assert_eq!(weacon_testing::messages(&records), ["mcp map failed"]);
     }
 
     #[test]

@@ -1,20 +1,20 @@
 //! The code map of each repository a workspace registered: a base layer at the main worktree's
 //! commit, and a layer per worktree with what it changed, kept in the core's database. It
 //! never leaves this machine.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the daemon and the MCP tools start reading the map in their own changes"
-    )
-)]
 
 #[cfg(test)]
 mod fake;
 mod repo;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the watcher and the search tool use it in their own changes"
+    )
+)]
 mod watch;
 
-pub(crate) use repo::LARGEST;
+pub(crate) use repo::{LARGEST, folder_index, main_worktree};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -28,6 +28,13 @@ use crate::app::blocking;
 use crate::db::{BASE, Layer, Map, Stored};
 
 /// The most hits a search returns before its answer is cut to its budget.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the watcher and the search tool use it in their own changes"
+    )
+)]
 const SEARCHED: u32 = 50;
 
 /// What the code map reads from a repository. Every call may block.
@@ -234,6 +241,13 @@ impl<S: Source> RepoMap<S> {
         Ok(facts)
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the watcher and the search tool use it in their own changes"
+        )
+    )]
     /// What search finds for `words` in the worktree at `path`, or in the base without one,
     /// best first, within `budget` bytes.
     pub(crate) async fn search(

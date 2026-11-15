@@ -1,12 +1,5 @@
 //! The core's `SQLite` database. Only this module uses the driver, and everything stored for a
 //! workspace is reached through its [`Workspace`] handle.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the daemon and the MCP tools start reading the map in their own changes"
-    )
-)]
 
 mod map;
 mod schema;

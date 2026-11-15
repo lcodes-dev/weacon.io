@@ -19,6 +19,7 @@ pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
 
 use crate::integrations::Plugin;
+use crate::mcp::Maps;
 use crate::mcp::grants::Granted;
 use crate::mcp::{self, Mcp};
 use crate::platform;
@@ -36,6 +37,8 @@ pub(crate) struct Places {
     pub(crate) mcp: Option<Mcp>,
     /// The Claude Code plugin each run is given.
     pub(crate) plugin: Option<Plugin>,
+    /// Where the MCP's answers come from; with none, it answers that there's no map.
+    pub(crate) maps: Option<Maps>,
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
@@ -192,12 +195,13 @@ mod tests {
         }
         let app = weacon_appkit::build(&VERSION);
         let (log, _records) = recording_logger();
-        let (mcp, _server) = mcp::start(&app, &log).unwrap();
+        let (mcp, _server) = mcp::start(&app, &log, None).unwrap();
         let places = |bin: &str| Places {
             path: Some(dir.join(bin).into_os_string()),
             work_root: Some(dir.join("Weacon")),
             mcp: Some(mcp.clone()),
             plugin: None,
+            maps: None,
         };
         let run_as = RunAs {
             key: key(),
@@ -234,6 +238,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: None,
             plugin: Some(plugin.unwrap()),
+            maps: None,
         };
         let roots = Workspaces::new(&dir.join("state"), places.path.clone());
         let run_as = RunAs {
@@ -269,6 +274,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: None,
             plugin: None,
+            maps: None,
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());
