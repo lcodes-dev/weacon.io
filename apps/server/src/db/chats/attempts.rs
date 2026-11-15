@@ -63,10 +63,12 @@ impl Workspace {
     }
 
     /// Gives up `attempt` of `request`, which never went out: unless another began since, the
-    /// one before it is current again, so its answers still count.
+    /// one before it is current again, so its answers still count, a refusal heard meanwhile
+    /// among them.
     pub(crate) async fn abandon(&self, request: &RequestId, attempt: Attempt) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chat_requests SET attempt = attempt - 1, attempt_at = 0
+            "UPDATE chat_requests SET attempt = attempt - 1, attempt_at = 0,
+                 refused = CASE WHEN refused_attempt = attempt - 1 THEN 1 ELSE refused END
              WHERE workspace_id = ? AND request_id = ? AND attempt = ?",
         )
         .bind(self.id.as_str())
@@ -79,23 +81,27 @@ impl Workspace {
     }
 
     /// Marks `request` refused for now by its core, when `attempt` is still its current one;
-    /// whether it was.
+    /// whether it was. A refusal of an earlier attempt is kept, in case the one after it never
+    /// goes out.
     pub(crate) async fn mark_refused(
         &self,
         request: &RequestId,
         attempt: i64,
     ) -> Result<bool, Fault> {
-        let marked = sqlx::query(
-            "UPDATE chat_requests SET refused = 1, refusals = refusals + 1
-             WHERE workspace_id = ? AND request_id = ? AND open = 1 AND attempt = ?",
+        let marked = sqlx::query_scalar(
+            "UPDATE chat_requests SET refused_attempt = MAX(refused_attempt, ?1),
+                 refused = CASE WHEN attempt = ?1 THEN 1 ELSE refused END,
+                 refusals = refusals + (attempt = ?1)
+             WHERE workspace_id = ?2 AND request_id = ?3 AND open = 1 AND attempt >= ?1
+             RETURNING attempt = ?1",
         )
+        .bind(attempt)
         .bind(self.id.as_str())
         .bind(request.as_str())
-        .bind(attempt)
-        .execute(&self.db.writer)
+        .fetch_optional(&self.db.writer)
         .await
         .map_err(failed)?;
-        Ok(marked.rows_affected() > 0)
+        Ok(marked == Some(true))
     }
 
     /// Takes `request` out of the ledger after its `attempt` failed to send, unless it was ever

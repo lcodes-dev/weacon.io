@@ -212,6 +212,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_refusal_heard_while_a_later_send_waits_counts_once_that_send_never_goes_out() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let workspace = shared.db.workspace(&id("w1")).await.unwrap();
+        make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        let sent = Sent::default();
+        let machine = id::<MachineId>("mc-1");
+        let request = id::<RequestId>("r-c-1");
+        let first = workspace.begin_attempt(&request, NOW).await.unwrap();
+        sent.sent(&machine, 7, &command("r-c-1", "c-1", "Fix the build"), 1);
+        let second = workspace.begin_attempt(&request, NOW).await.unwrap();
+        let for_now = Message::Error(ErrorBody {
+            code: weacon_protocol::code!("chat.unavailable"),
+            retryable: true,
+        });
+
+        let asked = sent.answered(&machine, 7).unwrap();
+        take(shared, &machine, asked, for_now).await.unwrap();
+        workspace.abandon(&request, second.unwrap()).await.unwrap();
+
+        let open = workspace.open_requests(&id("c-1")).await.unwrap();
+        assert_eq!(first.map(|attempt| attempt.number), Some(1));
+        assert!(open.iter().all(|request| request.refused), "{open:?}");
+        assert!(
+            workspace
+                .refused_before(&id("c-1"), &id("r-2"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn a_final_refusal_ends_its_command_once_and_tells_the_feeds_once() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;

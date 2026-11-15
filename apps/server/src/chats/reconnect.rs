@@ -101,7 +101,7 @@ async fn unserved(shared: &Shared, connected: &Connected) -> Result<usize, Fault
 
 // Sends `request` again over `route` while it is recent; one its core refused for now and too
 // old to send again ends in a failed receipt, and any other is left to its receipts. One being
-// sent meanwhile is left to that send.
+// sent meanwhile is left to that send, and one sent lately isn't ended.
 async fn again(
     shared: &Shared,
     workspace: &Workspace,
@@ -110,15 +110,15 @@ async fn again(
     request: OpenRequest,
 ) -> Result<(), Fault> {
     let now = shared.now();
-    if in_flight(shared, now, request.attempt_at) {
-        return Ok(());
-    }
     if recent(now, request.sent_at) {
+        if in_flight(shared, now, request.attempt_at) {
+            return Ok(());
+        }
         return send_again(shared, workspace, route, request.command)
             .await
             .map(drop);
     }
-    if !request.refused {
+    if !request.refused || recent(now, request.attempt_at) {
         return Ok(());
     }
     let receipt = Receipt {
@@ -142,13 +142,16 @@ async fn first_prompts(shared: &Shared, workspace: &Workspace, route: &Route) ->
             workspace.forget_chat(&chat, 0).await?;
             continue;
         };
-        // Being sent meanwhile: that send makes its chat.
+        // Being sent meanwhile: that send makes its chat. One begun lately may still be going
+        // out, however long ago it was first sent, so it is neither made nor taken back.
         let now = shared.now();
-        if in_flight(shared, now, first.attempt_at) {
-            continue;
-        }
         if recent(now, first.sent_at) {
+            if in_flight(shared, now, first.attempt_at) {
+                continue;
+            }
             send_again(shared, workspace, route, first.command).await?;
+        } else if recent(now, first.attempt_at) {
+            continue;
         } else if !first.sent {
             workspace.forget_chat(&chat, first.attempt).await?;
             continue;
@@ -196,9 +199,9 @@ fn in_flight(shared: &Shared, now: i64, attempt_at: i64) -> bool {
     attempt_at >= now.saturating_sub(waits.saturating_add(1))
 }
 
-// Whether a command sent at `sent_at` was sent within [`RESEND_WITHIN`] of `now`.
-fn recent(now: i64, sent_at: i64) -> bool {
-    sent_at >= now.saturating_sub(RESEND_WITHIN)
+// Whether `at` was within [`RESEND_WITHIN`] of `now`.
+fn recent(now: i64, at: i64) -> bool {
+    at >= now.saturating_sub(RESEND_WITHIN)
 }
 
 #[cfg(test)]
@@ -549,6 +552,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_old_refused_command_sent_again_lately_is_left_to_that_send() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        make(workspace, "c-1", "m1", NOW - 601).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        workspace.mark_refused(&id("r-c-1"), 0).await.unwrap();
+        // A member's retry began a minute ago, and is still on its way to the queue.
+        workspace
+            .begin_attempt(&id("r-c-1"), NOW - 60)
+            .await
+            .unwrap();
+        let _attached = attach(shared, &ada, &["chat.serve"]);
+
+        assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
+
+        assert_eq!(workspace.open_requests(&id("c-1")).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_command_refused_for_now_and_too_old_to_send_again_ends_in_one_failed_receipt() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
@@ -667,8 +691,11 @@ mod tests {
         begin(workspace, "c-1", "m1", NOW - 601).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         let mut attached = attach(shared, &ada, &["chat.serve"]);
-        // A pick-up began sending it just now, and waits for room.
-        workspace.begin_attempt(&id("r-c-1"), NOW).await.unwrap();
+        // A pick-up began sending it a minute ago, and is still on its way to the queue.
+        workspace
+            .begin_attempt(&id("r-c-1"), NOW - 60)
+            .await
+            .unwrap();
 
         assert_eq!(resend_now(shared, &connected(&ada)).await.unwrap(), 0);
 

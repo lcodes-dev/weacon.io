@@ -94,12 +94,14 @@ ALTER TABLE changes_with_chats RENAME TO changes;
 ";
 
 /// Whether each command reached its machine, whether its core last refused it for now, how
-/// often it did, and its current send: the attempt's number and when it began.
+/// often it did, the latest attempt it refused, and its current send: the attempt's number and
+/// when it began.
 /// Those stored before were sent, but for the first prompts of chats not made yet.
 pub(crate) const REQUESTS_SENT: &str = "
 ALTER TABLE chat_requests ADD COLUMN sent INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE chat_requests ADD COLUMN refused INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE chat_requests ADD COLUMN refusals INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE chat_requests ADD COLUMN refused_attempt INTEGER NOT NULL DEFAULT -1;
 ALTER TABLE chat_requests ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE chat_requests ADD COLUMN attempt_at INTEGER NOT NULL DEFAULT 0;
 UPDATE chat_requests SET sent = 1 WHERE EXISTS (SELECT 1 FROM changes AS h
