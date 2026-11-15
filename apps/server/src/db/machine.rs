@@ -5,11 +5,13 @@ use sqlx::SqliteConnection;
 use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AccountId, App, Capability, MachineId, MachineKey, MachineName, MachineOs, MachineSummary,
-    PairPending, PairingId, code,
+    AccountId, MachineId, MachineKey, MachineName, MachineOs, MachineSummary, PairPending,
+    PairingId, code,
 };
 
 use super::{Db, failed, stored, unreadable};
+
+mod list;
 
 /// How many pairings may be under way at once, server-wide, as anyone may start one.
 const MAX_UNDER_WAY: i64 = 1000;
@@ -54,19 +56,6 @@ pub(crate) enum Claim {
         owner: AccountId,
     },
 }
-
-/// A machine's id, name, system, key and when it was paired, as stored.
-type Row = (
-    String,
-    String,
-    String,
-    String,
-    i64,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
 
 /// A pairing's secret hash, and once it is confirmed its account, machine, when it was
 /// confirmed and whether it was claimed, as stored.
@@ -183,7 +172,7 @@ impl Db {
         .await
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
-        stored_machine((machine.as_str().to_owned(), name, os, key, now)).map(Some)
+        paired(machine.as_str().to_owned(), name, &os, key, now).map(Some)
     }
 
     /// A core's claim. Once the person has confirmed, the first claim pairs the machine with
@@ -227,52 +216,6 @@ impl Db {
             machine: stored(machine)?,
             owner: stored(owner)?,
         })
-    }
-
-    /// The machines paired with `account`, oldest first, each with what of `offered`, the
-    /// server's offers to cores, its core didn't offer back when it last connected.
-    pub(crate) async fn machines_of(
-        &self,
-        account: &AccountId,
-        offered: &[Capability],
-    ) -> Result<Vec<MachineSummary>, Fault> {
-        sqlx::query_as::<_, Row>(
-            "SELECT machine_id, name, os, machine_key, paired_at,
-                    core_name, core_version, core_commit, core_offers FROM machines
-             WHERE account_id = ? ORDER BY paired_at, machine_id",
-        )
-        .bind(account.as_str())
-        .fetch_all(&self.readers)
-        .await
-        .map_err(failed)?
-        .into_iter()
-        .map(|row| stored_machine(row, offered))
-        .collect()
-    }
-
-    /// Keeps the build `core` of `machine` and what it `offers`, as it said when it connected.
-    pub(crate) async fn saw_core(
-        &self,
-        machine: &MachineId,
-        core: &App,
-        offers: &[Capability],
-    ) -> Result<(), Fault> {
-        let offers = serde_json::to_string(offers).map_err(|error| {
-            Fault::new(code!("db.unwritable"), "A value can't be stored").because(error)
-        })?;
-        sqlx::query(
-            "UPDATE machines SET core_name = ?, core_version = ?, core_commit = ?, core_offers = ?
-             WHERE machine_id = ?",
-        )
-        .bind(&core.name)
-        .bind(&core.version)
-        .bind(&core.commit)
-        .bind(offers)
-        .bind(machine.as_str())
-        .execute(&self.writer)
-        .await
-        .map_err(failed)
-        .map(drop)
     }
 
     /// The paired machine whose token is hashed as `token_hash`, and its owner.
@@ -358,35 +301,22 @@ async fn add_machine(
     Ok(())
 }
 
-fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fault> {
-    let (id, name, os, key, paired_at, core_name, version, commit, offers) = row;
-    let core = match (core_name, version, commit) {
-        (Some(name), Some(version), Some(commit)) => Some(App {
-            name,
-            version,
-            commit,
-        }),
-        _ => None,
-    };
-    let offers: Vec<Capability> = match offers {
-        Some(offers) => serde_json::from_str(&offers).map_err(|_| unreadable())?,
-        None => Vec::new(),
-    };
-    let missing = match core {
-        Some(_) => (offered.iter())
-            .filter(|wanted| !offers.contains(wanted))
-            .cloned()
-            .collect(),
-        None => Vec::new(),
-    };
+/// A machine as stored, before its core has connected.
+pub(super) fn paired(
+    id: String,
+    name: String,
+    os: &str,
+    key: String,
+    paired_at: i64,
+) -> Result<MachineSummary, Fault> {
     Ok(MachineSummary {
         id: stored(id)?,
         name: stored(name)?,
-        os: stored_os(&os)?,
+        os: stored_os(os)?,
         key: stored(key)?,
         paired_at,
-        core,
-        missing,
+        core: None,
+        missing: Vec::new(),
     })
 }
 
@@ -417,6 +347,7 @@ fn unknown_value() -> Fault {
 
 #[cfg(test)]
 mod tests {
+    use weacon_protocol::{App, Capability};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -521,7 +452,7 @@ mod tests {
             }
         );
         assert_eq!(twice, claimed);
-        let machines = db.machines_of(&ada).await.unwrap();
+        let machines = db.machines_of(&ada, &[]).await.unwrap();
         assert_eq!(
             machines,
             [MachineSummary {
@@ -530,8 +461,44 @@ mod tests {
                 os: MachineOs::Linux,
                 key: key(),
                 paired_at: NOW + 1,
+                core: None,
+                missing: Vec::new(),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn a_machine_shows_its_cores_build_and_what_it_lacks_of_the_servers_offers() {
+        let Setup { _dir, db, ada, .. } = setup().await;
+        assert!(start(&db, "p1", NOW).await);
+        assert!(confirm(&db, &ada, "p1", "p1").await);
+        claim(&db, "p1", b"secret", NOW + 1).await;
+        let offered = [
+            Capability::new(code!("machine.connect")),
+            Capability::new(code!("machine.settings")),
+        ];
+        let core = App {
+            name: "weacon-core".to_owned(),
+            version: "1.2.3".to_owned(),
+            commit: "abc".to_owned(),
+        };
+
+        let before = db.machines_of(&ada, &offered).await.unwrap();
+        db.saw_core(&id("mc-p1"), &core, &offered[..1])
+            .await
+            .unwrap();
+        let older = db.machines_of(&ada, &offered).await.unwrap();
+        db.saw_core(&id("mc-p1"), &core, &offered).await.unwrap();
+        let current = db.machines_of(&ada, &offered).await.unwrap();
+
+        // Before its core has connected, a machine lacks nothing it could be told of.
+        assert_eq!(
+            (before[0].core.as_ref(), before[0].missing.len()),
+            (None, 0)
+        );
+        assert_eq!(older[0].core.as_ref(), Some(&core));
+        assert_eq!(older[0].missing, offered[1..]);
+        assert_eq!(current[0].missing, []);
     }
 
     #[tokio::test]
@@ -555,7 +522,7 @@ mod tests {
         assert!(start(&db, "p3", NOW + 600).await);
         assert!(start(&db, "p1", NOW + 600).await);
         assert!(start(&db, "p2", NOW + 600).await);
-        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
     }
 
     #[tokio::test]
@@ -575,18 +542,18 @@ mod tests {
         let Setup { _dir, db, ada, bo } = setup().await;
         assert!(start(&db, "p1", NOW).await);
         assert!(confirm(&db, &ada, "p1", "p1").await);
-        let unclaimed = db.machines_of(&ada).await.unwrap();
+        let unclaimed = db.machines_of(&ada, &[]).await.unwrap();
         claim(&db, "p1", b"secret", NOW + 2).await;
         let machine = id("mc-p1");
 
         assert_eq!(unclaimed, []);
         assert!(db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.has_machine(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&bo).await.unwrap(), []);
+        assert_eq!(db.machines_of(&bo, &[]).await.unwrap(), []);
         assert!(!db.unpair(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada).await.unwrap().len(), 1);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap().len(), 1);
         assert!(db.unpair(&ada, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
         assert!(!db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.unpair(&ada, &machine).await.unwrap());
         assert_eq!(claim(&db, "p1", b"secret", NOW + 3).await, Claim::Unknown);

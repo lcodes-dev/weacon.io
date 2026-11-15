@@ -119,7 +119,8 @@ async fn run(
         .await
     {
         // The machines list shows it as it last was; the connection goes on.
-        link.log.warn("core build not kept", &[("err", Field::error(&fault))]);
+        link.log
+            .warn("core build not kept", &[("err", Field::error(&fault))]);
     }
     let connected = Connected {
         machine: link.machine.id.clone(),
@@ -170,11 +171,11 @@ mod tests {
 
     use futures_util::SinkExt;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, Message, Welcome};
+    use weacon_protocol::{AccountId, Message, PROTOCOL, Welcome};
 
     use super::*;
     use crate::test_support::socket::{
-        Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
+        Socket, ends, frame, next, next_envelope, open, pongs, say, say_as, upgrade_status,
     };
     use crate::test_support::{Fixture, PATIENCE, Paired, ask, pair_machine};
 
@@ -193,6 +194,41 @@ mod tests {
             "{welcome:?}"
         );
         (paired, client)
+    }
+
+    // An older core still connects; only one on another protocol is turned away.
+    #[tokio::test]
+    async fn a_core_that_speaks_another_protocol_is_refused() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let mut client = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        say_as(&mut client, PROTOCOL + 1, &["machine.connect"]).await;
+
+        let Message::Error(refused) = next(&mut client).await else {
+            panic!("not refused");
+        };
+        assert_eq!(refused.code.as_str(), "protocol.unsupported");
+        assert!(ends(&mut client).await);
+    }
+
+    #[tokio::test]
+    async fn the_machines_list_shows_a_cores_build_and_what_it_doesnt_offer() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let (paired, mut client) = connected(server.address, &fixture).await;
+        // Answered once the server has let it in, by when its build is kept.
+        assert!(pongs(&mut client).await);
+
+        let (_, list) = ask(server.address, "GET /api/machines", &paired.proof, "").await;
+
+        let machine = &list["machines"][0];
+        let build = weacon_appkit::build(&crate::test_support::VERSION);
+        assert_eq!(machine["core"]["version"], build.version.as_str());
+        assert_eq!(machine["core"]["commit"], build.commit.as_str());
+        assert_eq!(machine["missing"], serde_json::json!(["machine.settings"]));
     }
 
     #[tokio::test]

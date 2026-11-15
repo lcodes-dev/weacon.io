@@ -3,9 +3,9 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AccountId, App, Capability};
 use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
+use crate::{AccountId, App, Capability};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.

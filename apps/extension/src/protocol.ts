@@ -799,8 +799,17 @@ export type MachineSettingsQueryKind = (
  * epoch.
  */
 export type MachineSummary = {
+  /**
+   * The core's build when it last connected; none until it has.
+   */
+  core?: App;
   id: MachineId;
   key: MachineKey;
+  /**
+   * What the server offers cores that this one didn't offer back when it last connected:
+   * it is older than the server supports, and those features don't reach it.
+   */
+  missing?: Array<Capability>;
   name: MachineName;
   os: MachineOs;
   paired_at: number;
