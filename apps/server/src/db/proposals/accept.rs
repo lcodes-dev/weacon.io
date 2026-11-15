@@ -682,6 +682,7 @@ mod tests {
         let anchors = DocAnchors {
             commit: CommitId::try_from("a".repeat(40)).unwrap(),
             pins: vec![DocPin::try_from("sym:a#0123456789abcdef".to_owned()).unwrap()],
+            repo: None,
         };
         let mut linked = revise("d1", 1, "See [a](sym:a).\nTwo\nThree\n");
         if let ProposalChange::DocEdit { content, .. } = &mut linked {

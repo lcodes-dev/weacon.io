@@ -1582,6 +1582,10 @@
           "items": {
             "$ref": "#/$defs/DocPin"
           }
+        },
+        "repo": {
+          "description": "The workspace's repository the pins are of; when absent, any repository's move may\ncheck them.",
+          "$ref": "#/$defs/RepoId"
         }
       },
       "required": [

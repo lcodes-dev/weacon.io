@@ -395,6 +395,27 @@ mod tests {
         }
     }
 
+    /// Content titled `title` whose `pins` are of the repository `site` at commit `b…`.
+    pub(super) fn pinned(title: &str, body: &str, pins: &[&str]) -> DocContent {
+        DocContent {
+            anchors: Some(weacon_protocol::DocAnchors {
+                commit: "b".repeat(40).parse().unwrap(),
+                pins: pins.iter().map(|pin| pin.parse().unwrap()).collect(),
+                repo: Some("site".parse().unwrap()),
+            }),
+            ..content(title, body)
+        }
+    }
+
+    /// An edit of doc p from its first revision.
+    pub(super) fn edit_p(content: DocContent) -> ProposalChange {
+        ProposalChange::DocEdit {
+            doc: id("p"),
+            base: 1,
+            content,
+        }
+    }
+
     /// w1 and w2, with doc d1 and task t1 in w1.
     pub(super) async fn workspaces(dir: &TempDir) -> (Workspace, Workspace) {
         let (one, two) = two_teams(dir).await;
@@ -875,16 +896,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
         let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
-        let anchors = weacon_protocol::DocAnchors {
-            commit: "a".repeat(40).parse().unwrap(),
-            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
-        };
-        let text = weacon_model::DocText::new(
-            weacon_model::Title::try_from("P".to_owned()).unwrap(),
-            "[a](sym:a::go) [b](sym:a::run)\n".to_owned(),
-            Some(anchors),
-        )
-        .unwrap();
+        let went = "sym:a::went#0123456789abcdef";
+        let edit = |body: &str, pins: &[&str]| edit_p(pinned("P", body, pins));
+        let text = doc_text(&pinned("P", "[a](sym:a::go) [b](sym:a::run)\n", &[go, run]));
+        let text = text.unwrap();
         one.add_doc(&Doc::new(id("p"), text), &by("m1"))
             .await
             .unwrap();
@@ -892,13 +907,13 @@ mod tests {
             agent: None,
             ..proposed(proposal, "mc1", change)
         };
+        let agents = edit("[a](sym:a::go)\n[b](sym:a::run)\n", &[go, run]);
+        let own = edit("[a](sym:a::went) [b](sym:a::run)\n", &[went, run]);
 
-        one.propose(&proposed("agent", "mc1", revise("d1", 1, "A\n")))
+        one.propose(&proposed("agent", "mc1", agents))
             .await
             .unwrap();
-        one.propose(&core("own", revise("d1", 1, "B\n")))
-            .await
-            .unwrap();
+        one.propose(&core("own", own)).await.unwrap();
         one.propose(&core("first", stale_of(&[go]))).await.unwrap();
         one.propose(&core("second", stale_of(&[run])))
             .await
@@ -948,6 +963,7 @@ mod tests {
         let anchors = weacon_protocol::DocAnchors {
             commit: "a".repeat(40).parse().unwrap(),
             pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+            repo: None,
         };
         let text = |body: &str| {
             let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
@@ -998,6 +1014,7 @@ mod tests {
         let anchors = weacon_protocol::DocAnchors {
             commit: "a".repeat(40).parse().unwrap(),
             pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+            repo: None,
         };
         let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
         let body = "[a](sym:a::go) [b](sym:a::run)\n".to_owned();

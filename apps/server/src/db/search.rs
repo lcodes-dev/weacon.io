@@ -308,6 +308,7 @@ mod tests {
                 .iter()
                 .map(|anchor| DocPin::try_from(format!("{anchor}#0123456789abcdef")).unwrap())
                 .collect(),
+            repo: None,
         });
         let title = Title::try_from(title.to_owned()).unwrap();
         let text = DocText::new(title, body.to_owned(), anchors).unwrap();

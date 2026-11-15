@@ -288,6 +288,11 @@ UPDATE workspaces SET doc_bytes =
        FROM doc_pins WHERE doc_pins.workspace_id = workspaces.workspace_id);
 ";
 
+/// The repository a revision's pins are of, when they say.
+pub(crate) const DOC_REPOS: &str = "
+ALTER TABLE doc_versions ADD COLUMN repo_id TEXT;
+";
+
 /// Which agent made a version, as its JSON, when its author names one.
 pub(crate) const VERSION_AGENTS: &str = "
 ALTER TABLE task_versions ADD COLUMN agent TEXT;
