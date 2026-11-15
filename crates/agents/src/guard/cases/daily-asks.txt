@@ -1,0 +1,22 @@
+npm install
+python script.py
+node build.js
+sh ./run.sh
+./scripts/check.sh
+docker ps
+curl -s https://example.com
+sed -n '1,20p' notes.md
+sed -i 's/a/b/' notes.md
+awk '{ print $1 }' notes.md
+python3 -c 'print(1)'
+npx tsc --noEmit
+python script.py && node build.js && sh ./run.sh
+terraform plan
+pwsh
+python3 script.py
+rails db:migrate
+npx prisma migrate deploy
+npx prisma generate --reset
+git clone /tmp/repo
+psql --host db -c 'select 1'
+awk -F: '{ print $1 }' notes.md

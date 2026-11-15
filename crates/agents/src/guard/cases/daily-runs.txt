@@ -1,0 +1,66 @@
+cargo test --locked
+cargo build
+cargo clippy --all-targets -- -D warnings
+cargo fmt
+cargo test -p weacon-core guard
+npm test
+npm run build
+npm run lint
+pnpm test
+make
+make test
+go test ./...
+pytest -q
+python -m pytest tests
+ls -la
+ls src
+cat README.md
+cat src/main.rs | head -50
+head -n 20 notes.md
+tail -f log.txt
+wc -l src/*.rs
+grep -rn TODO src
+rg -n "fn main" src
+find . -name '*.rs'
+find . -name '*.o' -delete
+diff a.txt b.txt
+sort notes.md | uniq -c
+jq .name package.json
+pwd
+echo hello
+git status
+git diff
+git diff --stat
+git log --oneline -5
+git add -A
+git commit -m "Fix it"
+git commit -m "$(cat <<'EOF'\nAdd it\nEOF\n)"
+git push -u origin HEAD
+git pull --rebase
+git checkout -b feature
+git switch main
+git stash
+git branch -a
+git fetch origin
+git rev-parse HEAD
+mkdir -p a/b
+touch a/b/c
+cp a/b/c d
+mv d e
+rm -rf target
+rm -f out.txt
+rm -rf target/* ./build/*.o
+echo hi > out.txt
+make 2>&1 | tee build.log
+chmod +x run.sh
+cd src && ls
+cd src && rm -rf generated
+ls ~
+which cargo
+cargo run -- --help
+timeout 60 cargo test
+env RUST_LOG=debug cargo test
+FOO=1 cargo test
+tsc --noEmit
+eslint src
+prettier --write src
