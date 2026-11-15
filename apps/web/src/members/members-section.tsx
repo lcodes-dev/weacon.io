@@ -36,7 +36,7 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
       },
     );
   return (
-    <section aria-label="Members">
+    <section className="members" aria-label="Members">
       <h2>Members</h2>
       {members.loading && <p className="muted">Loading</p>}
       {members.problem !== undefined && <Problem text={members.problem} retry={() => void members.load()} />}
