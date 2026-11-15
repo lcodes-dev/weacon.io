@@ -34,6 +34,20 @@ const TASKS: Code = code!("workspace.tasks");
 const DOCS: Code = code!("workspace.docs");
 /// What the server offers to clients that read chats and ask their agents.
 const CHATS: Code = code!("workspace.chats");
+/// What the feed offers; a client hears of the features it offers too.
+const OFFERED: [Code; 11] = [
+    FEED,
+    TASKS,
+    DOCS,
+    SETTINGS,
+    PROPOSALS,
+    CHATS,
+    MEMBERS,
+    DIFF,
+    WORKTREE,
+    SESSIONS,
+    LOG_FORWARD,
+];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -153,21 +167,7 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [
-        FEED,
-        TASKS,
-        DOCS,
-        SETTINGS,
-        PROPOSALS,
-        CHATS,
-        MEMBERS,
-        DIFF,
-        WORKTREE,
-        SESSIONS,
-        LOG_FORWARD,
-    ]
-    .map(Capability::new)
-    .to_vec();
+    let offered = OFFERED.map(Capability::new).to_vec();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
