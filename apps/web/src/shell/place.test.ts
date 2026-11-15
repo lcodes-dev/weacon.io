@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Place, placeOf, searchOf } from "./place.ts";
+import { type Place, followsHere, placeOf, searchOf } from "./place.ts";
 
 test("the address names a chat, the tasks, the docs or one doc, or the proposals, and back again", () => {
   const places: [Place, string][] = [
@@ -37,4 +37,14 @@ test("a view or id the app doesn't know, or one in the wrong view, is left out",
   assert.deepEqual(placeOf("?workspace=w-1&view=docs&task=t-1"), { view: "docs" });
   assert.equal(searchOf("w-1", { view: "chats", task: "t-1", at: 3 }), "?workspace=w-1&task=t-1");
   assert.deepEqual(placeOf(""), { view: "chats" });
+});
+
+test("only a plain left click on a link is followed in the page", () => {
+  const plain = { button: 0, metaKey: false, ctrlKey: false, shiftKey: false, altKey: false };
+
+  assert.equal(followsHere(plain), true);
+  for (const held of ["metaKey", "ctrlKey", "shiftKey", "altKey"] as const) {
+    assert.equal(followsHere({ ...plain, [held]: true }), false, held);
+  }
+  assert.equal(followsHere({ ...plain, button: 1 }), false);
 });

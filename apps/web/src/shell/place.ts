@@ -33,6 +33,11 @@ export function placeOf(search: string): Place {
   return view === "docs" && doc !== undefined ? { view, doc } : ({ view } as Place);
 }
 
+/** Whether a click on a link is one the page follows itself, rather than one the browser opens elsewhere. */
+export function followsHere(click: { button: number; metaKey: boolean; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }): boolean {
+  return click.button === 0 && !click.metaKey && !click.ctrlKey && !click.shiftKey && !click.altKey;
+}
+
 /** The address query of `place` in `workspace`. */
 export function searchOf(workspace: WorkspaceId | undefined, place: Place): string {
   if (workspace === undefined) {

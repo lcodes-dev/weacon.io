@@ -53,6 +53,12 @@ export function ChatScreen({
   const changes = useChanges(link, chatRef, live, shown === "changes");
   const worktree = useWorktree(link, chatRef, live, mine, shown === "changes");
   const { chat, state } = reading.sync;
+  // A message named while the changes show brings the transcript back.
+  useEffect(() => {
+    if (at !== undefined) {
+      setShown("run");
+    }
+  }, [at]);
   const landed = landing(chat, at);
   const subscribed = state.kind === "live";
   // Each window that comes back moves `first` on, and asks for the next until the message is in.

@@ -117,7 +117,12 @@ function useLanding(content: RefObject<HTMLDivElement | null>, landed: string | 
   const shown = useRef<string>(undefined);
   // After `useKeptPlace`'s, so the landing has the last word on where the view is.
   useLayoutEffect(() => {
-    if (landed === undefined || shown.current === landed) {
+    if (landed === undefined) {
+      // Gone from the address, so the same line lands again when it is next named.
+      shown.current = undefined;
+      return;
+    }
+    if (shown.current === landed) {
       return;
     }
     const row = content.current?.querySelector(`[data-key="${CSS.escape(landed)}"]`);

@@ -81,9 +81,15 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await page.locator(".tasks li.shown").getByText("Turn the compost").waitFor();
   assert.equal(new URL(page.url()).searchParams.get("task"), prompt.action.task?.id);
 
-  // A chat started from New chat has no task until one is picked by its title.
+  // A chat started from New chat has no task until one is picked by its title; tasks that
+  // couldn't be fetched say so there, and come with Try again.
+  let failing = true;
+  await page.route("**/api/workspaces/*/tasks", (route) => (failing ? route.fulfill({ status: 500 }) : route.fallback()));
   await page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "Chats" }).click();
   await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "New chat" }).click();
+  await form.getByLabel("Repository").waitFor();
+  failing = false;
+  await page.locator("section").getByRole("button", { name: "Try again" }).click();
   await form.getByRole("searchbox", { name: "Task (optional)" }).fill("COMPOST");
   await form.getByRole("list", { name: "Matching tasks" }).getByRole("button", { name: "Turn the compost" }).click();
   await form.getByText("Task: Turn the compost").waitFor();
@@ -140,4 +146,19 @@ test("a message found with ⌘K opens its chat at it, however far back it is", {
     return scroller !== undefined && box.top >= scroller.top && box.bottom <= scroller.bottom;
   });
   assert.equal(inView, true);
+
+  // Back at the latest lines without the message named, the same hit lands on it again.
+  await page.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: /Garden notes/ }).click();
+  await page.waitForURL((url) => !url.searchParams.has("at"));
+  await page.locator(".transcript").evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await page.keyboard.press("ControlOrMeta+k");
+  await search.getByRole("combobox", { name: "Search" }).fill("compost");
+  await search.getByRole("option", { name: /Garden notes/ }).click();
+  await landed.waitFor();
+  await page.waitForFunction(() => {
+    const row = document.querySelector(".row.landed");
+    const scroller = row?.closest(".transcript")?.getBoundingClientRect();
+    const box = row?.getBoundingClientRect();
+    return scroller !== undefined && box !== undefined && box.top >= scroller.top && box.bottom <= scroller.bottom;
+  });
 });

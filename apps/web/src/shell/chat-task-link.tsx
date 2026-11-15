@@ -1,5 +1,5 @@
 import type { TaskId, TaskRecord, WorkspaceId } from "../protocol.ts";
-import { type Place, searchOf } from "./place.ts";
+import { type Place, followsHere, searchOf } from "./place.ts";
 
 /** The task a chat was made for, by its title as it reads now, linked to it among the tasks; nothing until it is listed. */
 export function ChatTaskLink({ workspace, task, tasks, go }: { workspace: WorkspaceId; task: TaskId; tasks: readonly TaskRecord[] | undefined; go(place: Place): void }) {
@@ -14,8 +14,10 @@ export function ChatTaskLink({ workspace, task, tasks, go }: { workspace: Worksp
       <a
         href={searchOf(workspace, place)}
         onClick={(event) => {
-          event.preventDefault();
-          go(place);
+          if (followsHere(event)) {
+            event.preventDefault();
+            go(place);
+          }
         }}
       >
         {found.title}

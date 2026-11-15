@@ -313,7 +313,8 @@ function WorkspaceChats({
   const machines = useLoaded(() => api.machines(), api);
   // Until the feed is welcomed, whether it takes commands isn't known yet.
   const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
-  const tasks = useTasks(api, workspace.id, socket, tasksServed).value?.tasks;
+  const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);
+  const tasks = loadedTasks.value?.tasks;
   // New chat for a task opens with it; going to a chat, however, leaves the new one.
   const [starting, setStarting] = useState(place.task !== undefined);
   useEffect(() => setStarting(place.chat === undefined && place.task !== undefined), [place.chat, place.task]);
@@ -352,6 +353,7 @@ function WorkspaceChats({
       </div>
       <section>
         <Heading title={newChat !== undefined ? "New chat" : (open?.title ?? workspace.name)} status={status} />
+        {newChat !== undefined && tasks === undefined && loadedTasks.problem !== undefined && <Problem text={loadedTasks.problem} retry={() => void loadedTasks.load()} />}
         {newChat !== undefined ? (
           <NewChat
             key={place.task}
