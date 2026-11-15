@@ -91,7 +91,10 @@ impl ChatRuns {
     }
 
     fn said(&mut self, run: &RunId, event: &RunEvent, seq: u64) {
+        let another = self.run.as_ref().is_some_and(|latest| latest.run != *run);
         match event {
+            // Another run than the latest can't be answered; the engine never logs one asking.
+            RunEvent::PermissionAsked { .. } if another => {}
             RunEvent::PermissionAsked { prompt, .. } => self.waiting.push(Waiting {
                 run: run.clone(),
                 prompt: *prompt,
@@ -261,6 +264,13 @@ mod tests {
         }
         let still = log(vec![asks("run-1", 1), status("run-1", RunState::Running)]);
         assert_eq!(ChatRuns::fold(&still).waiting_seqs(), [1]);
+    }
+
+    #[test]
+    fn a_prompt_asked_by_another_run_than_the_latest_never_waits() {
+        let entries = log(vec![status("run-2", RunState::Running), asks("run-1", 1)]);
+
+        assert!(ChatRuns::fold(&entries).waiting_seqs().is_empty());
     }
 
     #[test]
