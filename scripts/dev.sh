@@ -7,6 +7,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/tools.sh
+. scripts/tools.sh
+use_mise
 
 log() {
   printf '==> %s\n' "$*" >&2
@@ -49,6 +52,8 @@ esac
 if [ ! -e "$data/weacon.db" ] && [ -z "$email" ]; then
   die "the first run makes your account: scripts/dev.sh you@example.com"
 fi
+[ apps/web/node_modules/.package-lock.json -nt apps/web/package-lock.json ] \
+  || die "the web app's packages are missing or older than its package-lock.json; run scripts/setup.sh"
 mkdir -p "$data"
 
 log "Building the web app, the server, the core and the TLS front"
