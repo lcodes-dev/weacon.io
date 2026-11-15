@@ -40,7 +40,7 @@ test("an owner invites someone, who signs in and joins, then is removed and leav
   // The server lets nobody sign up, but the invitation lets bo in.
   const bo = await another(served, "bo@example.com");
   const offer = bo.getByRole("list", { name: "Invitations" }).getByRole("listitem");
-  await offer.getByText("ada invited you").waitFor();
+  await offer.getByText("Crew").waitFor();
   await offer.getByRole("button", { name: "Accept" }).click();
   await bo.getByRole("heading", { name: "Crew" }).waitFor();
   await bo.getByRole("button", { name: "Workspace: Crew" }).click();

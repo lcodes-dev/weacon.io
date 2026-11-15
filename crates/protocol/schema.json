@@ -1900,7 +1900,7 @@
       ]
     },
     "Invitation": {
-      "description": "A live invitation as the workspace's owner sees it: the member it makes, and when it ends, in\nseconds since the Unix epoch.",
+      "description": "A live invitation as the workspace's owner sees it: its address, and when it ends, in seconds\nsince the Unix epoch.",
       "type": "object",
       "properties": {
         "email": {
@@ -1909,27 +1909,20 @@
         "expires_at": {
           "type": "integer",
           "format": "int64"
-        },
-        "member": {
-          "$ref": "#/$defs/MemberId"
         }
       },
       "required": [
-        "member",
         "email",
         "expires_at"
       ]
     },
     "InvitationOffer": {
-      "description": "A live invitation as the person it is addressed to sees it once signed in: the workspace, and\nwhat its owner is called there. They take it up with `POST /api/workspaces/{workspace}/accept`.",
+      "description": "A live invitation as the person it is addressed to sees it once signed in, which they take up\nwith `POST /api/workspaces/{workspace}/accept`.",
       "type": "object",
       "properties": {
         "expires_at": {
           "type": "integer",
           "format": "int64"
-        },
-        "invited_by": {
-          "type": "string"
         },
         "name": {
           "type": "string"
@@ -1941,7 +1934,6 @@
       "required": [
         "workspace",
         "name",
-        "invited_by",
         "expires_at"
       ]
     },
@@ -2404,20 +2396,20 @@
           ]
         },
         {
-          "description": "Ends a live invitation; only the owner may.",
+          "description": "Ends the live invitation to `email`; only the owner may.",
           "type": "object",
           "properties": {
+            "email": {
+              "type": "string"
+            },
             "kind": {
               "type": "string",
               "const": "revoke"
-            },
-            "member": {
-              "$ref": "#/$defs/MemberId"
             }
           },
           "required": [
             "kind",
-            "member"
+            "email"
           ]
         },
         {
@@ -4962,7 +4954,7 @@
           ]
         },
         {
-          "description": "Someone was invited, joined, left or was removed, or an invitation ended. Only for clients that have the capability `workspace.team`, which read the members\nagain.",
+          "description": "Someone was invited, joined, left or was removed, or an invitation ended. Only for\nclients that have the capability `workspace.team`, which read the members again.",
           "type": "object",
           "properties": {
             "kind": {

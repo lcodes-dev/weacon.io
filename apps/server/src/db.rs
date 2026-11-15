@@ -37,7 +37,7 @@ pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
 pub(crate) use proposals::Proposed;
 pub(crate) use sign_in::{Attempt, NewChallenge};
-pub(crate) use team::{InvitationRow, NewInvitation};
+pub(crate) use team::InvitationRow;
 pub(crate) use workspace::{MemberRow, Workspace};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

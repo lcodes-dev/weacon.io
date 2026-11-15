@@ -5,108 +5,68 @@ use weacon_observability::Fault;
 use weacon_protocol::{MemberId, WorkspaceRole, code};
 
 use super::changes::Versioned;
-use super::{Workspace, failed, stored, unreadable};
+use super::workspace::stored_role;
+use super::{Workspace, failed, unreadable};
 use crate::email::Email;
 
 mod offers;
 
-pub(super) const OWNER: &str = "owner";
-const MEMBER: &str = "member";
 /// How long an invitation lasts, in seconds.
 pub(crate) const INVITATION_LIFETIME: i64 = 7 * 24 * 60 * 60;
-
-/// An invitation to make: `member` is the id it gets if its address has never been in the
-/// workspace. Times are seconds since the Unix epoch.
-pub(crate) struct NewInvitation<'a> {
-    pub(crate) member: &'a MemberId,
-    pub(crate) by: &'a MemberId,
-    pub(crate) email: &'a Email,
-    pub(crate) now: i64,
-}
 
 /// A live invitation, as the workspace's owner sees it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct InvitationRow {
-    pub(crate) member: MemberId,
     pub(crate) email: Email,
     pub(crate) expires_at: i64,
 }
 
-pub(super) fn stored_role(name: &str) -> Result<WorkspaceRole, Fault> {
-    match name {
-        OWNER => Ok(WorkspaceRole::Owner),
-        MEMBER => Ok(WorkspaceRole::Member),
-        // This server writes every role it stores, so another is damage, not news.
-        _ => Err(unreadable()),
-    }
-}
-
 impl Workspace {
-    /// Invites `new.email`, if `new.by` is the owner and the address is neither a member nor
+    /// Invites `email` at `now`, if `by` is the owner and the address is neither a member nor
     /// invited already.
-    pub(crate) async fn invite(&self, new: &NewInvitation<'_>) -> Result<(), Fault> {
+    pub(crate) async fn invite(&self, by: &MemberId, email: &Email, now: i64) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        self.owner_only(&mut transaction, new.by).await?;
-        let found = sqlx::query_as::<_, (String, Option<String>, Option<i64>)>(
-            "SELECT m.member_id, m.account_id, i.expires_at FROM members AS m
-             LEFT JOIN invitations AS i USING (workspace_id, member_id)
-             WHERE m.workspace_id = ? AND m.email = ?",
+        self.owner_only(&mut transaction, by).await?;
+        let member = sqlx::query(
+            "SELECT 1 FROM members WHERE workspace_id = ? AND email = ? AND account_id IS NOT NULL",
         )
         .bind(self.id.as_str())
-        .bind(new.email.as_str())
+        .bind(email.as_str())
         .fetch_optional(&mut *transaction)
         .await
         .map_err(failed)?;
-        let member = match found {
-            None => new.member.clone(),
-            Some((_, Some(_), _)) => return Err(member_exists()),
-            Some((_, None, Some(ends))) if ends > new.now => return Err(invitation_exists()),
-            Some((member, None, _)) => stored(member)?,
-        };
-        sqlx::query(
-            "INSERT INTO members (workspace_id, member_id, email, role, joined)
-             VALUES (?, ?, ?, ?, 0) ON CONFLICT (workspace_id, member_id) DO NOTHING",
+        if member.is_some() {
+            return Err(member_exists());
+        }
+        let invited = sqlx::query(
+            "INSERT INTO invitations (workspace_id, email, expires_at) VALUES (?1, ?2, ?3 + ?4)
+             ON CONFLICT (workspace_id, email) DO UPDATE SET expires_at = excluded.expires_at
+                 WHERE expires_at <= ?3",
         )
         .bind(self.id.as_str())
-        .bind(member.as_str())
-        .bind(new.email.as_str())
-        .bind(MEMBER)
+        .bind(email.as_str())
+        .bind(now)
+        .bind(INVITATION_LIFETIME)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        sqlx::query(
-            "INSERT INTO invitations (workspace_id, member_id, invited_by, expires_at)
-             VALUES (?, ?, ?, ?)
-             ON CONFLICT (workspace_id, member_id) DO UPDATE
-                 SET invited_by = excluded.invited_by, expires_at = excluded.expires_at",
-        )
-        .bind(self.id.as_str())
-        .bind(member.as_str())
-        .bind(new.by.as_str())
-        .bind(new.now.saturating_add(INVITATION_LIFETIME))
-        .execute(&mut *transaction)
-        .await
-        .map_err(failed)?;
-        self.record_change(&mut transaction, Versioned::Members, new.by)
+        if invited.rows_affected() == 0 {
+            return Err(invitation_exists());
+        }
+        self.record_change(&mut transaction, Versioned::Members, by)
             .await?;
         transaction.commit().await.map_err(failed)
     }
 
-    /// Ends `member`'s live invitation, if `by` is the owner.
-    pub(crate) async fn revoke(
-        &self,
-        by: &MemberId,
-        member: &MemberId,
-        now: i64,
-    ) -> Result<(), Fault> {
+    /// Ends the live invitation to `email`, if `by` is the owner.
+    pub(crate) async fn revoke(&self, by: &MemberId, email: &Email, now: i64) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         self.owner_only(&mut transaction, by).await?;
         let ended = sqlx::query(
-            "UPDATE invitations SET expires_at = 0
-             WHERE workspace_id = ? AND member_id = ? AND expires_at > ?",
+            "DELETE FROM invitations WHERE workspace_id = ? AND email = ? AND expires_at > ?",
         )
         .bind(self.id.as_str())
-        .bind(member.as_str())
+        .bind(email.as_str())
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -148,10 +108,9 @@ impl Workspace {
 
     /// The live invitations, soonest to end first.
     pub(crate) async fn invitations(&self, now: i64) -> Result<Vec<InvitationRow>, Fault> {
-        sqlx::query_as::<_, (String, String, i64)>(
-            "SELECT m.member_id, m.email, i.expires_at
-             FROM invitations AS i JOIN members AS m USING (workspace_id, member_id)
-             WHERE i.workspace_id = ? AND i.expires_at > ? ORDER BY i.expires_at, m.rowid",
+        sqlx::query_as::<_, (String, i64)>(
+            "SELECT email, expires_at FROM invitations
+             WHERE workspace_id = ? AND expires_at > ? ORDER BY expires_at, email",
         )
         .bind(self.id.as_str())
         .bind(now)
@@ -159,9 +118,8 @@ impl Workspace {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|(member, email, expires_at)| {
+        .map(|(email, expires_at)| {
             Ok(InvitationRow {
-                member: stored(member)?,
                 email: Email::parse(&email).map_err(|_| unreadable())?,
                 expires_at,
             })
@@ -270,17 +228,8 @@ mod tests {
         (db, w1)
     }
 
-    // Invites `to` into `workspace` by `by` at `now`, as the new member `i-<name>`.
     async fn invite(workspace: &Workspace, by: &str, to: &str, now: i64) -> Result<(), Fault> {
-        let name = to.split('@').next().unwrap();
-        let (member, by, to) = (member_id(&format!("i-{name}")), member_id(by), email(to));
-        let new = NewInvitation {
-            member: &member,
-            by: &by,
-            email: &to,
-            now,
-        };
-        workspace.invite(&new).await
+        workspace.invite(&member_id(by), &email(to), now).await
     }
 
     async fn changes(workspace: &Workspace) -> usize {
@@ -293,10 +242,8 @@ mod tests {
             .count()
     }
 
-    fn listed(rows: &[InvitationRow]) -> Vec<(&str, &str)> {
-        rows.iter()
-            .map(|row| (row.member.as_str(), row.email.as_str()))
-            .collect()
+    fn listed(rows: &[InvitationRow]) -> Vec<&str> {
+        rows.iter().map(|row| row.email.as_str()).collect()
     }
 
     #[tokio::test]
@@ -313,15 +260,12 @@ mod tests {
         assert_eq!(code(&by_member), "member.not_allowed");
         assert_eq!(code(&not_here), "member.not_allowed");
         let live = w1.invitations(NOW).await.unwrap();
-        assert_eq!(
-            listed(&live),
-            [("i-cy", "cy@example.com"), ("i-di", "di@example.com")]
-        );
+        assert_eq!(listed(&live), ["cy@example.com", "di@example.com"]);
         assert_eq!(live[0].expires_at, NOW + INVITATION_LIFETIME);
         assert!(w2.invitations(NOW).await.unwrap().is_empty());
         let ended = NOW + 1 + INVITATION_LIFETIME;
         assert!(w1.invitations(ended).await.unwrap().is_empty());
-        // No invitation is a member, past or present.
+        // An invitation is no member, past or present.
         let members: Vec<_> = w1.members().await.unwrap();
         let members: Vec<_> = members.into_iter().map(|row| row.id).collect();
         assert_eq!(members, [member_id("o1"), member_id("m2")]);
@@ -332,7 +276,7 @@ mod tests {
     async fn an_address_has_one_live_invitation_and_a_member_none() {
         let dir = TempDir::new().unwrap();
         let (_db, w1) = team(&dir).await;
-        let (o1, cy) = (member_id("o1"), member_id("i-cy"));
+        let (o1, cy) = (member_id("o1"), email("cy@example.com"));
 
         let bo = invite(&w1, "o1", "bo@example.com", NOW).await.unwrap_err();
         invite(&w1, "o1", "cy@example.com", NOW).await.unwrap();
@@ -348,9 +292,8 @@ mod tests {
         assert_eq!(code(&again), "invitation.exists");
         assert_eq!(code(&by_member), "member.not_allowed");
         assert_eq!(code(&revoked), "member.not_found");
-        // Asked again, the address keeps its member.
         let live = w1.invitations(NOW + 3).await.unwrap();
-        assert_eq!(listed(&live), [("i-cy", "cy@example.com")]);
+        assert_eq!(listed(&live), ["cy@example.com"]);
         assert_eq!(live[0].expires_at, NOW + 3 + INVITATION_LIFETIME);
     }
 
@@ -421,8 +364,8 @@ mod tests {
 
     #[test]
     fn every_role_this_server_writes_reads_back_and_no_other() {
-        assert_eq!(stored_role(OWNER).unwrap(), WorkspaceRole::Owner);
-        assert_eq!(stored_role(MEMBER).unwrap(), WorkspaceRole::Member);
+        assert_eq!(stored_role("owner").unwrap(), WorkspaceRole::Owner);
+        assert_eq!(stored_role("member").unwrap(), WorkspaceRole::Member);
         assert_eq!(code(&stored_role("admin").unwrap_err()), "db.unreadable");
     }
 }

@@ -13,8 +13,6 @@ import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, Rep
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Readiness, Starts, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
 
-
-
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
  * machine has for the workspace, with an agent, by its first prompt. Once the server takes it,
@@ -73,9 +71,7 @@ export function NewChat({
   // Once the machine answers, only the agents signed in there for this workspace are offered.
   const offered = signedIn(settings.value);
   const chosenAgent = offered.find((kind) => kind === agent) ?? offered[0];
-  const signIn = chosenAgent === undefined ? "signed_out" : settings.value?.sign_ins.find((one) => one.agent === chosenAgent)?.state;
-  const agentName = chosenAgent === undefined ? "No agent" : vendorName(chosenAgent);
-  const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: agentName, signIn });
+  const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: chosenAgent !== undefined });
   const send: Send = async (text, request) => {
     if (machine === undefined || chosenRepo === undefined || chosenAgent === undefined) {
       return "refused";
@@ -136,7 +132,6 @@ export function NewChat({
       )}
       {settings.value !== undefined && offered.length < 2 && (
         <p>
-          {offered.length === 0 && "No agent is signed in for this workspace on this machine. "}
           <button type="button" onClick={() => openSettings(machine?.id)}>
             Sign in from Settings
           </button>

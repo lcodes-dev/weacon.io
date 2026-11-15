@@ -16,7 +16,6 @@ export function Invitations({
   joined(workspace: WorkspaceId): void;
 }) {
   const { busy, problem, ask } = useAsk();
-  const drop = (workspace: WorkspaceId, add: WorkspaceSummary) => change((list) => withAnswered(list, workspace, add));
   return (
     <>
       <ul aria-label="Invitations">
@@ -24,10 +23,6 @@ export function Invitations({
           <li key={offer.workspace}>
             <span>
               {offer.name}
-              <span className="muted">
-                {" "}
-                {offer.invited_by === "" ? "Invited" : `${offer.invited_by} invited you`}
-              </span>
             </span>
             <button
               type="button"
@@ -36,7 +31,7 @@ export function Invitations({
                 void ask(
                   () => api.acceptInvitation(offer.workspace),
                   (summary) => {
-                    drop(offer.workspace, summary);
+                    change((list) => withAnswered(list, offer.workspace, summary));
                     joined(summary.id);
                   },
                 )
@@ -53,7 +48,7 @@ export function Invitations({
 }
 
 /** `list` without the invitation to `workspace`, and with `joined`, the workspace it joined. */
-export function withAnswered(list: WorkspaceList | undefined, workspace: WorkspaceId, joined: WorkspaceSummary): WorkspaceList {
+function withAnswered(list: WorkspaceList | undefined, workspace: WorkspaceId, joined: WorkspaceSummary): WorkspaceList {
   const workspaces = list?.workspaces ?? [];
   return {
     workspaces: workspaces.some(({ id }) => id === joined.id) ? workspaces : [...workspaces, joined],

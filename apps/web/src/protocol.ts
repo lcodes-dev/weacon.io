@@ -733,22 +733,20 @@ export type InstallCommand = {
 };
 
 /**
- * A live invitation as the workspace's owner sees it: the member it makes, and when it ends, in
- * seconds since the Unix epoch.
+ * A live invitation as the workspace's owner sees it: its address, and when it ends, in seconds
+ * since the Unix epoch.
  */
 export type Invitation = {
   email: string;
   expires_at: number;
-  member: MemberId;
 };
 
 /**
- * A live invitation as the person it is addressed to sees it once signed in: the workspace, and
- * what its owner is called there. They take it up with `POST /api/workspaces/{workspace}/accept`.
+ * A live invitation as the person it is addressed to sees it once signed in, which they take up
+ * with `POST /api/workspaces/{workspace}/accept`.
  */
 export type InvitationOffer = {
   expires_at: number;
-  invited_by: string;
   name: string;
   workspace: WorkspaceId;
 };
@@ -986,8 +984,8 @@ export type MemberAction = (
     kind: "invite";
   }
   | {
+    email: string;
     kind: "revoke";
-    member: MemberId;
   }
   | {
     kind: "remove";

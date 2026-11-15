@@ -70,24 +70,19 @@ export function Workspaces({
       listing.current = false;
     };
   }, [shown, covered]);
-  const leave = (id: WorkspaceId, text: string) => {
-    loaded.change((before) => ({ ...before, workspaces: (before?.workspaces ?? []).filter((one) => one.id !== id) }));
-    void loaded.load();
+  // A workspace left goes from the list, which then shows in its place, saying why.
+  const leave = (text: string) => {
     setNotice(text);
-    if (id === open) {
-      choose(undefined);
-    }
+    void loaded.load();
   };
-  const latestLeave = useRef(leave);
-  latestLeave.current = leave;
   useEffect(() => {
     if (left !== undefined) {
       const name = list?.find(({ id }) => id === left.workspace)?.name;
-      latestLeave.current(left.workspace, name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
+      leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
     }
   }, [left]);
   const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={choose} />;
-  const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => leave(workspace.id, text) } : undefined;
+  const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: leave } : undefined;
   return (
     <Frame right={who}>
       <div className={page === undefined ? "pane" : "pane away"}>

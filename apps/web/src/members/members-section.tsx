@@ -7,7 +7,6 @@ import { Problem } from "../api/problem.tsx";
 import type { MemberAction, MemberList, MemberSummary } from "../protocol.ts";
 import type { OpenWorkspace } from "../shell/workspaces.tsx";
 import { useOffers } from "../shell/workspace-socket.ts";
-import { roleText } from "./roles.ts";
 
 /** Whether other people are in the workspace `list` lists: more than one member now. */
 export function isTeam(list: MemberList): boolean {
@@ -52,9 +51,9 @@ export function MembersSection({ api, open, members }: { api: Api; open: OpenWor
           <h3>Invitations</h3>
           <ul aria-label="Invitations">
             {list.invitations.map((invitation) => (
-              <li key={invitation.member}>
+              <li key={invitation.email}>
                 {invitation.email} <span className="muted">ends {ending(invitation.expires_at)}</span>{" "}
-                <Confirm label="Revoke" question={`Revoke the invitation to ${invitation.email}?`} busy={changing.busy} confirm={() => act({ kind: "revoke", member: invitation.member })} />
+                <Confirm label="Revoke" question={`Revoke the invitation to ${invitation.email}?`} busy={changing.busy} confirm={() => act({ kind: "revoke", email: invitation.email })} />
               </li>
             ))}
           </ul>
@@ -86,7 +85,7 @@ function Member({
   return (
     <li>
       {name}
-      {me && " (you)"} <span className="muted">{role === undefined ? "Past member" : roleText(role)}</span>{" "}
+      {me && " (you)"} <span className="muted">{role === undefined ? "Past member" : role === "owner" ? "Owner" : "Member"}</span>{" "}
       {removes && role === "member" && <Confirm label="Remove" question={`Remove ${name} from this workspace?`} busy={busy} confirm={() => act({ kind: "remove", member: id })} />}
     </li>
   );

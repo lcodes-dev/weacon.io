@@ -7,21 +7,28 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use weacon_observability::Fault;
-use weacon_protocol::{
-    Code, Invitation, InvitationOffer, MemberAction, MemberCommand, WorkspaceId, code,
-};
+use weacon_protocol::{Code, Invitation, MemberAction, MemberCommand, WorkspaceId, code};
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
-use crate::db::{Account, InvitationRow, NewInvitation};
+use crate::db::InvitationRow;
 use crate::email::Email;
-use crate::http::{Body, error, failure, invalid, not_found};
+use crate::http::{Body, Refusals, Refused, failure, invalid, not_found};
 use crate::shared::Shared;
-use crate::workspaces::name_of;
 
 /// What the server offers to clients that manage who is in a workspace and hear it change.
 pub(crate) const TEAM: Code = code!("workspace.team");
+
+struct Team;
+
+impl Refusals for Team {
+    const REFUSALS: &'static [(Code, StatusCode, bool)] = &[
+        (code!("member.not_allowed"), StatusCode::FORBIDDEN, false),
+        (code!("member.not_found"), StatusCode::NOT_FOUND, false),
+        (code!("member.exists"), StatusCode::CONFLICT, false),
+        (code!("invitation.exists"), StatusCode::CONFLICT, false),
+    ];
+}
 
 pub(crate) fn routes() -> Router<Shared> {
     Router::new().route("/api/workspaces/{workspace}/accept", post(accept))
@@ -34,19 +41,18 @@ pub(crate) async fn command(
     member: Member,
     Body(body): Body<MemberCommand>,
 ) -> Response {
-    let workspace = &member.workspace;
+    let (workspace, by, now) = (&member.workspace, &member.id, shared.now());
     let done = match body.action {
-        MemberAction::Invite { email } => {
-            let Ok(email) = Email::parse(email.expose()) else {
-                return invalid(code!("email.invalid"));
-            };
-            invite(&shared, &member, &email).await
-        }
-        MemberAction::Revoke { member: invited } => {
-            workspace.revoke(&member.id, &invited, shared.now()).await
-        }
-        MemberAction::Remove { member: removed } => workspace.remove(&member.id, &removed).await,
-        MemberAction::Leave => workspace.leave(&member.id).await,
+        MemberAction::Invite { email } => match Email::parse(email.expose()) {
+            Ok(email) => workspace.invite(by, &email, now).await,
+            Err(_) => return invalid(code!("email.invalid")),
+        },
+        MemberAction::Revoke { email } => match Email::parse(email.expose()) {
+            Ok(email) => workspace.revoke(by, &email, now).await,
+            Err(_) => return invalid(code!("email.invalid")),
+        },
+        MemberAction::Remove { member: removed } => workspace.remove(by, &removed).await,
+        MemberAction::Leave => workspace.leave(by).await,
         MemberAction::Newer => return invalid(code!("request.invalid")),
     };
     match done {
@@ -54,18 +60,8 @@ pub(crate) async fn command(
             shared.wake_feeds(workspace.id());
             StatusCode::NO_CONTENT.into_response()
         }
-        Err(fault) => refused(fault),
+        Err(fault) => Refused::<Team>::from(fault).into_response(),
     }
-}
-
-async fn invite(shared: &Shared, member: &Member, email: &Email) -> Result<(), Fault> {
-    let new = NewInvitation {
-        member: &fresh(&new_id)?,
-        by: &member.id,
-        email,
-        now: shared.now(),
-    };
-    member.workspace.invite(&new).await
 }
 
 /// `POST /api/workspaces/{workspace}/accept`: takes up the invitation to the signed-in account's
@@ -75,8 +71,12 @@ pub(crate) async fn accept(
     session: Session,
     Path(workspace): Path<WorkspaceId>,
 ) -> Response {
-    let account = shared.db.account(session.account);
-    match account.accept(&workspace, shared.now()).await {
+    let accepted = async {
+        let member = fresh(&new_id)?;
+        let account = shared.db.account(session.account);
+        account.accept(&workspace, &member, shared.now()).await
+    };
+    match accepted.await {
         Ok(Some(summary)) => {
             shared.wake_feeds(&workspace);
             Json(summary).into_response()
@@ -86,51 +86,12 @@ pub(crate) async fn accept(
     }
 }
 
-/// The invitations `account` may take up, each with what its maker is called in its workspace.
-pub(crate) async fn offers(
-    shared: &Shared,
-    account: &Account,
-) -> Result<Vec<InvitationOffer>, Fault> {
-    let mut offers = Vec::new();
-    for offer in account.invitations(shared.now()).await? {
-        let rows = shared
-            .db
-            .workspace(&offer.workspace)
-            .await?
-            .members()
-            .await?;
-        let invited_by = rows
-            .iter()
-            .find(|row| row.id == offer.invited_by)
-            .map_or("", |row| name_of(&rows, row));
-        offers.push(InvitationOffer {
-            invited_by: invited_by.to_owned(),
-            workspace: offer.workspace,
-            name: offer.name,
-            expires_at: offer.expires_at,
-        });
-    }
-    Ok(offers)
-}
-
-pub(crate) fn invitation(row: InvitationRow) -> Invitation {
-    Invitation {
-        member: row.member,
-        email: row.email.as_str().into(),
-        expires_at: row.expires_at,
-    }
-}
-
-fn refused(fault: Fault) -> Response {
-    let code = fault.code().clone();
-    if code == code!("member.not_allowed") {
-        error(StatusCode::FORBIDDEN, code, false)
-    } else if code == code!("member.not_found") {
-        not_found(code)
-    } else if code == code!("member.exists") || code == code!("invitation.exists") {
-        error(StatusCode::CONFLICT, code, false)
-    } else {
-        failure(fault)
+impl From<InvitationRow> for Invitation {
+    fn from(row: InvitationRow) -> Self {
+        Self {
+            email: row.email.as_str().into(),
+            expires_at: row.expires_at,
+        }
     }
 }
 
@@ -258,7 +219,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_invited_address_sees_the_workspace_and_who_invited_it() {
+    async fn an_invited_address_sees_the_workspace() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
         command(&ada, &crew, invite("bo@example.com")).await;
@@ -272,8 +233,8 @@ mod tests {
         let offers = listed["invitations"].as_array().unwrap();
         assert_eq!(offers.len(), 1);
         let offer = &offers[0];
-        let seen = [&offer["workspace"], &offer["name"], &offer["invited_by"]];
-        assert_eq!(seen, [&json!(crew), &json!("Crew"), &json!("ada")]);
+        let seen = [&offer["workspace"], &offer["name"]];
+        assert_eq!(seen, [&json!(crew), &json!("Crew")]);
     }
 
     #[tokio::test]
@@ -330,9 +291,9 @@ mod tests {
         let bo = fixture
             .sign_in_client(server.address, "bo@example.com")
             .await;
-        let invitation = members(&ada, &crew).await["invitations"][0]["member"].clone();
+        let invitation = members(&ada, &crew).await["invitations"][0]["email"].clone();
 
-        let revoke = json!({ "kind": "revoke", "member": invitation });
+        let revoke = json!({ "kind": "revoke", "email": invitation });
         assert_eq!(
             command(&ada, &crew, revoke).await.0,
             "http/1.1 204 no content"

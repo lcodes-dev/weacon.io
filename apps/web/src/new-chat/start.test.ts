@@ -77,14 +77,12 @@ test("a first prompt that didn't start its chat says why, and the right way on",
 });
 
 test("the box says what the machine picked still needs before a chat can start there", () => {
-  const ready = { live: true, repos: ["api"], agent: "Codex", signIn: "signed_in" as const };
+  const ready = { live: true, repos: ["api"], agent: true };
   assert.equal(startBlocked(ready), undefined);
-  assert.equal(startBlocked({ ...ready, signIn: undefined }), undefined);
   assert.equal(startBlocked({ ...ready, live: false }), "Chats start once the server is connected.");
   assert.equal(startBlocked({ ...ready, repos: undefined }), "Pick a repository to start a chat.");
   assert.equal(startBlocked({ ...ready, repos: [] }), "Add a repository on this machine to start a chat.");
-  assert.equal(startBlocked({ ...ready, signIn: "signed_out" }), "Codex isn't signed in on this machine.");
-  assert.equal(startBlocked({ ...ready, signIn: "not_installed" }), "Codex isn't installed on this machine.");
+  assert.equal(startBlocked({ ...ready, agent: false }), "No agent is signed in for this workspace on this machine.");
 });
 
 test("New chat offers every agent until the machine answers, then only those signed in for the workspace", () => {

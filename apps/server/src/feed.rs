@@ -319,8 +319,6 @@ async fn relay(
 
 /// Sends every change after the last one sent, a page at a time, while its member still is one.
 async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> Result<(), Closed> {
-    // A member just removed ends here, whatever the change that woke the feed.
-    feed.allowed(shared).await?;
     loop {
         let workspace = &feed.member.workspace;
         let page = workspace
@@ -338,11 +336,12 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
                 WorkspaceChange::MembersChanged => feed.hears(TEAM),
                 WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
             };
+            // Before each one, not each page, even one it doesn't hear of: a member removed
+            // meanwhile gets nothing more.
+            feed.allowed(shared).await?;
             if !wanted {
                 continue;
             }
-            // Before each one, not each page: a member removed meanwhile gets nothing more.
-            feed.allowed(shared).await?;
             reply(socket, shared, 0, Message::Workspace(update)).await?;
         }
         if !more {
@@ -758,9 +757,8 @@ mod tests {
         let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
-        // A page of two changes, m2's and m1's: the session lasts through the check before the
-        // page and the first change's.
-        checks.store(2, Ordering::SeqCst);
+        // A page of two changes, m2's and m1's: the session lasts through the first's check.
+        checks.store(1, Ordering::SeqCst);
         say(&mut client, &["workspace.feed"]).await;
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));

@@ -97,8 +97,8 @@ pub struct MemberList {
 pub enum WorkspaceChange {
     /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
-    /// Someone was invited, joined, left or was removed, or an invitation ended. Only for clients that have the capability `workspace.team`, which read the members
-    /// again.
+    /// Someone was invited, joined, left or was removed, or an invitation ended. Only for
+    /// clients that have the capability `workspace.team`, which read the members again.
     MembersChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.

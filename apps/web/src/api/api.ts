@@ -73,7 +73,7 @@ export class Api {
    * `signedOut` is told when the server answers that the current session is over, and `left` when
    * it refuses a workspace to a session that still is one, as once its member was removed.
    */
-  constructor(fetch: Fetch, signedOut: () => void, left: (workspace: WorkspaceId) => void = () => {}) {
+  constructor(fetch: Fetch, signedOut: () => void, left: (workspace: WorkspaceId) => void) {
     this.#fetch = fetch;
     this.#signedOut = signedOut;
     this.#left = left;
@@ -283,7 +283,7 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
 }
 
 const isOffer = (value: unknown): value is InvitationOffer =>
-  fields(value, ["workspace", "name", "invited_by"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
+  fields(value, ["workspace", "name"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
 const isList = (value: unknown): value is WorkspaceList =>
   listOf("workspaces", isWorkspace)(value) && (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isOffer)(value));
 const isChat = (value: unknown): value is ChatSummary =>
@@ -332,7 +332,7 @@ const isOffers = (offers: unknown): boolean => offers === undefined || (Array.is
 const isMachineList = listOf<MachineList>("machines", isMachine);
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
-const isInvitation = (value: unknown): boolean => fields(value, ["member", "email"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
+const isInvitation = (value: unknown): boolean => fields(value, ["email"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
 const isMembers = (value: unknown): value is MemberList =>
   listOf("members", (member) => fields(member, ["id", "name"]))(value) &&
   (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isInvitation)(value));

@@ -3,22 +3,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MemberId, Secret, WorkspaceId};
 
-/// A live invitation as the workspace's owner sees it: the member it makes, and when it ends, in
-/// seconds since the Unix epoch.
+/// A live invitation as the workspace's owner sees it: its address, and when it ends, in seconds
+/// since the Unix epoch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Invitation {
-    pub member: MemberId,
     pub email: Secret,
     pub expires_at: i64,
 }
 
-/// A live invitation as the person it is addressed to sees it once signed in: the workspace, and
-/// what its owner is called there. They take it up with `POST /api/workspaces/{workspace}/accept`.
+/// A live invitation as the person it is addressed to sees it once signed in, which they take up
+/// with `POST /api/workspaces/{workspace}/accept`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct InvitationOffer {
     pub workspace: WorkspaceId,
     pub name: String,
-    pub invited_by: String,
     pub expires_at: i64,
 }
 
@@ -35,8 +33,8 @@ pub enum MemberAction {
     /// Invites `email` for seven days; only the owner may. The answer is the same whether or not
     /// the address has an account.
     Invite { email: Secret },
-    /// Ends a live invitation; only the owner may.
-    Revoke { member: MemberId },
+    /// Ends the live invitation to `email`; only the owner may.
+    Revoke { email: Secret },
     /// Ends a member's membership; only the owner may.
     Remove { member: MemberId },
     /// Ends the asker's own membership; the owner can't.
@@ -68,8 +66,10 @@ mod tests {
                 json!({ "kind": "invite", "email": "bo@example.com" }),
             ),
             (
-                MemberAction::Revoke { member: member() },
-                json!({ "kind": "revoke", "member": "m-1" }),
+                MemberAction::Revoke {
+                    email: "bo@example.com".into(),
+                },
+                json!({ "kind": "revoke", "email": "bo@example.com" }),
             ),
             (
                 MemberAction::Remove { member: member() },
@@ -94,21 +94,19 @@ mod tests {
         let offer = InvitationOffer {
             workspace: workspace(),
             name: "Team".to_owned(),
-            invited_by: "ada".to_owned(),
             expires_at: 9,
         };
         let invitation = Invitation {
-            member: member(),
             email: "bo@example.com".into(),
             expires_at: 9,
         };
         round_trips(
             &offer,
-            json!({ "workspace": "w-1", "name": "Team", "invited_by": "ada", "expires_at": 9 }),
+            json!({ "workspace": "w-1", "name": "Team", "expires_at": 9 }),
         );
         round_trips(
             &invitation,
-            json!({ "member": "m-1", "email": "bo@example.com", "expires_at": 9 }),
+            json!({ "email": "bo@example.com", "expires_at": 9 }),
         );
     }
 }

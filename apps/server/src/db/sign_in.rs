@@ -187,15 +187,12 @@ async fn invited(
     email: &Email,
     now: i64,
 ) -> Result<bool, Fault> {
-    let found = sqlx::query(
-        "SELECT 1 FROM members AS m JOIN invitations AS i USING (workspace_id, member_id)
-         WHERE m.email = ? AND m.account_id IS NULL AND i.expires_at > ? LIMIT 1",
-    )
-    .bind(email.as_str())
-    .bind(now)
-    .fetch_optional(connection)
-    .await
-    .map_err(failed)?;
+    let found = sqlx::query("SELECT 1 FROM invitations WHERE email = ? AND expires_at > ? LIMIT 1")
+        .bind(email.as_str())
+        .bind(now)
+        .fetch_optional(connection)
+        .await
+        .map_err(failed)?;
     Ok(found.is_some())
 }
 
@@ -440,21 +437,11 @@ mod tests {
         )
         .await
         .unwrap();
-        for (member, address, at) in [
-            ("i1", "cy@example.com", NOW),
-            (
-                "i2",
-                "di@example.com",
-                NOW - crate::db::team::INVITATION_LIFETIME,
-            ),
-        ] {
-            let invitation = crate::db::NewInvitation {
-                member: &member_id(member),
-                by: &member_id("o-w1"),
-                email: &email(address),
-                now: at,
-            };
-            w1.invite(&invitation).await.unwrap();
+        let week_ago = NOW - crate::db::team::INVITATION_LIFETIME;
+        for (address, at) in [("cy@example.com", NOW), ("di@example.com", week_ago)] {
+            w1.invite(&member_id("o-w1"), &email(address), at)
+                .await
+                .unwrap();
         }
         let addresses = [
             "cy@example.com",

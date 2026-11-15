@@ -20,7 +20,7 @@ function serve(...answers: Array<{ status: number; body?: unknown } | "unreachab
       json: () => ("body" in answer ? Promise.resolve(answer.body) : Promise.reject(new SyntaxError("no body"))),
     });
   };
-  return { api: new Api(fetch, () => ends++), sent, ended: () => ends };
+  return { api: new Api(fetch, () => ends++, () => {}), sent, ended: () => ends };
 }
 
 const ADA = { account: "acc-1", email: "ada@example.com" };
@@ -139,8 +139,8 @@ test("a workspace refused to a session that still is one is left, and one refuse
 });
 
 test("members are changed, invitations taken up, and lists with invitations of the wrong shape refused", async () => {
-  const offer = { workspace: "w-1", name: "Crew", invited_by: "ada", expires_at: 9 };
-  const invitation = { member: "m-2", email: "bo@example.com", expires_at: 9 };
+  const offer = { workspace: "w-1", name: "Crew", expires_at: 9 };
+  const invitation = { email: "bo@example.com", expires_at: 9 };
   const { api, sent } = serve(
     { status: 204 },
     { status: 200, body: { id: "w-1", name: "Crew", role: "member" } },
@@ -179,7 +179,7 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
       () => new Promise((resolve) => (answerLate = resolve)),
       () => Promise.resolve(signIn),
     ];
-    const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++);
+    const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++, () => {});
 
     const late = api.workspaces();
     await api.finishSignIn({ email: "ada@example.com", code: "12345678", challenge: "ch-1" });

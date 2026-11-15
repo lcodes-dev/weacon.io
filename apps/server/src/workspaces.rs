@@ -7,7 +7,7 @@ use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
+    Code, Invitation, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
     WorkspaceSummary, code,
 };
 
@@ -66,7 +66,7 @@ pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Resp
     let account = shared.db.account(session.account);
     let listed = async {
         let workspaces = account.workspaces().await?;
-        let invitations = team::offers(&shared, &account).await?;
+        let invitations = account.invitations(shared.now()).await?;
         Ok::<_, Fault>(WorkspaceList {
             workspaces,
             invitations: Some(invitations),
@@ -98,7 +98,7 @@ pub(crate) async fn members(State(shared): State<Shared>, member: Member) -> Res
             .any(|row| row.id == member.id && row.role == Some(WorkspaceRole::Owner));
         let invitations = if owns {
             let live = member.workspace.invitations(shared.now()).await?;
-            Some(live.into_iter().map(team::invitation).collect())
+            Some(live.into_iter().map(Invitation::from).collect())
         } else {
             None
         };
@@ -124,7 +124,7 @@ pub(crate) async fn members(State(shared): State<Shared>, member: Member) -> Res
 /// What `row` is called among `rows`: their address's part before the `@`, since accounts hold
 /// no other name, or their whole address where another member's has the same part, so no one
 /// can pass as another.
-pub(crate) fn name_of<'a>(rows: &[MemberRow], row: &'a MemberRow) -> &'a str {
+fn name_of<'a>(rows: &[MemberRow], row: &'a MemberRow) -> &'a str {
     let local = row.email.local();
     let shared = rows
         .iter()

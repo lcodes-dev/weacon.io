@@ -2,7 +2,7 @@ use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary, code};
 
-use super::team::{OWNER, stored_role};
+use super::workspace::{OWNER, stored_role};
 use super::{Db, failed, stored, unreadable};
 
 /// How many workspaces one account may own: enough for anyone, too few to fill the disk.
