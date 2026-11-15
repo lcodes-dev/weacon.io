@@ -177,13 +177,10 @@ async fn accept(listener: &TcpListener, front: &Arc<Front>) {
     // Owned here, so stopping the server ends its connections too.
     let mut connections = JoinSet::new();
     loop {
-        if connections.len() >= front.limits.connections {
-            connections.join_next().await;
-            continue;
-        }
+        let room = connections.len() < front.limits.connections;
         tokio::select! {
             Some(_) = connections.join_next() => {}
-            accepted = listener.accept() => match accepted {
+            accepted = listener.accept(), if room => match accepted {
                 Ok((stream, _)) => {
                     connections.spawn(connection(stream, Arc::clone(front)));
                 }

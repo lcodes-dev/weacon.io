@@ -407,7 +407,6 @@ mod tests {
         let (one, two) = (workspace("one"), workspace("two"));
         let main = crate_repo(&dir, "one");
         setup.register(&one, "site", &main);
-        setup.register(&two, "site", &main);
         let chat = dir.join("two-chat");
         let chat_arg = chat.to_str().unwrap();
         fixture(
@@ -416,17 +415,30 @@ mod tests {
             &["worktree", "add", "--quiet", "-b", "chat", chat_arg],
         );
         let chat = chat.canonicalize().unwrap();
+        // Registered by the linked worktree's own path.
+        setup.register(&two, "site", &chat);
         let (log, _records) = recording_logger();
         let stores = setup.maps.stores(&log).await.unwrap();
 
-        let (found, _) = stores.watched(vec![(one.clone(), main.clone())]).await;
+        let own = dir.join("one-chat");
+        let own_arg = own.to_str().unwrap();
+        fixture(
+            &dir,
+            &main,
+            &["worktree", "add", "--quiet", "-b", "own", own_arg],
+        );
+        let own = own.canonicalize().unwrap();
+        let runs = vec![(one.clone(), main.clone()), (one.clone(), main.join("src"))];
+        let (found, _) = stores.watched(runs).await;
+        let (in_own, _) = stores.watched(vec![(one.clone(), own.clone())]).await;
         let (linked, _) = stores.watched(vec![(two.clone(), chat.clone())]).await;
 
         let trees = |found: &[Watched]| -> Vec<(WorkspaceId, PathBuf)> {
             let tree = |watched: &Watched| (watched.workspace.clone(), watched.worktree.clone());
             found.iter().map(tree).collect()
         };
-        assert_eq!(trees(&found), [(one, main.clone())]);
+        assert_eq!(trees(&found), [(one.clone(), main.clone())]);
+        assert_eq!(trees(&in_own), [(one, own)]);
         assert_eq!(trees(&linked), [(two, chat)]);
         assert!(linked.iter().all(|watched| watched.main == main));
     }
