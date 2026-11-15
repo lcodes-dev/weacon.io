@@ -64,14 +64,14 @@ fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fa
     let core: Option<App> = core.and_then(|core| serde_json::from_str(&core).ok());
     let offers: Option<Vec<Capability>> =
         offers.and_then(|offers| serde_json::from_str(&offers).ok());
-    let missing = offers
-        .map(|offers| {
-            (offered.iter())
-                .filter(|wanted| !offers.contains(wanted))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+    // Only a core whose build shows can be shown as older than the server.
+    let missing = match (&core, offers) {
+        (Some(_), Some(offers)) => (offered.iter())
+            .filter(|wanted| !offers.contains(wanted))
+            .cloned()
+            .collect(),
+        _ => Vec::new(),
+    };
     Ok(MachineSummary {
         core,
         missing,
@@ -115,7 +115,9 @@ mod tests {
         let current = db.machines_of(&ada, &offered).await.unwrap();
         db.saw_core(&id("mc-p1"), Some(&core), None).await.unwrap();
         let unrecorded = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), None, Some(&[])).await.unwrap();
+        db.saw_core(&id("mc-p1"), None, Some(&offered[..1]))
+            .await
+            .unwrap();
         let unplain = db.machines_of(&ada, &offered).await.unwrap();
 
         assert_eq!(
@@ -129,7 +131,7 @@ mod tests {
         assert_eq!(unrecorded[0].core.as_ref(), Some(&core));
         assert_eq!(unrecorded[0].missing, []);
         assert_eq!(unplain[0].core, None);
-        assert_eq!(unplain[0].missing, offered);
+        assert_eq!(unplain[0].missing, []);
     }
 
     #[tokio::test]
