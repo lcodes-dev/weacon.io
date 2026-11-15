@@ -27,7 +27,7 @@ const FIND_FOLLOWS: [&str; 2] = ["-L", "-follow"];
 
 /// Programs that change files, each with the options it may take; every word that isn't an
 /// option must name a path inside the chat's worktree.
-const WRITERS: [(&str, &str, Reason); 9] = [
+pub(super) const WRITERS: [(&str, &str, Reason); 9] = [
     ("mkdir", "pv", Reason::WriteOutside),
     ("touch", "acm", Reason::WriteOutside),
     ("rm", "rRfvd", Reason::DeleteOutside),
@@ -252,6 +252,11 @@ fn writes(
         }
     }
     None
+}
+
+/// Whether `name` is a listed reader, which may open a file operand it is given.
+pub(super) fn is_reader(name: &str) -> bool {
+    READERS.iter().any(|(reader, _)| *reader == name)
 }
 
 /// Whether `name` with `args` is one of the build and test tools.

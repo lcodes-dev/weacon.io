@@ -58,12 +58,6 @@ const LOOKS: [&str; 12] = [
 ];
 // What `remote` does that changes no setting.
 const REMOTE_LOOKS: [&str; 4] = ["-v", "--verbose", "show", "get-url"];
-// Subcommands where an option can delete, force or discard. For these a word the shell could
-// turn into such an option — one it alone can spell, or a glob — can't be proven safe.
-pub(super) const CAN_CHANGE: [&str; 12] = [
-    "branch", "tag", "push", "fetch", "pull", "checkout", "switch", "restore", "reset", "clean",
-    "stash", "remote",
-];
 
 // Subcommands that rewrite the working tree, so a path a later command in the same line resolved
 // may no longer be what is there.
@@ -136,14 +130,17 @@ pub(super) fn judge(args: &[Word], context: &Context, cwd: &Path) -> Option<Reas
 
 fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Option<Reason> {
     let has = |long: &[&str], short: &[char]| has(args, long, short);
-    // Git permutes options among the operands, so a dynamic or glob word anywhere could be the
-    // deleting or forcing option, and the run can't be proven safe.
-    if CAN_CHANGE.contains(&name) && args.iter().any(|arg| arg.dynamic || arg.glob) {
+    // git permutes options among the operands, so a dynamic or glob word anywhere could be any
+    // option — a pager that runs a program, an output path outside the worktree — so unless it is
+    // past a literal `--` or the value of commit's message, the run can't be proven safe.
+    if hidden_option(name, args) {
         return Some(Reason::Unsure);
     }
-    // A subcommand's action is its first non-option word: `remote -v set-url` acts on `set-url`.
+    // A subcommand's action is its first non-option word before any `--`: `remote -v set-url`
+    // acts on `set-url`, while `stash -- show` has no action (an implicit push of pathspec `show`).
     let first = args
         .iter()
+        .take_while(|arg| arg.text != "--")
         .map(|arg| arg.text.as_str())
         .find(|text| !text.starts_with('-'));
     let unlisted = match name {
@@ -189,6 +186,38 @@ fn subcommand(name: &str, args: &[Word], context: &Context, repo: &Path) -> Opti
         "clean" => (!own_checkout(repo, context)).then_some(Reason::CleanMainCheckout),
         _ => elsewhere.then_some(Reason::WriteOutside),
     }
+}
+
+// Whether a word the shell alone can spell, or a glob, could be an option here. Only a word after
+// a literal `--`, and the value of commit's `-m`/`--message`, cannot be one.
+fn hidden_option(name: &str, args: &[Word]) -> bool {
+    let mut operands = false;
+    let mut message = false;
+    for arg in args {
+        if std::mem::take(&mut message) {
+            continue;
+        }
+        if arg.text == "--" {
+            operands = true;
+            continue;
+        }
+        if operands {
+            continue;
+        }
+        if name == "commit" {
+            if matches!(arg.text.as_str(), "-m" | "--message") {
+                message = true;
+                continue;
+            }
+            if arg.text.starts_with("-m") || arg.text.starts_with("--message=") {
+                continue;
+            }
+        }
+        if arg.dynamic || arg.glob {
+            return true;
+        }
+    }
+    false
 }
 
 // A forced refspec with a local side, as in `+main:main`, overwrites that branch.

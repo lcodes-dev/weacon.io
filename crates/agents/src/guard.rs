@@ -101,11 +101,11 @@ pub fn check_command(line: &str, context: &Context) -> Option<Reason> {
         ..context.clone()
     };
     let mut cwd = context.cwd.clone();
-    // Once a command in the line can rewrite the worktree, a later one's write target may no
-    // longer be what the guard resolved, so it asks.
+    // Once a command in the line can rewrite the worktree, a later one's resolved read or write
+    // target may no longer be what the guard checked, so it asks.
     let mut rewritten = false;
     commands.iter().find_map(|simple| {
-        if rewritten && rules::writes_a_path(simple) {
+        if rewritten && rules::touches_a_path(simple) {
             return Some(Reason::Unsure);
         }
         let reason = rules::judge(simple, context, &mut cwd);
@@ -610,6 +610,9 @@ mod tests {
         );
         assert_eq!(check("git config --add a.b c"), Some(Reason::NotListed));
         assert_eq!(check("git config set user.name"), Some(Reason::NotListed));
+        // `stash -- show` is an implicit push of pathspec `show`, not the read-only `stash show`.
+        assert_eq!(in_main("git stash show"), None);
+        assert_eq!(in_main("git stash -- show"), Some(Reason::WriteOutside));
     }
 
     #[test]
@@ -617,14 +620,14 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
         let check = |line: &str| check_command(line, &context);
-        // One loop over the rule's own list, so a subcommand added to it is covered without a new
-        // test. For each, a word only the shell can spell, or a glob, could be the deleting or
-        // forcing option, wherever git's permuted parse places it, even behind a leading option.
-        for sub in git::CAN_CHANGE {
+        // One loop over every safe subcommand, so one added later is covered without a new test.
+        // git permutes options among the operands, so a word only the shell can spell, or a glob,
+        // could be any option wherever the parse places it, even behind a leading option.
+        for sub in safe::GIT_SAFE {
             assert_eq!(
                 check(&format!("git {sub} $X")),
                 Some(Reason::Unsure),
-                "{sub} with a dynamic flag"
+                "{sub} with a dynamic argument"
             );
             assert_eq!(
                 check(&format!("git {sub} *")),
@@ -634,14 +637,25 @@ mod tests {
             assert_eq!(
                 check(&format!("git {sub} -q $X")),
                 Some(Reason::Unsure),
-                "{sub} with a dynamic flag behind a leading option"
+                "{sub} with a dynamic argument behind a leading option"
             );
         }
+        // The options such a word could spell: a pager that runs a program, an output path outside
+        // the worktree, a deletion — on subcommands that look read-only, the literal checks miss
+        // them, so the dynamic/glob rule is what asks.
+        assert_eq!(check("git grep $X pattern"), Some(Reason::Unsure));
+        assert_eq!(check("git diff $X"), Some(Reason::Unsure));
+        assert_eq!(check("git grep pattern *"), Some(Reason::Unsure));
         // A sub-action is read past leading options, so a change hidden behind `-v` still asks.
         assert_eq!(
             check("git remote -v set-url origin /tmp/x"),
             Some(Reason::NotListed)
         );
+        // Past a literal `--`, and the value of commit's message in any of its forms, a word
+        // can't be an option.
+        assert_eq!(check("git grep pattern -- *"), None);
+        assert_eq!(check("git commit -m $X"), None);
+        assert_eq!(check("git commit --message=$X"), None);
     }
 
     #[test]
@@ -1355,19 +1369,22 @@ mod tests {
         assert_eq!(check("cp -R src stage"), Some(Reason::Unsure));
         assert_eq!(check("cp -a src stage"), Some(Reason::Unsure));
         assert_eq!(check("mv src stage"), Some(Reason::Unsure));
+        // The recursive flag alone asks, even when the source is a plain file.
+        assert_eq!(check("cp -R src/x other"), Some(Reason::Unsure));
         // A glob source can't be resolved ahead, so a move or copy of one asks too.
         assert_eq!(check("mv src* stage"), Some(Reason::Unsure));
         assert_eq!(check("cp src/* stage"), Some(Reason::Unsure));
     }
 
     #[test]
-    fn a_write_after_a_tree_change_in_the_same_line_asks() {
+    fn a_read_or_write_after_a_tree_change_in_the_same_line_asks() {
         let dir = TempDir::new().unwrap();
         let context = context(&dir);
         let check = |line: &str| check_command(line, &context);
 
-        // A checkout, switch or restore can bring an outward symlink into being; a later write by
-        // path in the same line may go through it, whatever separates the two.
+        // A checkout, switch or restore can bring a symlink into being — one leading out, or to a
+        // credential — so a later write or read by path in the same line asks, however the two are
+        // separated.
         assert_eq!(
             check("git checkout evil && printf x > evil"),
             Some(Reason::Unsure)
@@ -1382,13 +1399,33 @@ mod tests {
         );
         assert_eq!(check("git switch other && rm keep"), Some(Reason::Unsure));
         assert_eq!(check("git restore . && cp a b"), Some(Reason::Unsure));
-        // A write before the change, and non-writing commands after it, still run; so does a lone
-        // switch.
+        // The tree it rewrites is read past git's own `-C`.
+        assert_eq!(check("git -C sub checkout x && rm y"), Some(Reason::Unsure));
+        // The read case: the later command reads a path that may now link to a credential.
+        assert_eq!(
+            check("git checkout evil && cat stolen"),
+            Some(Reason::Unsure)
+        );
+        assert_eq!(
+            check("git switch other && cat < stolen"),
+            Some(Reason::Unsure)
+        );
+        // An in-place edit after the change is a write too.
+        assert_eq!(
+            check("git checkout evil && sed -i s/a/b/ evil"),
+            Some(Reason::Unsure)
+        );
+        // A write before the change, and git, a bare reader or a non-path command after it, still
+        // run; so does a lone switch, and a git command that does not rewrite the tree.
         assert_eq!(check("printf x > before && git checkout evil"), None);
         assert_eq!(
             check("git checkout -b feature && git add . && git status"),
             None
         );
+        assert_eq!(check("git checkout -b feature && pwd"), None);
+        assert_eq!(check("git log --oneline && rm stale"), None);
+        // A build tool whose option merely looks like an in-place edit still runs.
+        assert_eq!(check("git checkout -b feature && make -i"), None);
         assert_eq!(check("git switch main"), None);
     }
 

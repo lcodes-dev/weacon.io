@@ -105,12 +105,14 @@ pub(super) fn rewrites_tree(simple: &Simple) -> bool {
         && git::rewrites_tree(words.get(1..).unwrap_or_default())
 }
 
-/// Whether `simple` writes to a path the guard resolves, so an earlier command's tree change could
-/// have moved what that path names since it was checked.
-pub(super) fn writes_a_path(simple: &Simple) -> bool {
+/// Whether `simple` reads or writes a path the guard resolves, so an earlier command's tree change
+/// could have moved what that path names — to an outward link for a write, or a credential for a
+/// read — since it was checked.
+pub(super) fn touches_a_path(simple: &Simple) -> bool {
     if simple
         .writes
         .iter()
+        .chain(&simple.reads)
         .any(|target| !DEVICES.contains(&target.text.to_ascii_lowercase().as_str()))
     {
         return true;
@@ -122,11 +124,13 @@ pub(super) fn writes_a_path(simple: &Simple) -> bool {
         return false;
     };
     let args = words.get(1..).unwrap_or_default();
-    match program_name(&program.text).as_str() {
-        "mkdir" | "touch" | "rm" | "rmdir" | "cp" | "mv" | "ln" | "chmod" | "tee" | "dd" => true,
-        "sed" | "perl" | "gawk" | "awk" => has(args, &["--in-place"], &['i']),
-        _ => false,
-    }
+    let name = program_name(&program.text);
+    let writes = safe::WRITERS.iter().any(|(writer, ..)| *writer == name)
+        || name == "dd"
+        || (matches!(name.as_str(), "sed" | "perl" | "gawk" | "awk")
+            && has(args, &["--in-place"], &['i']));
+    // A reader opening a file operand reads through whatever that path now resolves to.
+    writes || (safe::is_reader(&name) && !positional(args).is_empty())
 }
 
 // What the command's redirections and assignments reach.
