@@ -201,13 +201,13 @@ Sign the agent in first, as in step 6, and give the workspace a repository.
 2. Pick the **Machine**, the **Repository** and the **Agent**.
 3. Type what you want done and choose **Send**.
 
-The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. What the agent says appears under **Agent** as it is written. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
+The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. What the agent says appears under **Agent**, each message once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
 When the agent asks to use a tool, the chat names the tool, such as "Asks to use Bash", with **Allow** and **Deny**; with the access level at ask first, it waits for you. After a reload, a prompt still waiting says "Asks to use a tool" until the agent's next prompt, because the tool's name is passed on as it happens and never kept. It never shows the command or the file's contents, because a tool's input doesn't leave your machine, so you can't see them before you answer. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 
 **Stop** ends the agent's turn. Send another prompt in the same chat to carry on. Reloading the page keeps the chat as it was.
 
-The server keeps only a chat's messages: the prompts, the agent's text, the run's state and its permission prompts. Text as it is written and a prompt's tool name pass through to the people reading the chat and aren't kept. Tool calls and changes aren't kept, so the chat shows text only. Only the person who started a chat can prompt it; the workspace's other members can read it. The machine must be connected when you send: if it isn't, the prompt is refused and nothing waits to run later, so send it again once the machine is back.
+The server keeps only a chat's messages: the prompts, the agent's text, the run's state and its permission prompts. A prompt's tool name passes through to the people reading the chat and isn't kept. Tool calls and changes aren't kept, so the chat shows text only. Only the person who started a chat can prompt it; the workspace's other members can read it. The machine must be connected when you send: if it isn't, the prompt is refused and nothing waits to run later, so send it again once the machine is back.
 
 While the agent isn't signed in on that machine, the form says "Claude Code isn't signed in on this machine." and **Send** stays off. **Sign in from Settings** opens Settings with that machine's settings open: choose **Sign in** next to Claude Code, then **Back**. A Codex that isn't installed shows "Codex isn't installed on this machine."
 
