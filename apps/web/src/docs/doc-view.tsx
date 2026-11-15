@@ -11,7 +11,7 @@ import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { MarkdownView } from "../transcript/markdown-view.ts";
 import { DocEditor } from "./doc-editor.tsx";
-import { byline } from "./docs.ts";
+import { byline, newer } from "./docs.ts";
 
 type Props = { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket; names: Names; doc: DocId; back(): void };
 
@@ -45,7 +45,7 @@ export function DocView({ api, workspace, socket, names, doc, back }: Props) {
       () => api.reviseDoc(workspace, doc, version, { ...content, title: content.title.trim() }),
       (saved: DocRecord) => {
         close();
-        record.change(() => saved);
+        record.change((shown) => newer(shown, saved));
         void history.load();
       },
       (code) => {
