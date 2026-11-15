@@ -177,8 +177,7 @@ pub(crate) struct Back<'a> {
     pub(crate) to: &'a mpsc::Sender<Envelope>,
 }
 
-/// Sends `command` to `machine`, then `follow`, both or neither, and takes the core's answer to
-/// it, its receipt or refusal, `back`, as [`forward`] does.
+/// Sends `command` to `machine`, then `follow`, both or neither; the core's answer goes `back`.
 ///
 /// # Errors
 /// `relay.busy`, which may pass, and `machine.offline`.
@@ -195,12 +194,11 @@ pub(crate) fn command(
         asked: Asked::new(&command.workspace, &command.request, about),
         machine: machine.clone(),
     };
-    if shared.relay.wait(relayed, sent, back.id, back.to).is_err() {
-        return Err(Fault::new(
-            code!("relay.busy"),
-            "Too many asks wait for answers",
-        ));
-    }
+    let busy = |_| Fault::new(code!("relay.busy"), "Too many asks wait for answers");
+    shared
+        .relay
+        .wait(relayed, sent, back.id, back.to)
+        .map_err(busy)?;
     let messages = vec![
         (relayed, Message::ChatCommand(command)),
         (shared.links.next_id(), follow),
