@@ -1,5 +1,6 @@
 //! A chat's log: its committed events as JSON lines, in the order they were committed.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -7,18 +8,16 @@ use std::path::{Path, PathBuf};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatEntry, ChatEvent, ChatId, MAX_FRAME, RepoId, RequestId, RunEvent, RunUpdate,
-    code,
+    AgentKind, ChatEntry, ChatEvent, ChatId, MAX_FRAME, Outcome, RepoId, RequestId, RunEvent,
+    RunUpdate, code,
 };
 
 use crate::app::blocking;
 use crate::platform;
 
 mod line;
-mod requests;
 
 use line::entry_line;
-use requests::Requests;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -37,7 +36,8 @@ pub(crate) struct ChatLog {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: Requests,
+    /// Each request a receipt is in for, and whether one other than `accepted` ended it.
+    receipts: HashMap<RequestId, bool>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// The agent the chat's first prompt named, Claude when it named none.
@@ -79,7 +79,7 @@ impl ChatLog {
                 workspace_root,
                 starts: Vec::new(),
                 end: 0,
-                requests: Requests::default(),
+                receipts: HashMap::new(),
                 broken: false,
                 agent: None,
                 repo: None,
@@ -135,7 +135,10 @@ impl ChatLog {
                     self.repo.clone_from(repo);
                 }
             }
-            ChatEvent::Receipt { receipt } => self.requests.receipted(receipt),
+            ChatEvent::Receipt { receipt } => {
+                let ended = receipt.outcome != Outcome::Accepted;
+                *self.receipts.entry(receipt.request.clone()).or_default() |= ended;
+            }
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
             | ChatEvent::OutsidePrompt { .. }
@@ -240,7 +243,12 @@ impl ChatLog {
 
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests.has_ended(request)
+        self.receipts.get(request) == Some(&true)
+    }
+
+    /// Whether any receipt for the command under `request` is in the log.
+    pub(crate) fn has_receipt(&self, request: &RequestId) -> bool {
+        self.receipts.contains_key(request)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {

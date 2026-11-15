@@ -98,8 +98,6 @@ impl<A: Agent> Engine<A> {
         run: &RunId,
         prompt: u32,
     ) -> Result<(), Fault> {
-        let answers = &mut self.open(key).await?.pending_answers;
-        answers.retain(|answered| answered.answer.prompt != prompt);
         self.withdraw(key, run, prompt).await?;
         self.running_again(key, run).await
     }
@@ -168,9 +166,7 @@ mod tests {
     use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
     use weacon_testing::messages;
 
-    use super::super::by_hand::{
-        OnTurn, allow_one, hear, latest, on_ask, on_its_way, on_turn, waiting_in,
-    };
+    use super::super::by_hand::{OnTurn, allow_one, hear, latest, on_ask, on_turn, waiting_in};
     use super::*;
     use crate::chats::test_support::{
         Told, asks, chat, client, key, prompt, pushed, run, session, soon, text,
@@ -382,59 +378,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(on.engine.open(&key()).await.unwrap().log.seq(), 6);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_answer_on_its_way_to_a_withdrawn_prompt_is_never_given() {
-        let mut on = on_ask().await;
-        on_its_way(&mut on.engine, 1).await;
-        let withdrawn = RunEvent::PermissionWithdrawn {
-            run: run("run-1"),
-            prompt: 1,
-        };
-
-        hear(&mut on.engine, withdrawn).await.unwrap();
-
-        assert!(
-            on.engine
-                .open(&key())
-                .await
-                .unwrap()
-                .pending_answers
-                .is_empty()
-        );
-        assert_eq!(soon(on.agent.told.recv()).await, None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_withdrawal_that_cant_be_written_still_drops_the_answers_on_their_way() {
-        let mut on = on_ask().await;
-        on_its_way(&mut on.engine, 1).await;
-        // Both writes fail: the log is broken, and a folder where its file was keeps it so.
-        let file = on
-            .engine
-            .workspaces
-            .root(&key().workspace)
-            .join("chats/c-c-1.jsonl");
-        std::fs::rename(&file, file.with_extension("moved")).unwrap();
-        std::fs::create_dir(&file).unwrap();
-        on.engine.open(&key()).await.unwrap().log.jam();
-        let withdrawn = RunEvent::PermissionWithdrawn {
-            run: run("run-1"),
-            prompt: 1,
-        };
-
-        let lost = hear(&mut on.engine, withdrawn).await;
-
-        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        assert!(
-            on.engine
-                .open(&key())
-                .await
-                .unwrap()
-                .pending_answers
-                .is_empty()
-        );
     }
 
     #[tokio::test(start_paused = true)]

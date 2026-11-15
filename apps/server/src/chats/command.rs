@@ -1,26 +1,24 @@
 //! A member's command to a chat: checked here, then relayed to the chat's machine, whose
 //! answer is the command's receipt.
 
-use tokio::sync::mpsc;
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatCommand, Envelope};
+use weacon_protocol::{Asker, ChatCommand};
 
 use super::admit::{Admitted, admit, detached};
 use super::link;
 use crate::auth::Member;
 use crate::db::{Chat, NewChat};
-use crate::relay;
+use crate::relay::{self, Back};
 use crate::shared::Shared;
 
 /// Takes `command` from `asker`, one of the chat's workspace's members, refusing what the
-/// chat's owner or machine doesn't allow, and relays it once; the machine's answer reaches
-/// `asked`, the envelope id it came under and the way back.
+/// chat's owner or machine doesn't allow, and relays it once; the machine's answer goes `back`.
 pub(crate) async fn take(
     member: &Member,
     asker: &Asker,
     shared: &Shared,
     command: ChatCommand,
-    asked: (u32, &mpsc::Sender<Envelope>),
+    back: Back<'_>,
 ) -> Result<(), Fault> {
     let chat = member.workspace.chat(&command.chat).await?;
     match admit(chat, asker.clone(), command)? {
@@ -44,10 +42,10 @@ pub(crate) async fn take(
                 machine: &summary.name,
                 at: shared.now(),
             };
-            start(shared, member, &chat, command, asked).await
+            start(shared, member, &chat, command, back).await
         }
         Admitted::Existing { chat, command } => {
-            existing(shared, member, &chat, command, asked).await
+            existing(shared, member, &chat, command, back).await
         }
     }
 }
@@ -59,17 +57,16 @@ async fn start(
     member: &Member,
     chat: &NewChat<'_>,
     command: ChatCommand,
-    asked: (u32, &mpsc::Sender<Envelope>),
+    back: Back<'_>,
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
     workspace.add_chat(chat).await?;
-    let follow = link::follow(workspace.id(), &command.chat, 0);
-    let made = command.chat.clone();
-    if let Err(fault) = relay::command(shared, chat.machine_id, command, follow, asked) {
-        workspace.forget_chat(&made).await?;
+    let follow = link::follow(workspace.id(), chat.id, 0);
+    if let Err(fault) = relay::command(shared, chat.machine_id, command, follow, back) {
+        workspace.forget_chat(chat.id).await?;
         return Err(fault);
     }
-    workspace.chat_made(&made, &member.id).await?;
+    workspace.chat_made(chat.id, &member.id).await?;
     shared.wake_feeds(workspace.id());
     Ok(())
 }
@@ -80,7 +77,7 @@ async fn existing(
     member: &Member,
     chat: &Chat,
     command: ChatCommand,
-    asked: (u32, &mpsc::Sender<Envelope>),
+    back: Back<'_>,
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
     if !workspace.runs_on(&command.chat, &chat.machine).await? {
@@ -94,7 +91,7 @@ async fn existing(
         return Err(link::offline());
     }
     let follow = link::follow(workspace.id(), &command.chat, chat.core_seq);
-    relay::command(shared, &chat.machine, command, follow, asked)
+    relay::command(shared, &chat.machine, command, follow, back)
 }
 
 #[cfg(test)]
@@ -102,6 +99,9 @@ mod tests {
     use weacon_protocol::{
         AgentKind, ChatAction, ChatQuery, ChatQueryKind, ErrorBody, Message, Outcome, Receipt, code,
     };
+
+    use tokio::sync::mpsc;
+    use weacon_protocol::Envelope;
 
     use super::*;
     use crate::chats::test_support::{Ada, ada, attach, sent};
@@ -131,7 +131,14 @@ mod tests {
         command: ChatCommand,
     ) -> (Result<(), Fault>, mpsc::Receiver<Envelope>) {
         let (back, answers) = mpsc::channel(4);
-        let taken = take(&ada.member, &ada.asker, shared, command, (4, &back)).await;
+        let taken = take(
+            &ada.member,
+            &ada.asker,
+            shared,
+            command,
+            Back { id: 4, to: &back },
+        )
+        .await;
         (taken, answers)
     }
 
@@ -141,7 +148,11 @@ mod tests {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(
+            shared,
+            &ada,
+            &["machine.connect", "chat.serve", "chat.answers"],
+        );
 
         let first = with_codex(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)));
         let (taken, mut answers) = asked(&ada, shared, first).await;
@@ -158,7 +169,7 @@ mod tests {
             .map(|chat| (chat.title.as_str(), chat.machine.as_str()))
             .collect();
         assert_eq!(made, [("Fix it", "Studio")]);
-        assert!(answers.try_recv().is_err());
+        answers.try_recv().unwrap_err();
         let busy = Message::Receipt(Receipt {
             request: id("r-1"),
             outcome: Outcome::Failed {
@@ -180,12 +191,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_command_to_a_machine_that_cant_take_it_is_refused_and_a_first_prompts_chat_taken_back()
+    async fn a_command_to_a_machine_that_cant_answer_it_is_refused_and_a_first_prompts_chat_taken_back()
      {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        let mut attached = attach(shared, &ada, &["machine.connect"]);
+        // A core that serves chats but answers no command, as an older one, is sent none.
+        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
 
         let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let (refused, _answers) = asked(&ada, shared, first).await;
@@ -209,7 +221,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada, &["chat.serve", "chat.answers"]);
 
         let (one, mut first) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
         let (two, mut second) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
@@ -269,7 +281,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        let mut serving = attach(shared, &ada, &["chat.serve", "chat.answers"]);
         for action in [ChatAction::Hold, ChatAction::Release] {
             let mut command = prompt("r-2", "c-1", "Go", None);
             command.action = action;

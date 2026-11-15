@@ -170,8 +170,15 @@ pub(crate) async fn forward(
     Ok(())
 }
 
+/// Where an answer goes: the connection's way back, under the envelope id it answers.
+#[derive(Clone, Copy)]
+pub(crate) struct Back<'a> {
+    pub(crate) id: u32,
+    pub(crate) to: &'a mpsc::Sender<Envelope>,
+}
+
 /// Sends `command` to `machine`, then `follow`, both or neither, and takes the core's answer to
-/// it, its receipt or refusal, back to `back` under `id`, as [`forward`] does.
+/// it, its receipt or refusal, `back`, as [`forward`] does.
 ///
 /// # Errors
 /// `relay.busy`, which may pass, and `machine.offline`.
@@ -180,40 +187,29 @@ pub(crate) fn command(
     machine: &MachineId,
     command: ChatCommand,
     follow: Message,
-    asked: (u32, &mpsc::Sender<Envelope>),
+    back: Back<'_>,
 ) -> Result<(), Fault> {
-    let (id, back) = asked;
     let relayed = shared.links.next_id();
     let about = About::Command(command.chat.clone());
     let sent = Sent {
         asked: Asked::new(&command.workspace, &command.request, about),
         machine: machine.clone(),
     };
-    if shared.relay.wait(relayed, sent, id, back).is_err() {
+    if shared.relay.wait(relayed, sent, back.id, back.to).is_err() {
         return Err(Fault::new(
             code!("relay.busy"),
             "Too many asks wait for answers",
         ));
     }
-    let envelopes = vec![
-        Envelope {
-            id: relayed,
-            message: Message::ChatCommand(command),
-        },
-        Envelope {
-            id: shared.links.next_id(),
-            message: follow,
-        },
+    let messages = vec![
+        (relayed, Message::ChatCommand(command)),
+        (shared.links.next_id(), follow),
     ];
-    let serve = Capability::new(crate::chats::SERVE);
-    if shared.links.send_all(machine, &serve, envelopes).is_err() {
+    let sent = crate::chats::send_all(shared, machine, crate::chats::ANSWERS, messages);
+    if sent.is_err() {
         shared.relay.lock().remove(&relayed);
-        return Err(Fault::new(
-            code!("machine.offline"),
-            "The chat's machine isn't connected",
-        ));
     }
-    Ok(())
+    sent
 }
 
 /// The asker's machine that `asked` goes to.
@@ -948,6 +944,38 @@ mod tests {
         (relay, answers)
     }
 
+    fn accepted(request: &str) -> Message {
+        Message::Receipt(weacon_protocol::Receipt {
+            request: RequestId::try_from(request.to_owned()).unwrap(),
+            outcome: weacon_protocol::Outcome::Accepted,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_chat_commands_receipt_answers_it_only_from_its_machine_and_for_its_request() {
+        let one = MachineId::try_from("mc-1".to_owned()).unwrap();
+        let two = MachineId::try_from("mc-2".to_owned()).unwrap();
+        let (relay, mut answers) = waiting_on(&one);
+        if let Some(waiter) = relay.lock().get_mut(&7) {
+            let chat = weacon_protocol::ChatId::try_from("c-1".to_owned()).unwrap();
+            waiter.sent.asked.about = About::Command(chat);
+        }
+
+        let claimed = [
+            relay.answered(&two, envelope(7, accepted("r-1"))),
+            relay.answered(&one, envelope(7, accepted("r-2"))),
+        ];
+        let before = answers.try_recv();
+        let answered = relay.answered(&one, envelope(7, accepted("r-1")));
+
+        assert_eq!(claimed, [true, true]);
+        before.unwrap_err();
+        assert!(answered);
+        let told = answers.try_recv().unwrap();
+        assert_eq!((told.id, told.message), (41, accepted("r-1")));
+        assert!(!relay.answered(&one, envelope(7, accepted("r-1"))));
+    }
+
     #[tokio::test]
     async fn only_the_asked_machine_answers_what_was_asked_and_only_once() {
         let one = MachineId::try_from("mc-1".to_owned()).unwrap();
@@ -972,12 +1000,17 @@ mod tests {
             relay.answered(&one, envelope(7, changed(&one, another))),
             relay.answered(&one, envelope(8, settings_answer(&one))),
             relay.answered(&one, envelope(7, Message::Unknown)),
+            // A receipt answers only a chat command.
+            relay.answered(&one, envelope(7, accepted("r-1"))),
         ];
         let before = answers.try_recv();
         let answered = relay.answered(&one, envelope(7, settings_answer(&one)));
         let again = relay.answered(&one, envelope(7, settings_answer(&one)));
 
-        assert_eq!(claimed, [true, true, true, true, true, true, false, true]);
+        assert_eq!(
+            claimed,
+            [true, true, true, true, true, true, false, true, true]
+        );
         assert!(answered);
         assert!(!again);
         before.unwrap_err();

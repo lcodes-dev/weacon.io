@@ -1,6 +1,6 @@
 //! What people ask of a chat's agent: a prompt, a permission answer, an interrupt.
 
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
     RunEvent, RunUpdate, code,
@@ -8,7 +8,7 @@ use weacon_protocol::{
 
 use super::agent::{Agent, Order};
 use super::launch::not_started;
-use super::{ChatKey, Engine, PendingAnswer, PendingInterrupt, unsupported};
+use super::{ChatKey, Engine, PendingInterrupt, chat_about, unsupported};
 use crate::git::state::Stores;
 use crate::runs::Queued;
 
@@ -20,16 +20,16 @@ impl<A: Agent> Engine<A> {
     ) -> Result<(), Fault> {
         let request = command.request;
         let acted = self.act(key, request.clone(), command.action).await;
-        if let Err(fault) = &acted
-            && never_taken(fault)
-        {
-            // Its receipt ends it in the log, and the refusal answers it.
-            let refused = Outcome::Failed {
-                code: fault.code().clone(),
-            };
-            self.commit_receipt(key, &request, refused).await?;
+        let Err(fault) = acted else {
+            return Ok(());
+        };
+        // Taken once its receipt is in the log, whatever failed after.
+        if !self.open(key).await?.log.has_receipt(&request) {
+            return Err(fault);
         }
-        acted
+        let fields = [&chat_about(key)[..], &[("err", Field::error(&fault))]].concat();
+        self.log.warn("chat command cut short", &fields);
+        Ok(())
     }
 
     async fn act(
@@ -146,60 +146,22 @@ impl<A: Agent> Engine<A> {
                 "That permission prompt isn't waiting",
             ));
         }
-        // Kept before its receipt is written, for a write reported failed that still landed; an
-        // earlier answer to the same prompt still on its way goes only once this one's is in.
-        chat.pending_answers.push(PendingAnswer {
-            request: request.clone(),
-            answer: answer.clone(),
-        });
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
-        let answers = &mut self.open(key).await?.pending_answers;
-        answers.retain(|other| other.answer.prompt != answer.prompt || other.request == request);
-        self.deliver(key, &request, answer).await
-    }
-
-    // Gives the answer `request` committed to its run. It is logged unless the log has it
-    // already, as after a write reported failed that still landed.
-    async fn deliver(
-        &mut self,
-        key: &ChatKey,
-        request: &RequestId,
-        answer: PermissionAnswer,
-    ) -> Result<(), Fault> {
-        let live = self.is_live(key);
-        let chat = self.open(key).await?;
-        let pending = |other: &PendingAnswer| other.request == *request && other.answer == answer;
-        if !live {
-            return Ok(());
-        }
-        // Given already: only its run's state may still need saving.
-        if !chat.pending_answers.iter().any(pending) {
-            return self.running_again(key, &answer.run).await;
-        }
-        if chat.log.runs().waits(&answer.run, answer.prompt) {
-            // In the log before the agent is told, so a crash between the two leaves the truth.
-            let update = RunUpdate {
-                run: answer.run.clone(),
-                event: RunEvent::PermissionAnswered {
-                    answer: answer.clone(),
-                },
-            };
-            self.commit(key, ChatEvent::Run { update }).await?;
-        }
-        let chat = self.open(key).await?;
-        // The prompt has its answer: any other on its way to it is never given.
-        let answered = |other: &PendingAnswer| {
-            other.answer.run == answer.run && other.answer.prompt == answer.prompt
+        // In the log before the agent is told, so a crash between the two leaves the truth.
+        let update = RunUpdate {
+            run: answer.run.clone(),
+            event: RunEvent::PermissionAnswered {
+                answer: answer.clone(),
+            },
         };
-        chat.pending_answers.retain(|other| !answered(other));
+        self.commit(key, ChatEvent::Run { update }).await?;
         let run = answer.run.clone();
         self.order(key, Order::Answer(answer));
         self.running_again(key, &run).await
     }
 
-    // Committed first and bound to the turn it stops, so a retry after a failed write still
-    // stops that turn and never a later one.
+    // Bound to the turn it stops, so it never stops a later one.
     async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
         // While its run starts, a chat's turn is the prompt that run will take first.
         let starting = self.is_launching(key).then(|| self.runs.of(key)).flatten();
@@ -207,14 +169,16 @@ impl<A: Agent> Engine<A> {
         let turn = self
             .turn(key)
             .or_else(|| first.map(|queued| queued.request.clone()));
-        let chat = self.open(key).await?;
-        chat.pending_interrupts.push(PendingInterrupt {
-            request: request.clone(),
-            turn,
-            committed: false,
-        });
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
+        self.open(key)
+            .await?
+            .pending_interrupts
+            .push(PendingInterrupt {
+                request: request.clone(),
+                turn,
+                committed: false,
+            });
         self.stop_turn(key, &request).await
     }
 
@@ -246,21 +210,11 @@ impl<A: Agent> Engine<A> {
     }
 }
 
-// Whether a command refused with `fault` could never be taken, however often it is sent.
-fn never_taken(fault: &Fault) -> bool {
-    [
-        code!("chat.empty_prompt"),
-        code!("chat.agent_conflict"),
-        code!("message.unsupported"),
-    ]
-    .contains(fault.code())
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_testing::{TempDir, messages};
 
-    use super::super::by_hand::{allow_one, hear, launched, on_ask, on_its_way, on_turn};
+    use super::super::by_hand::{allow_one, hear, launched, on_ask, on_turn};
     use super::*;
     use crate::chats::test_support::{
         Told, allow, asks, chat, command, key, parts, prompt, prompt_in, prompt_naming, run, soon,
@@ -348,16 +302,15 @@ mod tests {
         // The first prompt reaches the log, but the runs journal can't be saved.
         let path = engine.runs.jam();
         let first = prompt_naming("r-1", "Hi", AgentKind::Codex);
-        let lost = engine.command(&key(), first.clone()).await;
+        let lost = engine.command(&key(), first).await;
         assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
         engine.runs.unjam(path);
 
         let other = prompt_naming("r-2", "Hi", AgentKind::Claude);
         let conflict = engine.command(&key(), other).await.unwrap_err();
         assert_eq!(conflict.code().as_str(), "chat.agent_conflict");
-        let refused = &crate::chats::test_support::request("r-2");
-        assert!(engine.open(&key()).await.unwrap().log.has_ended(refused));
-        engine.command(&key(), first).await.unwrap();
+        let next = prompt_naming("r-3", "Hi", AgentKind::Codex);
+        engine.command(&key(), next).await.unwrap();
 
         let started = soon(bench.started.recv()).await.unwrap();
         assert_eq!(started.run_as.agent, AgentKind::Codex);
@@ -430,25 +383,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn answering_one_prompt_keeps_another_answer_still_on_its_way() {
-        let mut on = on_ask().await;
-        let asks = asks("run-1", 2);
-        hear(&mut on.engine, asks).await.unwrap();
-        // As when its receipt was written but its delivery was cut short.
-        let (second, two) = on_its_way(&mut on.engine, 2).await;
-
-        on.engine.command(&key(), allow_one("r-3").0).await.unwrap();
-        on.engine.command(&key(), second).await.unwrap();
-
-        let one = PermissionAnswer {
-            prompt: 1,
-            ..two.clone()
-        };
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(one)));
-        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Answer(two)));
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn an_interrupt_that_cant_be_committed_isnt_sent() {
         let mut on = on_turn().await;
         assert_eq!(
@@ -465,13 +399,13 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_interrupt_whose_receipt_failed_outlasts_a_later_one_and_stops_no_later_turn() {
+    async fn an_interrupt_whose_receipt_failed_stops_no_later_turn() {
         let mut on = on_turn().await;
         let told = soon(on.agent.told.recv()).await;
         assert_eq!(told, Some(Told::Send("Hi".to_owned())));
         on.engine.open(&key()).await.unwrap().log.jam();
         let first = command("r-2", "c-1", ChatAction::Interrupt);
-        let failed = on.engine.command(&key(), first.clone()).await;
+        let failed = on.engine.command(&key(), first).await;
         assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
 
         // Another interrupt stops the turn, and the next prompt gets one of its own.
@@ -486,8 +420,6 @@ mod tests {
         on.engine.command(&key(), next).await.unwrap();
         let told = soon(on.agent.told.recv()).await;
         assert_eq!(told, Some(Told::Send("More".to_owned())));
-
-        on.engine.command(&key(), first).await.unwrap();
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
         assert_eq!(on.engine.turn(&key()), Some(prompt("r-4", "More").request));

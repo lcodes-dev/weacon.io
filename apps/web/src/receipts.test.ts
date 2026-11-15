@@ -106,7 +106,7 @@ test("how a command ended is said once for every subject", () => {
     "The machine is offline, so the answer wasn't sent. Try again once it's back.",
     "This chat's machine is gone, so it takes no answers.",
     "The connection closed. The answer may not have been sent.",
-    "The server didn't answer. The answer may not have been sent.",
+    "No answer came. The answer may not have been sent.",
   ]);
 });
 

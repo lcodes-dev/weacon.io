@@ -33,7 +33,7 @@ pub(crate) use self::busy::{Install, LeaveId, LeaveStep};
 use self::handle::Ask;
 pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
-use self::pending::{PendingAnswer, PendingEnd, PendingInterrupt};
+use self::pending::{PendingEnd, PendingInterrupt};
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
@@ -84,7 +84,6 @@ struct Chat {
     launching: Option<RunId>,
     /// A run let go after a failed write whose agent is still starting.
     let_go: Option<RunId>,
-    pending_answers: Vec<PendingAnswer>,
     pending_end: Option<PendingEnd>,
     /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
     pending_interrupts: Vec<PendingInterrupt>,
@@ -113,7 +112,6 @@ impl Chat {
             && !self.is_starting()
             && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
-            && self.pending_answers.is_empty()
             && self.pending_end.is_none()
             && self.pending_session.is_none()
             && self.held.is_none()
@@ -344,7 +342,6 @@ impl<A: Agent> Engine<A> {
                 orders: None,
                 launching: None,
                 let_go: None,
-                pending_answers: Vec::new(),
                 pending_end: None,
                 pending_interrupts: Vec::new(),
                 pending_session: None,
@@ -568,7 +565,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn an_empty_prompt_ends_in_a_failed_receipt_and_the_next_is_queued() {
+    async fn an_empty_prompt_is_refused_and_the_next_is_queued() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;
         let mut agent = first_turn(&mut bench, &mut pushes).await;
@@ -580,10 +577,7 @@ mod tests {
 
         assert_eq!(
             pushed(&mut pushes, 2).await,
-            [
-                "5 receipt r-2 failed chat.empty_prompt",
-                "6 prompt r-3 Next"
-            ]
+            ["5 prompt r-3 Next", "6 receipt r-3 accepted"]
         );
         agent.told.try_recv().unwrap_err();
     }
@@ -726,10 +720,7 @@ mod tests {
         bench.command(same).await.unwrap();
         assert_eq!(
             pushed(&mut pushes, 2).await,
-            [
-                "5 receipt r-2 failed chat.agent_conflict",
-                "6 prompt r-3 More"
-            ]
+            ["5 prompt r-3 More", "6 receipt r-3 accepted"]
         );
     }
 
@@ -741,8 +732,7 @@ mod tests {
         let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
         assert_eq!(code_of(bench.command(newer).await), "message.unsupported");
 
-        let failed = pushed(&mut pushes, 1).await;
-        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
+        assert_eq!(pushed(&mut pushes, 1).await, ["nothing"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1099,8 +1089,7 @@ mod tests {
             .command(command("r-1", "c-1", ChatAction::Newer), &anyone);
         let refused = action.await.unwrap_err();
         assert_eq!(refused.code().as_str(), "message.unsupported");
-        let failed = pushed(&mut pushes, 1).await;
-        assert_eq!(failed, ["1 receipt r-1 failed message.unsupported"]);
+        assert_eq!(pushed(&mut pushes, 1).await, ["nothing"]);
         let asked = bench
             .chats
             .query(query("c-1", ChatQueryKind::Newer), &anyone);

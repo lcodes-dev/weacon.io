@@ -24,7 +24,7 @@ const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => str
   full: ({ subject, unsent }) => `This workspace is full, so ${subject} ${unsent}.`,
   unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
   lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
-  unsure: ({ subject, unsure }) => `The server didn't answer. ${capital(subject)} ${unsure}.`,
+  unsure: ({ subject, unsure }) => `No answer came. ${capital(subject)} ${unsure}.`,
 };
 
 /** What a person reads once a command about `about` ended as `settled`: nothing when it was taken. */

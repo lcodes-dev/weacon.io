@@ -235,11 +235,10 @@ async fn take_up(
         let (key, request, taken) = match ask {
             Ask::Command(id, command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
-                let request = Some(command.request.clone());
-                let asked = command.request.clone();
+                let request = command.request.clone();
                 let taken = chats.command(command, &client).await;
-                drop(answer.send(answered(id, asked, &taken)).await);
-                (key, request, taken)
+                drop(answer.send(answered(id, request.clone(), &taken)).await);
+                (key, Some(request), taken)
             }
             Ask::Follow(key, after) => {
                 let followed = follow(&chats, &client, &key, after, &mut jumps).await;

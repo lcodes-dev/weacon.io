@@ -25,7 +25,6 @@ impl<A: Agent> Engine<A> {
             RunState::Sleeping
         };
         let chat = self.open(key).await?;
-        chat.pending_answers.clear();
         // What the run reported first wins over a later end, such as its exit.
         let outcome = match chat.pending_end.take() {
             Some(end) if turn.as_ref() == Some(&end.turn) => end.outcome,

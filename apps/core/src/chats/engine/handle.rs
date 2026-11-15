@@ -89,8 +89,7 @@ impl Chats {
     }
 
     /// Acts on `command` from `client`. Its receipts are events in the chat's log; an error
-    /// means it has no receipt, and sending it again is safe. A hold or a release has none: it
-    /// is done once this returns.
+    /// refuses it. A hold or a release has none: it is done once this returns.
     pub(crate) async fn command(&self, command: ChatCommand, client: &Client) -> Result<(), Fault> {
         let (answer, answered) = oneshot::channel();
         let ask = Ask::Command(command, client.clone(), answer);

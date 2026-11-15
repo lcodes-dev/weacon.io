@@ -16,7 +16,7 @@ use weacon_protocol::{
 };
 
 use crate::auth::{Member, Session};
-use crate::chats::{self, Watch};
+use crate::chats::{self, Asking, Watch};
 use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
 use crate::http::{RequestTag, failure};
@@ -274,10 +274,12 @@ async fn received(
     let asks = feed.hears(CHAT_COMMANDS) && chats::asks(&envelope.message);
     if reads || asks {
         feed.allowed(shared).await?;
-        let answer = feed
-            .chats
-            .heard(envelope, &feed.member, &feed.asker, shared, &feed.answer_to)
-            .await;
+        let asking = Asking {
+            member: &feed.member,
+            asker: &feed.asker,
+            back: &feed.answer_to,
+        };
+        let answer = feed.chats.heard(envelope, asking, shared).await;
         return send_chats(socket, shared, feed, answer).await;
     }
     if feed.hears(TERMINALS)

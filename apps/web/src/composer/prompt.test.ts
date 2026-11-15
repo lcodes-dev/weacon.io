@@ -34,7 +34,7 @@ test("a prompt is sent and waits for its receipt, unless it is over the server's
 test("a send says why it wasn't taken, or may not have been, and nothing once it was", () => {
   assert.equal(sentProblem("accepted"), undefined);
   assert.equal(sentProblem("lost"), "The connection closed. The message may not have been sent.");
-  assert.equal(sentProblem("unsure"), "The server didn't answer. The message may not have been sent.");
+  assert.equal(sentProblem("unsure"), "No answer came. The message may not have been sent.");
   assert.equal(sentProblem("refused"), "The message wasn't sent.");
   assert.equal(sentProblem("offline"), "The machine is offline, so the message wasn't sent. Try again once it's back.");
   assert.equal(sentProblem("detached"), "This chat's machine is gone, so it can be read but takes no messages.");

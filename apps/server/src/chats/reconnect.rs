@@ -47,17 +47,18 @@ async fn pick_up(shared: &Shared, connected: &Connected) {
     }
 }
 
-/// Follows again `connected`'s unsettled chats in its owner's workspaces, whose runs it may
-/// still be at; gives how many weren't followed.
+/// Follows again `connected`'s open chats in its owner's workspaces, so it sends up what it did
+/// meanwhile; gives how many weren't followed.
 async fn follow_again(shared: &Shared, connected: &Connected) -> Result<usize, Fault> {
     let Connected { machine, owner } = connected;
     let mut unsent = 0_usize;
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
-        for (chat, core_seq) in workspace.unsettled_on(machine).await? {
+        for (chat, core_seq) in workspace.open_on(machine).await? {
             let follow = link::follow(workspace.id(), &chat, core_seq);
             // What can't be followed now is the next time the machine connects.
-            if link::send_all(shared, machine, vec![follow]).is_err() {
+            let sent = vec![(shared.links.next_id(), follow)];
+            if link::send_all(shared, machine, link::SERVE, sent).is_err() {
                 unsent += 1;
             }
         }
@@ -89,7 +90,7 @@ mod tests {
         })
     }
 
-    // Ada's chats c-1, at work since its machine's event 3, and c-2, at rest, on her machine.
+    // Ada's chats c-1, whose machine sent up to its event 3, and c-2, on her machine.
     async fn chats(ada: &Ada) {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
@@ -101,7 +102,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_connecting_again_follows_its_chats_at_work_and_nothing_else() {
+    async fn a_machine_connecting_again_follows_its_open_chats_and_nothing_else() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
@@ -110,7 +111,10 @@ mod tests {
 
         assert_eq!(follow_again(shared, &connected(&ada)).await.unwrap(), 0);
 
-        assert_eq!(sent(&mut attached), [follow_query("c-1", 3)]);
+        assert_eq!(
+            sent(&mut attached),
+            [follow_query("c-1", 3), follow_query("c-2", 0)]
+        );
         let elsewhere = Connected {
             machine: id("mc-other"),
             owner: ada.asker.account.clone(),
@@ -137,7 +141,10 @@ mod tests {
 
         follow(shared.clone(), missed).await;
 
-        assert_eq!(sent(&mut attached), [follow_query("c-1", 3)]);
+        assert_eq!(
+            sent(&mut attached),
+            [follow_query("c-1", 3), follow_query("c-2", 0)]
+        );
     }
 
     #[tokio::test]
@@ -155,7 +162,7 @@ mod tests {
         assert_eq!(first.message, follow_query("c-1", 3));
         drop(attached);
         let older = attach(shared, &ada, &["machine.connect"]);
-        assert_eq!(follow_again(shared, &connected(&ada)).await.unwrap(), 1);
+        assert_eq!(follow_again(shared, &connected(&ada)).await.unwrap(), 2);
         pick_up(shared, &connected(&ada)).await;
         let warned = crate::test_support::messages(&fixture.records);
         assert!(warned.contains(&"chats not all picked up"), "{warned:?}");

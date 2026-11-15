@@ -93,7 +93,6 @@ DROP TABLE changes;
 ALTER TABLE changes_with_chats RENAME TO changes;
 ";
 
-/// Chat commands are sent once, so none is kept to send again.
 pub(crate) const REQUESTS_GONE: &str = "
 DROP TABLE chat_requests;
 ";

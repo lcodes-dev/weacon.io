@@ -1,5 +1,5 @@
 import { type Sent, sentProblem } from "../composer/prompt.ts";
-import type { AgentKind, MachineId, MachineSummary, RepoId, SignInState } from "../protocol.ts";
+import type { MachineSummary, RepoId, SignInState } from "../protocol.ts";
 import { lacks } from "../machines/core.ts";
 import { type Subject, settledText } from "../receipts.ts";
 
@@ -11,7 +11,7 @@ export function readiness(sends: boolean, machines: MachineSummary[]): Readiness
   if (!sends) {
     return { kind: "unserved" };
   }
-  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve"));
+  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve") && !lacks(machine, "chat.answers"));
   if (usable.length > 0) {
     return { kind: "ready", machines: usable };
   }
@@ -32,9 +32,6 @@ const MISSING: Record<Exclude<Readiness["kind"], "ready">, string> = {
 export function missingText(kind: Exclude<Readiness["kind"], "ready">): string {
   return MISSING[kind];
 }
-
-/** What a new chat's first prompt names besides its text. */
-export type Choice = { machine: MachineId; repo: RepoId; agent: AgentKind };
 
 const NEW_CHAT: Subject = {
   subject: "the chat",

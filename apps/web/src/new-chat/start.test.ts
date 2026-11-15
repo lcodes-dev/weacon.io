@@ -23,6 +23,8 @@ test("a chat starts only where the server takes commands, on a connected machine
   assert.deepEqual(readiness(true, []), { kind: "unpaired" });
   assert.deepEqual(readiness(true, [away]), { kind: "offline" });
   assert.deepEqual(readiness(true, [away, old]), { kind: "outdated" });
+  const silent = machine("mc-5", { connected: true, missing: ["chat.answers"] });
+  assert.deepEqual(readiness(true, [silent]), { kind: "outdated" });
   const other = machine("mc-4", { connected: true, missing: ["terminal.relay"] });
   assert.deepEqual(readiness(true, [other]), { kind: "ready", machines: [other] });
 });
@@ -40,7 +42,7 @@ test("a first prompt that didn't start its chat says why, and the right way on",
   assert.equal(startProblem("refused"), "The chat couldn't be started.");
   assert.equal(startProblem("full"), "This workspace is full, so the chat wasn't started.");
   assert.equal(startProblem("unsupported"), "The machine's core can't do this, so the chat couldn't be started.");
-  assert.equal(startProblem("unsure"), "The server didn't answer. The chat may have started.");
+  assert.equal(startProblem("unsure"), "No answer came. The chat may have started.");
   assert.equal(startProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });
 

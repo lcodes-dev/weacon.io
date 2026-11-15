@@ -8,24 +8,25 @@ use weacon_protocol::{
 
 use crate::shared::Shared;
 
-/// What a core must offer to be sent chats' commands and queries.
+/// What a core must offer to be sent chats' queries.
 pub(crate) const SERVE: Code = code!("chat.serve");
+/// What a core must offer to be sent chats' commands: it answers each, taken or refused.
+pub(crate) const ANSWERS: Code = code!("chat.answers");
 
-/// Sends `messages` to `machine`, all of them or none, refusing with `machine.offline` when it
-/// isn't connected, doesn't serve chats or hasn't room for them all.
+/// Sends `messages` to `machine` under their envelope ids, all of them or none, refusing with
+/// `machine.offline` when it isn't connected, doesn't offer `needs` or hasn't room for them all.
 pub(crate) fn send_all(
     shared: &Shared,
     machine: &MachineId,
-    messages: Vec<Message>,
+    needs: Code,
+    messages: Vec<(u32, Message)>,
 ) -> Result<(), Fault> {
-    let envelopes = messages.into_iter().map(|message| Envelope {
-        id: shared.links.next_id(),
-        message,
-    });
-    let serve = Capability::new(SERVE);
+    let envelopes = messages
+        .into_iter()
+        .map(|(id, message)| Envelope { id, message });
     shared
         .links
-        .send_all(machine, &serve, envelopes.collect())
+        .send_all(machine, &Capability::new(needs), envelopes.collect())
         .map_err(|_| offline())
 }
 

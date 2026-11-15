@@ -259,12 +259,9 @@ impl Workspace {
         Ok(())
     }
 
-    /// The open chats made on `machine`, whose owner still owns it, with a run at work, each
-    /// with the last of its events it has.
-    pub(crate) async fn unsettled_on(
-        &self,
-        machine: &MachineId,
-    ) -> Result<Vec<(ChatId, u64)>, Fault> {
+    /// The open chats made on `machine`, whose owner still owns it, each with the last of its
+    /// events it has.
+    pub(crate) async fn open_on(&self, machine: &MachineId) -> Result<Vec<(ChatId, u64)>, Fault> {
         sqlx::query_as::<_, (String, i64)>(
             "SELECT c.chat_id, c.core_seq FROM chats AS c
              JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
@@ -272,7 +269,6 @@ impl Workspace {
              WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
-                 AND json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
              ORDER BY c.chat_id",
         )
         .bind(self.id.as_str())
@@ -405,10 +401,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_follows_again_only_its_open_chats_with_a_run_at_work() {
+    async fn a_machine_follows_again_its_open_chats_made_there() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
-        for chat in ["c-1", "c-2", "c-3", "c-4", "c-5"] {
+        for chat in ["c-1", "c-2", "c-3", "c-4"] {
             make(&one, chat, "m1", NOW).await.unwrap();
         }
         // Its first prompt never reached the machine.
@@ -417,30 +413,24 @@ mod tests {
         make(&one, "c-7", "m3", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
-        let running = || status(RunState::Running);
         append(&one, "c-2", &[(Some(4), status(RunState::Idle))])
             .await
             .unwrap();
-        append(&one, "c-3", &[(Some(7), running())]).await.unwrap();
-        append(&one, "c-4", &[(Some(2), running())]).await.unwrap();
-        append(&one, "c-5", &[(Some(2), running())]).await.unwrap();
-        append(&one, "c-7", &[(Some(2), running())]).await.unwrap();
-        append(&two, "c-1", &[(Some(2), running())]).await.unwrap();
-        one.set_chat_state(&id("c-4"), ChatState::Detached)
+        one.set_chat_state(&id("c-3"), ChatState::Detached)
             .await
             .unwrap();
-        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-5'")
+        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-4'")
             .execute(&one.db.writer)
             .await
             .unwrap();
 
-        let unsettled = one.unsettled_on(&id("mc-1")).await.unwrap();
-        let ids: Vec<_> = unsettled
+        let open = one.open_on(&id("mc-1")).await.unwrap();
+        let ids: Vec<_> = open
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-3", 7)]);
-        assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
+        assert_eq!(ids, [("c-1", 0), ("c-2", 4)]);
+        assert_eq!(two.open_on(&id("mc-1")).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
