@@ -11,7 +11,9 @@ use axum::routing::get;
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{Capability, Code, Envelope, MAX_FRAME, MachineId, Message, code};
+use weacon_protocol::{
+    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineId, MachineName, Message, code,
+};
 
 use crate::auth::Machine;
 use crate::connections::Place;
@@ -100,6 +102,20 @@ pub(crate) fn offers() -> Vec<Capability> {
     vec![Capability::new(CONNECT), Capability::new(SETTINGS)]
 }
 
+/// What of `hello` the machines list keeps: its build, only when each part is short text that
+/// shows as it is stored, by the rule for machines' names; and only those of its capabilities
+/// the server offers, so a core can't store more.
+fn kept(hello: &Hello) -> (Option<&App>, Vec<Capability>) {
+    let build = &hello.app;
+    let plain = [&build.name, &build.version, &build.commit]
+        .into_iter()
+        .all(|part| MachineName::try_from(part.clone()).is_ok());
+    let offers = (offers().into_iter())
+        .filter(|offer| hello.capabilities.contains(offer))
+        .collect();
+    (plain.then_some(build), offers)
+}
+
 async fn run(
     socket: &mut WebSocket,
     shared: &Shared,
@@ -114,10 +130,8 @@ async fn run(
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
-    if let Err(fault) = (shared.db)
-        .saw_core(&link.machine.id, &hello.app, &hello.capabilities)
-        .await
-    {
+    let (build, kept) = kept(&hello);
+    if let Err(fault) = shared.db.saw_core(&link.machine.id, build, &kept).await {
         // The machines list shows it as it last was; the connection goes on.
         link.log
             .warn("core build not kept", &[("err", Field::error(&fault))]);
@@ -196,7 +210,40 @@ mod tests {
         (paired, client)
     }
 
-    // An older core still connects; only one on another protocol is turned away.
+    #[test]
+    fn only_a_plain_build_and_the_servers_own_offers_are_kept() {
+        let hello = |version: &str, offered: &[&str]| Hello {
+            protocol: PROTOCOL,
+            app: App {
+                name: "weacon-core".to_owned(),
+                version: version.to_owned(),
+                commit: "abc".to_owned(),
+            },
+            capabilities: serde_json::from_value(serde_json::json!(offered)).unwrap(),
+        };
+        let plain = hello(
+            "1.2.3",
+            &["future.thing", "machine.settings", "machine.connect"],
+        );
+        let (build, offers) = kept(&plain);
+        assert_eq!(build, Some(&plain.app));
+        assert_eq!(
+            offers,
+            offers_named(&["machine.connect", "machine.settings"])
+        );
+        for version in ["1.2.3\u{202e}", "1.2.3\n", &"9".repeat(65), ""] {
+            assert_eq!(
+                kept(&hello(version, &[])),
+                (None, Vec::new()),
+                "{version:?}"
+            );
+        }
+    }
+
+    fn offers_named(names: &[&str]) -> Vec<Capability> {
+        serde_json::from_value(serde_json::json!(names)).unwrap()
+    }
+
     #[tokio::test]
     async fn a_core_that_speaks_another_protocol_is_refused() {
         let fixture = Fixture::new().await;

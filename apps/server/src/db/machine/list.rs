@@ -1,13 +1,13 @@
 //! The machines paired with an account, each with its core's build as it last connected.
 
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, App, Capability, MachineId, MachineSummary, code};
+use weacon_protocol::{AccountId, App, Capability, MachineId, MachineSummary};
 
 use super::paired;
-use crate::db::{Db, failed, unreadable};
+use crate::db::{Db, failed};
 
-/// A machine's id, name, system, key and when it was paired, and its core's name, version,
-/// commit and offers when it last connected, as stored.
+/// A machine's id, name, system, key and when it was paired, and its core's build and offers
+/// as JSON, as stored.
 type Row = (
     String,
     String,
@@ -16,22 +16,19 @@ type Row = (
     i64,
     Option<String>,
     Option<String>,
-    Option<String>,
-    Option<String>,
 );
 
 impl Db {
-    /// The machines paired with `account`, oldest first, each with what of `offered`, the
-    /// server's offers to cores, its core didn't offer back when it last connected.
+    /// The machines paired with `account`, oldest first, each with the `offered` capabilities
+    /// its core didn't offer back when it last connected.
     pub(crate) async fn machines_of(
         &self,
         account: &AccountId,
         offered: &[Capability],
     ) -> Result<Vec<MachineSummary>, Fault> {
         sqlx::query_as::<_, Row>(
-            "SELECT machine_id, name, os, machine_key, paired_at,
-                    core_name, core_version, core_commit, core_offers FROM machines
-             WHERE account_id = ? ORDER BY paired_at, machine_id",
+            "SELECT machine_id, name, os, machine_key, paired_at, core_build, core_offers
+             FROM machines WHERE account_id = ? ORDER BY paired_at, machine_id",
         )
         .bind(account.as_str())
         .fetch_all(&self.readers)
@@ -46,48 +43,32 @@ impl Db {
     pub(crate) async fn saw_core(
         &self,
         machine: &MachineId,
-        core: &App,
+        core: Option<&App>,
         offers: &[Capability],
     ) -> Result<(), Fault> {
-        let offers = serde_json::to_string(offers).map_err(|error| {
-            Fault::new(code!("db.unwritable"), "A value can't be stored").because(error)
-        })?;
-        sqlx::query(
-            "UPDATE machines SET core_name = ?, core_version = ?, core_commit = ?, core_offers = ?
-             WHERE machine_id = ?",
-        )
-        .bind(&core.name)
-        .bind(&core.version)
-        .bind(&core.commit)
-        .bind(offers)
-        .bind(machine.as_str())
-        .execute(&self.writer)
-        .await
-        .map_err(failed)
-        .map(drop)
+        sqlx::query("UPDATE machines SET core_build = ?, core_offers = ? WHERE machine_id = ?")
+            .bind(core.and_then(|core| serde_json::to_string(core).ok()))
+            .bind(serde_json::to_string(offers).ok())
+            .bind(machine.as_str())
+            .execute(&self.writer)
+            .await
+            .map_err(failed)
+            .map(drop)
     }
 }
 
 fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fault> {
-    let (id, name, os, key, paired_at, core_name, version, commit, offers) = row;
-    let core = match (core_name, version, commit) {
-        (Some(name), Some(version), Some(commit)) => Some(App {
-            name,
-            version,
-            commit,
-        }),
-        _ => None,
-    };
-    let offers: Vec<Capability> = match offers {
-        Some(offers) => serde_json::from_str(&offers).map_err(|_| unreadable())?,
-        None => Vec::new(),
-    };
-    let missing = match core {
-        Some(_) => (offered.iter())
+    let (id, name, os, key, paired_at, core, offers) = row;
+    // A value this build can't read shows the machine as not connected yet, not the list as broken.
+    let core: Option<App> = core.and_then(|core| serde_json::from_str(&core).ok());
+    let offers: Option<Vec<Capability>> =
+        offers.and_then(|offers| serde_json::from_str(&offers).ok());
+    let missing = match (&core, offers) {
+        (Some(_), Some(offers)) => (offered.iter())
             .filter(|wanted| !offers.contains(wanted))
             .cloned()
             .collect(),
-        None => Vec::new(),
+        _ => Vec::new(),
     };
     Ok(MachineSummary {
         core,

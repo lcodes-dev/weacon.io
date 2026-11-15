@@ -484,14 +484,15 @@ mod tests {
         };
 
         let before = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), &core, &offered[..1])
+        db.saw_core(&id("mc-p1"), Some(&core), &offered[..1])
             .await
             .unwrap();
         let older = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), &core, &offered).await.unwrap();
+        db.saw_core(&id("mc-p1"), Some(&core), &offered)
+            .await
+            .unwrap();
         let current = db.machines_of(&ada, &offered).await.unwrap();
 
-        // Before its core has connected, a machine lacks nothing it could be told of.
         assert_eq!(
             (before[0].core.as_ref(), before[0].missing.len()),
             (None, 0)
