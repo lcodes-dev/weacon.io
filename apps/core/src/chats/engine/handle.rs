@@ -18,6 +18,7 @@ pub(crate) struct Chats {
 
 pub(super) enum Ask {
     Command(ChatCommand, oneshot::Sender<Result<(), Fault>>),
+    Busy(oneshot::Sender<bool>),
     Query(
         ChatQuery,
         Client,
@@ -27,6 +28,21 @@ pub(super) enum Ask {
 
 fn stopped() -> Fault {
     Fault::new(code!("chat.engine_stopped"), "The daemon is stopping")
+}
+
+/// A way to the engine that lets it stop once every [`Chats`] is gone.
+#[derive(Clone, Debug)]
+pub(crate) struct WeakChats(mpsc::WeakSender<Ask>);
+
+impl WeakChats {
+    /// Whether an agent is on a turn or waits on a person, or a session or a turn's end the
+    /// journal couldn't save yet is only in memory, which a restart would cut off or lose.
+    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
+        let asks = self.0.upgrade().ok_or_else(stopped)?;
+        let (answer, answered) = oneshot::channel();
+        asks.send(Ask::Busy(answer)).await.map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())
+    }
 }
 
 impl Chats {
@@ -42,6 +58,11 @@ impl Chats {
         let ask = Ask::Command(command, answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
+    }
+
+    /// A way to ask whether the engine is busy that doesn't keep it running.
+    pub(crate) fn downgrade(&self) -> WeakChats {
+        WeakChats(self.asks.downgrade())
     }
 
     /// The answer to `query`, if it has one; a subscription's events go to `client`.

@@ -1,4 +1,4 @@
-//! Checks a release's manifest against the keys every build trusts.
+//! Release manifests: the keys every build trusts, and checking a manifest against them.
 
 use minisign_verify::{PublicKey, Signature};
 use weacon_observability::Fault;
@@ -46,7 +46,9 @@ pub(crate) fn verified(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::update::fixtures::{LEGACY, MANIFEST, OTHER, OTHER_SIGNATURE, SIGNATURE, TEST_KEY};
+    use crate::update::fixtures::{
+        LEGACY_SIGNATURE, MANIFEST, NOT_A_MANIFEST, NOT_A_MANIFEST_SIGNATURE, SIGNATURE, TEST_KEY,
+    };
 
     fn code(result: Result<ReleaseManifest, Fault>) -> String {
         result.unwrap_err().code().as_str().to_owned()
@@ -84,7 +86,12 @@ mod tests {
     #[test]
     fn a_legacy_or_garbled_signature_is_refused() {
         let garbled = SIGNATURE.replace("BJKm", "BJKn");
-        for signature in [LEGACY, garbled.as_str(), "", "untrusted comment: x\n"] {
+        for signature in [
+            LEGACY_SIGNATURE,
+            garbled.as_str(),
+            "",
+            "untrusted comment: x\n",
+        ] {
             let result = verified(MANIFEST.as_bytes(), signature, &[TEST_KEY]);
             assert_eq!(code(result), "update.unsigned", "{signature:?}");
         }
@@ -106,7 +113,11 @@ mod tests {
 
     #[test]
     fn signed_bytes_that_are_no_manifest_are_refused() {
-        let result = verified(OTHER.as_bytes(), OTHER_SIGNATURE, &[TEST_KEY]);
+        let result = verified(
+            NOT_A_MANIFEST.as_bytes(),
+            NOT_A_MANIFEST_SIGNATURE,
+            &[TEST_KEY],
+        );
         assert_eq!(code(result), "update.bad_manifest");
     }
 
