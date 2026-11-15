@@ -19,8 +19,7 @@ const LEVELS: Array<[AccessLevel, string]> = [
   ["full", "Full"],
 ];
 
-/** The agents a core runs, by their vendors' names. */
-export const AGENTS = new Map<AgentKind | string, string>([
+const AGENTS = new Map<AgentKind | string, string>([
   ["claude", "Claude Code"],
   ["codex", "Codex"],
 ]);

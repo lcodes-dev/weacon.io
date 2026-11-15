@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MachineSummary } from "../protocol.ts";
-import { Starts, missingText, readiness, servesChats, startBlocked, startProblem } from "./start.ts";
+import { Starts, missingText, readiness, startBlocked, startProblem } from "./start.ts";
 
 const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary => ({
   id,
@@ -23,16 +23,15 @@ test("a chat starts only where the server takes commands, on a connected machine
   assert.deepEqual(readiness(true, []), { kind: "unpaired" });
   assert.deepEqual(readiness(true, [away]), { kind: "offline" });
   assert.deepEqual(readiness(true, [away, old]), { kind: "outdated" });
-  assert.ok(servesChats(machine("mc-4", { missing: ["terminal.relay"] })));
-  assert.ok(!servesChats(old));
+  const other = machine("mc-4", { connected: true, missing: ["terminal.relay"] });
+  assert.deepEqual(readiness(true, [other]), { kind: "ready", machines: [other] });
 });
 
 test("each thing missing reads as its own line, and nothing is missing once a chat can start", () => {
-  const lines = (["unserved", "unpaired", "offline", "outdated"] as const).map((kind) => missingText({ kind }));
+  const lines = (["unserved", "unpaired", "offline", "outdated"] as const).map(missingText);
   assert.equal(new Set(lines).size, 4);
-  assert.equal(missingText({ kind: "unpaired" }), "Pair a machine in Settings to start a chat.");
-  assert.equal(missingText({ kind: "offline" }), "Your machine is offline. Start Weacon on it to start a chat.");
-  assert.equal(missingText({ kind: "ready", machines: [] }), undefined);
+  assert.equal(missingText("unpaired"), "Pair a machine in Settings to start a chat.");
+  assert.equal(missingText("offline"), "Your machine is offline. Start Weacon on it to start a chat.");
 });
 
 test("a retry of a first prompt that may have run goes to the same chat with the same choice", () => {
@@ -49,7 +48,6 @@ test("a retry of a first prompt that may have run goes to the same chat with the
   assert.equal(starts.end("r-1", "lost"), undefined);
   assert.deepEqual(starts.begin("r-1", "w-1", "Fix the build.", { ...choice, repo: "web" }, fresh), first);
   assert.equal(starts.end("r-1", "accepted"), "c-1");
-  // Only the first word counts; a late receipt for it starts nothing more.
   assert.equal(starts.end("r-1", "accepted"), undefined);
 });
 
@@ -71,7 +69,7 @@ test("a first prompt that didn't start its chat says why, and the right way on",
   assert.equal(startProblem("offline"), "The machine is offline, so the chat wasn't started. Try again once it's back.");
   assert.equal(startProblem("refused"), "The chat couldn't be started.");
   assert.equal(startProblem("full"), "This workspace is full, so the chat wasn't started.");
-  assert.equal(startProblem("unsupported"), "That machine's weacon can't run this agent. Pick another, or update it.");
+  assert.equal(startProblem("unsupported"), "The machine's core can't do this, so the chat couldn't be started.");
   assert.equal(startProblem("unsure"), "The server didn't answer. The chat may have started.");
   assert.equal(startProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });

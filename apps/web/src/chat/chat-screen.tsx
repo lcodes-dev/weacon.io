@@ -38,7 +38,7 @@ export function ChatScreen({
   mine: boolean;
   away: boolean;
   /** The chat's title, a pull request's to start with. */
-  title?: string;
+  title?: string | undefined;
   /** The workspace's members' names, for its agents' owners. */
   names?: Names;
 }) {

@@ -7,13 +7,13 @@ import { Composer } from "../composer/composer.tsx";
 import type { Send } from "../composer/prompt.ts";
 import { later } from "../connection.ts";
 import { newId } from "../ids.ts";
-import { AGENTS } from "../machines/machine-settings.tsx";
+import { vendorName } from "../chat/label.ts";
 import { current, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Readiness, Starts, missingText, startBlocked, startProblem } from "./start.ts";
 
-const NO_SETTINGS: MachineSettings | undefined = undefined;
+const KINDS: AgentKind[] = ["claude", "codex"];
 
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
@@ -38,7 +38,7 @@ export function NewChat({
   const machine = machines.find(({ id }) => id === picked) ?? machines[0];
   const id = machine?.id;
   const key = `${id} ${socket.workspace}`;
-  const settings = useLoaded(() => (id === undefined ? answered(NO_SETTINGS) : current(socket, id, later)), key);
+  const settings = useLoaded(() => (id === undefined ? answered<MachineSettings | undefined>(undefined) : current(socket, id, later)), key);
   const listed = useLoaded(() => (id === undefined ? answered<RepoId[]>([]) : repos(socket, id, later)), key);
   const [repo, setRepo] = useState<RepoId>();
   const [agent, setAgent] = useState<AgentKind>("claude");
@@ -59,7 +59,7 @@ export function NewChat({
   const shownRepos = listed.value;
   const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
   const signIn = settings.value?.sign_ins.find((one) => one.agent === agent)?.state;
-  const agentName = AGENTS.get(agent) ?? "This agent";
+  const agentName = vendorName(agent);
   const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: agentName, signIn });
   const send: Send = async (text, request) => {
     if (machine === undefined || chosenRepo === undefined) {
@@ -109,10 +109,10 @@ export function NewChat({
       {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
       <label>
         Agent
-        <select value={agent} onChange={(event) => setAgent(event.target.value === "codex" ? "codex" : "claude")}>
-          {[...AGENTS].map(([kind, name]) => (
+        <select value={agent} onChange={(event) => setAgent(KINDS.find((kind) => kind === event.target.value) ?? agent)}>
+          {KINDS.map((kind) => (
             <option key={kind} value={kind}>
-              {name}
+              {vendorName(kind)}
             </option>
           ))}
         </select>
@@ -140,7 +140,7 @@ export function StartMissing({ ready, check, openSettings }: { ready: Readiness 
   }
   return (
     <p className="muted">
-      {ready === undefined ? "Looking for your machines." : missingText(ready)}{" "}
+      {ready === undefined ? "Looking for your machines." : missingText(ready.kind)}{" "}
       {ready?.kind === "unpaired" && (
         <button type="button" onClick={openSettings}>
           Open Settings

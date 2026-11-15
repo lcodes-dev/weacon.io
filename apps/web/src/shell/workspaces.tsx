@@ -218,13 +218,13 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const { api, workspace, socket, place } = open;
   const status = useFeed(workspace.id, api, socket, log);
   // Whether the server serves chats, known once the feed is welcomed.
-  const { read } = useChatAccess(socket);
+  const { read, send } = useChatAccess(socket);
   const names = useNames(api, workspace.id, socket);
   const served = useSections(socket);
   const searches = useOffers(socket, "workspace.search");
   const palette = (chatMachine?: string) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
   if (place.view === "chats") {
-    return <WorkspaceChats {...open} place={place} status={status} read={read} names={names} palette={palette} />;
+    return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} />;
   }
   return (
     <div className="workspace">
@@ -300,21 +300,21 @@ function WorkspaceChats({
   place,
   go,
   read,
+  send,
   names,
   palette,
   openSettings,
-}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; names: Names; palette(chatMachine?: string): ReactNode }) {
+}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: string): ReactNode }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
-  const { send } = useChatAccess(socket);
   const ready = machines.value === undefined ? undefined : readiness(send, machines.value.machines);
   const [starting, setStarting] = useState(false);
   // The chat just started here, shown before the list has it.
   const [started, setStarted] = useState<ChatId>();
   const live = status.state === "live";
   const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
-  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: "" } : undefined);
+  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, owner: workspace.member ?? "" } : undefined);
   const newChat = starting && ready?.kind === "ready" ? ready.machines : undefined;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
@@ -342,7 +342,7 @@ function WorkspaceChats({
         />
       </div>
       <section>
-        <Heading title={newChat !== undefined ? "New chat" : open?.title || workspace.name} status={status} />
+        <Heading title={newChat !== undefined ? "New chat" : (open?.title ?? workspace.name)} status={status} />
         {newChat !== undefined ? (
           <NewChat
             socket={socket}
@@ -363,7 +363,7 @@ function WorkspaceChats({
               link={socket}
               live={live}
               chatRef={{ workspace: workspace.id, chat: open.id }}
-              mine={listedChat === undefined || owns(workspace.member, listedChat)}
+              mine={owns(workspace.member, open)}
               away={away}
               title={open.title}
               names={names}

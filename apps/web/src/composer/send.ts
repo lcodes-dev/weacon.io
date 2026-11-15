@@ -6,7 +6,7 @@ import { type Ended, Sends } from "./sends.ts";
 
 /**
  * One box's `Sends` for React: `taken` hears each send's payload once it is accepted, at once or
- * late, and `explain` words why one wasn't.
+ * late, and `explain`, which must not change, words why one wasn't.
  */
 export function useSend<T>(send: Send, lates: Lates, taken: (payload: T) => void, explain?: (sent: Sent) => string | undefined) {
   const [sending, setSending] = useState(false);

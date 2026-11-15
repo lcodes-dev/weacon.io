@@ -1,22 +1,18 @@
 import type { ChatRef } from "../chat-ref.ts";
 import { type Sent, sentProblem } from "../composer/prompt.ts";
 import type { AgentKind, ChatAction, ChatId, MachineId, MachineSummary, RepoId, RequestId, SignInState, WorkspaceId } from "../protocol.ts";
+import { lacks } from "../machines/core.ts";
 import { type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
 /** Whether a person can start a chat: on which of their machines, or what is missing first. */
 export type Readiness = { kind: "ready"; machines: MachineSummary[] } | { kind: "unserved" | "unpaired" | "offline" | "outdated" };
-
-/** Whether a machine's core runs chats: one older than the server's `chat.serve` doesn't. */
-export function servesChats(machine: MachineSummary): boolean {
-  return !(machine.missing ?? []).includes("chat.serve");
-}
 
 /** Where a person who may send (`sends`) with `machines` stands on starting a chat. */
 export function readiness(sends: boolean, machines: MachineSummary[]): Readiness {
   if (!sends) {
     return { kind: "unserved" };
   }
-  const usable = machines.filter((machine) => machine.connected === true && servesChats(machine));
+  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve"));
   if (usable.length > 0) {
     return { kind: "ready", machines: usable };
   }
@@ -33,9 +29,9 @@ const MISSING: Record<Exclude<Readiness["kind"], "ready">, string> = {
   outdated: "Your machine's weacon is too old to run chats. Update it to start a chat.",
 };
 
-/** What is missing to start a chat, in one line; nothing when one can be started. */
-export function missingText(ready: Readiness): string | undefined {
-  return ready.kind === "ready" ? undefined : MISSING[ready.kind];
+/** What is missing to start a chat, in one line. */
+export function missingText(kind: Exclude<Readiness["kind"], "ready">): string {
+  return MISSING[kind];
 }
 
 /** What a new chat's first prompt names besides its text. */
@@ -65,7 +61,7 @@ export class Starts {
   /** The chat the first prompt under `request` made, once it ended as `sent`, if it did; only the first word counts. */
   end(request: RequestId, sent: Sent): ChatId | undefined {
     const held = this.#held.get(request);
-    if (held === undefined || mayHaveRun(sent === "too_long" ? "refused" : sent)) {
+    if (held === undefined || (sent !== "too_long" && mayHaveRun(sent))) {
       return undefined;
     }
     this.#held.delete(request);
@@ -85,9 +81,6 @@ const NEW_CHAT: Subject = {
 export function startProblem(sent: Sent): string | undefined {
   if (sent === "too_long") {
     return sentProblem(sent);
-  }
-  if (sent === "unsupported") {
-    return "That machine's weacon can't run this agent. Pick another, or update it.";
   }
   return settledText(sent, NEW_CHAT);
 }
