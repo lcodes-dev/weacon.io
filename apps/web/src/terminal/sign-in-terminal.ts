@@ -69,6 +69,7 @@ export class SignInTerminal {
   // Whether the core has heard of this terminal, and so has one to close.
   #sent = false;
   #received: Promise<void> = Promise.resolve();
+  #typed: Promise<void> = Promise.resolve();
 
   constructor(options: Options) {
     this.#options = options;
@@ -126,11 +127,17 @@ export class SignInTerminal {
     }
   }
 
-  /** Sends what was typed; a long paste goes in pieces that each fit one sealed frame. */
-  async input(data: Uint8Array): Promise<void> {
-    for (let at = 0; at < data.length; at += INPUT_PIECE) {
-      await this.#seal({ kind: "input", data: hex(data.subarray(at, at + INPUT_PIECE)) });
-    }
+  /**
+   * Sends what was typed, after whatever was typed before it; a long paste goes in pieces that
+   * each fit one sealed frame.
+   */
+  input(data: Uint8Array): Promise<void> {
+    this.#typed = this.#typed.then(async () => {
+      for (let at = 0; at < data.length; at += INPUT_PIECE) {
+        await this.#seal({ kind: "input", data: hex(data.subarray(at, at + INPUT_PIECE)) });
+      }
+    });
+    return this.#typed;
   }
 
   resize(size: Size): Promise<void> {
@@ -176,6 +183,9 @@ export class SignInTerminal {
       throw new Error("no handshake to finish");
     }
     const { channel, payload } = await pending.finish(reply);
+    if (this.#done) {
+      return channel.close();
+    }
     if (payload.length > 0) {
       throw new Error("a reply with a payload");
     }

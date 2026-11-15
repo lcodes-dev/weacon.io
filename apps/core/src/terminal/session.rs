@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use weacon_agents::{Event, Launch, SignIn, Size, Terminal};
 use weacon_observability::{Fault, Field, Logger};
@@ -72,7 +73,9 @@ async fn serve(
     let first = session.channel.open(first.as_slice())?;
     let (launch, size) = (session.launch.clone(), session.size);
     let (terminal, mut events) = off_runtime(move || launch.log_in_terminal(size)).await?;
-    apply(&terminal, &first).await?;
+    let (typed, to_write) = mpsc::channel(WAITING);
+    let mut writer = Writer(tokio::spawn(write(terminal, to_write)));
+    pass(&typed, &first)?;
     loop {
         tokio::select! {
             event = events.next() => {
@@ -87,16 +90,44 @@ async fn serve(
                 let Some(sealed) = sealed else {
                     return Ok(());
                 };
-                apply(&terminal, &session.channel.open(sealed.as_slice())?).await?;
+                pass(&typed, &session.channel.open(sealed.as_slice())?)?;
+            }
+            written = &mut writer.0 => {
+                return written.map_err(|error| input_failed().because(error))?;
             }
         }
     }
 }
 
-// Passes on one opened frame; a frame this build doesn't know changes nothing.
-async fn apply(terminal: &Terminal, plaintext: &[u8]) -> Result<(), Fault> {
+// Inputs waiting for the terminal to take them.
+const WAITING: usize = 64;
+
+// Ends the writes, and the terminal they hold, however the session ends, as a write the
+// sign-in doesn't take waits for good.
+struct Writer(JoinHandle<Result<(), Fault>>);
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+// Queues one opened frame for the terminal; a frame that finds the queue full fails it.
+fn pass(typed: &mpsc::Sender<TerminalInput>, plaintext: &[u8]) -> Result<(), Fault> {
     let input =
         TerminalInput::from_json(plaintext).map_err(|error| input_failed().because(error))?;
+    typed.try_send(input).map_err(|_| input_failed())
+}
+
+async fn write(terminal: Terminal, mut typed: mpsc::Receiver<TerminalInput>) -> Result<(), Fault> {
+    while let Some(input) = typed.recv().await {
+        apply(&terminal, input).await?;
+    }
+    Ok(())
+}
+
+// Passes on one input; one this build doesn't know changes nothing.
+async fn apply(terminal: &Terminal, input: TerminalInput) -> Result<(), Fault> {
     let applied = match input {
         TerminalInput::Input { data } => terminal.input(data.as_slice()).await,
         TerminalInput::Resize { cols, rows } => terminal.resize(size(cols, rows)?),

@@ -70,7 +70,13 @@ export function MachineSettingsView({ machine, socket, later, pins, relays }: Pr
             {...terminalLink(socket)}
             onClosed={() => void settings.load()}
           />
-          <button type="button" onClick={() => setSigningIn(undefined)}>
+          <button
+            type="button"
+            onClick={() => {
+              setSigningIn(undefined);
+              void settings.load();
+            }}
+          >
             Close the sign-in
           </button>
         </>

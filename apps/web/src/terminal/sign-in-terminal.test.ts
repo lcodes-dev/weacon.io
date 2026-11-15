@@ -106,6 +106,42 @@ test("a long paste goes in pieces, each sealed in a frame of its own", async () 
   assert.equal(states.at(-1)?.kind, "open");
 });
 
+test("what is typed goes in the order it was typed, a long paste's pieces together", async () => {
+  const { session, sent, receive } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  await receive({ kind: "accepted", handshake: message(1).ciphertext });
+  const before = sent.length;
+
+  const paste = session.input(new Uint8Array(16_385).fill(0x61));
+  const enter = session.input(new TextEncoder().encode("\r\n"));
+  await Promise.all([paste, enter]);
+
+  const lengths = sent.slice(before).map((command) => sealed(command).length);
+  assert.equal(lengths.length, 3);
+  // The paste's last byte, then the two of Enter, each as hex.
+  assert.deepEqual([lengths[2]! - lengths[1]!], [4]);
+});
+
+test("a connection lost while the handshake finishes leaves the terminal closed", async () => {
+  const { session, states, receive } = terminal(new Pins(store(machine.key)));
+  await session.start();
+  const subtle = crypto.subtle;
+  const derive = subtle.deriveBits.bind(subtle);
+  // The core's reply is in, and the connection goes as its keys are worked out.
+  subtle.deriveBits = (...args: Parameters<SubtleCrypto["deriveBits"]>) => {
+    session.lost();
+    return derive(...args);
+  };
+  try {
+    await receive({ kind: "accepted", handshake: message(1).ciphertext });
+  } finally {
+    delete (subtle as Partial<SubtleCrypto>).deriveBits;
+  }
+
+  assert.deepEqual(states.at(-1), { kind: "closed", problem: "offline" });
+  assert.ok(!states.some((state) => state.kind === "open"));
+});
+
 test("a changed key, or a pin that can't be read, sends nothing", async () => {
   for (const [pins, problem] of [
     [new Pins(store("00".repeat(32))), "key_changed"],

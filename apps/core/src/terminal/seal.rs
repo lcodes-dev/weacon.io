@@ -208,7 +208,9 @@ impl Dh for X25519 {
     }
 }
 
+// For the terminal's tests, which run only where the vendor they plant can.
 #[cfg(test)]
+#[cfg(unix)]
 pub(super) use tests::{finish, initiator, opened, sealed, write};
 
 #[cfg(test)]

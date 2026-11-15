@@ -86,6 +86,10 @@ impl Link {
 
 async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     let Err(Closed) = run(&mut socket, &shared, &mut link).await;
+    // A newer connection of the machine keeps its terminals.
+    if !shared.links.is_open(&link.machine.id) {
+        terminals::offline(&shared, &link.machine.id);
+    }
     // A core that is gone just doesn't hear it.
     if link.gone {
         drop(reply(&mut socket, &shared, 0, refusal(code!("machine.unpaired"))).await);

@@ -50,7 +50,8 @@ pub(crate) async fn forward(
     match sent(shared, ask, &mut command, back).await {
         Ok(()) => Ok(()),
         Err(Refusal::Refused(error)) => {
-            closed(back, command.terminal, command.workspace, error.code);
+            let closed = closed(command.terminal, command.workspace, error.code);
+            drop(back.try_send(closed));
             Ok(())
         }
         Err(Refusal::Failed(fault)) => Err(fault),
@@ -106,11 +107,41 @@ pub(crate) fn delivered(shared: &Shared, machine: &MachineId, update: TerminalUp
     if taken && !closing {
         return;
     }
-    let route = open.remove(&key);
+    let Some(route) = open.remove(&key) else {
+        return;
+    };
     drop(open);
-    if let Some(route) = route.filter(|_| !taken) {
+    if !taken {
+        let lagged = closed(
+            key.1.clone(),
+            route.workspace.clone(),
+            code!("terminal.lagged"),
+        );
+        tell(&route.back, lagged);
         abandon(shared, key, route);
     }
+}
+
+/// Closes each terminal open on `machine` as offline, once its connection has ended.
+pub(crate) fn offline(shared: &Shared, machine: &MachineId) {
+    let gone: Vec<_> = shared
+        .terminals
+        .lock()
+        .extract_if(|(on, _), _| on == machine)
+        .collect();
+    for ((_, terminal), route) in gone {
+        tell(
+            &route.back,
+            closed(terminal, route.workspace, code!("machine.offline")),
+        );
+    }
+}
+
+// Sends `envelope` to a browser's connection once it has room, which it has once it has
+// caught up, or not at all once it has ended.
+fn tell(back: &mpsc::Sender<Envelope>, envelope: Envelope) {
+    let back = back.clone();
+    tokio::spawn(async move { drop(back.send(envelope).await) });
 }
 
 /// Closes each terminal the connection behind `back` opened, once that connection has ended.
@@ -180,16 +211,16 @@ impl Terminals {
     }
 }
 
-fn closed(back: &mpsc::Sender<Envelope>, terminal: TerminalId, workspace: WorkspaceId, code: Code) {
+fn closed(terminal: TerminalId, workspace: WorkspaceId, code: Code) -> Envelope {
     let update = TerminalUpdate {
         terminal,
         workspace,
         event: TerminalEvent::Closed { code: Some(code) },
     };
-    drop(back.try_send(Envelope {
+    Envelope {
         id: 0,
         message: Message::Terminal(update),
-    }));
+    }
 }
 
 #[cfg(test)]
@@ -303,6 +334,13 @@ mod tests {
 
     fn frame(raw: &[u8]) -> Envelope {
         update(TerminalEvent::Frame { sealed: bytes(raw) })
+    }
+
+    fn frame_update(raw: &[u8]) -> TerminalUpdate {
+        let Message::Terminal(update) = frame(raw).message else {
+            panic!("not an update");
+        };
+        update
     }
 
     #[tokio::test]
@@ -480,5 +518,50 @@ mod tests {
         assert_eq!(closed_code(&ended), None);
         assert_eq!(closed_code(&late), Some("terminal.unknown"));
         assert!(pongs(&mut core).await, "the machine heard more");
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_goes_away_has_its_terminals_closed_as_offline() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let machine = paired.machine_id();
+        let signs_in = ["machine.connect", "terminal.sign_in"];
+        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut browser = browser(server.address, &paired).await;
+
+        send(&mut browser, opening(&machine, "w1")).await;
+        next_envelope(&mut core).await;
+        drop(core);
+        let closed = next_envelope(&mut browser).await;
+
+        assert_eq!(closed_code(&closed), Some("machine.offline"));
+    }
+
+    #[tokio::test]
+    async fn a_browser_too_slow_for_its_terminal_hears_it_closed_once_it_catches_up() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let machine: MachineId = id("mc-1");
+        let (back, mut answers) = mpsc::channel(1);
+        let asker = Asker {
+            account: id::<AccountId>("a-1"),
+            member: id::<MemberId>("m-1"),
+        };
+        let Message::TerminalCommand(open) = opening(&machine, "w1").message else {
+            panic!("not a command");
+        };
+        let key = (machine.clone(), open.terminal.clone());
+        shared.terminals.route(key, &open, &asker, &back).unwrap();
+
+        delivered(shared, &machine, frame_update(SHOWN));
+        delivered(shared, &machine, frame_update(TYPED));
+        let first = answers.recv().await.unwrap();
+        let then = tokio::time::timeout(crate::test_support::PATIENCE, answers.recv());
+        let then = then.await.unwrap().unwrap();
+
+        assert_eq!(first, frame(SHOWN));
+        assert_eq!(closed_code(&then), Some("terminal.lagged"));
+        assert!(shared.terminals.lock().is_empty());
     }
 }

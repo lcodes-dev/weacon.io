@@ -71,11 +71,14 @@ impl Terminals {
                 let (agent, handshake) = (*agent, handshake.clone());
                 self.start(command, agent, &handshake).await;
             }
-            // A frame that finds the terminal's queue full is dropped, so the next one fails
-            // to open and the terminal closes as any other does.
+            // A frame that finds the terminal's queue full closes it, as one lost can't be told.
             (TerminalAction::Frame { sealed }, Some(open)) => {
-                if let Some(frames) = &open.frames {
-                    drop(frames.try_send(sealed.clone()));
+                let queued = open
+                    .frames
+                    .as_ref()
+                    .map(|frames| frames.try_send(sealed.clone()));
+                if matches!(queued, Some(Err(_))) {
+                    open.frames = None;
                 }
             }
             (TerminalAction::Close, Some(open)) => open.frames = None,
@@ -172,6 +175,8 @@ fn ids(terminal: &TerminalId, workspace: &WorkspaceId) -> [(&'static str, Field)
     ]
 }
 
+// The vendor these tests plant is a shell script.
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -191,15 +196,17 @@ mod tests {
     const PRINTED: &str = "MARKER-PRINTED-9d1e";
     const TYPED: &str = "MARKER-TYPED-77c4";
 
-    // A `claude` that asks for a code, says what it got, and is signed in once asked.
-    fn plant_claude(bin: &Path, ran: &Path) {
+    // A `claude` that asks for a code and says what it got.
+    const ASKS: &str =
+        "echo 'Paste the code MARKER-PRINTED-9d1e'\nIFS= read -r code\necho \"Got $code\"";
+
+    // A `claude` whose login runs `login`, and that is signed in once asked.
+    fn plant_claude(bin: &Path, ran: &Path, login: &str) {
         let script = format!(
             "#!/bin/sh\n\
              if [ \"$1 $2\" = \"auth status\" ]; then printf '{{\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n\
              touch '{}'\n\
-             echo 'Paste the code {PRINTED}'\n\
-             IFS= read -r code\n\
-             echo \"Got $code\"\n",
+             {login}\n",
             ran.display()
         );
         weacon_testing::platform::write_program(&bin.join("claude"), &script).unwrap();
@@ -214,10 +221,14 @@ mod tests {
     }
 
     fn machine() -> Machine {
+        machine_running(ASKS)
+    }
+
+    fn machine_running(login: &str) -> Machine {
         let dir = TempDir::new().unwrap();
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        plant_claude(&bin, &dir.join("ran"));
+        plant_claude(&bin, &dir.join("ran"), login);
         let state = dir.join("state");
         let paired = machine::Paired {
             server: "https://weacon.example.com".to_owned(),
@@ -348,7 +359,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn the_login_runs_sealed_and_neither_the_relay_nor_the_logs_see_what_passes() {
         let mut machine = machine();
@@ -401,7 +411,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_terminal_it_doesnt_have_or_an_open_while_unpaired_is_refused() {
         let mut machine = machine();
@@ -421,7 +430,6 @@ mod tests {
         assert!(!machine.dir.join("ran").exists());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_handshake_starts_nothing_until_its_browser_seals_a_frame() {
         let mut machine = machine();
@@ -446,7 +454,6 @@ mod tests {
         assert_eq!(next(&mut machine).await, closed("terminal.refused"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn one_sign_in_runs_per_workspace_and_vendor_at_a_time() {
         let mut machine = machine();
@@ -482,7 +489,6 @@ mod tests {
         ));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_handshake_for_another_key_or_size_is_refused() {
         let mut machine = machine();
@@ -512,7 +518,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn a_tampered_frame_closes_the_terminal_before_its_login_starts() {
         let mut machine = machine();
@@ -534,7 +539,6 @@ mod tests {
         assert!(!machine.dir.join("ran").exists());
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn opening_a_live_terminal_again_changes_nothing() {
         let mut machine = machine();
@@ -561,7 +565,6 @@ mod tests {
     }
 
     // Time is paused, so the deadline passes as soon as nothing else can happen.
-    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn a_browser_that_never_seals_a_frame_loses_its_terminal() {
         let mut machine = machine();
@@ -575,5 +578,66 @@ mod tests {
         assert_eq!(ended, closed("terminal.timed_out"));
         assert_eq!(started.elapsed(), Duration::from_mins(1));
         assert!(!machine.dir.join("ran").exists());
+    }
+
+    // An opened terminal whose browser end is ready to seal frames.
+    async fn opened_terminal(machine: &mut Machine) -> TransportState {
+        let (handshaking, open) = opening(machine, "t-1");
+        machine.terminals.handle(open).await;
+        let TerminalEvent::Accepted { handshake } = next(machine).await else {
+            panic!("not accepted");
+        };
+        finish(handshaking, handshake.as_slice())
+    }
+
+    // The code the terminal closed with, whatever it showed first.
+    async fn closed_after_output(machine: &mut Machine) -> Option<Code> {
+        loop {
+            if let TerminalEvent::Closed { code } = next(machine).await {
+                return code;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_finds_the_queue_full_closes_the_terminal() {
+        let mut machine = machine();
+        let mut browser = opened_terminal(&mut machine).await;
+        let typed = TerminalInput::Input {
+            data: bytes(b"x".to_vec()),
+        };
+
+        // Nothing here waits, so the terminal takes none of them meanwhile.
+        for _ in 0..=WAITING {
+            let input = command("t-1", frame(&mut browser, &typed));
+            machine.terminals.handle(input).await;
+        }
+
+        assert_eq!(closed_after_output(&mut machine).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_terminal_closes_while_its_sign_in_takes_no_input() {
+        let mut machine = machine_running("stty raw -echo\necho ready\nexec sleep 600");
+        let mut browser = opened_terminal(&mut machine).await;
+        let resize = TerminalInput::Resize { cols: 80, rows: 24 };
+        let first = command("t-1", frame(&mut browser, &resize));
+        machine.terminals.handle(first).await;
+        assert!(matches!(
+            next(&mut machine).await,
+            TerminalEvent::Frame { .. }
+        ));
+        let typed = TerminalInput::Input {
+            data: bytes(vec![b'a'; 16_384]),
+        };
+
+        for _ in 0..40 {
+            let input = command("t-1", frame(&mut browser, &typed));
+            machine.terminals.handle(input).await;
+        }
+        let close = command("t-1", TerminalAction::Close);
+        machine.terminals.handle(close).await;
+
+        assert_eq!(closed_after_output(&mut machine).await, None);
     }
 }
