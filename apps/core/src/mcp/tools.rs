@@ -44,6 +44,13 @@ pub(crate) fn listed() -> Vec<Tool> {
             &["path"],
         ),
         tool(
+            McpCall::DOCS_FOR,
+            "The doc lines that pin one item by its path, as an item or a step of a flow; read \
+             them before changing it.",
+            json!({"path": {"type": "string"}, "budget": budget}),
+            &["path"],
+        ),
+        tool(
             McpCall::FLOW,
             "The flows the docs pin and where the code breaks them; call it before changing \
              code a flow passes through.",
@@ -78,6 +85,8 @@ pub(crate) fn answer_from(call: &McpCall, map: &Index) -> String {
         McpCall::Map(args) => map.start_here(budget(args.budget)),
         McpCall::Symbol(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
         McpCall::Symbol(args) => map.item(&args.path, budget(args.budget)),
+        McpCall::DocsFor(args) if args.path.len() > LONGEST_PATH => NO_ITEM.to_owned(),
+        McpCall::DocsFor(args) => map.docs_for(&args.path, budget(args.budget)),
         McpCall::Newer => String::new(),
     }
 }
@@ -91,7 +100,7 @@ pub(crate) fn budget(asked: Option<u32>) -> usize {
 #[cfg(test)]
 mod tests {
     use weacon_codemap::{SourceFile, index};
-    use weacon_protocol::{FlowArgs, MapArgs, SymbolArgs};
+    use weacon_protocol::{DocsForArgs, FlowArgs, MapArgs, SymbolArgs};
 
     use super::*;
 
@@ -131,10 +140,10 @@ mod tests {
             .map(|tool| tool.description.as_deref().map(str::len))
             .collect();
 
-        assert_eq!(names, ["map", "symbol", "flow"]);
+        assert_eq!(names, ["map", "symbol", "docs_for", "flow"]);
         assert_eq!(names.get(..2), Some(UP_FRONT.as_slice()));
-        assert_eq!(sizes, [Some(189), Some(170), Some(106)]);
-        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1103);
+        assert_eq!(sizes, [Some(189), Some(170), Some(106), Some(106)]);
+        assert_eq!(serde_json::to_string(&tools).unwrap().len(), 1455);
     }
 
     #[test]
@@ -157,6 +166,29 @@ mod tests {
             close,
             "No item S::go.\nItems with that name:\n- fn a_b::m::S::go  src/m.rs:2\n"
         );
+    }
+
+    #[test]
+    fn docs_for_lists_the_lines_that_pin_an_item() {
+        let docs = index(&[
+            file("Cargo.toml", "[package]\nname = \"a-b\"\n"),
+            file("src/lib.rs", "pub fn run() {}\n"),
+            file("docs/a.md", "Begin at sym:a_b::run.\n"),
+        ])
+        .unwrap();
+        let docs_for = |path: &str| {
+            let args = DocsForArgs {
+                path: path.to_owned(),
+                budget: None,
+            };
+            answer_from(&McpCall::DocsFor(args), &docs)
+        };
+
+        assert_eq!(
+            docs_for("a_b::run"),
+            "Docs that pin a_b::run: 1.\n- docs/a.md:1  Begin at sym:a_b::run.\n"
+        );
+        assert_eq!(docs_for(&"x".repeat(LONGEST_PATH + 1)), NO_ITEM);
     }
 
     #[test]

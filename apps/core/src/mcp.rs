@@ -86,6 +86,7 @@ fn listen(
     let address = listener.local_addr().map_err(failed)?;
     let grants = Grants::default();
     let log = log.child(&[("component", "mcp".into())]);
+    let watching = (maps.clone(), log.clone());
     let handler = Handler {
         version: app.version.clone(),
         maps,
@@ -94,7 +95,16 @@ fn listen(
     handler
         .log
         .info("mcp started", &[("port", address.port().into())]);
-    let server = tokio::spawn(serve(listener, address, grants.clone(), handler, limits));
+    let serving = serve(listener, address, grants.clone(), handler, limits);
+    // One task, so stopping the server stops the watches too.
+    let server = tokio::spawn(async move {
+        let keep_current = async {
+            if let (Some(maps), log) = &watching {
+                maps.keep_current(log).await;
+            }
+        };
+        tokio::join!(serving, keep_current);
+    });
     let mcp = Mcp {
         url: format!("http://{address}/mcp"),
         grants,

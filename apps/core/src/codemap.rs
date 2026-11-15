@@ -5,16 +5,10 @@
 #[cfg(test)]
 mod fake;
 mod repo;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the watcher and the search tool use it in their own changes"
-    )
-)]
 mod watch;
 
-pub(crate) use repo::{LARGEST, folder_index, main_worktree};
+pub(crate) use repo::{LARGEST, Repo, locate, watch, worktree_index};
+pub(crate) use watch::Watch;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -30,10 +24,7 @@ use crate::db::{BASE, Layer, Map, Stored};
 /// The most hits a search returns before its answer is cut to its budget.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "the watcher and the search tool use it in their own changes"
-    )
+    expect(dead_code, reason = "the search tool uses it in its own change")
 )]
 const SEARCHED: u32 = 50;
 
@@ -245,10 +236,7 @@ impl<S: Source> RepoMap<S> {
     /// best first, within `budget` bytes.
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "the watcher and the search tool use it in their own changes"
-        )
+        expect(dead_code, reason = "the search tool uses it in its own change")
     )]
     pub(crate) async fn search(
         &self,

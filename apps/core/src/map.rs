@@ -6,7 +6,7 @@ use std::time::Instant;
 use weacon_appkit::Ending;
 use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
-use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
+use weacon_protocol::{DocsForArgs, FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
 use crate::cli::{MapCommand, MapSubcommand};
@@ -32,6 +32,9 @@ pub(crate) fn run(
             answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
         }
         Some(MapSubcommand::Flows) => answer(&McpCall::Flow(FlowArgs { budget }), &root)?,
+        Some(MapSubcommand::DocsFor { path }) => {
+            answer(&McpCall::DocsFor(DocsForArgs { path, budget }), &root)?
+        }
         Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
         Some(MapSubcommand::Contracts) => answered(&root, budget, contracts)?,
         None => answer(&McpCall::Map(MapArgs { budget }), &root)?,
@@ -352,6 +355,14 @@ mod tests {
              - docs/run.md:1  a::run -> a::gone: breaks: no item a::gone\n"
         );
         assert_eq!(printed(&root, Some(MapSubcommand::Flows), None), flows);
+        let docs_for = MapSubcommand::DocsFor {
+            path: "a::run".to_owned(),
+        };
+        assert_eq!(
+            printed(&root, Some(docs_for), None),
+            "Docs that pin a::run: 1.\n\
+             - docs/run.md:1  Runs flow:a::run->a::m::go, then flow:a::run->a::gone.\n"
+        );
         let docs_only = repo(&[("docs/run.md", "Runs flow:a::run->a::gone.\n")]);
         assert_eq!(
             printed(&docs_only, Some(MapSubcommand::Flows), None),

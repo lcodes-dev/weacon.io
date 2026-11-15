@@ -15,6 +15,8 @@ pub enum McpCall {
     Symbol(SymbolArgs),
     /// The flows the folder's docs pin, and where each breaks.
     Flow(FlowArgs),
+    /// The doc lines that pin one item.
+    DocsFor(DocsForArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other)]
     Newer,
@@ -24,6 +26,7 @@ impl McpCall {
     pub const MAP: &str = "map";
     pub const SYMBOL: &str = "symbol";
     pub const FLOW: &str = "flow";
+    pub const DOCS_FOR: &str = "docs_for";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
     #[must_use]
@@ -32,6 +35,7 @@ impl McpCall {
             Self::Map(_) => Some(Self::MAP),
             Self::Symbol(_) => Some(Self::SYMBOL),
             Self::Flow(_) => Some(Self::FLOW),
+            Self::DocsFor(_) => Some(Self::DOCS_FOR),
             Self::Newer => None,
         }
     }
@@ -66,6 +70,15 @@ pub struct FlowArgs {
 /// From a run's agent, under `McpCall::Symbol`: the item it asks about.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct SymbolArgs {
+    /// The item's path, `weacon_protocol::frame::Envelope`.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<u32>,
+}
+
+/// From a run's agent, under `McpCall::DocsFor`: the item whose docs it asks for.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct DocsForArgs {
     /// The item's path, `weacon_protocol::frame::Envelope`.
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,6 +127,7 @@ mod tests {
             (McpCall::MAP, json!({})),
             (McpCall::SYMBOL, path),
             (McpCall::FLOW, json!({})),
+            (McpCall::DOCS_FOR, json!({"path": "a::b"})),
         ] {
             assert_eq!(call(name, arguments).unwrap().name(), Some(name));
         }

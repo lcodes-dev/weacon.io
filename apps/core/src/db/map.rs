@@ -56,10 +56,7 @@ pub(crate) struct Stored {
 
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "the watcher and the search tool use it in their own changes"
-    )
+    expect(dead_code, reason = "the search tool uses it in its own change")
 )]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Hit {
@@ -126,13 +123,6 @@ impl Map {
     }
 
     /// The commit the layer named `name` was read at, if it has been stored.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the watcher and the search tool use it in their own changes"
-        )
-    )]
     pub(crate) async fn commit_of(&self, name: &str) -> Result<Option<String>, Fault> {
         let (workspace, repo) = self.keys();
         sqlx::query_scalar(
@@ -281,10 +271,7 @@ impl Map {
     /// from the commit it was read at.
     #[cfg_attr(
         not(test),
-        expect(
-            dead_code,
-            reason = "the watcher and the search tool use it in their own changes"
-        )
+        expect(dead_code, reason = "the search tool uses it in its own change")
     )]
     pub(crate) async fn search(
         &self,
@@ -336,7 +323,7 @@ impl Map {
         not(test),
         expect(
             dead_code,
-            reason = "the watcher and the search tool use it in their own changes"
+            reason = "removing a repository forgets its map in its own change"
         )
     )]
     pub(crate) async fn forget(&self) -> Result<(), Fault> {
@@ -361,10 +348,7 @@ impl Map {
 /// words.
 #[cfg_attr(
     not(test),
-    expect(
-        dead_code,
-        reason = "the watcher and the search tool use it in their own changes"
-    )
+    expect(dead_code, reason = "the search tool uses it in its own change")
 )]
 fn match_query(words: &str) -> Option<String> {
     let terms: Vec<String> = words

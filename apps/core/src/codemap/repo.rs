@@ -8,8 +8,8 @@ use weacon_codemap::Index;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
+use super::watch::Watch;
 use super::{RepoMap, Source, off_runtime};
-use crate::app::blocking;
 use crate::db::{LocalRepo, Workspace};
 use crate::git::Git;
 use crate::platform;
@@ -60,43 +60,48 @@ impl Source for Repo {
     }
 }
 
-/// The index of the repository `folder` is in, as the worktree holding `folder` has it, kept in
-/// `workspace`'s map so that only text it hasn't seen is read.
-pub(crate) async fn folder_index(
+/// The index of the repository whose main worktree is `main`, as its worktree `worktree` has
+/// it, kept in `workspace`'s map so that only text it hasn't seen is read.
+pub(crate) async fn worktree_index(
     workspace: &Workspace,
     git: &Git,
-    folder: &Path,
+    main: PathBuf,
+    worktree: &Path,
 ) -> Result<Index, Fault> {
-    let (main, worktree) = {
-        let (git, folder) = (git.clone(), folder.to_owned());
-        blocking(move || Ok(locate(&git, &folder)))
-            .await
-            .map_err(|error| not_a_repo().because(error))??
-    };
-    let repo = RepoMap {
+    let repo = repo_map(workspace, git, main);
+    let base = repo.base().await?;
+    let changed = repo.changed(&base, worktree).await?;
+    let facts = repo.worktree(&base, worktree, changed).await?;
+    off_runtime(move || Ok(weacon_codemap::assemble(&facts))).await
+}
+
+/// A watch of `worktree`, in the repository whose main worktree is `main`, over `workspace`'s
+/// map.
+pub(crate) fn watch(
+    workspace: &Workspace,
+    git: &Git,
+    main: PathBuf,
+    worktree: PathBuf,
+) -> Watch<Repo> {
+    Watch::new(repo_map(workspace, git, main), worktree)
+}
+
+fn repo_map(workspace: &Workspace, git: &Git, main: PathBuf) -> RepoMap<Repo> {
+    RepoMap {
         map: workspace.map(&LocalRepo::at(&main)),
         source: Repo {
             git: git.clone(),
             repo: main,
         },
-    };
-    let base = repo.base().await?;
-    let changed = repo.changed(&base, &worktree).await?;
-    let facts = repo.worktree(&base, &worktree, changed).await?;
-    off_runtime(move || Ok(weacon_codemap::assemble(&facts))).await
-}
-
-/// The canonical path of the main worktree of `folder`'s repository; it blocks.
-///
-/// # Errors
-/// When `folder` isn't in a git repository.
-pub(crate) fn main_worktree(git: &Git, folder: &Path) -> Result<PathBuf, Fault> {
-    locate(git, folder).map(|(main, _)| main)
+    }
 }
 
 /// The canonical paths of the main worktree of `folder`'s repository and of the worktree
-/// `folder` is in.
-fn locate(git: &Git, folder: &Path) -> Result<(PathBuf, PathBuf), Fault> {
+/// `folder` is in; it blocks.
+///
+/// # Errors
+/// When `folder` isn't in a git repository.
+pub(crate) fn locate(git: &Git, folder: &Path) -> Result<(PathBuf, PathBuf), Fault> {
     let folder = folder
         .canonicalize()
         .map_err(|error| not_a_repo().because(error))?;
@@ -226,11 +231,14 @@ mod tests {
         let git = git(&dir);
 
         let symbol = |index: &Index, path: &str| index.symbol(path).is_some();
-        let in_main = folder_index(&workspace, &git, &main).await.unwrap();
-        assert!(symbol(&in_main, "a::run"));
-        let in_other = folder_index(&workspace, &git, &other.join("a/src"))
-            .await
-            .unwrap();
+        let index = async |folder: &Path| {
+            let (main, worktree) = locate(&git, folder).unwrap();
+            worktree_index(&workspace, &git, main, &worktree)
+                .await
+                .unwrap()
+        };
+        assert!(symbol(&index(&main).await, "a::run"));
+        let in_other = index(&other.join("a/src")).await;
         assert!(symbol(&in_other, "a::walk"));
         assert!(!symbol(&in_other, "a::run"));
         let main_key = LocalRepo::at(&main.canonicalize().unwrap());
@@ -243,13 +251,9 @@ mod tests {
                 .is_some()
         );
 
-        let fault = folder_index(&workspace, &git, &dir.join("state"))
-            .await
-            .unwrap_err();
+        let fault = locate(&git, &dir.join("state")).unwrap_err();
         assert_eq!(fault.code().as_str(), "git.failed");
-        let fault = folder_index(&workspace, &git, &dir.join("missing"))
-            .await
-            .unwrap_err();
+        let fault = locate(&git, &dir.join("missing")).unwrap_err();
         assert_eq!(fault.code().as_str(), "map.not_a_repo");
     }
 }

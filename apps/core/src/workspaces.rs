@@ -78,7 +78,7 @@ impl Workspaces {
     }
 
     /// The workspaces this machine has a folder for, sorted by id; none before the first.
-    fn known(&self) -> io::Result<Vec<WorkspaceId>> {
+    pub(crate) fn known(&self) -> io::Result<Vec<WorkspaceId>> {
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
