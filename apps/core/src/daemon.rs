@@ -76,7 +76,13 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         daemon
             .uplink
             .spawn(route::server(app, state_dir, chats, worktrees));
-        let serve = daemon.serve(signals.wait());
+        let checks = daemon.shared.chats.downgrade();
+        let serve = async {
+            tokio::select! {
+                () = daemon.serve(signals.wait()) => {}
+                never = crate::update::schedule(state_dir, app.version.version, &checks, &app.log) => match never {},
+            }
+        };
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
