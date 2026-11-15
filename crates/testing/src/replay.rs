@@ -52,20 +52,21 @@ pub(crate) async fn play(
     mut output: impl AsyncWrite + Unpin,
     pace: Duration,
 ) -> Result<(), Failure> {
-    for step in recording.lines().filter(|line| !line.trim().is_empty()) {
-        if let Some(line) = step.strip_prefix("< ") {
-            output.write_all(format!("{line}\n").as_bytes()).await?;
-            if !pace.is_zero() {
-                tokio::time::sleep(pace).await;
+    for step in steps(&recording) {
+        match step? {
+            Step::Prints(line) => {
+                output.write_all(format!("{line}\n").as_bytes()).await?;
+                if !pace.is_zero() {
+                    tokio::time::sleep(pace).await;
+                }
             }
-        } else if let Some(expected) = step.strip_prefix("> ") {
-            let mut sent = String::new();
-            input.read_line(&mut sent).await?;
-            if serde_json::from_str::<Value>(&sent).ok() != Some(json(expected)?) {
-                return Err(format!("expected {expected}\nbut got {sent}").into());
+            Step::Reads(expected) => {
+                let mut sent = String::new();
+                input.read_line(&mut sent).await?;
+                if serde_json::from_str::<Value>(&sent).ok() != Some(json(expected)?) {
+                    return Err(format!("expected {expected}\nbut got {sent}").into());
+                }
             }
-        } else {
-            return Err(format!("not a recorded line: {step}").into());
         }
     }
     output.shutdown().await?;
@@ -76,6 +77,29 @@ pub(crate) async fn play(
     } else {
         Err(format!("sent after the agent exited: {rest}").into())
     }
+}
+
+/// One line of a recording: one the agent prints, or one it reads from its driver.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Step<'a> {
+    Prints(&'a str),
+    Reads(&'a str),
+}
+
+/// The steps of `recording`, skipping blank lines; a line marked neither way is a failure.
+pub(crate) fn steps(recording: &str) -> impl Iterator<Item = Result<Step<'_>, Failure>> {
+    recording
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|step| {
+            if let Some(line) = step.strip_prefix("< ") {
+                Ok(Step::Prints(line))
+            } else if let Some(line) = step.strip_prefix("> ") {
+                Ok(Step::Reads(line))
+            } else {
+                Err(format!("not a recorded line: {step}").into())
+            }
+        })
 }
 
 fn json(line: &str) -> Result<Value, Failure> {
