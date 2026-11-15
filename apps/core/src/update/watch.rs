@@ -548,6 +548,12 @@ mod tests {
         assert_eq!(messages(&records), ["update available"]);
     }
 
+    async fn logged(records: &weacon_testing::Records) {
+        while messages(records).is_empty() {
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test]
     async fn the_schedule_checks_at_once_asking_whether_an_agent_is_busy() {
         let dir = TempDir::new().unwrap();
@@ -564,10 +570,13 @@ mod tests {
         );
         let running = tokio::spawn(async move { watch.run(busy, &log).await });
 
-        was_asked.recv().await.unwrap();
-        while messages(&records).is_empty() {
-            tokio::task::yield_now().await;
-        }
+        // Bounded, so a check that never runs fails the test instead of hanging it.
+        let within = Duration::from_secs(10);
+        tokio::time::timeout(within, was_asked.recv())
+            .await
+            .unwrap();
+        let logged = tokio::time::timeout(within, logged(&records));
+        logged.await.unwrap();
         running.abort();
         assert_eq!(messages(&records), ["update check failed"]);
     }
