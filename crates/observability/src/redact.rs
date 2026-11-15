@@ -1,36 +1,32 @@
-use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::LazyLock;
 
-use regex::{Captures, Regex};
 use serde_json::{Map, Value};
 
 use crate::errors::{ErrorInfo, describe_error};
 
 // Matched against a key's letters run together, so "apiKey" and "api_key" both match.
-static SECRET_IN_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    pattern(
-        r"password|passwd|passphrase|passcode|secret|credential|cookie|authori[sz]ation|(?:key|token)s?$",
-    )
-});
-static NOT_SECRET_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    pattern(r"(?:public|primary|foreign|cache|sort|idempotency|partition|lookup)keys?")
-});
-// In free text: "password=…", "Authorization: …", "\"token\":\"…\"" and the like.
-static SECRET_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    pattern(
-        r#"(?i)([a-z0-9_.-]*(?:pass(?:word|wd|phrase|code)?|pwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key|credential|authori[sz]ation|cookie)[a-z0-9_.-]*"?\s*[=:]\s*)(?:(?:bearer|basic|token)\s+[^\s"']+|"[^"]*"|'[^']*'|[^\s;&,"']+)"#,
-    )
-});
-static CREDENTIAL_IN_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9_.~+/=-]{8,}"));
-static USERINFO_IN_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@"));
-static QUERY_IN_PATH: LazyLock<Regex> = LazyLock::new(|| pattern(r"(^|\s)(/[^\s?#]*)[?#]\S*"));
-static SCHEME: LazyLock<Regex> = LazyLock::new(|| pattern(r"(?i)^[a-z][a-z0-9+.-]*://"));
-static URL_IN_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| pattern(r#"(?i)[a-z][a-z0-9+.-]*://[^\s"'<>]+"#));
-
+const SECRET_IN_KEY: [&str; 9] = [
+    "password",
+    "passwd",
+    "passphrase",
+    "passcode",
+    "secret",
+    "credential",
+    "cookie",
+    "authorisation",
+    "authorization",
+];
+const SECRET_ENDS: [&str; 4] = ["key", "keys", "token", "tokens"];
+const NOT_SECRET_KEY: [&str; 8] = [
+    "publickey",
+    "primarykey",
+    "foreignkey",
+    "cachekey",
+    "sortkey",
+    "idempotencykey",
+    "partitionkey",
+    "lookupkey",
+];
 const SECRET_WORDS: [&str; 15] = [
     "auth",
     "bearer",
@@ -102,10 +98,6 @@ const DESCRIBES_CONTENT: [&str; 15] = [
     "bytes", "count", "format", "hash", "id", "ids", "index", "kind", "length", "lines", "size",
     "status", "tokens", "type", "version",
 ];
-const MAX_STRING: usize = 1000;
-const MAX_KEY: usize = 100;
-const MAX_ITEMS: usize = 100;
-const MAX_DEPTH: usize = 8;
 
 /// A log field's value: anything that converts into JSON, or an error.
 #[derive(Clone, Debug, PartialEq)]
@@ -130,57 +122,33 @@ impl<T: Into<Value>> From<T> for Field {
     }
 }
 
-/// Copies log fields with secrets and content replaced, URLs stripped and sizes capped.
+/// Copies log fields with those named for secrets or content replaced, at any depth.
 pub(crate) fn redact_fields(fields: &[(&str, Field)]) -> Map<String, Value> {
-    let kept = fields.iter().take(MAX_ITEMS).map(|(key, Field(kind))| {
-        let value = match kind {
-            Kind::Value(value) => redact_entry(key, value, 0),
-            Kind::Error(info) => replacement(key).map_or_else(
-                || serde_json::to_value(info).unwrap_or(Value::Null),
-                Value::from,
-            ),
-        };
-        (truncate(key, MAX_KEY), value)
-    });
-    kept.chain(more_entries(fields.len())).collect()
-}
-
-/// [`redact_fields`] for a JSON object, such as a report's extra data.
-pub(crate) fn redact_in_place(fields: &mut BTreeMap<String, Value>) {
-    *fields = redact_entries(fields.iter(), 0).collect();
-}
-
-/// A URL without its credentials, query or fragment; relative URLs work too.
-pub(crate) fn safe_url(url: &str) -> String {
-    let prefix_len = SCHEME.find(url).map_or(0, |found| found.end());
-    let (prefix, rest) = url.split_at_checked(prefix_len).unwrap_or(("", url));
-    let address = if prefix.is_empty() {
-        rest
-    } else {
-        rest.get(credentials_end(rest)..).unwrap_or(rest)
-    };
-    let path = address.split(['?', '#']).next().unwrap_or_default();
-    format!("{prefix}{path}")
-}
-
-/// Redacts one string. It is cut to length last, so a cut can't hide a secret from the patterns.
-pub(crate) fn redact_string(value: &str) -> String {
-    let text = SECRET_ASSIGNMENT.replace_all(value, "${1}[redacted]");
-    let text = CREDENTIAL_IN_TEXT.replace_all(&text, "${1} [redacted]");
-    let text = USERINFO_IN_TEXT.replace_all(&text, "${1}");
-    let text = URL_IN_TEXT.replace_all(&text, |found: &Captures<'_>| safe_url(&found[0]));
-    let text = QUERY_IN_PATH.replace_all(&text, "${1}${2}");
-    truncate(&text, MAX_STRING)
+    fields
+        .iter()
+        .map(|(key, Field(kind))| {
+            let value = match kind {
+                Kind::Value(value) => redact_entry(key, value),
+                Kind::Error(info) => replacement(key).map_or_else(
+                    || serde_json::to_value(info).unwrap_or(Value::Null),
+                    Value::from,
+                ),
+            };
+            ((*key).to_owned(), value)
+        })
+        .collect()
 }
 
 /// "[redacted]" or "[omitted]" when a field named `key` must not be kept.
-pub(crate) fn replacement(key: &str) -> Option<&'static str> {
+fn replacement(key: &str) -> Option<&'static str> {
     let words = words(key);
     let joined = words.concat();
     let last = words.last().map_or("", String::as_str);
     let has = |list: &[&str]| words.iter().any(|word| list.contains(&word.as_str()));
-    let secret = (SECRET_IN_KEY.is_match(&joined) || has(&SECRET_WORDS))
-        && !NOT_SECRET_KEY.is_match(&joined)
+    let named = SECRET_IN_KEY.iter().any(|word| joined.contains(word))
+        || SECRET_ENDS.iter().any(|end| joined.ends_with(end));
+    let secret = (named || has(&SECRET_WORDS))
+        && !NOT_SECRET_KEY.iter().any(|word| joined.contains(word))
         && !DESCRIBES_SECRET.contains(&last);
     if secret {
         Some("[redacted]")
@@ -189,28 +157,6 @@ pub(crate) fn replacement(key: &str) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    let length = text.chars().count();
-    if length <= max {
-        return text.to_owned();
-    }
-    let kept: String = text.chars().take(max).collect();
-    format!("{kept}… [{} more]", length - max)
-}
-
-// A colon could be a port or a password holding "/"; an "@" before the query means a password.
-fn credentials_end(rest: &str) -> usize {
-    let authority = rest.split('/').next().unwrap_or_default();
-    if let Some(at) = authority.rfind('@') {
-        return at + 1;
-    }
-    if !authority.contains(':') {
-        return 0;
-    }
-    let before_query = rest.split(['?', '#']).next().unwrap_or_default();
-    before_query.rfind('@').map_or(0, |at| at + 1)
 }
 
 fn words(key: &str) -> Vec<String> {
@@ -233,61 +179,23 @@ fn words(key: &str) -> Vec<String> {
         .collect()
 }
 
-fn redact_value(value: &Value, depth: usize) -> Value {
-    match value {
-        Value::String(text) => redact_string(text).into(),
-        Value::Array(_) | Value::Object(_) if depth >= MAX_DEPTH => "[too deep]".into(),
-        Value::Array(items) => {
-            let kept = items
-                .iter()
-                .take(MAX_ITEMS)
-                .map(|item| redact_value(item, depth + 1));
-            let more = excess(items.len()).map(|more| format!("[{more} more]").into());
-            Value::Array(kept.chain(more).collect())
-        }
-        Value::Object(entries) => Value::Object(redact_entries(entries.iter(), depth).collect()),
-        Value::Null | Value::Bool(_) | Value::Number(_) => value.clone(),
-    }
-}
-
-fn redact_entries<'a>(
-    entries: impl ExactSizeIterator<Item = (&'a String, &'a Value)>,
-    depth: usize,
-) -> impl Iterator<Item = (String, Value)> {
-    let more = more_entries(entries.len());
-    entries
-        .take(MAX_ITEMS)
-        .map(move |(key, value)| {
-            (
-                truncate(&redact_string(key), MAX_KEY),
-                redact_entry(key, value, depth),
-            )
-        })
-        .chain(more)
-}
-
 // Numbers and flags are counts and switches, never secrets or content.
-fn redact_entry(key: &str, value: &Value, depth: usize) -> Value {
+fn redact_entry(key: &str, value: &Value) -> Value {
     if value.is_number() || value.is_boolean() {
         return value.clone();
     }
-    replacement(key).map_or_else(|| redact_value(value, depth + 1), Value::from)
+    replacement(key).map_or_else(|| redact_value(value), Value::from)
 }
 
-fn more_entries(count: usize) -> Option<(String, Value)> {
-    excess(count).map(|more| ("[more]".to_owned(), more.into()))
-}
-
-fn excess(count: usize) -> Option<usize> {
-    count.checked_sub(MAX_ITEMS).filter(|more| *more > 0)
-}
-
-#[expect(
-    clippy::expect_used,
-    reason = "the patterns are constants, and the tests compile each one"
-)]
-fn pattern(source: &str) -> Regex {
-    Regex::new(source).expect("a valid pattern")
+fn redact_value(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => items.iter().map(redact_value).collect(),
+        Value::Object(entries) => entries
+            .iter()
+            .map(|(key, value)| (key.clone(), redact_entry(key, value)))
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => value.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -379,55 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn cuts_credentials_from_values_wherever_a_url_sits_in_the_text() {
-        let out = redacted(&[
-            ("rawHeaders", json!(["Authorization", "Bearer abcdefgh1234MARKER"]).into()),
-            ("shell", r#"curl -H "Authorization: Bearer abcdefgh1234MARKER" https://h.example/x?key=MARKER"#.into()),
-            ("databaseUrl", "postgres://app:MARKER@db.internal:5432/weacon".into()),
-            ("note", "see https://weacon.example/cb?code=MARKER#state=MARKER for details".into()),
-        ]);
-
-        assert_eq!(
-            out,
-            json!({
-                "rawHeaders": ["Authorization", "Bearer [redacted]"],
-                "shell": r#"curl -H "Authorization: [redacted]" https://h.example/x"#,
-                "databaseUrl": "postgres://db.internal:5432/weacon",
-                "note": "see https://weacon.example/cb for details",
-            })
-        );
-    }
-
-    #[test]
-    fn redacts_secrets_in_free_text_and_keys_even_past_the_length_limit() {
-        let texts = [
-            "postgres://app:se'cretMARKER@db/weacon",
-            "postgres://app:a<MARKER@db/weacon",
-            "curl -H 'Authorization: token ghp_MARKER1234'",
-            "host=db user=app password=MARKER",
-            "Server=db;Password=MARKER;",
-            "GITHUB_TOKEN=MARKER",
-            r#"{"authorization":"MARKER"}"#,
-            "token ghp_MARKER1234",
-            "GET /auth/callback?code=MARKER&state=1",
-        ];
-        let long_url = format!("{} postgres://app:MARKERpw@db/weacon", "x".repeat(976));
-        let long_bearer = format!("{} Authorization: Bearer MARKER123456789", "x".repeat(970));
-        let out = redacted(&[
-            ("texts", json!(texts).into()),
-            ("long", json!([long_url, long_bearer]).into()),
-            (
-                "remotes",
-                json!({ "https://x-access-token:ghs_MARKER@github.com/o/r.git": "origin" }).into(),
-            ),
-        ]);
-
-        assert!(!out.to_string().contains("MARKER"), "{out}");
-        assert_eq!(out["texts"][3], "host=db user=app password=[redacted]");
-        assert_eq!(out["texts"][8], "GET /auth/callback");
-    }
-
-    #[test]
     fn keeps_ids_and_counts_of_content() {
         let out = redacted(&[
             ("messageId", "msg_1".into()),
@@ -458,115 +317,10 @@ mod tests {
     }
 
     #[test]
-    fn cuts_long_strings_long_keys_big_collections_and_deep_nesting() {
-        let mut deep = json!({ "leaf": true });
-        for _ in 0..10 {
-            deep = json!({ "next": deep });
-        }
-        let long_key = format!("k{}", "e".repeat(150));
-        let wide: Map<String, Value> = (0..105)
-            .map(|index| (format!("k{index}"), index.into()))
-            .collect();
-        let out = redacted(&[
-            ("long", "y".repeat(1200).into()),
-            (&long_key, 1.into()),
-            ("list", Value::from((0..103).collect::<Vec<i32>>()).into()),
-            ("wide", Value::Object(wide).into()),
-            ("deep", deep.into()),
-        ]);
-
-        assert_eq!(out["long"], format!("{}… [200 more]", "y".repeat(1000)));
-        assert!(out.get(format!("k{}… [51 more]", "e".repeat(99))).is_some());
-        let mut list: Vec<Value> = (0..100).map(Value::from).collect();
-        list.push("[3 more]".into());
-        assert_eq!(out["list"], Value::Array(list));
-        assert_eq!(out["wide"].as_object().unwrap().len(), 101);
-        assert_eq!(out["wide"]["[more]"], 5);
-        assert!(out["deep"].to_string().contains("[too deep]"));
-    }
-
-    #[test]
-    fn cuts_lists_nested_too_deep() {
-        let mut deep = json!([true]);
-        for _ in 0..10 {
-            deep = json!([deep]);
-        }
-
-        assert!(
-            redacted(&[("deep", deep.into())])["deep"]
-                .to_string()
-                .contains("[too deep]")
-        );
-    }
-
-    #[test]
-    fn notes_how_many_fields_were_cut() {
-        let fields: Vec<(String, Field)> = (0..102)
-            .map(|index| (format!("k{index}"), index.into()))
-            .collect();
-        let borrowed: Vec<(&str, Field)> = fields
-            .iter()
-            .map(|(key, field)| (key.as_str(), field.clone()))
-            .collect();
-
-        assert_eq!(redact_fields(&borrowed)["[more]"], 2);
-    }
-
-    #[test]
-    fn safe_url_drops_credentials_queries_and_fragments_even_from_odd_and_relative_urls() {
-        let cases = [
-            (
-                "https://user:pass@weacon.example:8443/w/a?x=1#y",
-                "https://weacon.example:8443/w/a",
-            ),
-            ("https://u:p@ss@host/x", "https://host/x"),
-            ("postgres://u:p#ss@h/db", "postgres://h/db"),
-            ("https://u:pa/ss@host/db", "https://host/db"),
-            ("/invite?code=secret#frag", "/invite"),
-            (
-                "https://unpkg.com/react@18.3.1/index.js",
-                "https://unpkg.com/react@18.3.1/index.js",
-            ),
-            ("https://host:8443/@user/post?x=1", "https://user/post"),
-            (
-                "postgres://app:2024/MARKER@db/weacon",
-                "postgres://db/weacon",
-            ),
-            ("HTTPS://Host/Path?q", "HTTPS://Host/Path"),
-        ];
-
-        for (url, expected) in cases {
-            assert_eq!(safe_url(url), expected, "{url}");
-        }
-    }
-
-    #[test]
     fn splits_keys_into_words_whatever_their_style() {
         assert_eq!(words("apiKey"), ["api", "key"]);
         assert_eq!(words("API_KEY"), ["api", "key"]);
         assert_eq!(words("x-api-key2Value"), ["x", "api", "key", "value"]);
         assert_eq!(words("ümlautKey"), ["mlaut", "key"]);
-    }
-
-    #[test]
-    fn truncates_by_characters_not_bytes() {
-        assert_eq!(truncate("héllo", 2), "hé… [3 more]");
-        assert_eq!(truncate("héllo", 5), "héllo");
-    }
-
-    #[test]
-    fn compiles_every_pattern() {
-        for pattern in [
-            &SECRET_IN_KEY,
-            &NOT_SECRET_KEY,
-            &SECRET_ASSIGNMENT,
-            &CREDENTIAL_IN_TEXT,
-            &USERINFO_IN_TEXT,
-            &QUERY_IN_PATH,
-            &SCHEME,
-            &URL_IN_TEXT,
-        ] {
-            LazyLock::force(pattern);
-        }
     }
 }

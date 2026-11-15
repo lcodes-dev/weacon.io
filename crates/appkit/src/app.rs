@@ -55,14 +55,8 @@ pub fn root_logger(sink: Sink, version: &Version) -> Logger {
 
 /// Reports for `dsn`, from `client` running `version`; a bad DSN is logged and turns them off.
 #[must_use]
-pub fn reports(
-    dsn: &str,
-    client: &str,
-    version: &Version,
-    home_dir: &str,
-    log: &Logger,
-) -> Option<Reports> {
-    Reports::new(dsn, client, &version.release(), home_dir)
+pub fn reports(dsn: &str, client: &str, version: &Version, log: &Logger) -> Option<Reports> {
+    Reports::new(dsn, client, &version.release())
         .inspect_err(|fault| log.warn("report setup failed", &[("err", Field::error(fault))]))
         .ok()
 }
@@ -130,8 +124,8 @@ mod tests {
         let (sink, records) = recording_sink();
         let log = root_logger(sink, &VERSION);
 
-        assert!(reports("not a dsn", "weacon/0.1.0", &VERSION, "", &log).is_none());
-        assert!(reports(DSN, "weacon/0.1.0", &VERSION, "", &log).is_some());
+        assert!(reports("not a dsn", "weacon/0.1.0", &VERSION, &log).is_none());
+        assert!(reports(DSN, "weacon/0.1.0", &VERSION, &log).is_some());
         assert_eq!(messages(&records), ["report setup failed"]);
     }
 
@@ -139,8 +133,7 @@ mod tests {
     fn a_panic_is_logged_and_reported_without_its_text() {
         let (sink, records) = recording_sink();
         let log = root_logger(sink, &VERSION);
-        let (reporter, uploads) =
-            recording_reporter(reports(DSN, "weacon/0.1.0", &VERSION, "", &log));
+        let (reporter, uploads) = recording_reporter(reports(DSN, "weacon/0.1.0", &VERSION, &log));
         panicked(
             &log,
             &reporter,

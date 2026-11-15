@@ -10,7 +10,7 @@ pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, dsn: Option<
     let log = root_logger(logs, &version);
     log.info("app started", &[]);
     let client = format!("{}/{}", version.name, version.version);
-    let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, "", &log));
+    let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, &log));
     App {
         version,
         reporter: Arc::new(reporter(reports, true, deliver)),

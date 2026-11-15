@@ -2585,7 +2585,6 @@ dependencies = [
 name = "weacon-observability"
 version = "0.0.0"
 dependencies = [
- "regex",
  "sentry-types",
  "serde",
  "serde_json",

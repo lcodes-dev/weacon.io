@@ -187,7 +187,6 @@ mod tests {
             "https://key@sentry.example.com/1",
             "weacon/0.1.0",
             "weacon-core@0.1.0+1a2b3c4",
-            "",
         )
         .ok();
         app.base.reporter = std::sync::Arc::new(weacon_appkit::reporter(
