@@ -1,7 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::chat::any_newer;
 use crate::{AccountId, AgentKind, AgentSession, ChatEntry, MachineId, RequestId};
 
 /// A person asks their own machine about the agent sessions they ran outside Weacon, from a
@@ -30,7 +29,7 @@ pub enum SessionsQueryKind {
         after: u64,
     },
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -59,7 +58,7 @@ pub enum SessionsAnswerKind {
     /// No such session in the person's own config folders.
     Missing,
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -72,32 +71,12 @@ pub struct OutsideSession {
     pub session: AgentSession,
     /// The folder it ran in, when its file names one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
     pub folder: Option<String>,
     pub modified_at: i64,
 }
 
-impl SessionsQueryKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::List => false,
-            Self::Open { agent, .. } => *agent == AgentKind::Newer,
-            Self::Newer => true,
-        }
-    }
-}
-
-impl SessionsAnswerKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::List { sessions } => sessions
-                .iter()
-                .any(|session| session.agent == AgentKind::Newer),
-            Self::Opened { events, .. } => any_newer(events),
-            Self::Missing => false,
-            Self::Newer => true,
-        }
-    }
-}
+impl SessionsAnswerKind {}
 
 #[cfg(test)]
 mod tests {
@@ -210,8 +189,6 @@ mod tests {
             serde_json::from_value::<SessionsAnswerKind>(wire).unwrap(),
             answer
         );
-        assert!(!answer.is_newer());
-        assert!(!SessionsAnswerKind::Missing.is_newer());
     }
 
     #[test]

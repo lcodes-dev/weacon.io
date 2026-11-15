@@ -18,7 +18,7 @@ pub enum TaskStatus {
     InProgress,
     Done,
     /// A status this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -38,7 +38,7 @@ pub enum Author {
         agent: Option<AgentRef>,
     },
     /// An author this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -95,7 +95,7 @@ pub enum TaskEditBody {
         before: Option<TaskId>,
     },
     /// An edit this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }

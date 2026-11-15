@@ -26,15 +26,9 @@ pub enum Outcome {
     },
     Unknown,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
-}
-
-impl Outcome {
-    pub(crate) const fn is_newer(&self) -> bool {
-        matches!(self, Self::Newer)
-    }
 }
 
 /// The core's or server's word on a command, sent when it accepts it and again when it ends.

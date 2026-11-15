@@ -16,7 +16,7 @@ pub enum McpCall {
     /// The flows the folder's docs pin, and where each breaks.
     Flow(FlowArgs),
     /// A tool this build doesn't offer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     Newer,
 }
 

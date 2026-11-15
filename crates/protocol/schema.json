@@ -2123,10 +2123,7 @@
         },
         "folder": {
           "description": "The folder it ran in, when its file names one.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "modified_at": {
           "type": "integer",
@@ -2339,10 +2336,7 @@
         },
         "screenshot_png": {
           "description": "What the element looked like: a PNG, base64-encoded. None when the page couldn't be\ncaptured.",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": "string"
         },
         "selector": {
           "description": "A CSS selector that finds the element on the page.",

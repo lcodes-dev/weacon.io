@@ -28,7 +28,7 @@ pub enum MachineSettingsQueryKind {
     /// `repo.list`; an older core answers `request.unknown`.
     Repos,
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -63,7 +63,7 @@ pub enum MachineSettingsAction {
         team: Option<bool>,
     },
     /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -88,7 +88,7 @@ pub enum MachineSettingsAnswerKind {
         repos: Vec<RepoId>,
     },
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -123,39 +123,12 @@ pub enum SignInState {
     /// The vendor's tool didn't say.
     Unknown,
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
 
-impl MachineSettingsAction {
-    pub(crate) fn is_newer(&self) -> bool {
-        matches!(
-            self,
-            Self::Newer
-                | Self::SetAccess {
-                    level: AccessLevel::Newer,
-                    ..
-                }
-        )
-    }
-}
-
-impl MachineSettingsAnswerKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::Current(settings) => {
-                matches!(settings.access, AccessLevel::Newer)
-                    || settings.sign_ins.iter().any(|sign_in| {
-                        matches!(sign_in.agent, AgentKind::Newer)
-                            || matches!(sign_in.state, SignInState::Newer)
-                    })
-            }
-            Self::Repos { .. } => false,
-            Self::Newer => true,
-        }
-    }
-}
+impl MachineSettingsAnswerKind {}
 
 #[cfg(test)]
 mod tests {

@@ -24,7 +24,7 @@ pub enum DiffQueryKind {
     /// Every file the chat's agents changed in its worktree.
     Changes,
     /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -47,7 +47,7 @@ pub enum DiffAnswerKind {
     /// Nothing changed.
     Unchanged,
     /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -70,7 +70,7 @@ pub enum FileChange {
         from: String,
     },
     /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -86,7 +86,7 @@ pub enum DiffContent {
     /// The file's changes wouldn't fit one frame.
     TooLarge,
     /// Content this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -117,39 +117,12 @@ pub enum LineOp {
     Added,
     Removed,
     /// An operation this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
 
-impl DiffAnswerKind {
-    pub(crate) fn is_newer(&self) -> bool {
-        match self {
-            Self::File { file, .. } => file.is_newer(),
-            Self::Unchanged => false,
-            Self::Newer => true,
-        }
-    }
-}
-
-impl DiffFile {
-    fn is_newer(&self) -> bool {
-        matches!(self.change, FileChange::Newer) || self.content.is_newer()
-    }
-}
-
-impl DiffContent {
-    fn is_newer(&self) -> bool {
-        match self {
-            Self::Text { hunks } => hunks
-                .iter()
-                .flat_map(|hunk| &hunk.lines)
-                .any(|line| line.op == LineOp::Newer),
-            Self::Binary | Self::TooLarge => false,
-            Self::Newer => true,
-        }
-    }
-}
+impl DiffFile {}
 
 #[cfg(test)]
 mod tests {

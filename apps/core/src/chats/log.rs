@@ -192,9 +192,10 @@ impl ChatLog {
     /// Commits `event` as the next entry, on disk before it is returned.
     ///
     /// # Errors
-    /// `chat.delta_not_logged` for a text delta and `chat.event_too_large` for an event that
-    /// doesn't fit one frame, which both leave the log as it was; `chat.log_not_written` when
-    /// the write fails, after which the log must be opened again.
+    /// `chat.delta_not_logged` for a text delta, `chat.event_unwritable` for an event from a
+    /// newer peer and `chat.event_too_large` for one that doesn't fit one frame, which all leave
+    /// the log as it was; `chat.log_not_written` when the write fails, after which the log must
+    /// be opened again.
     pub(crate) async fn append(&mut self, event: ChatEvent) -> Result<ChatEntry, Fault> {
         let not_written = || {
             Fault::new(
@@ -220,7 +221,12 @@ impl ChatLog {
             seq: self.seq() + 1,
             event,
         };
-        let mut line = serde_json::to_vec(&entry).map_err(|error| not_written().because(error))?;
+        let mut line = serde_json::to_vec(&entry).map_err(|_| {
+            Fault::new(
+                code!("chat.event_unwritable"),
+                "The event holds a part only ever received",
+            )
+        })?;
         line.push(b'\n');
         if line.len() > ENTRY_MAX {
             return Err(Fault::new(
@@ -551,7 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_text_delta_or_an_event_too_large_for_a_frame_is_never_committed() {
+    async fn a_text_delta_a_newer_event_or_one_too_large_for_a_frame_is_never_committed() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
         let delta = ChatEvent::Run {
@@ -564,10 +570,12 @@ mod tests {
         };
 
         let refused = log.append(delta).await.unwrap_err();
+        let newer = log.append(ChatEvent::Newer).await.unwrap_err();
         let too_large = log.append(sized(1, ENTRY_MAX + 1)).await.unwrap_err();
         let largest = log.append(sized(1, ENTRY_MAX)).await.unwrap();
 
         assert_eq!(refused.code().as_str(), "chat.delta_not_logged");
+        assert_eq!(newer.code().as_str(), "chat.event_unwritable");
         assert_eq!(too_large.code().as_str(), "chat.event_too_large");
         assert_eq!(open(&dir).await.seq(), 1);
         let update = Envelope {

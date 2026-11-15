@@ -1,11 +1,9 @@
-use std::fmt;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::AccountId;
 use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
+use crate::{AccountId, Secret};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -58,7 +56,7 @@ pub enum MachineOs {
     Linux,
     Windows,
     /// A system this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -75,19 +73,19 @@ pub struct PairStart {
 /// The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and
 /// the `secret` only the core that started may claim the machine with, until `expires_at`, in
 /// seconds since the Unix epoch.
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairStarted {
     pub pairing: PairingId,
-    pub code: String,
-    pub secret: String,
+    pub code: Secret<String>,
+    pub secret: Secret<String>,
     pub expires_at: i64,
 }
 
 /// From the web app, signed in: the machine waiting under `code`. The answer is a
 /// [`PairPending`].
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairLookup {
-    pub code: String,
+    pub code: Secret<String>,
 }
 
 /// A machine waiting to be paired, for the person to check against what its terminal shows.
@@ -101,22 +99,22 @@ pub struct PairPending {
 
 /// From the web app, signed in: pairs the machine waiting under `code` with the signed-in
 /// account. The answer is its [`MachineSummary`].
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairConfirm {
     pub pairing: PairingId,
-    pub code: String,
+    pub code: Secret<String>,
 }
 
 /// From the core that started `pairing`: whether the person has confirmed it yet. The answer
 /// is a [`PairClaimed`].
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairClaim {
     pub pairing: PairingId,
-    pub secret: String,
+    pub secret: Secret<String>,
 }
 
 /// The answer to a [`PairClaim`].
-#[derive(PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PairClaimed {
     /// Not confirmed yet: claim again later.
@@ -127,10 +125,10 @@ pub enum PairClaimed {
     Paired {
         machine: MachineId,
         owner: AccountId,
-        token: String,
+        token: Secret<String>,
     },
     /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
 }
@@ -150,51 +148,6 @@ pub struct MachineSummary {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineList {
     pub machines: Vec<MachineSummary>,
-}
-
-// Codes, secrets and tokens never reach a log line, even through `{:?}`.
-impl fmt::Debug for PairStarted {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PairStarted")
-            .field("pairing", &self.pairing)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for PairLookup {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PairLookup").finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for PairConfirm {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PairConfirm")
-            .field("pairing", &self.pairing)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for PairClaim {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PairClaim")
-            .field("pairing", &self.pairing)
-            .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for PairClaimed {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Waiting => f.write_str("Waiting"),
-            Self::Paired { machine, owner, .. } => f
-                .debug_struct("Paired")
-                .field("machine", machine)
-                .field("owner", owner)
-                .finish_non_exhaustive(),
-            Self::Newer => f.write_str("Newer"),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -292,7 +245,7 @@ mod tests {
         let claimed = PairClaimed::Paired {
             machine: "mc-1".parse().unwrap(),
             owner: "a-1".parse().unwrap(),
-            token: "tok".to_owned(),
+            token: "tok".into(),
         };
         let claimed_wire =
             json!({ "state": "paired", "machine": "mc-1", "owner": "a-1", "token": "tok" });
@@ -323,7 +276,7 @@ mod tests {
 
     #[test]
     fn codes_secrets_and_tokens_stay_out_of_debug() {
-        let secret = || "s3cr3t-marker".to_owned();
+        let secret = || Secret::from("s3cr3t-marker");
         let cases = [
             (
                 format!(
@@ -335,11 +288,11 @@ mod tests {
                         expires_at: 1,
                     }
                 ),
-                r#"PairStarted { pairing: PairingId("p-1"), .. }"#,
+                r#"PairStarted { pairing: PairingId("p-1"), code: Secret(..), secret: Secret(..), expires_at: 1 }"#,
             ),
             (
                 format!("{:?}", PairLookup { code: secret() }),
-                "PairLookup { .. }",
+                "PairLookup { code: Secret(..) }",
             ),
             (
                 format!(
@@ -349,7 +302,7 @@ mod tests {
                         code: secret()
                     }
                 ),
-                r#"PairConfirm { pairing: PairingId("p-1"), .. }"#,
+                r#"PairConfirm { pairing: PairingId("p-1"), code: Secret(..) }"#,
             ),
             (
                 format!(
@@ -359,7 +312,7 @@ mod tests {
                         secret: secret()
                     }
                 ),
-                r#"PairClaim { pairing: PairingId("p-1"), .. }"#,
+                r#"PairClaim { pairing: PairingId("p-1"), secret: Secret(..) }"#,
             ),
         ];
 
@@ -377,10 +330,10 @@ mod tests {
                     PairClaimed::Paired {
                         machine: "mc-1".parse().unwrap(),
                         owner: "a-1".parse().unwrap(),
-                        token: "s3cr3t-marker".to_owned(),
+                        token: "s3cr3t-marker".into(),
                     }
                 ),
-                r#"Paired { machine: MachineId("mc-1"), owner: AccountId("a-1"), .. }"#,
+                r#"Paired { machine: MachineId("mc-1"), owner: AccountId("a-1"), token: Secret(..) }"#,
             ),
             (format!("{:?}", PairClaimed::Waiting), "Waiting"),
             (format!("{:?}", PairClaimed::Newer), "Newer"),

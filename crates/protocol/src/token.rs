@@ -3,12 +3,15 @@
 
 pub(crate) const TOKEN_MAX: usize = 64;
 
-// The schema's form of `is_token`; a test keeps the two in step.
+// The schema's form of `is_token`, which also refuses a leading `-`; a test keeps the two in
+// step.
 pub(crate) const TOKEN_PATTERN: &str = r"^[A-Za-z0-9_-]+$";
 
-/// 1–64 ASCII letters, digits, `-` or `_`.
+/// 1–64 ASCII letters, digits, `-` or `_`, not starting with `-`, so no command line reads one
+/// as an option.
 pub(crate) fn is_token(id: &str) -> bool {
     (1..=TOKEN_MAX).contains(&id.len())
+        && !id.starts_with('-')
         && id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
@@ -144,6 +147,7 @@ mod tests {
         assert_eq!(serde_json::from_value::<RunId>(json!("t_1")).unwrap(), id);
         assert_eq!(RunId::try_from("a b".to_owned()), Err("a b".to_owned()));
         assert_eq!("a b".parse::<RunId>(), Err("not a run id"));
+        assert_eq!("--help".parse::<RunId>(), Err("not a run id"));
         let bad = serde_json::from_value::<RunId>(json!("../x")).unwrap_err();
         assert!(bad.to_string().contains("not a run id"), "{bad}");
     }
@@ -152,7 +156,7 @@ mod tests {
     fn tokens_are_short_and_plain_and_match_the_schema() {
         let pattern = regex::Regex::new(TOKEN_PATTERN).unwrap();
         let longest = "a".repeat(TOKEN_MAX);
-        for good in ["01JC2YQ7Z8", "9b1d-4c2e_f", longest.as_str()] {
+        for good in ["01JC2YQ7Z8", "9b1d-4c2e_f", "_a", "a-", longest.as_str()] {
             assert!(is_token(good), "{good}");
             assert!(pattern.is_match(good), "{good}");
         }
@@ -161,6 +165,10 @@ mod tests {
             assert!(!is_token(bad), "{bad}");
             // The schema states the length limit apart from the pattern.
             assert!(bad.len() > TOKEN_MAX || !pattern.is_match(bad), "{bad}");
+        }
+        for option in ["-", "-a", "--help"] {
+            assert!(!is_token(option), "{option}");
+            assert!(pattern.is_match(option), "{option}");
         }
     }
 }

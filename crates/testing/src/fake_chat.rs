@@ -2,12 +2,12 @@
 //! Codex run's long answer, then another prompt and a member's Claude run. It commits the
 //! recording's events as that run's, which asks to use Bash once the recording ends, and answers
 //! the client's chat queries and commands. A prompt of exactly [`LOSE`] makes it tell the client
-//! it lost events, and a query about any other chat is refused.
+//! it lost events; a query or command about any other chat, or one it doesn't know, is refused.
 
 use weacon_model::ChatRuns;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
-    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, ErrorBody,
+    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Code, Envelope, ErrorBody,
     MemberId, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId, RunState,
     RunStatus, RunUpdate, WorkspaceId, code,
 };
@@ -31,6 +31,17 @@ const EARLIER: u64 = 60;
 /// tests read it.
 #[cfg(test)]
 pub(crate) const SEEDED: u64 = 69;
+
+/// The error that answers the message `id`.
+pub(crate) const fn refusal(id: u32, code: Code) -> Envelope {
+    Envelope {
+        id,
+        message: Message::Error(ErrorBody {
+            code,
+            retryable: false,
+        }),
+    }
+}
 
 /// One chat's log, and the envelope id of the client's subscription to it.
 #[derive(Debug)]
@@ -81,46 +92,38 @@ impl FakeChat {
 
     /// What answers `envelope` when it is a query about this chat or a command to it.
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Vec<Envelope> {
-        if let Message::ChatQuery(ChatQuery {
-            workspace,
-            chat,
-            query,
-        }) = &envelope.message
-        {
-            if !self.is(workspace, chat) {
-                let refused = ErrorBody {
-                    code: code!("chat.not_found"),
-                    retryable: false,
-                };
-                return vec![Envelope {
-                    id: envelope.id,
-                    message: Message::Error(refused),
-                }];
+        let refused = |code| vec![refusal(envelope.id, code)];
+        match &envelope.message {
+            Message::ChatQuery(ChatQuery {
+                workspace, chat, ..
+            })
+            | Message::ChatCommand(ChatCommand {
+                workspace, chat, ..
+            }) if !self.is(workspace, chat) => refused(code!("chat.not_found")),
+            Message::ChatQuery(ChatQuery {
+                query: ChatQueryKind::Newer,
+                ..
+            })
+            | Message::ChatCommand(ChatCommand {
+                action: ChatAction::Newer,
+                ..
+            }) => refused(code!("message.unsupported")),
+            Message::ChatQuery(ChatQuery { query, .. }) => self.query(envelope.id, query),
+            Message::ChatCommand(ChatCommand {
+                request, action, ..
+            }) => {
+                let seq = self.seq();
+                self.command(request, action);
+                let mut told = self.told_since(seq);
+                if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+                    && let Some(id) = self.subscription.take()
+                {
+                    told.push(self.envelope(id, ChatAnswerKind::EventsLost));
+                }
+                told
             }
-            return self.query(envelope.id, query);
+            _ => Vec::new(),
         }
-        let Message::ChatCommand(ChatCommand {
-            workspace,
-            chat,
-            request,
-            action,
-            ..
-        }) = &envelope.message
-        else {
-            return Vec::new();
-        };
-        if !self.is(workspace, chat) {
-            return Vec::new();
-        }
-        let seq = self.seq();
-        self.command(request, action);
-        let mut told = self.told_since(seq);
-        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
-            && let Some(id) = self.subscription.take()
-        {
-            told.push(self.envelope(id, ChatAnswerKind::EventsLost));
-        }
-        told
     }
 
     /// Commits a recorded event of a run; what tells the client of it, if it subscribed. `None`
@@ -995,34 +998,45 @@ mod tests {
     }
 
     #[test]
-    fn another_chats_queries_are_refused_and_other_messages_get_nothing() {
+    fn another_chat_and_what_it_doesnt_know_are_refused_and_other_messages_get_nothing() {
         let mut fake = fake();
         let mut elsewhere = query(2, "c-1", ChatQueryKind::Snapshot);
         if let Message::ChatQuery(query) = &mut elsewhere.message {
             query.workspace = WorkspaceId::try_from("w-2".to_owned()).unwrap();
         }
-        let refused = |id| Envelope {
-            id,
-            message: Message::Error(ErrorBody {
-                code: code!("chat.not_found"),
-                retryable: false,
-            }),
-        };
+        let mut commanded = command(ChatAction::Interrupt);
+        if let Message::ChatCommand(command) = &mut commanded.message {
+            command.workspace = WorkspaceId::try_from("w-2".to_owned()).unwrap();
+        }
+        let seq = fake.seq();
 
         assert_eq!(
             fake.answer(&query(1, "c-2", ChatQueryKind::Snapshot)),
-            [refused(1)]
+            [refusal(1, code!("chat.not_found"))]
         );
-        assert_eq!(fake.answer(&elsewhere), [refused(2)]);
+        assert_eq!(
+            fake.answer(&elsewhere),
+            [refusal(2, code!("chat.not_found"))]
+        );
+        assert_eq!(
+            fake.answer(&commanded),
+            [refusal(commanded.id, code!("chat.not_found"))]
+        );
+        assert_eq!(
+            fake.answer(&query(3, "c-1", ChatQueryKind::Newer)),
+            [refusal(3, code!("message.unsupported"))]
+        );
+        let newer = command(ChatAction::Newer);
+        assert_eq!(
+            fake.answer(&newer),
+            [refusal(newer.id, code!("message.unsupported"))]
+        );
+        assert_eq!(fake.seq(), seq);
         assert!(
             fake.answer(&played(RunEvent::Text {
                 text: "x".to_owned()
             }))
             .is_empty()
-        );
-        assert!(
-            fake.answer(&query(1, "c-1", ChatQueryKind::Newer))
-                .is_empty()
         );
     }
 }

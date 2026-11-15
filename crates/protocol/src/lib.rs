@@ -19,6 +19,7 @@ mod receipt;
 mod release;
 mod repo;
 mod run;
+mod secret;
 mod sessions;
 mod settings;
 mod task;
@@ -71,6 +72,7 @@ pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
     RunStatus, RunUpdate,
 };
+pub use secret::Secret;
 pub use sessions::{
     OutsideSession, SessionsAnswer, SessionsAnswerKind, SessionsQuery, SessionsQueryKind,
 };
@@ -151,6 +153,10 @@ mod tests {
         assert!(
             fs::read_to_string(&path).is_ok_and(|committed| committed == current),
             "schema.json is out of date: run UPDATE_SCHEMA=1 cargo test -p weacon-protocol"
+        );
+        assert!(
+            !current.contains(r#""null""#),
+            "an optional field is left out, never null"
         );
     }
 }
