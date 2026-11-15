@@ -29,6 +29,14 @@ test("a pick just under the frame is kept and one at it is shrunk", async () => 
   assert.equal((await fit(BASE, async (scale) => "A".repeat(scale === 1 ? room : 1))).screenshot_png?.length, 1);
 });
 
+test("a component's name and file are cut, and left out when the page named none", async () => {
+  const named = await fit({ ...BASE, component: `${"c".repeat(256)}x`, source: `${"s".repeat(256)}x` });
+
+  assert.equal(named.component, "c".repeat(256));
+  assert.equal(named.source, "s".repeat(256));
+  assert.ok(!("component" in (await fit(BASE))) && !("source" in (await fit(BASE))));
+});
+
 test("long text is cut, and no text is left with half a character", async () => {
   const html = `${"a".repeat(256 * 1024 - 1)}\u{1F600} and more`;
   const title = `${"t".repeat(4 * 1024 - 1)}\u{1F600}`;

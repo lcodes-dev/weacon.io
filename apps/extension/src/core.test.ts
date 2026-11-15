@@ -2,24 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { Failure, type Port, deliver, report } from "./core.ts";
-import type { Envelope, Pick } from "./protocol.ts";
+import { Failure, NEEDS, type Port, connect, report } from "./core.ts";
+import type { Incoming } from "./incoming.ts";
+import type { Envelope } from "./protocol.ts";
 
 const ME = { name: "weacon-extension", version: "0.1.0", commit: "1a2b3c4" };
 const CORE = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
-const PICK: Pick = {
-  request: "p-1",
-  url: "http://localhost:3000/",
-  title: "Home",
-  selector: "#app > button",
-  html: "<button>Save</button>",
-  screenshot_png: "iVBORw0KGgo=",
-};
-
 const HANG_UP = Symbol("hang up");
+const LIST: Envelope = { id: 2, type: "chats_query", query: { kind: "list" } };
 
 // A port whose core answers each message with `answer`'s replies, or hangs up on undefined.
-function port(answer: (sent: Envelope) => unknown[] | undefined) {
+function port(answer: (sent: Envelope) => Array<Envelope | string | typeof HANG_UP> | undefined) {
   const sent: Envelope[] = [];
   let receive = (_: unknown) => {};
   let hangUp = () => {};
@@ -42,18 +35,18 @@ function port(answer: (sent: Envelope) => unknown[] | undefined) {
     onMessage: { addListener: (listener) => (receive = listener) },
     onDisconnect: { addListener: (listener) => (hangUp = listener) },
   };
-  return { fake, sent, disconnected: () => disconnected };
+  return { fake, sent, disconnected: () => disconnected, push: (message: Envelope) => receive(message), hangUp: () => hangUp() };
 }
 
-function welcome(capabilities: string[]) {
+function welcome(capabilities: string[]): Envelope {
   return { id: 1, type: "welcome", app: CORE, capabilities };
 }
 
-function core(pickReplies: unknown[] | undefined, capabilities = ["element.pick"]) {
-  return port((sent) => (sent.type === "hello" ? [welcome(capabilities)] : pickReplies));
+function core(replies: (sent: Envelope) => Envelope[] | undefined, capabilities = NEEDS) {
+  return port((sent) => (sent.type === "hello" ? [welcome(capabilities)] : replies(sent)));
 }
 
-async function failure(promise: Promise<void>): Promise<string> {
+async function failure(promise: Promise<unknown>): Promise<string> {
   const error = await promise.then(
     () => undefined,
     (error: unknown) => error,
@@ -62,73 +55,92 @@ async function failure(promise: Promise<void>): Promise<string> {
   return error.code;
 }
 
-test("a pick follows the hello and ends with its receipt", async () => {
-  const { fake, sent, disconnected } = core([
-    { id: 7, type: "receipt", request: "other", state: "completed" },
-    "not an envelope",
-    { id: 2, type: "receipt", request: "p-1", state: "completed" },
-  ]);
+test("a conversation greets the core first and gets each reply by its id", async () => {
+  const listed: Envelope = { id: 2, type: "chats_answer", answer: { kind: "list", chats: [] } };
+  const { fake, sent } = core(() => [{ id: 9, type: "receipt", request: "x", state: "completed" }, listed]);
+  const heard: Incoming[] = [];
 
-  await deliver(fake, ME, PICK);
+  const link = await connect(fake, ME, (message) => heard.push(message), () => {});
+  const reply = await link.ask({ ...LIST, id: link.next() });
 
-  assert.deepEqual(sent, [
-    { id: 1, type: "hello", protocol: PROTOCOL, app: ME },
-    { id: 2, type: "pick", ...PICK },
-  ]);
-  assert.ok(disconnected());
+  assert.deepEqual(sent, [{ id: 1, type: "hello", protocol: PROTOCOL, app: ME }, LIST]);
+  assert.deepEqual(reply, listed);
+  assert.deepEqual(heard, [{ id: 9, type: "receipt", request: "x", state: "completed" }]);
 });
 
-test("a refused or failed pick fails with the core's code", async () => {
-  const failed = { id: 2, type: "receipt", request: "p-1", state: "failed", code: "pick.not_kept" };
-  const conflict = { id: 2, type: "error", code: "request.conflict", retryable: false };
-  const odd = { id: 2, type: "welcome", app: CORE };
+test("what no one waits for, pushes and malformed messages aside, is heard", async () => {
+  const pushed: Envelope = { id: 0, type: "chat_answer", workspace: "w-1", chat: "c-1", answer: { kind: "events_lost" } };
+  const refused: Envelope = { id: 3, type: "error", code: "chat.held", retryable: false };
+  const { fake, push } = core(() => []);
+  const heard: Incoming[] = [];
+  await connect(fake, ME, (message) => heard.push(message), () => {});
 
-  assert.equal(await failure(deliver(core([failed]).fake, ME, PICK)), "pick.not_kept");
-  assert.equal(await failure(deliver(core([conflict]).fake, ME, PICK)), "request.conflict");
-  assert.equal(await failure(deliver(core([odd]).fake, ME, PICK)), "extension.unexpected_reply");
-});
+  push(pushed);
+  push(refused);
+  push({ id: 4, type: "chat", workspace: "w-1", chat: "c-1", entry: { seq: 0, event: { kind: "outside_prompt", text: "x" } } });
 
-test("a core that can't take picks is told apart from one that isn't there", async () => {
-  const other = port(() => [{ id: 1, type: "error", code: "protocol.unsupported", retryable: false }]);
-  const refused = port(() => [{ id: 1, type: "error", code: "handshake.required", retryable: false }]);
-  const gone = port(() => undefined);
-  const old = core([], []);
-
-  assert.equal(await failure(deliver(other.fake, ME, PICK)), "extension.core_other_protocol");
-  assert.equal(await failure(deliver(refused.fake, ME, PICK)), "extension.core_refused");
-  assert.equal(await failure(deliver(gone.fake, ME, PICK)), "extension.core_unreachable");
-  assert.equal(await failure(deliver(old.fake, ME, PICK)), "extension.core_too_old");
-  assert.equal(old.sent.length, 1);
-  assert.ok(gone.disconnected());
+  assert.deepEqual(heard, [pushed, refused]);
 });
 
 test("an accepted receipt isn't the end, and a core that goes quiet fails the wait", async () => {
-  const accepted = { id: 2, type: "receipt", request: "p-1", state: "accepted" };
-  const completed = { id: 2, type: "receipt", request: "p-1", state: "completed" };
-  const quiet = port((sent) => (sent.type === "hello" ? [welcome(["element.pick"])] : []));
+  const pick: Envelope = { id: 2, type: "pick", request: "p-1", url: "http://localhost/", title: "", selector: "p", html: "<p></p>" };
+  const accepted: Envelope = { id: 2, type: "receipt", request: "p-1", state: "accepted" };
+  const completed: Envelope = { id: 2, type: "receipt", request: "p-1", state: "completed" };
+  const twice = await connect(core(() => [accepted, completed]).fake, ME, () => {}, () => {});
+  const quiet = await connect(core(() => [accepted]).fake, ME, () => {}, () => {});
 
-  await deliver(core([accepted, completed]).fake, ME, PICK);
-  assert.equal(await failure(deliver(core([accepted]).fake, ME, PICK, 10)), "extension.core_no_reply");
-  assert.equal(await failure(deliver(quiet.fake, ME, PICK, 10)), "extension.core_no_reply");
-  assert.ok(quiet.disconnected());
+  assert.deepEqual(await twice.ask(pick), completed);
+  assert.equal(await failure(quiet.ask(pick, 10)), "extension.core_no_reply");
 });
 
-test("a port that closed after the hello fails the pick without sending it", async () => {
-  const { fake, sent } = port(() => [welcome(["element.pick"]), HANG_UP]);
+test("a core without what the panel needs is told apart from one that isn't there", async () => {
+  const other = port(() => [{ id: 1, type: "error", code: "protocol.unsupported", retryable: false }]);
+  const refused = port(() => [{ id: 1, type: "error", code: "handshake.required", retryable: false }]);
+  const gone = port(() => undefined);
+  const old = core(() => [], NEEDS.slice(1));
 
-  assert.equal(await failure(deliver(fake, ME, PICK)), "extension.core_unreachable");
-  assert.equal(sent.length, 1);
+  assert.equal(await failure(connect(other.fake, ME, () => {}, () => {})), "extension.core_other_protocol");
+  assert.equal(await failure(connect(refused.fake, ME, () => {}, () => {})), "extension.core_refused");
+  assert.equal(await failure(connect(gone.fake, ME, () => {}, () => {})), "extension.core_unreachable");
+  assert.equal(await failure(connect(old.fake, ME, () => {}, () => {})), "extension.core_too_old");
+  assert.equal(await failure(connect(port(() => []).fake, ME, () => {}, () => {}, 10)), "extension.core_no_reply");
+  assert.ok(old.disconnected() && gone.disconnected());
+});
+
+test("a closed port fails what waits and what is sent after, and says it closed", async () => {
+  const { fake, hangUp } = core(() => []);
+  let closed = 0;
+  const link = await connect(fake, ME, () => {}, () => (closed += 1));
+  const waiting = link.ask(LIST);
+
+  hangUp();
+
+  assert.equal(await failure(waiting), "extension.core_unreachable");
+  assert.equal(await failure(link.ask(LIST)), "extension.core_unreachable");
+  assert.throws(() => link.send(LIST), Failure);
+  assert.equal(closed, 1);
+});
+
+test("closing the link disconnects and fails what waits", async () => {
+  const { fake, disconnected } = core(() => []);
+  const link = await connect(fake, ME, () => {}, () => {});
+  const waiting = link.ask(LIST);
+
+  link.close();
+
+  assert.ok(disconnected());
+  assert.equal(await failure(waiting), "extension.core_unreachable");
+  assert.equal([link.next(), link.next()].join(), "2,3");
 });
 
 test("failures are reported by code after a hello, and quietly dropped without a core", async () => {
-  const told = core(undefined, []);
+  const told = core(() => [], []);
   const gone = port(() => undefined);
 
   await report(told.fake, ME, "extension.capture_failed");
   await report(gone.fake, ME, "extension.capture_failed");
 
   assert.deepEqual(told.sent.at(-1), { id: 2, type: "error", code: "extension.capture_failed", retryable: false });
-  assert.ok(told.disconnected());
+  assert.ok(told.disconnected() && gone.disconnected());
   assert.equal(gone.sent.length, 1);
-  assert.ok(gone.disconnected());
 });

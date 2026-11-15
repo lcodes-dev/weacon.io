@@ -1,8 +1,9 @@
 {
   "extends": "../../tooling/ts/tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["es2024", "dom"],
-    "types": ["node", "chrome"]
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": ["node", "chrome"],
+    "jsx": "react-jsx"
   },
   "include": ["src", "tools", "../../tooling/ts"]
 }

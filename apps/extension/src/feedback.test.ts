@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { reported, title } from "./feedback.ts";
+import { reported, say } from "./feedback.ts";
 
-test("known failures get their own words and others a general one", () => {
-  assert.equal(title("extension.page_not_local"), "Weacon picks elements on local pages only");
-  assert.equal(title("pick.not_kept"), "The element couldn't be sent to Weacon");
+test("known failures get their own words and others name their code", () => {
+  assert.equal(say("extension.core_too_old"), "Update Weacon on this machine.");
+  assert.equal(say("extension.page_not_web"), "Weacon picks elements on web pages only.");
+  assert.equal(say("agent.signed_out"), "Something went wrong (agent.signed_out).");
 });
 
 test("only the extension's own failures are reported to the core", () => {
