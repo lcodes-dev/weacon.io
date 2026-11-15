@@ -325,7 +325,8 @@ mod tests {
         drop(pushes);
         assert!(soon(bench.started.recv()).await.is_none());
 
-        tokio::time::sleep(IDLE_CHECK).await;
+        // Moved on, not slept: a start under way would hold a paused clock back.
+        tokio::time::advance(IDLE_CHECK).await;
 
         assert!(soon(bench.started.recv()).await.is_some());
     }

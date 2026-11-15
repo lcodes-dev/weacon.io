@@ -742,4 +742,27 @@ mod tests {
         assert!(!log.has_ended(&request("r-3")));
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
     }
+
+    #[tokio::test]
+    async fn a_refused_request_is_the_same_command_again_and_another_only_while_open() {
+        let dir = TempDir::new().unwrap();
+        let mut log = open(&dir).await;
+        let failed = Outcome::Failed {
+            code: code!("chat.empty_prompt"),
+        };
+        let receipt = Receipt {
+            request: request("r-1"),
+            outcome: failed,
+        };
+        log.append(ChatEvent::Receipt { receipt }).await.unwrap();
+        log.refused(&request("r-1"), digest(&asks(" ")));
+
+        assert_eq!(seen(&log, "r-1", asks(" ")).await, Seen::Same);
+        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
+        drop(log);
+
+        // Opened again, the digest is gone: any command under a refused request is done.
+        let log = open(&dir).await;
+        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Same);
+    }
 }

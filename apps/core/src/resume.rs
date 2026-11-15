@@ -204,6 +204,8 @@ fn chat_command(key: &ChatKey, action: ChatAction) -> Result<Message, Fault> {
 mod tests {
     use std::path::PathBuf;
 
+    use std::time::Duration;
+
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::sync::mpsc;
     use weacon_protocol::{
@@ -433,14 +435,22 @@ mod tests {
 
     async fn all_sent(mut received: mpsc::UnboundedReceiver<Message>) -> Vec<Message> {
         let mut all = Vec::new();
-        while let Some(message) = received.recv().await {
+        while let Some(message) = bounded(received.recv()).await {
             all.push(message);
         }
         all
     }
 
     async fn held(socket: &Path) -> Result<Option<Held>, Fault> {
-        hold(socket, build(&VERSION), &key()).await
+        bounded(hold(socket, build(&VERSION), &key())).await
+    }
+
+    // What `future` gives, failing the test should it take more than a few seconds.
+    async fn bounded<T>(future: impl Future<Output = T>) -> T {
+        let future = Box::pin(future);
+        tokio::time::timeout(Duration::from_secs(5), future)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -455,13 +465,15 @@ mod tests {
             Ok(())
         };
         let taken = held(&socket).await.unwrap();
-        carry_on(taken, agent, &recording_logger().0).await.unwrap();
+        bounded(carry_on(taken, agent, &recording_logger().0))
+            .await
+            .unwrap();
 
-        let release = received.recv().await;
+        let release = bounded(received.recv()).await;
         assert!(matches!(release, Some(Message::ChatCommand(command))
             if command.action == ChatAction::Release && command.chat == key().chat));
         assert!(
-            received.recv().await.is_none(),
+            bounded(received.recv()).await.is_none(),
             "the connection stayed open"
         );
     }
@@ -485,6 +497,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_daemon_that_doesnt_answer_stops_resume_with_its_code() {
+        let dir = TempDir::new().unwrap();
+        let socket = dir.join("weacon.sock");
+        let mut listener = crate::platform::bind(&socket).unwrap();
+        tokio::spawn(async move { drop(listener.accept().await.unwrap()) });
+
+        let refused = held(&socket).await.map(|_| ());
+
+        assert_eq!(code_of(refused), "daemon.no_answer");
+    }
+
+    #[tokio::test]
     async fn with_no_daemon_or_one_that_cant_hold_there_is_nothing_to_hold() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
@@ -493,8 +517,12 @@ mod tests {
         let mut received = daemon(&socket, Fake::default());
         assert!(held(&socket).await.unwrap().is_none());
 
-        assert_eq!(received.recv().await.map(|_| ()), Some(()));
-        assert!(received.recv().await.is_none(), "{:?}", sent(&mut received));
+        assert_eq!(bounded(received.recv()).await.map(|_| ()), Some(()));
+        assert!(
+            bounded(received.recv()).await.is_none(),
+            "{:?}",
+            sent(&mut received)
+        );
     }
 
     #[tokio::test]
@@ -524,7 +552,7 @@ mod tests {
             Ok(())
         };
         let taken = held(&socket).await.unwrap();
-        carry_on(taken, agent, &log).await.unwrap();
+        bounded(carry_on(taken, agent, &log)).await.unwrap();
 
         assert_eq!(warned(), 1);
     }
