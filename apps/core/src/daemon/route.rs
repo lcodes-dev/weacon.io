@@ -62,6 +62,13 @@ pub(super) async fn route(
                 Err(fault) => Reply::error(id, fault.code().clone(), false),
             }
         }
+        Message::MapQuery(query) => Reply {
+            envelope: Some(Envelope {
+                id,
+                message: Message::MapAnswer(shared.mcp.hook_map(query, &shared.log).await),
+            }),
+            close: false,
+        },
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
     }
 }

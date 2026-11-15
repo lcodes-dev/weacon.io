@@ -95,6 +95,7 @@ struct Shared {
     chats: Chats,
     worktrees: Worktrees,
     outside: Outside,
+    mcp: mcp::Mcp,
     log: Logger,
 }
 
@@ -145,7 +146,7 @@ impl Daemon {
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
         let (mcp, mcp_server) = mcp::start(&app, &log, mcp::Maps::new(state_dir, &places))?;
-        places.mcp = Some(mcp);
+        places.mcp = Some(mcp.clone());
         let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
@@ -162,6 +163,7 @@ impl Daemon {
                 chats,
                 worktrees,
                 outside: Outside::default(),
+                mcp,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -211,6 +213,11 @@ impl Daemon {
             log.error("engine failed", &[]);
         }
         log.info("daemon stopped", &[]);
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn mcp(&self) -> &mcp::Mcp {
+        &self.shared.mcp
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {

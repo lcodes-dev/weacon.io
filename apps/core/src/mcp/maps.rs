@@ -56,6 +56,10 @@ struct Stores {
     reads: Arc<Semaphore>,
 }
 
+/// A read of a map that didn't end within its limit.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct TooSlow;
+
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Watched {
@@ -91,8 +95,24 @@ impl Maps {
         permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> String {
+        match self.stored(call, grant, permit, log).await {
+            Ok(Some(answer)) => answer,
+            Ok(None) => NO_MAP.to_owned(),
+            Err(TooSlow) => TOO_SLOW.to_owned(),
+        }
+    }
+
+    /// [`Self::answer`]'s answer when there is a map; none when there isn't, and [`TooSlow`]
+    /// once the limit passes.
+    pub(crate) async fn stored(
+        &self,
+        call: &McpCall,
+        grant: &Grant,
+        permit: OwnedSemaphorePermit,
+        log: &Logger,
+    ) -> Result<Option<String>, TooSlow> {
         let Some(stores) = self.stores(log).await else {
-            return NO_MAP.to_owned();
+            return Ok(None);
         };
         let (workspace, folder) = (grant.workspace.clone(), grant.folder.clone());
         let (call, reading_log) = (call.clone(), log.clone());
@@ -108,13 +128,12 @@ impl Maps {
                 .flatten()
         });
         match tokio::time::timeout(self.limit, reading).await {
-            Err(_) => TOO_SLOW.to_owned(),
-            Ok(Ok(Some(answer))) => answer,
-            Ok(Ok(None)) => NO_MAP.to_owned(),
+            Err(_) => Err(TooSlow),
+            Ok(Ok(answer)) => Ok(answer),
             Ok(Err(error)) => {
                 let fault = failed().because(error);
                 log.warn("mcp map failed", &[("err", Field::error(&fault))]);
-                NO_MAP.to_owned()
+                Ok(None)
             }
         }
     }
