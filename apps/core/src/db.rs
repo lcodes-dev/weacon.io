@@ -44,15 +44,11 @@ impl Db {
             .synchronous(SqliteSynchronous::Normal)
             .busy_timeout(BUSY_TIMEOUT)
             .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(CONNECTIONS)
-            .connect_with(options)
-            .await
-            .map_err(|error| {
-                Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
-            })?;
-        schema::migrate(&pool).await?;
-        Ok(Self { pool })
+        connect(
+            SqlitePoolOptions::new().max_connections(CONNECTIONS),
+            options,
+        )
+        .await
     }
 
     /// A database in memory, gone once dropped, with the same schema.
@@ -64,14 +60,8 @@ impl Db {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .idle_timeout(None)
-            .max_lifetime(None)
-            .connect_with(options)
-            .await
-            .map_err(|error| {
-                Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
-            })?;
-        schema::migrate(&pool).await?;
-        Ok(Self { pool })
+            .max_lifetime(None);
+        connect(pool, options).await
     }
 
     pub(crate) fn workspace(&self, id: &WorkspaceId) -> Workspace {
@@ -80,6 +70,15 @@ impl Db {
             id: id.clone(),
         }
     }
+}
+
+/// A pool of `pool`'s connections with `options`, its schema brought up to date.
+async fn connect(pool: SqlitePoolOptions, options: SqliteConnectOptions) -> Result<Db, Fault> {
+    let pool = pool.connect_with(options).await.map_err(|error| {
+        Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
+    })?;
+    schema::migrate(&pool).await?;
+    Ok(Db { pool })
 }
 
 fn failed(error: sqlx::Error) -> Fault {

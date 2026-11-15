@@ -9,34 +9,21 @@ use weacon_protocol::{
 };
 
 use crate::db::Hit;
-use crate::machine_settings::Identity;
 use crate::mcp::Maps;
 
 /// The most items an answer holds.
 const MOST: usize = 50;
-/// The longest words a search takes, and the longest name or path an answer holds.
+/// The longest words a search takes.
 const LONGEST_WORDS: usize = 200;
+/// The longest name or path an answer holds.
 const LONGEST: usize = 500;
 
-/// Answers `query` from the maps of the workspace's repositories, for this machine's owner only.
+/// Answers `query` from the maps of the workspace's repositories; the caller checks who asks.
 pub(crate) async fn query(
     maps: &Maps,
-    owner: &Identity,
     query: SymbolsQuery,
     log: &Logger,
 ) -> Result<SymbolsAnswer, Fault> {
-    if query.machine != owner.machine {
-        return Err(Fault::new(
-            code!("symbols.other_machine"),
-            "The request is for another machine",
-        ));
-    }
-    if query.by.is_none_or(|by| by.account != owner.account) {
-        return Err(Fault::new(
-            code!("symbols.not_owner"),
-            "Only this machine's owner can search its code",
-        ));
-    }
     let SymbolsQueryKind::Search { words } = query.query else {
         return Err(Fault::new(
             code!("symbols.unknown"),
@@ -110,13 +97,6 @@ mod tests {
         T::try_from(id.to_owned()).unwrap()
     }
 
-    fn owner() -> Identity {
-        Identity {
-            machine: id("mc-1"),
-            account: id("a-1"),
-        }
-    }
-
     fn query(machine: &str, by: Option<&str>, words: &str) -> SymbolsQuery {
         SymbolsQuery {
             request: id::<RequestId>("r-1"),
@@ -176,11 +156,11 @@ mod tests {
         query: SymbolsQuery,
         log: &Logger,
     ) -> Result<SymbolsAnswer, Fault> {
-        super::query(maps, &owner(), query, log).await
+        super::query(maps, query, log).await
     }
 
     #[tokio::test]
-    async fn only_the_owner_asking_this_machine_known_words_of_a_fair_length_is_answered() {
+    async fn only_known_words_of_a_fair_length_are_searched() {
         let (log, _records) = recording_logger();
         let maps = Maps::off();
         let too_long = "x".repeat(LONGEST_WORDS + 1);
@@ -188,9 +168,6 @@ mod tests {
         let mut newer = query("mc-1", Some("a-1"), "run");
         newer.query = SymbolsQueryKind::Newer;
         for (asked, refused) in [
-            (query("mc-2", Some("a-1"), "run"), "symbols.other_machine"),
-            (query("mc-1", Some("a-2"), "run"), "symbols.not_owner"),
-            (query("mc-1", None, "run"), "symbols.not_owner"),
             (newer, "symbols.unknown"),
             (query("mc-1", Some("a-1"), &too_long), "symbols.too_long"),
             (query("mc-1", Some("a-1"), &longest), "mcp.map_failed"),

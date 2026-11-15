@@ -280,8 +280,8 @@ fn replies(host: &Host, id: u32, answered: Result<Vec<Message>, Fault>) -> Vec<E
 
 /// The items of the code the owner searched for.
 async fn search(asked: &Asked, query: SymbolsQuery) -> Result<Message, Fault> {
-    let owner = owner(&asked.host).await?;
-    let answer = symbols::query(&asked.maps, &owner, query, &asked.host.log).await?;
+    owners(&asked.host, query.by.as_ref()).await?;
+    let answer = symbols::query(&asked.maps, query, &asked.host.log).await?;
     Ok(Message::SymbolsAnswer(answer))
 }
 
@@ -475,7 +475,7 @@ mod tests {
         assert_eq!((answer.request.as_str(), answer.answer), ("r-2", none));
         assert_eq!(
             test_support::error_code(&stranger.message),
-            Some("symbols.not_owner")
+            Some("machine.not_owner")
         );
         assert_eq!(test_support::messages(&records), ["ask failed"]);
     }

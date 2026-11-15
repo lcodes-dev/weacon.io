@@ -104,7 +104,8 @@ fn search(folder: &Path, words: &str, budget: Option<u32>) -> Result<String, Fau
     let entries = map.entries();
     let hits = crate::app::runtime()?.block_on(async {
         let db = Db::memory().await?;
-        let local = WorkspaceId::try_from("local".to_owned()).map_err(|_| index_failed())?;
+        // A workspace of its own, in a database no one else opens.
+        let local = WorkspaceId::try_from("local".to_owned()).map_err(|_| read_failed())?;
         let map = db.workspace(&local).map(&LocalRepo::at(folder));
         let layer = Layer {
             name: BASE.to_owned(),

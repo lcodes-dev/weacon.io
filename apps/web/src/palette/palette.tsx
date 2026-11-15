@@ -8,7 +8,7 @@ import type { Place } from "../shell/place.ts";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { composing, picker } from "../composer/keys.ts";
 import { type Listed, listed, opensPalette, parts } from "./hits.ts";
-import { place, searcher, symbols } from "./symbols.ts";
+import { SYMBOLS, place, searcher, symbols } from "./symbols.ts";
 import "./palette.css";
 
 type Props = {
@@ -186,9 +186,9 @@ type Coded = { text: string; symbols: CodeSymbol[] };
  * while no machine of theirs offers them. `settled` once nothing is left to wait for.
  */
 function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | undefined, text: string) {
-  const offered = useOffers(socket, "symbols.search");
-  const [machine, setMachine] = useState<MachineId | undefined>(undefined);
-  const [asked, setAsked] = useState(false);
+  const offered = useOffers(socket, SYMBOLS);
+  // Undefined until the machines are listed, null when none of them offers symbols.
+  const [machine, setMachine] = useState<MachineId | null | undefined>(undefined);
   const [coded, setCoded] = useState<Loaded<Coded>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<Coded>(setCoded));
   useEffect(() => {
@@ -196,8 +196,7 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
     if (offered) {
       void api.machines().then((answer) => {
         if (live) {
-          setMachine(answer.ok ? searcher(answer.value.machines, chatMachine) : undefined);
-          setAsked(true);
+          setMachine((answer.ok ? searcher(answer.value.machines, chatMachine) : undefined) ?? null);
         }
       });
     }
@@ -207,18 +206,19 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
   }, [api, offered, chatMachine]);
   useEffect(() => () => loader.stop(), [loader]);
   useEffect(() => {
-    if (machine !== undefined && text.trim() !== "") {
+    if (typeof machine === "string" && text.trim() !== "") {
       void loader.load(async () => {
         const answer = await symbols(socket, machine, text, later);
         return answer.ok ? { ok: true, value: { text, symbols: answer.value } } : answer;
       });
     }
   }, [loader, socket, machine, text]);
-  const answered = coded.value?.text === text;
+  const asking = typeof machine === "string";
+  const answered = asking && coded.value?.text === text;
   return {
-    symbols: machine !== undefined && answered ? (coded.value?.symbols ?? []) : [],
-    problem: machine === undefined ? undefined : coded.problem,
-    settled: !offered || (asked && (machine === undefined || answered || coded.problem !== undefined)),
+    symbols: answered ? (coded.value?.symbols ?? []) : [],
+    problem: asking ? coded.problem : undefined,
+    settled: !offered || machine === null || answered || coded.problem !== undefined,
   };
 }
 

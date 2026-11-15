@@ -1,10 +1,10 @@
-import type { Later } from "../connection.ts";
+import type { Later, WebCapability } from "../connection.ts";
 import type { MachineId, MachineSummary, Symbol as CodeSymbol, SymbolKind } from "../protocol.ts";
 import { type Answer, MALFORMED } from "../api/api.ts";
 import { type MachineSocket, askMachine } from "../machines/ask-machine.ts";
 
 /** What a core offers to search its code. */
-export const SYMBOLS = "symbols.search";
+export const SYMBOLS: WebCapability = "symbols.search";
 
 /** The machine the palette asks for symbols: the open chat's, by its name, when it offers them, else the first that does. */
 export function searcher(machines: readonly MachineSummary[], chatMachine: string | undefined): MachineId | undefined {

@@ -33,7 +33,8 @@ const OFFERED: &[Capability] = &[
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
 /// `workspace.chats` and `workspace.chat_commands`, committing a receipt that accepts each
-/// command to the chat, `diff.view`, `worktree.manage` and `symbols.search`; it refuses a message it doesn't know.
+/// command to the chat, `diff.view`, `worktree.manage` and `symbols.search`; it refuses a
+/// message it doesn't know.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
