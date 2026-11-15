@@ -183,7 +183,9 @@ impl Workspace {
                      WHERE search.title || char(10) || search.body NOT LIKE value ESCAPE '\\')
              ORDER BY search.rowid IN
                      (SELECT rowid FROM search
-                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2) DESC,
+                      WHERE search MATCH 'title : (' || ?1 || ')' AND workspace_id = ?2)
+                 AND NOT EXISTS (SELECT 1 FROM json_each(?3)
+                     WHERE search.title NOT LIKE value ESCAPE '\\') DESC,
                  rows.at DESC, search.rowid DESC
              LIMIT ?4",
         )
@@ -336,6 +338,21 @@ mod tests {
             panic!("{first:?}");
         };
         assert_eq!((task.as_str(), title.as_str()), ("t2", "Ship the release"));
+    }
+
+    #[tokio::test]
+    async fn a_title_holding_the_short_words_too_comes_first() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        one.add_task(&new_task("t1", "Release v2", "a"), &by(5))
+            .await
+            .unwrap();
+        one.add_doc(&doc("d1", "Release", "Notes for v2.", &[]), &by(40))
+            .await
+            .unwrap();
+
+        assert_eq!(found(&one, "release v2").await, ["t1", "d1"]);
+        assert_eq!(found(&one, "release").await, ["d1", "t1"]);
     }
 
     #[tokio::test]
