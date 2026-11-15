@@ -841,6 +841,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn turns_paused_for_an_install_start_again_once_resumed() {
+        use crate::chats::test_support::{bench, prompt, soon};
+
+        let mut running = bench();
+        let chats = running.chats.downgrade();
+        assert!(!pause_unless_busy(&chats).await);
+        running.command(prompt("r-1", "Hi")).await.unwrap();
+        assert!(soon(running.started.recv()).await.is_none());
+
+        resume_turns(&chats).await;
+
+        assert!(soon(running.started.recv()).await.is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn agents_count_as_busy_when_the_engine_says_so_or_doesnt_answer() {
         use crate::chats::test_support::{bench, parts};
 
