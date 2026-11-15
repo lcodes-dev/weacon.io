@@ -16,10 +16,12 @@ use crate::platform;
 
 mod line;
 mod requests;
+mod title;
 
 use line::entry_line;
 use requests::Requests;
 pub(crate) use requests::{Seen, digest};
+pub(crate) use title::title;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -58,6 +60,13 @@ fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+// Where `chat`'s log is under its workspace's folder.
+fn path(workspace_root: &Path, chat: &ChatId) -> PathBuf {
+    workspace_root
+        .join("chats")
+        .join(super::file_stem(chat) + ".jsonl")
+}
+
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
@@ -70,8 +79,7 @@ impl ChatLog {
     /// # Errors
     /// When the log can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
-        let dir = workspace_root.join("chats");
-        let path = dir.join(super::file_stem(chat) + ".jsonl");
+        let path = path(workspace_root, chat);
         let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
             let mut log = Self {
@@ -397,6 +405,7 @@ mod tests {
 
     fn asks(text: &str) -> ChatAction {
         ChatAction::Prompt {
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: None,
@@ -461,6 +470,7 @@ mod tests {
     async fn a_chats_repository_is_the_one_its_first_prompt_named() {
         let dir = TempDir::new().unwrap();
         let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
+            pick: None,
             request: request(id),
             text: "Go".to_owned(),
             repo: Some(RepoId::try_from(repo.to_owned()).unwrap()),
@@ -672,6 +682,7 @@ mod tests {
         assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
         assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
         let elsewhere = ChatAction::Prompt {
+            pick: None,
             text: "Hi".to_owned(),
             repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
             machine: None,
@@ -679,6 +690,7 @@ mod tests {
         };
         assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
         let another_agent = ChatAction::Prompt {
+            pick: None,
             text: "Hi".to_owned(),
             repo: None,
             machine: None,

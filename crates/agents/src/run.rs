@@ -102,11 +102,12 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
         run
     }
 
-    /// Starts a turn with the person's `prompt`.
+    /// Starts a turn with the person's `prompt`, and `png`, a base64 PNG, where the agent
+    /// [takes images](crate::takes_images).
     ///
     /// # Errors
     /// When a turn is already running, or the agent's stdin is closed.
-    pub async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+    pub async fn send(&mut self, prompt: &str, png: Option<&str>) -> Result<(), Fault> {
         if self.turn != Turn::Idle {
             return Err(Fault::new(
                 code!("agent.busy"),
@@ -114,7 +115,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             ));
         }
         self.turn = Turn::Running;
-        let effects = self.wire.prompt(prompt);
+        let effects = self.wire.prompt(prompt, png);
         self.apply(effects);
         self.flush().await
     }
@@ -324,7 +325,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../replays/claude/turn.replay"));
         let command = json!({ "command": "cargo test -p parser" });
 
-        run.send("Run the parser tests").await.unwrap();
+        run.send("Run the parser tests", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_asked).await,
             [
@@ -361,7 +362,7 @@ mod tests {
         run.rules.level = AccessLevel::ReadOnly;
         let write = json!({ "file_path": "README.md", "content": "# Parser" });
 
-        run.send("Tidy the readme").await.unwrap();
+        run.send("Tidy the readme", None).await.unwrap();
 
         assert_eq!(
             until(&mut run, is_finished).await,
@@ -393,7 +394,7 @@ mod tests {
         let write = json!({ "file_path": "/README.md", "content": "# Parser" });
         let command = json!({ "command": "cargo test" });
 
-        run.send("Tidy the readme, then run the tests")
+        run.send("Tidy the readme, then run the tests", None)
             .await
             .unwrap();
         assert_eq!(
@@ -425,7 +426,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../replays/claude/deny.replay"));
         run.rules = full("/");
 
-        run.send("Tidy the readme").await.unwrap();
+        run.send("Tidy the readme", None).await.unwrap();
         let events = until(&mut run, is_asked).await;
         assert!(matches!(
             events.last(),
@@ -443,7 +444,7 @@ mod tests {
     async fn a_denial_is_sent_back_and_unhandled_requests_are_refused() {
         let (mut run, done) = fake(include_str!("../replays/claude/deny.replay"));
 
-        run.send("Tidy the readme").await.unwrap();
+        run.send("Tidy the readme", None).await.unwrap();
         let events = until(&mut run, is_asked).await;
         assert_eq!(events.first(), Some(&started()));
         assert_eq!(events.len(), 3);
@@ -460,7 +461,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../replays/claude/interrupt.replay"));
 
         run.interrupt().await.unwrap();
-        run.send("Rewrite the lexer").await.unwrap();
+        run.send("Rewrite the lexer", None).await.unwrap();
         assert_eq!(until(&mut run, is_asked).await.len(), 2);
         run.interrupt().await.unwrap();
         run.interrupt().await.unwrap();
@@ -481,7 +482,7 @@ mod tests {
     async fn a_turn_cut_off_ends_unknown_and_resuming_never_resends_it() {
         let (mut run, done) = fake(include_str!("../replays/claude/cut_off.replay"));
 
-        run.send("Bump the version").await.unwrap();
+        run.send("Bump the version", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [started(), text("Bumping it now."), ended(Outcome::Unknown)]
@@ -489,7 +490,7 @@ mod tests {
         ends_as_recorded(run, done).await;
 
         let (mut resumed, done) = fake(include_str!("../replays/claude/resume.replay"));
-        resumed.send("Did the bump land?").await.unwrap();
+        resumed.send("Did the bump land?", None).await.unwrap();
         assert_eq!(
             until(&mut resumed, is_finished).await,
             [
@@ -505,7 +506,7 @@ mod tests {
     async fn an_agent_error_fails_the_turn() {
         let (mut run, done) = fake(include_str!("../replays/claude/failed.replay"));
 
-        run.send("Explain the build").await.unwrap();
+        run.send("Explain the build", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [
@@ -537,10 +538,10 @@ mod tests {
             Rules::ask_first(),
         );
 
-        let sent = run.send("Hello").await.unwrap_err();
+        let sent = run.send("Hello", None).await.unwrap_err();
         assert_eq!(sent.code().as_str(), "agent.io_failed");
         assert_eq!(
-            run.send("Again").await.unwrap_err().code().as_str(),
+            run.send("Again", None).await.unwrap_err().code().as_str(),
             "agent.busy"
         );
         assert_eq!(run.next().await.unwrap(), Some(started()));

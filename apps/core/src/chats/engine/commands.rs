@@ -76,6 +76,7 @@ impl<A: Agent> Engine<A> {
                 text,
                 repo,
                 agent: named,
+                pick,
                 ..
             } => {
                 let (agent, fresh) = (self.agent_of(key, named).await?, seen != Seen::Pending);
@@ -90,7 +91,12 @@ impl<A: Agent> Engine<A> {
                 }
                 if fresh {
                     self.has_room(key)?;
+                    let note = match &pick {
+                        Some(pick) => Some(self.pick_note(pick).await?),
+                        None => None,
+                    };
                     let prompt = ChatEvent::Prompt {
+                        pick: note,
                         request: request.clone(),
                         text: text.clone(),
                         repo,
@@ -98,7 +104,16 @@ impl<A: Agent> Engine<A> {
                     };
                     self.commit(key, prompt).await?;
                 }
-                self.prompt(key, request, text, agent).await
+                self.prompt(
+                    key,
+                    Queued {
+                        request,
+                        text,
+                        pick,
+                    },
+                    agent,
+                )
+                .await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -150,14 +165,10 @@ impl<A: Agent> Engine<A> {
     async fn prompt(
         &mut self,
         key: &ChatKey,
-        request: RequestId,
-        text: String,
+        queued: Queued,
         agent: AgentKind,
     ) -> Result<(), Fault> {
-        let queued = Queued {
-            request: request.clone(),
-            text,
-        };
+        let request = queued.request.clone();
         self.runs.enqueue(key, agent, queued, self.now()).await?;
         self.commit_receipt(key, &request, Outcome::Accepted)
             .await?;
@@ -438,6 +449,7 @@ mod tests {
             .await
             .unwrap();
         let queued = Queued {
+            pick: None,
             request: prompt("r-2", "More").request,
             text: "More".to_owned(),
         };

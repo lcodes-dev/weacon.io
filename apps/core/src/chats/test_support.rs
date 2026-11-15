@@ -27,6 +27,8 @@ use crate::workspaces::Workspaces;
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Told {
     Send(String),
+    /// The image that went with the prompt before it.
+    Png(String),
     Answer(PermissionAnswer),
     Interrupt,
 }
@@ -39,9 +41,12 @@ pub(crate) struct FakeAgent {
 }
 
 impl Agent for FakeAgent {
-    async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+    async fn send(&mut self, prompt: &str, png: Option<&str>) -> Result<(), Fault> {
         self.on_turn = true;
         drop(self.told.send(Told::Send(prompt.to_owned())));
+        if let Some(png) = png {
+            drop(self.told.send(Told::Png(png.to_owned())));
+        }
         Ok(())
     }
 
@@ -109,6 +114,11 @@ impl Bench {
             .add(&git, repo.clone(), &folder)
             .unwrap();
         repo
+    }
+
+    /// The engine's state folder.
+    pub(crate) fn state_dir(&self) -> &std::path::Path {
+        &self.dir
     }
 
     /// Holds up the next agent's start until the returned sender is sent to or dropped.
@@ -230,6 +240,7 @@ pub(crate) fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> 
 /// A prompt as chat `c-1`'s log holds it.
 pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
     ChatEvent::Prompt {
+        pick: None,
         request: request(request_id),
         text: text.to_owned(),
         repo: None,
@@ -253,6 +264,7 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
         request,
         "c-1",
         ChatAction::Prompt {
+            pick: None,
             text,
             repo: None,
             machine: None,

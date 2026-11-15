@@ -681,6 +681,7 @@ mod tests {
         texts(&mut client, 1).await;
         let interrupt = command(2, request("q-1"), ChatAction::Interrupt);
         let prompt = ChatAction::Prompt {
+            pick: None,
             text: "hi".to_owned(),
             repo: None,
             machine: None,

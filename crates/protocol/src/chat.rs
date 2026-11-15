@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
-    RequestId, RunState, RunStatus, RunUpdate, WorkspaceId,
+    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, PickNote, Receipt,
+    RepoId, RequestId, RunState, RunStatus, RunUpdate, WorkspaceId,
 };
 
 token_id!(
@@ -34,8 +34,13 @@ pub enum ChatAction {
     /// sender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on
     /// its first prompt, Claude when missing; a later prompt naming another agent is refused as
     /// `chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.
+    /// `pick` names a [`Pick`](crate::Pick) the core keeps, under `chat.pick`, from a local
+    /// client only; the agent gets it as quoted page content.
     Prompt {
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "RequestId")]
+        pick: Option<RequestId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "RepoId")]
         repo: Option<RepoId>,
@@ -97,10 +102,13 @@ pub struct ChatEntry {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ChatEvent {
     /// A person's prompt, accepted under `request`, with the repository and the agent it
-    /// named, if any.
+    /// named, and a note of the element it carried, if any.
     Prompt {
         request: RequestId,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "PickNote")]
+        pick: Option<PickNote>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "RepoId")]
         repo: Option<RepoId>,
@@ -315,6 +323,7 @@ mod tests {
         let cases = [
             (
                 ChatAction::Prompt {
+                    pick: None,
                     text: "Run the tests".to_owned(),
                     repo: None,
                     machine: None,
@@ -324,6 +333,7 @@ mod tests {
             ),
             (
                 ChatAction::Prompt {
+                    pick: None,
                     text: "Fix the build".to_owned(),
                     repo: Some(repo()),
                     machine: Some("mc-1".parse().unwrap()),
@@ -382,6 +392,7 @@ mod tests {
         let cases = [
             (
                 ChatEvent::Prompt {
+                    pick: None,
                     request: request(),
                     text: "Run the tests".to_owned(),
                     repo: None,
@@ -430,6 +441,7 @@ mod tests {
     #[test]
     fn a_prompt_event_keeps_the_repo_and_the_agent_it_fixed() {
         let event = ChatEvent::Prompt {
+            pick: None,
             request: request(),
             text: "Fix the build".to_owned(),
             repo: Some(repo()),
@@ -440,6 +452,40 @@ mod tests {
             entry_wire(
                 &json!({ "kind": "prompt", "request": "r-1", "text": "Fix the build",
                                 "repo": "site", "agent": "codex" }),
+            ),
+        );
+    }
+
+    #[test]
+    fn a_prompt_names_its_pick_and_its_event_keeps_only_a_note_of_it() {
+        let action = ChatAction::Prompt {
+            text: "Make it blue".to_owned(),
+            pick: Some("p-1".parse().unwrap()),
+            repo: None,
+            machine: None,
+            agent: None,
+        };
+        travels(
+            &command(action),
+            command_wire(&json!({ "kind": "prompt", "text": "Make it blue", "pick": "p-1" })),
+        );
+        let event = ChatEvent::Prompt {
+            request: request(),
+            text: "Make it blue".to_owned(),
+            pick: Some(PickNote {
+                url: "http://localhost:3000/".to_owned(),
+                title: "Home".to_owned(),
+                selector: "main > button".to_owned(),
+            }),
+            repo: None,
+            agent: None,
+        };
+        travels(
+            &update(event),
+            entry_wire(
+                &json!({ "kind": "prompt", "request": "r-1", "text": "Make it blue",
+                "pick": { "url": "http://localhost:3000/", "title": "Home",
+                          "selector": "main > button" } }),
             ),
         );
     }

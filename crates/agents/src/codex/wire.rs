@@ -348,7 +348,7 @@ mod tests {
     async fn a_thread_runs_a_turn_and_an_approval_goes_out_and_back() {
         let (mut run, done) = fake(include_str!("../../replays/codex/approval.replay"), None);
 
-        run.send("Run the parser tests").await.unwrap();
+        run.send("Run the parser tests", None).await.unwrap();
         let events = until(&mut run, is_asked).await;
         assert_eq!(
             events.get(..2),
@@ -388,7 +388,7 @@ mod tests {
             Some(THREAD),
         );
 
-        run.send("Rewrite the lexer").await.unwrap();
+        run.send("Rewrite the lexer", None).await.unwrap();
         assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
         run.interrupt().await.unwrap();
         let events = until(&mut run, is_finished).await;
@@ -416,14 +416,14 @@ mod tests {
     async fn a_refused_turn_takes_its_interrupt_along_and_a_declined_change_fails() {
         let (mut run, done) = fake(include_str!("../../replays/codex/decline.replay"), None);
 
-        run.send("Tidy the readme").await.unwrap();
+        run.send("Tidy the readme", None).await.unwrap();
         assert_eq!(until(&mut run, is_started).await, [started(THREAD)]);
         run.interrupt().await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [ended(Outcome::Interrupted)]
         );
-        run.send("Tidy the readme").await.unwrap();
+        run.send("Tidy the readme", None).await.unwrap();
         let events = until(&mut run, is_asked).await;
         assert!(matches!(
             events.first(),
@@ -441,9 +441,9 @@ mod tests {
     async fn without_a_thread_every_prompt_fails() {
         let (mut run, done) = fake(include_str!("../../replays/codex/no_thread.replay"), None);
 
-        run.send("Explain the build").await.unwrap();
+        run.send("Explain the build", None).await.unwrap();
         assert_eq!(until(&mut run, is_finished).await, [failed()]);
-        run.send("Explain the build").await.unwrap();
+        run.send("Explain the build", None).await.unwrap();
         assert_eq!(next(&mut run).await, Some(failed()));
         ends_as_recorded(run, done).await;
     }
@@ -455,7 +455,7 @@ mod tests {
             None,
         );
 
-        run.send("Bump the version").await.unwrap();
+        run.send("Bump the version", None).await.unwrap();
         run.interrupt().await.unwrap();
         assert_eq!(next(&mut run).await, Some(ended(Outcome::Interrupted)));
         assert_eq!(next(&mut run).await, Some(started(THREAD)));

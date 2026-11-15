@@ -197,6 +197,7 @@ mod tests {
     fn of_two_prompts_open_only_the_unanswered_one_still_waits() {
         let entries = log(vec![
             ChatEvent::Prompt {
+                pick: None,
                 request: weacon_protocol::RequestId::try_from("r-1".to_owned()).unwrap(),
                 text: "Hi".to_owned(),
                 repo: None,

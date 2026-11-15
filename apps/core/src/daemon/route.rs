@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
@@ -11,7 +12,7 @@ use weacon_protocol::{
 };
 
 use super::Shared;
-use super::chat::{command_chat, query_chat};
+use super::chat::{command_chat, list_chats, query_chat};
 use super::worktrees::{self, Late};
 use crate::chats::Chats;
 use crate::chats::feed::Client;
@@ -49,6 +50,7 @@ pub(super) async fn route(
         Message::Pick(pick) => keep(shared, id, pick).await,
         Message::ChatCommand(command) => command_chat(shared, id, command, client).await,
         Message::ChatQuery(query) => query_chat(shared, id, query, client).await,
+        Message::ChatsQuery(query) => list_chats(shared, id, query).await,
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),
@@ -81,12 +83,22 @@ pub(super) async fn route(
     }
 }
 
-// The receipt for a pick the extension sent, once it is kept.
+// The receipt for a pick the extension sent, once it is kept; older picks go first.
 async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
     let (picks, request) = (shared.picks.clone(), pick.request.clone());
-    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
-        .await
-        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
+    let kept =
+        tokio::task::spawn_blocking(move || (picks.sweep(SystemTime::now()), picks.keep(&pick)))
+            .await
+            .unwrap_or_else(|error| (Ok(()), Err(KeepError::Io(error.into()))));
+    let kept = match kept {
+        (Err(error), kept) => {
+            shared
+                .log
+                .warn("picks not swept", &[("err", Field::error(&error))]);
+            kept
+        }
+        (Ok(()), kept) => kept,
+    };
     let outcome = match kept {
         Ok(()) => {
             let request_id = request.as_str().into();

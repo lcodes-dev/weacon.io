@@ -112,10 +112,20 @@ impl Wire {
     }
 }
 
-pub(crate) fn prompt(text: &str) -> Vec<Effect> {
+/// A person's message, with `png`, a base64 PNG, as an image block after the text.
+pub(crate) fn prompt(text: &str, png: Option<&str>) -> Vec<Effect> {
+    let content = png.map_or_else(
+        || json!(text),
+        |png| {
+            json!([
+                { "type": "text", "text": text },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": png } },
+            ])
+        },
+    );
     vec![Effect::Send(json!({
         "type": "user",
-        "message": { "role": "user", "content": text },
+        "message": { "role": "user", "content": content },
         "parent_tool_use_id": null,
         "session_id": "",
     }))]
@@ -194,7 +204,10 @@ pub(super) fn event(block: Block) -> Option<RunEvent> {
 
 #[cfg(test)]
 mod tests {
+    use weacon_protocol::AgentKind;
+
     use super::*;
+    use crate::takes_images;
 
     #[test]
     fn text_on_the_persons_side_is_never_the_agents() {
@@ -209,6 +222,27 @@ mod tests {
             heard.as_slice(),
             [Effect::Event(RunEvent::ToolDone { call, failed: true })] if call == "t1"
         ));
+    }
+
+    #[test]
+    fn an_image_follows_the_text_as_a_base64_png_block() {
+        let sent = |png| match prompt("Fix it", png).as_slice() {
+            [Effect::Send(line)] => line.clone(),
+            _ => panic!("not one line"),
+        };
+        let (plain, shown) = (sent(None), sent(Some("iVBORw0KGgo=")));
+
+        assert_eq!(plain["message"]["content"], json!("Fix it"));
+        assert_eq!(
+            shown["message"]["content"],
+            json!([
+                { "type": "text", "text": "Fix it" },
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png",
+                  "data": "iVBORw0KGgo=" } },
+            ])
+        );
+        assert_eq!(shown["type"], "user");
+        assert!(takes_images(AgentKind::Claude) && !takes_images(AgentKind::Codex));
     }
 
     #[test]

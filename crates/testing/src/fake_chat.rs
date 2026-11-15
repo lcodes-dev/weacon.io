@@ -210,6 +210,7 @@ impl FakeChat {
         });
         match action {
             ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
+                pick: None,
                 request: request.clone(),
                 text: text.clone(),
                 repo: None,
@@ -281,6 +282,7 @@ impl FakeChat {
     fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
         let request = RequestId::try_from(request.to_owned())?;
         self.commit(ChatEvent::Prompt {
+            pick: None,
             request,
             text: text.to_owned(),
             repo: None,
@@ -451,6 +453,7 @@ mod tests {
 
     fn prompt(text: &str) -> Envelope {
         command(ChatAction::Prompt {
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: None,
@@ -816,6 +819,7 @@ mod tests {
         let mut fake = fake();
         let named = |agent| {
             command(ChatAction::Prompt {
+                pick: None,
                 text: "Go.".to_owned(),
                 repo: None,
                 machine: None,
@@ -1024,6 +1028,7 @@ mod tests {
             [refusal(3, code!("message.unsupported"))]
         );
         let unnamed = command(ChatAction::Prompt {
+            pick: None,
             text: "Hi".to_owned(),
             repo: None,
             machine: None,

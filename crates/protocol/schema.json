@@ -439,6 +439,32 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chats_query"
+        }
+      },
+      "$ref": "#/$defs/ChatsQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "chats_answer"
+        }
+      },
+      "$ref": "#/$defs/ChatsAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -774,7 +800,7 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.",
+          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`pick` names a [`Pick`](crate::Pick) the core keeps, under `chat.pick`, from a local\nclient only; the agent gets it as quoted page content.",
           "type": "object",
           "properties": {
             "agent": {
@@ -786,6 +812,9 @@
             },
             "machine": {
               "$ref": "#/$defs/MachineId"
+            },
+            "pick": {
+              "$ref": "#/$defs/RequestId"
             },
             "repo": {
               "$ref": "#/$defs/RepoId"
@@ -1004,7 +1033,7 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`, with the repository and the agent it\nnamed, if any.",
+          "description": "A person's prompt, accepted under `request`, with the repository and the agent it\nnamed, and a note of the element it carried, if any.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1013,6 +1042,9 @@
             "kind": {
               "type": "string",
               "const": "prompt"
+            },
+            "pick": {
+              "$ref": "#/$defs/PickNote"
             },
             "repo": {
               "$ref": "#/$defs/RepoId"
@@ -1300,6 +1332,70 @@
         "workspace",
         "chat",
         "entry"
+      ]
+    },
+    "ChatsAnswer": {
+      "description": "The core's answer to a [`ChatsQuery`], under the query's envelope id.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ChatsAnswerKind"
+        }
+      },
+      "required": [
+        "answer"
+      ]
+    },
+    "ChatsAnswerKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "chats": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/LocalChat"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind",
+            "chats"
+          ]
+        }
+      ]
+    },
+    "ChatsQuery": {
+      "description": "A local client asks the core which chats it serves, in every workspace, under `chat.list`.\nNever relayed by the server, which lists a workspace's chats itself.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/ChatsQueryKind"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "ChatsQueryKind": {
+      "oneOf": [
+        {
+          "description": "Every chat this core has run or queued a prompt for, newest first.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "list"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
       ]
     },
     "ClientLog": {
@@ -1947,6 +2043,39 @@
             "removed"
           ]
         }
+      ]
+    },
+    "LocalChat": {
+      "description": "A chat a core serves: `title` is its first prompt's first line, as the server titles it, and\n`updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "chat": {
+          "$ref": "#/$defs/ChatId"
+        },
+        "run": {
+          "description": "What its latest run is doing; left out when it has had none.",
+          "$ref": "#/$defs/RunState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "chat",
+        "title",
+        "agent",
+        "updated_at"
       ]
     },
     "LogEvent": {
@@ -2705,9 +2834,13 @@
       ]
     },
     "Pick": {
-      "description": "An element someone picked in Chrome, from the extension's host to a core that offers\n`element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the\nmessage fits in one frame.",
+      "description": "An element someone picked in Chrome, from the extension to a core that offers `element.pick`,\nwhich keeps it on the machine for a prompt that names its `request` under `chat.pick`. The\nsender cuts the HTML short and shrinks the screenshot so the message fits in one frame.\nEverything in it comes from the page, so it is untrusted.",
       "type": "object",
       "properties": {
+        "component": {
+          "description": "The name of the component that rendered the element, where the page's framework says.",
+          "type": "string"
+        },
         "html": {
           "description": "The element's outer HTML.",
           "type": "string"
@@ -2723,6 +2856,10 @@
           "description": "A CSS selector that finds the element on the page.",
           "type": "string"
         },
+        "source": {
+          "description": "The source file of that component, where the framework says, as the page names it.",
+          "type": "string"
+        },
         "title": {
           "type": "string"
         },
@@ -2736,6 +2873,26 @@
         "title",
         "selector",
         "html"
+      ]
+    },
+    "PickNote": {
+      "description": "What a chat's log keeps of a pick a prompt carried: the page's address without its query or\nfragment, its title and the element's selector, never its HTML or screenshot.",
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "title",
+        "selector"
       ]
     },
     "PinnedDoc": {

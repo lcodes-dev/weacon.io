@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::RequestId;
 
-/// An element someone picked in Chrome, from the extension's host to a core that offers
-/// `element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the
-/// message fits in one frame.
+/// An element someone picked in Chrome, from the extension to a core that offers `element.pick`,
+/// which keeps it on the machine for a prompt that names its `request` under `chat.pick`. The
+/// sender cuts the HTML short and shrinks the screenshot so the message fits in one frame.
+/// Everything in it comes from the page, so it is untrusted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pick {
     pub request: RequestId,
@@ -20,6 +21,23 @@ pub struct Pick {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub screenshot_png: Option<String>,
+    /// The name of the component that rendered the element, where the page's framework says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub component: Option<String>,
+    /// The source file of that component, where the framework says, as the page names it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub source: Option<String>,
+}
+
+/// What a chat's log keeps of a pick a prompt carried: the page's address without its query or
+/// fragment, its title and the element's selector, never its HTML or screenshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PickNote {
+    pub url: String,
+    pub title: String,
+    pub selector: String,
 }
 
 #[cfg(test)]
@@ -33,7 +51,8 @@ mod tests {
     fn a_pick_has_a_flat_tagged_shape() {
         let wire = json!({ "id": 2, "type": "pick", "request": "p-1",
             "url": "http://localhost:3000/", "title": "Home", "selector": "main > button",
-            "html": "<button>Save</button>", "screenshot_png": "iVBORw0KGgo=" });
+            "html": "<button>Save</button>", "screenshot_png": "iVBORw0KGgo=",
+            "component": "SaveButton", "source": "src/save-button.tsx" });
         let envelope = Envelope {
             id: 2,
             message: Message::Pick(Pick {
@@ -43,6 +62,8 @@ mod tests {
                 selector: "main > button".to_owned(),
                 html: "<button>Save</button>".to_owned(),
                 screenshot_png: Some("iVBORw0KGgo=".to_owned()),
+                component: Some("SaveButton".to_owned()),
+                source: Some("src/save-button.tsx".to_owned()),
             }),
         };
 
@@ -56,7 +77,8 @@ mod tests {
             "title": "", "selector": "p", "html": "<p></p>" });
         let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
 
-        assert!(matches!(&envelope.message, Message::Pick(pick) if pick.screenshot_png.is_none()));
+        assert!(matches!(&envelope.message, Message::Pick(pick)
+            if pick.screenshot_png.is_none() && pick.component.is_none() && pick.source.is_none()));
         assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
     }
 }

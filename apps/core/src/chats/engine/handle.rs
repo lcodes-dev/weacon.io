@@ -8,6 +8,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
 use super::agent::Agent;
+use super::queries::Listed;
 use super::{ChatKey, Engine, LeaveId, LeaveStep};
 use crate::chats::feed::Client;
 
@@ -29,6 +30,7 @@ pub(super) enum Ask {
         Client,
         oneshot::Sender<Result<Option<ChatAnswerKind>, Fault>>,
     ),
+    List(oneshot::Sender<Vec<Listed>>),
     /// A client hung up.
     Left,
 }
@@ -115,6 +117,16 @@ impl Chats {
         answered.await.map_err(|_| stopped())?
     }
 
+    /// Every chat the engine has a record of, in no order.
+    pub(crate) async fn list(&self) -> Result<Vec<Listed>, Fault> {
+        let (answer, answered) = oneshot::channel();
+        self.asks
+            .send(Ask::List(answer))
+            .await
+            .map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())
+    }
+
     /// Tells the engine a client hung up, so a chat it held goes on at once.
     pub(crate) async fn left(&self) {
         drop(self.asks.send(Ask::Left).await);
@@ -154,6 +166,10 @@ impl<A: Agent> Engine<A> {
             }
             Ask::Step(leave, step, answer) => {
                 self.answer_step(leave, step, answer).await;
+                None
+            }
+            Ask::List(answer) => {
+                drop(answer.send(self.listed()));
                 None
             }
             Ask::Left => {

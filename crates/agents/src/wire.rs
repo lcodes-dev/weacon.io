@@ -3,12 +3,19 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use weacon_protocol::{AgentSession, RunEvent};
+use weacon_protocol::{AgentKind, AgentSession, RunEvent};
 
 use crate::{claude, codex};
 
 /// Sent back for a request the driver doesn't handle.
 pub(crate) const UNSUPPORTED: &str = "Weacon doesn't handle this request.";
+
+/// Whether `agent` takes an image in a person's message; for one that doesn't, the caller
+/// names a file in the prompt instead.
+#[must_use]
+pub const fn takes_images(agent: AgentKind) -> bool {
+    matches!(agent, AgentKind::Claude)
+}
 
 /// Each agent's own way of saying things.
 pub(crate) enum Wire {
@@ -47,9 +54,9 @@ impl Wire {
         }
     }
 
-    pub(crate) fn prompt(&mut self, text: &str) -> Vec<Effect> {
+    pub(crate) fn prompt(&mut self, text: &str, png: Option<&str>) -> Vec<Effect> {
         match self {
-            Self::Claude(_) => claude::prompt(text),
+            Self::Claude(_) => claude::prompt(text, png),
             Self::Codex(wire) => wire.prompt(text),
         }
     }

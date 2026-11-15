@@ -280,7 +280,7 @@ mod tests {
 
         // Bounded in count and time, so a driver that never ends fails instead of hanging.
         async fn events(mut run: AgentRun) -> Vec<RunEvent> {
-            run.send("Hello").await.unwrap();
+            run.send("Hello", None).await.unwrap();
             let mut events = Vec::new();
             while events.len() < 10
                 && let Some(event) = timeout(Duration::from_secs(10), run.next())

@@ -156,8 +156,8 @@ pub(crate) struct Granted<A = AgentRun> {
 }
 
 impl<A: Agent> Agent for Granted<A> {
-    async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
-        self.agent.send(prompt).await
+    async fn send(&mut self, prompt: &str, png: Option<&str>) -> Result<(), Fault> {
+        self.agent.send(prompt, png).await
     }
 
     async fn answer(&mut self, answer: &PermissionAnswer) -> Result<(), Fault> {
@@ -185,7 +185,7 @@ mod tests {
     }
 
     impl Agent for Echo {
-        async fn send(&mut self, _: &str) -> Result<(), Fault> {
+        async fn send(&mut self, _: &str, _: Option<&str>) -> Result<(), Fault> {
             Err(refused("send"))
         }
 
@@ -215,7 +215,7 @@ mod tests {
         };
 
         let refusals = [
-            agent.send("hi").await.unwrap_err(),
+            agent.send("hi", None).await.unwrap_err(),
             agent.answer(&answer).await.unwrap_err(),
             agent.interrupt().await.unwrap_err(),
         ];
