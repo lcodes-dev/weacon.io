@@ -88,15 +88,19 @@ export function answerProblem(answering: Answering | undefined): string | undefi
 
 /** What a permission prompt says; a stored chat keeps no tool names, so one may be missing. */
 export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
-  const named = tool === "" ? undefined : tool;
   switch (state) {
     case "open":
-      return `Asks to use ${named ?? "a tool"}`;
+      return `Asks to use ${toolName(tool)}`;
     case "closed":
-      return `Asked to use ${named ?? "a tool"}`;
+      return `Asked to use ${toolName(tool)}`;
     case "allowed":
-      return named === undefined ? "Allowed" : `Allowed ${named}`;
+      return tool === "" ? "Allowed" : `Allowed ${tool}`;
     case "denied":
-      return named === undefined ? "Denied" : `Denied ${named}`;
+      return tool === "" ? "Denied" : `Denied ${tool}`;
   }
+}
+
+/** The tool a prompt names, or "a tool" when its name wasn't kept. */
+export function toolName(tool: string): string {
+  return tool === "" ? "a tool" : tool;
 }

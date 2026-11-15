@@ -167,7 +167,7 @@ export function StartMissing({
     <p className="muted">
       {ready === undefined ? "Looking for your machines." : missingText(ready.kind)}{" "}
       {ready?.kind === "unpaired" && (
-        <button type="button" onClick={openSettings}>
+        <button type="button" onClick={() => openSettings()}>
           Open Settings
         </button>
       )}{" "}
