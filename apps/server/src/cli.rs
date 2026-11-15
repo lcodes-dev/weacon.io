@@ -34,12 +34,9 @@ pub(crate) struct Serve {
     /// The database file, created if missing.
     #[arg(long)]
     pub(crate) db: PathBuf,
-    /// The folder where sign-in codes wait, one JSON file each, for a mail relay to send.
-    #[arg(long)]
-    pub(crate) outbox: PathBuf,
-    /// The file with the server's key for sign-in codes, made if missing and readable only by
-    /// this user. To change the key, replace the file and restart: codes already sent stop
-    /// working, and nobody is signed out.
+    /// The file with the server's key for pairing codes, made if missing and readable only by
+    /// this user. To change the key, replace the file and restart: pairing codes already shown
+    /// stop working, and nobody is signed out.
     #[arg(long)]
     pub(crate) secret: PathBuf,
     /// How many connections may be open at once; more wait their turn. Keep it well under the
@@ -155,8 +152,6 @@ mod tests {
             "serve",
             "--db",
             "team.db",
-            "--outbox",
-            "outbox",
             "--secret",
             "secret",
         ];
@@ -166,7 +161,6 @@ mod tests {
             Serve {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
-                outbox: PathBuf::from("outbox"),
                 secret: PathBuf::from("secret"),
                 max_connections: 512,
                 trusted_proxy: Vec::new(),

@@ -87,12 +87,23 @@ impl Logger {
         self.write(Level::Fatal, msg, fields);
     }
 
+    /// Logs a mail whole: the one record whose fields aren't redacted. Only the server calls it.
+    pub fn mail(&self, to: &str, subject: &str, text: &str) {
+        let fields = [("to", to), ("subject", subject), ("text", text)]
+            .map(|(key, value)| (key.to_owned(), Value::from(value)));
+        self.record(Level::Info, "mail printed", Map::from_iter(fields));
+    }
+
     fn write(&self, level: Level, msg: &'static str, fields: &[(&str, Field)]) {
+        self.record(level, msg, redact_fields(fields));
+    }
+
+    fn record(&self, level: Level, msg: &'static str, fields: Map<String, Value>) {
         if level < self.options.level {
             return;
         }
         let mut all = (*self.bindings).clone();
-        all.extend(redact_fields(fields));
+        all.extend(fields);
         for key in RESERVED {
             all.remove(key);
         }
@@ -242,6 +253,27 @@ pub(crate) mod tests {
         let out = json(&records);
         assert!(!out.to_string().contains("MARKER"), "{out}");
         assert_eq!(out[0]["err"]["kind"], "Other");
+    }
+
+    #[test]
+    fn a_mail_is_printed_whole() {
+        let (log, records) = capture(Level::Info);
+        let text = "Your code is MARKER-CODE. token=MARKER-TOKEN https://example.com/?code=MARKER";
+
+        log.child(&[("token", "MARKER-SECRET".into())])
+            .mail("ada@example.com", "Your code", text);
+        let (quiet, unseen) = capture(Level::Warn);
+        quiet.mail("ada@example.com", "Ignored", "");
+
+        assert!(unseen.lock().unwrap().is_empty());
+
+        assert_eq!(
+            json(&records),
+            json!([{
+                "time": TIME, "level": "info", "msg": "mail printed", "token": "[redacted]",
+                "to": "ada@example.com", "subject": "Your code", "text": text,
+            }])
+        );
     }
 
     #[test]

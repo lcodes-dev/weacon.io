@@ -208,7 +208,7 @@ mod tests {
         let new = NewChallenge {
             email: &address,
             id: &challenge,
-            code_hash: b"code",
+            code: "code",
             now: 100,
             expires_at: 700,
         };
@@ -216,7 +216,7 @@ mod tests {
         let attempt = Attempt {
             email: &address,
             challenge: &challenge,
-            code_hash: b"code",
+            code: "code",
             token_hash: token,
             now: 100,
             token_expires_at: 200,
