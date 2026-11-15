@@ -333,6 +333,8 @@ mod tests {
             let refused = launch_with(&state, &env, &mut runner(&mut calls, &expected));
             refused.unwrap_err();
             calls.pop();
+            // Even a unit made for a relative state folder never puts it on the command line.
+            unit_in(&dir, &exe, Path::new("state"));
             let relative = launch_with(Path::new("state"), &env, &mut runner(&mut calls, ""));
             assert!(!relative.unwrap());
             assert_eq!(calls.len(), 1);
