@@ -673,9 +673,12 @@ mod tests {
         assert_eq!(runs(&one).await, [Some(RunState::Running)]);
         assert_eq!(changed_chats(&one).await.len(), 2);
 
-        append(&one, "c-1", &[(Some(4), status(RunState::Waiting))])
-            .await
-            .unwrap();
+        let waiting = Incoming {
+            core_seq: Some(4),
+            event: &status(RunState::Waiting),
+            at: NOW + 40,
+        };
+        one.append_events(&id("c-1"), &[waiting]).await.unwrap();
         assert_eq!(runs(&one).await, [Some(RunState::Waiting)]);
         assert_eq!(changed_chats(&one).await.len(), 3);
         assert_eq!(updated_at(&one).await, NOW);

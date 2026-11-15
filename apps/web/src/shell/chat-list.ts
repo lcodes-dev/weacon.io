@@ -33,6 +33,6 @@ const RUNS: Record<RunState, string> = {
  * run is doing, and its state's note; a run state this app doesn't know is left out.
  */
 export function rowNote(chat: ChatSummary, names: Names): string {
-  const run = chat.run === undefined ? undefined : (RUNS as Partial<Record<string, string>>)[chat.run];
+  const run = chat.run !== undefined && Object.hasOwn(RUNS, chat.run) ? RUNS[chat.run] : undefined;
   return [names.get(chat.owner), chat.machine, run, stateNote(chat.state)].filter((part) => part !== undefined).join(" · ");
 }
