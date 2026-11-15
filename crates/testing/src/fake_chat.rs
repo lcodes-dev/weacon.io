@@ -7,12 +7,14 @@
 use weacon_model::ChatRuns;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand,
-    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Code, Envelope, ErrorBody,
-    MemberId, Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId, RunState,
-    RunStatus, RunUpdate, WorkspaceId, code,
+    ChatEntry, ChatEvent, ChatId, ChatQuery, ChatQueryKind, ChatUpdate, Envelope, MemberId,
+    Message, Outcome, PermissionAnswer, Receipt, RequestId, RunEvent, RunId, RunState, RunStatus,
+    RunUpdate, WorkspaceId, code,
 };
 
 mod events;
+
+use crate::fake_core::refusal;
 
 use events::{agent, asks_bash, run, said};
 
@@ -31,17 +33,6 @@ const EARLIER: u64 = 60;
 /// tests read it.
 #[cfg(test)]
 pub(crate) const SEEDED: u64 = 69;
-
-/// The error that answers the message `id`.
-pub(crate) const fn refusal(id: u32, code: Code) -> Envelope {
-    Envelope {
-        id,
-        message: Message::Error(ErrorBody {
-            code,
-            retryable: false,
-        }),
-    }
-}
 
 /// One chat's log, and the envelope id of the client's subscription to it.
 #[derive(Debug)]
@@ -92,38 +83,44 @@ impl FakeChat {
 
     /// What answers `envelope` when it is a query about this chat or a command to it.
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Vec<Envelope> {
-        let refused = |code| vec![refusal(envelope.id, code)];
-        match &envelope.message {
-            Message::ChatQuery(ChatQuery {
-                workspace, chat, ..
-            })
-            | Message::ChatCommand(ChatCommand {
-                workspace, chat, ..
-            }) if !self.is(workspace, chat) => refused(code!("chat.not_found")),
-            Message::ChatQuery(ChatQuery {
-                query: ChatQueryKind::Newer,
-                ..
-            })
-            | Message::ChatCommand(ChatCommand {
-                action: ChatAction::Newer,
-                ..
-            }) => refused(code!("message.unsupported")),
-            Message::ChatQuery(ChatQuery { query, .. }) => self.query(envelope.id, query),
-            Message::ChatCommand(ChatCommand {
-                request, action, ..
-            }) => {
-                let seq = self.seq();
-                self.command(request, action);
-                let mut told = self.told_since(seq);
-                if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
-                    && let Some(id) = self.subscription.take()
-                {
-                    told.push(self.envelope(id, ChatAnswerKind::EventsLost));
-                }
-                told
+        let id = envelope.id;
+        let refused = |code| vec![refusal(id, code)];
+        if let Message::ChatQuery(ChatQuery {
+            workspace,
+            chat,
+            query,
+        }) = &envelope.message
+        {
+            if !self.is(workspace, chat) {
+                return refused(code!("chat.not_found"));
             }
-            _ => Vec::new(),
+            return self.query(id, query);
         }
+        let Message::ChatCommand(ChatCommand {
+            workspace,
+            chat,
+            request,
+            action,
+            ..
+        }) = &envelope.message
+        else {
+            return Vec::new();
+        };
+        if !self.is(workspace, chat) {
+            return refused(code!("chat.not_found"));
+        }
+        if *action == ChatAction::Newer {
+            return refused(code!("message.unsupported"));
+        }
+        let seq = self.seq();
+        self.command(request, action);
+        let mut told = self.told_since(seq);
+        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+            && let Some(id) = self.subscription.take()
+        {
+            told.push(self.envelope(id, ChatAnswerKind::EventsLost));
+        }
+        told
     }
 
     /// Commits a recorded event of a run; what tells the client of it, if it subscribed. `None`
@@ -199,7 +196,7 @@ impl FakeChat {
                 self.told_since(*after)
             }
             ChatQueryKind::Subscribe { .. } => vec![self.envelope(id, ChatAnswerKind::EventsLost)],
-            ChatQueryKind::Newer => Vec::new(),
+            ChatQueryKind::Newer => vec![refusal(id, code!("message.unsupported"))],
         }
     }
 

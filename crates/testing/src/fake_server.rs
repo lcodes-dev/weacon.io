@@ -14,7 +14,8 @@ use tokio_tungstenite::tungstenite::{self, Message as Frame};
 use weacon_protocol::{Capability, Envelope, Message, code};
 
 use crate::Failure;
-use crate::fake_chat::{FakeChat, refusal};
+use crate::fake_chat::FakeChat;
+use crate::fake_core::refusal;
 use crate::fake_worktree::FakeWorktree;
 use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
