@@ -398,3 +398,35 @@ SELECT workspace_id, kind, item, rowid, COALESCE(
     0)
 FROM search;
 ";
+
+// Chats join the search: each chat by its title, and each message its log keeps, a person's
+// prompt or an agent's text, as `chat/seq`.
+pub(crate) const SEARCH_CHATS: &str = "
+CREATE TEMP TABLE found AS
+SELECT (SELECT COALESCE(MAX(rowid), 0) FROM search) + ROW_NUMBER() OVER () AS row, *
+FROM (
+    SELECT workspace_id, 'chat' AS kind, chat_id AS item, title, '' AS body, created_at AS at
+    FROM chats
+    UNION ALL
+    SELECT workspace_id, 'message', chat_id || '/' || seq, '', text, at
+    FROM (SELECT workspace_id, chat_id, seq, at,
+              CASE json_extract(body, '$.kind')
+                  WHEN 'prompt' THEN json_extract(body, '$.text')
+                  WHEN 'outside_prompt' THEN json_extract(body, '$.text')
+                  WHEN 'run' THEN CASE json_extract(body, '$.update.event.event')
+                      WHEN 'text' THEN json_extract(body, '$.update.event.text') END
+              END AS text
+          FROM chat_events)
+    WHERE text IS NOT NULL
+);
+
+INSERT INTO search (rowid, workspace_id, kind, item, title, body)
+SELECT row, workspace_id, kind, item, replace(replace(title, char(1), ' '), char(2), ' '),
+    replace(replace(body, char(1), ' '), char(2), ' ')
+FROM found;
+
+INSERT INTO search_rows (workspace_id, kind, item, row, at)
+SELECT workspace_id, kind, item, row, at FROM found;
+
+DROP TABLE found;
+";

@@ -1,13 +1,13 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{DocId, TaskId};
+use crate::{ChatId, DocId, TaskId};
 
-/// Asks the server, under the capability `workspace.search`, for what in the workspace holds
-/// every word of `text`, at most 8 words of at most 64 characters, in 256 bytes. Words of three
-/// or more characters match
-/// whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and
-/// text without a longer word finds nothing. `limit` is 20 without one, and at most 50.
+/// Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in
+/// the workspace that hold every word of `text`, at most 8 words of at most 64 characters, in
+/// 256 bytes. Words of three or more characters match whatever their case and accents; shorter
+/// ones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.
+/// `limit` is 20 without one, and at most 50.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SearchQuery {
     pub text: String,
@@ -34,6 +34,16 @@ pub enum SearchHit {
     Doc {
         doc: DocId,
         title: String,
+        snippet: Snippet,
+    },
+    /// A chat, by its title or by one of the messages its log keeps: a person's prompt or an
+    /// agent's text. `seq` is that message's place in the log.
+    Chat {
+        chat: ChatId,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "u64")]
+        seq: Option<u64>,
         snippet: Snippet,
     },
     /// A hit this build doesn't know, from a newer peer; only ever received.
@@ -82,7 +92,25 @@ mod tests {
 
         assert_eq!(serde_json::to_value(&hit).unwrap(), wire);
         assert_eq!(serde_json::from_value::<SearchHit>(wire).unwrap(), hit);
-        let newer = json!({ "kind": "chat", "chat": "c1" });
+        let chat = SearchHit::Chat {
+            chat: ChatId::try_from("c1".to_owned()).unwrap(),
+            title: "Fix the build".to_owned(),
+            seq: Some(3),
+            snippet: Snippet::default(),
+        };
+        let chat_wire = json!({
+            "kind": "chat",
+            "chat": "c1",
+            "title": "Fix the build",
+            "seq": 3,
+            "snippet": { "text": "", "marks": [] },
+        });
+        assert_eq!(serde_json::to_value(&chat).unwrap(), chat_wire);
+        assert_eq!(
+            serde_json::from_value::<SearchHit>(chat_wire).unwrap(),
+            chat
+        );
+        let newer = json!({ "kind": "symbol", "name": "a::b" });
         assert_eq!(
             serde_json::from_value::<SearchHit>(newer).unwrap(),
             SearchHit::Newer

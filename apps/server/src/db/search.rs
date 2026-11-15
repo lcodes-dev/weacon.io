@@ -1,7 +1,7 @@
 use sqlx::SqliteConnection;
 use weacon_model::{Doc, Task};
 use weacon_observability::Fault;
-use weacon_protocol::{Mark, SearchHit, Snippet};
+use weacon_protocol::{ChatEvent, ChatId, Mark, RunEvent, RunUpdate, SearchHit, Snippet};
 
 use super::{Workspace, failed, stored, unreadable};
 use crate::search::query::Query;
@@ -10,7 +10,13 @@ use crate::search::query::Query;
 const MATCH_START: char = '\u{1}';
 const MATCH_END: char = '\u{2}';
 
-/// What search finds a task or doc by, and when it last changed.
+// What a search row is of; a message's item is its chat and its place in the log, `c-1/12`.
+const TASK: &str = "task";
+const DOC: &str = "doc";
+const CHAT: &str = "chat";
+const MESSAGE: &str = "message";
+
+/// What search finds a task, doc, chat or message by, and when it last changed.
 struct Indexed<'a> {
     kind: &'static str,
     item: &'a str,
@@ -30,7 +36,7 @@ impl Workspace {
         at: i64,
     ) -> Result<(), Fault> {
         let indexed = Indexed {
-            kind: "task",
+            kind: TASK,
             item: task.id.as_str(),
             title: task.title.as_str(),
             body: "",
@@ -56,10 +62,51 @@ impl Workspace {
             body + "\n" + pin.as_str()
         });
         let indexed = Indexed {
-            kind: "doc",
+            kind: DOC,
             item: doc.id.as_str(),
             title: doc.text.title().as_str(),
             body: &body,
+            at,
+        };
+        self.index(transaction, indexed).await
+    }
+
+    /// Indexes the chat `chat` by its title, as made at `at`.
+    pub(super) async fn index_chat(
+        &self,
+        transaction: &mut SqliteConnection,
+        chat: &ChatId,
+        title: &str,
+        at: i64,
+    ) -> Result<(), Fault> {
+        let indexed = Indexed {
+            kind: CHAT,
+            item: chat.as_str(),
+            title,
+            body: "",
+            at,
+        };
+        self.index(transaction, indexed).await
+    }
+
+    /// Indexes `event`, at `seq` in `chat`'s log, if it is a message: a person's prompt or an
+    /// agent's text.
+    pub(super) async fn index_message(
+        &self,
+        transaction: &mut SqliteConnection,
+        (chat, seq): (&ChatId, i64),
+        event: &ChatEvent,
+        at: i64,
+    ) -> Result<(), Fault> {
+        let Some(text) = message_text(event) else {
+            return Ok(());
+        };
+        let item = format!("{}/{seq}", chat.as_str());
+        let indexed = Indexed {
+            kind: MESSAGE,
+            item: &item,
+            title: "",
+            body: text,
             at,
         };
         self.index(transaction, indexed).await
@@ -115,12 +162,17 @@ impl Workspace {
         Ok(())
     }
 
-    /// The workspace's tasks and docs that match `query`, at most `limit` of them: those
-    /// matching in their title first, then the most recently changed.
+    /// The workspace's tasks, docs, chats and messages that match `query`, at most `limit` of
+    /// them: those matching in their title first, then the most recently changed. A message
+    /// takes its chat's title.
     pub(crate) async fn search(&self, query: &Query, limit: u32) -> Result<Vec<SearchHit>, Fault> {
         let short = serde_json::to_string(&query.short).map_err(|_| unreadable())?;
         sqlx::query_as::<_, HitRow>(
-            "SELECT search.kind, search.item, search.title,
+            "SELECT search.kind, search.item,
+                 COALESCE((SELECT title FROM chats
+                     WHERE chats.workspace_id = search.workspace_id
+                         AND chats.chat_id = substr(search.item, 1, instr(search.item, '/') - 1)
+                         AND search.kind = 'message'), search.title),
                  snippet(search, -1, char(1), char(2), '…', 64)
              FROM search
              JOIN search_rows AS rows
@@ -150,17 +202,51 @@ impl Workspace {
 fn hit((kind, item, title, marked): HitRow) -> Result<SearchHit, Fault> {
     let snippet = snippet(&marked);
     match kind.as_str() {
-        "task" => Ok(SearchHit::Task {
+        TASK => Ok(SearchHit::Task {
             task: stored(item)?,
             title,
             snippet,
         }),
-        "doc" => Ok(SearchHit::Doc {
+        DOC => Ok(SearchHit::Doc {
             doc: stored(item)?,
             title,
             snippet,
         }),
+        CHAT => Ok(SearchHit::Chat {
+            chat: stored(item)?,
+            title,
+            seq: None,
+            snippet,
+        }),
+        MESSAGE => {
+            let (chat, seq) = item.split_once('/').ok_or_else(unreadable)?;
+            Ok(SearchHit::Chat {
+                chat: stored(chat.to_owned())?,
+                title,
+                seq: Some(seq.parse().map_err(|_| unreadable())?),
+                snippet,
+            })
+        }
         _ => Err(unreadable()),
+    }
+}
+
+/// The message `event` carries, if it carries one.
+fn message_text(event: &ChatEvent) -> Option<&str> {
+    match event {
+        ChatEvent::Prompt { text, .. }
+        | ChatEvent::OutsidePrompt { text }
+        | ChatEvent::Run {
+            update:
+                RunUpdate {
+                    event: RunEvent::Text { text },
+                    ..
+                },
+        } => Some(text),
+        ChatEvent::Run { .. }
+        | ChatEvent::Receipt { .. }
+        | ChatEvent::RunStatus { .. }
+        | ChatEvent::Newer => None,
     }
 }
 
@@ -202,6 +288,7 @@ mod tests {
     use super::*;
     use crate::db::Db;
     use crate::db::schema::{database_before, steps};
+    use crate::db::test_support::{append, make_titled, said};
     use crate::search::query::{MAX_WORD, parse};
     use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
 
@@ -234,6 +321,10 @@ mod tests {
             .map(|hit| match hit {
                 SearchHit::Task { task, .. } => task.as_str().to_owned(),
                 SearchHit::Doc { doc, .. } => doc.as_str().to_owned(),
+                SearchHit::Chat { chat, seq, .. } => match seq {
+                    Some(seq) => format!("{}/{seq}", chat.as_str()),
+                    None => chat.as_str().to_owned(),
+                },
                 SearchHit::Newer => "newer".to_owned(),
             })
             .collect()
@@ -514,5 +605,79 @@ mod tests {
         let rows = index_rows(&old).await;
         assert_eq!(rows, index_rows(&new).await);
         assert_eq!(rows.len(), 2);
+    }
+
+    // c-1 titled "Fix the build" in w1, whose log holds a prompt, an agent's text, a text
+    // being written and an outside prompt, at seqs 1 to 4.
+    async fn chatted(workspace: &Workspace) {
+        make_titled(workspace, "c-1", "m1", "Fix the build", 3)
+            .await
+            .unwrap();
+        let prompt = ChatEvent::Prompt {
+            request: "r-2".parse().unwrap(),
+            text: "Why is the deploy flaky".to_owned(),
+            repo: None,
+            agent: None,
+        };
+        let delta = ChatEvent::Run {
+            update: RunUpdate {
+                run: "run-1".parse().unwrap(),
+                event: RunEvent::TextDelta {
+                    text: "Half written".to_owned(),
+                },
+            },
+        };
+        let outside = ChatEvent::OutsidePrompt {
+            text: "Typed in the terminal".to_owned(),
+        };
+        let events = [
+            (Some(1), prompt),
+            (Some(2), said("The cache expired")),
+            (Some(3), delta),
+            (Some(4), outside),
+        ];
+        append(workspace, "c-1", &events).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_chat_is_found_by_its_title_and_the_messages_its_log_keeps() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        chatted(&one).await;
+
+        assert_eq!(found(&one, "build").await, ["c-1"]);
+        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
+        assert_eq!(found(&one, "cache").await, ["c-1/2"]);
+        assert_eq!(found(&one, "terminal").await, ["c-1/4"]);
+        assert!(found(&one, "written").await.is_empty());
+        assert!(found(&two, "build").await.is_empty());
+        let query = parse("cache").unwrap().unwrap();
+        let hits = one.search(&query, 5).await.unwrap();
+        let [SearchHit::Chat { title, .. }] = hits.as_slice() else {
+            panic!("{hits:?}");
+        };
+        assert_eq!(title, "Fix the build");
+    }
+
+    #[tokio::test]
+    async fn chats_stored_before_their_search_are_indexed_as_a_write_indexes_them() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        chatted(&one).await;
+        let written = index_rows(&one.db).await;
+        sqlx::raw_sql(
+            "DELETE FROM search WHERE kind IN ('chat', 'message');
+             DELETE FROM search_rows WHERE kind IN ('chat', 'message');",
+        )
+        .execute(&one.db.writer)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(steps::SEARCH_CHATS)
+            .execute(&one.db.writer)
+            .await
+            .unwrap();
+        assert_eq!(index_rows(&one.db).await, written);
+        assert_eq!(written.len(), 4);
     }
 }

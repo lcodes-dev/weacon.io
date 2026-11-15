@@ -117,7 +117,9 @@ mod tests {
     fn titles(hits: &[SearchHit]) -> Vec<&str> {
         hits.iter()
             .map(|hit| match hit {
-                SearchHit::Task { title, .. } | SearchHit::Doc { title, .. } => title.as_str(),
+                SearchHit::Task { title, .. }
+                | SearchHit::Doc { title, .. }
+                | SearchHit::Chat { title, .. } => title.as_str(),
                 SearchHit::Newer => "",
             })
             .collect()

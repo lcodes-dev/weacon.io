@@ -143,6 +143,8 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
+            self.index_message(&mut *transaction, (chat, row.seq), row.event, row.at)
+                .await?;
         }
         self.keep_runs(&mut *transaction, chat, runs).await?;
         for request in rows.iter().filter_map(|row| ended(row.event)) {

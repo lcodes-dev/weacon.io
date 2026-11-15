@@ -83,6 +83,8 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
+        self.index_chat(&mut transaction, chat.id, chat.title, chat.at)
+            .await?;
         self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }
