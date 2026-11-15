@@ -250,6 +250,37 @@ mod tests {
         );
     }
 
+    // Output that can't be written, as a closed pipe.
+    struct Closed;
+
+    impl Write for Closed {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_list_that_cant_be_printed_says_so() {
+        let dir = TempDir::new().unwrap();
+        let mut app = app(Some(&dir.join("state")), None);
+        app.path = std::env::var_os("PATH");
+        let workspace = WorkspaceId::try_from("w-1".to_owned()).unwrap();
+        let add = RepoCommand::Add {
+            workspace: workspace.clone(),
+            id: id("site"),
+            path: repo(&dir),
+        };
+        run(&app, add, &mut Vec::new()).unwrap();
+
+        let error = run(&app, RepoCommand::List { workspace }, &mut Closed).unwrap_err();
+
+        assert_eq!(code(&error), "repo.print_failed");
+    }
+
     #[test]
     fn the_command_adds_and_lists_a_workspaces_repositories() {
         let dir = TempDir::new().unwrap();
