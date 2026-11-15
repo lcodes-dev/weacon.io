@@ -15,6 +15,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("worktree.manage")),
     Capability::new(code!("repo.list")),
     Capability::new(code!("chat.hold")),
+    Capability::new(code!("terminal.sign_in")),
 ];
 
 /// One client's place in the conversation with the daemon.
@@ -119,6 +120,7 @@ mod tests {
                             Capability::new(code!("worktree.manage")),
                             Capability::new(code!("repo.list")),
                             Capability::new(code!("chat.hold")),
+                            Capability::new(code!("terminal.sign_in")),
                         ],
                     }),
                 }),

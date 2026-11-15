@@ -16,6 +16,7 @@ use crate::secret::Secret;
 use crate::sign_in;
 use crate::sign_up::SignUp;
 use crate::socket;
+use crate::terminals::Terminals;
 use crate::web::WebFile;
 
 #[derive(Clone)]
@@ -38,6 +39,8 @@ pub(crate) struct Shared {
     pub(crate) links: Arc<Links>,
     /// The asks waiting for their machines' answers.
     pub(crate) relay: Arc<Relay>,
+    /// The sign-in terminals open now.
+    pub(crate) terminals: Arc<Terminals>,
     /// Which machine was just unpaired, for its open connection.
     pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import type { Lates, Send } from "./prompt.ts";
 import { type Ended, Sends } from "./sends.ts";
 
@@ -21,7 +21,7 @@ export function useSend<T>(send: Send, lates: Lates, taken: (payload: T) => void
   };
   useEffect(() => lates((late) => show(sends.current.settle(late.request, late.settled))), [lates]);
   const submit = async (text: string, payload: T) => {
-    const request = sends.current.start(text, payload, newRequestId);
+    const request = sends.current.start(text, payload, newId);
     setSending(true);
     setProblem(undefined);
     const sent = await send(text, request);
