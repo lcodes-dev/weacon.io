@@ -207,22 +207,20 @@ function Workspace({
   // Whether the server serves chats, and search, known once the feed is welcomed.
   const { read } = useChatAccess(socket);
   const searches = useOffers(socket, "workspace.search");
-  const palette = <Palette api={api} workspace={workspace.id} enabled={searches && !away} openChat={choose} />;
-  if (!read) {
-    return (
-      <div className="workspace">
-        <ChatsNav loaded={status.state === "connecting" ? "connecting" : "none"} chosen={chosen} choose={choose} />
-        <section>
-          <Heading title={workspace.name} status={status} />
-        </section>
-        {palette}
-      </div>
-    );
-  }
   return (
     <>
-      <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} away={away} chosen={chosen} choose={choose} />
-      {palette}
+      {read ? (
+        <WorkspaceChats api={api} workspace={workspace} socket={socket} status={status} away={away} chosen={chosen} choose={choose} />
+      ) : (
+        <div className="workspace">
+          <ChatsNav loaded={status.state === "connecting" ? "connecting" : "none"} chosen={chosen} choose={choose} />
+          <section>
+            <Heading title={workspace.name} status={status} />
+          </section>
+        </div>
+      )}
+      {/* A chat it opens needs the chats the server serves. */}
+      <Palette api={api} workspace={workspace.id} enabled={searches && read && !away} openChat={choose} />
     </>
   );
 }

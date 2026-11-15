@@ -23,7 +23,7 @@ pub(crate) fn routes() -> Router<Shared> {
 }
 
 /// `POST /api/workspaces/{workspace}/search`: what in the workspace matches the query's text.
-/// Every member reads every task and doc, so membership is the only check.
+/// Every member reads every task, doc and chat, so membership is the only check.
 async fn search(
     member: Member,
     body: Result<Body<SearchQuery>, Unreadable>,

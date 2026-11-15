@@ -11,6 +11,7 @@ import type {
   MachineId,
   MachineList,
   MachineSummary,
+  Mark,
   PairConfirm,
   PairLookup,
   PairPending,
@@ -167,21 +168,27 @@ const isChat = (value: unknown): value is ChatSummary =>
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at);
 const isChats = listOf<ChatList>("chats", isChat);
+const isMark = (value: unknown): boolean =>
+  typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);
+const isSnippet = (value: unknown): boolean => fields(value, ["text"]) && listOf("marks", isMark)(value);
 // A hit of a kind this build doesn't know only needs its kind; the palette leaves it out.
 const isHit = (value: unknown): boolean => {
   if (!fields(value, ["kind"])) {
     return false;
   }
-  const hit = value as { kind: string; title?: unknown; snippet?: unknown; chat?: unknown };
-  if (!["task", "doc", "chat"].includes(hit.kind)) {
-    return true;
+  const hit = value as { kind: string; snippet?: unknown; chat?: string };
+  const known = fields(value, ["title"]) && isSnippet(hit.snippet);
+  switch (hit.kind) {
+    case "task":
+    case "doc":
+      return known;
+    case "chat":
+      // A chat's id goes into the address, so it must be one.
+      return known && fields(value, ["chat"]) && isId(hit.chat ?? "");
+    default:
+      return true;
   }
-  // A chat's id goes into the address, so it must be one.
-  return typeof hit.title === "string" && isSnippet(hit.snippet) && (hit.kind !== "chat" || (typeof hit.chat === "string" && isId(hit.chat)));
 };
-const isSnippet = (value: unknown): boolean =>
-  fields(value, ["text"]) &&
-  listOf("marks", (mark) => typeof mark === "object" && mark !== null && Number.isSafeInteger((mark as { start: unknown }).start) && Number.isSafeInteger((mark as { end: unknown }).end))(value);
 const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
 const isPending = (value: unknown): value is PairPending =>

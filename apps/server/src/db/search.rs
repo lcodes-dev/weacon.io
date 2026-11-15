@@ -89,22 +89,21 @@ impl Workspace {
         self.index(transaction, indexed).await
     }
 
-    /// Indexes `event`, at `seq` in `chat`'s log, if it is a message: a person's prompt or an
-    /// agent's text.
+    /// Indexes `event`, the log entry [`message_item`] names, if it is a message: a person's
+    /// prompt or an agent's text.
     pub(super) async fn index_message(
         &self,
         transaction: &mut SqliteConnection,
-        (chat, seq): (&ChatId, i64),
+        item: &str,
         event: &ChatEvent,
         at: i64,
     ) -> Result<(), Fault> {
         let Some(text) = message_text(event) else {
             return Ok(());
         };
-        let item = format!("{}/{seq}", chat.as_str());
         let indexed = Indexed {
             kind: MESSAGE,
-            item: &item,
+            item,
             title: "",
             body: text,
             at,
@@ -229,6 +228,11 @@ fn hit((kind, item, title, marked): HitRow) -> Result<SearchHit, Fault> {
         }
         _ => Err(unreadable()),
     }
+}
+
+/// How the search index names the event at `seq` in `chat`'s log.
+pub(super) fn message_item(chat: &ChatId, seq: i64) -> String {
+    format!("{}/{seq}", chat.as_str())
 }
 
 /// The message `event` carries, if it carries one.
@@ -679,5 +683,46 @@ mod tests {
             .unwrap();
         assert_eq!(index_rows(&one.db).await, written);
         assert_eq!(written.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn chats_stored_before_search_are_found_in_their_own_workspace_only() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("old.db");
+        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One'), ('w2', 'Two');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1'), ('w2', 'm2', 'ada@example.com', 'a1');
+             INSERT INTO tasks VALUES ('w1', 't1', 'Ship the build', 'todo', 'a', 1);
+             INSERT INTO task_versions (workspace_id, task_id, version, author_kind,
+                 author_member, accepted_by, at) VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 5);
+             INSERT INTO chats (workspace_id, chat_id, owner_member, title, machine_id,
+                 machine_name, state, created_at, updated_at)
+                 VALUES ('w1', 'c-1', 'm1', 'Fix the build', 'mc1', 'Laptop', 'open', 6, 6),
+                        ('w2', 'c-2', 'm2', 'Fix the build', 'mc1', 'Laptop', 'open', 7, 7);
+             INSERT INTO chat_events (workspace_id, chat_id, seq, body, at) VALUES
+                 ('w1', 'c-1', 1, '{\"kind\":\"prompt\",\"request\":\"r-1\",\"text\":\"Why\\u0001 flaky\"}', 8),
+                 ('w1', 'c-1', 2, 'not json, flaky', 9),
+                 ('w2', 'c-2', 1, '{\"kind\":\"outside_prompt\",\"text\":\"Flaky deploy\"}', 10);";
+        database_before(&path, steps::SEARCH, rows).await;
+
+        let db = Db::open(&path).await.unwrap();
+        let (one, two) = (
+            db.workspace(&workspace_id("w1")).await.unwrap(),
+            db.workspace(&workspace_id("w2")).await.unwrap(),
+        );
+        assert_eq!(found(&one, "build").await, ["c-1", "t1"]);
+        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
+        assert_eq!(found(&two, "flaky").await, ["c-2/1"]);
+        assert_eq!(found(&two, "build").await, ["c-2"]);
+        let bodies: Vec<String> =
+            sqlx::query_scalar("SELECT body FROM search WHERE kind = 'message'")
+                .fetch_all(&db.readers)
+                .await
+                .unwrap();
+        assert!(
+            bodies.iter().all(|body| !body.contains('\u{1}')),
+            "{bodies:?}"
+        );
     }
 }

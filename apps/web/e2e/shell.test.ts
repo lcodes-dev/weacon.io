@@ -737,7 +737,6 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   assert.equal(await bar.getByLabel("Description").count(), 0);
 });
 
-
 test("⌘K searches the open workspace, and choosing a chat opens it", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
@@ -746,8 +745,17 @@ test("⌘K searches the open workspace, and choosing a chat opens it", { timeout
     chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 }],
   }));
   const asked: string[] = [];
-  await page.route("**/api/workspaces/*/search", (route) => {
-    asked.push(JSON.parse(route.request().postData() ?? "{}").text);
+  let answerBread = () => {};
+  const bread = new Promise<void>((resolve) => {
+    answerBread = resolve;
+  });
+  await page.route("**/api/workspaces/*/search", async (route) => {
+    const text = (JSON.parse(route.request().postData() ?? "{}") as { text: string }).text;
+    asked.push(text);
+    // The answer for "bread" waits, so the page still holds the one for "milk".
+    if (text === "bread") {
+      await bread;
+    }
     const hits = [
       { kind: "task", task: "t-1", title: "Buy milk", snippet: { text: "Buy milk", marks: [{ start: 4, end: 8 }] } },
       { kind: "chat", chat: "c-1", title: "Merge the shopping lists", seq: 4, snippet: { text: "add the milk", marks: [{ start: 8, end: 12 }] } },
@@ -774,7 +782,14 @@ test("⌘K searches the open workspace, and choosing a chat opens it", { timeout
   assert.match(page.url(), /&chat=c-1$/);
   assert.equal(await search.count(), 0);
   await page.keyboard.press("ControlOrMeta+k");
-  await search.waitFor();
+  await search.getByRole("combobox", { name: "Search" }).fill("milk");
+  await results.nth(1).waitFor();
+  await search.getByRole("combobox", { name: "Search" }).fill("bread");
+  await results.first().waitFor({ state: "detached" });
+  await page.keyboard.press("Enter");
+  assert.equal(await search.count(), 1);
+  answerBread();
+  await results.nth(1).waitFor();
   await page.keyboard.press("Escape");
   await search.waitFor({ state: "detached" });
 });

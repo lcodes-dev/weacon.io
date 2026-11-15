@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { Api } from "../api/api.ts";
+import type { Answer, Api } from "../api/api.ts";
 import { type Loaded, Loader } from "../api/loaded.ts";
-import type { ChatId, SearchAnswer, WorkspaceId } from "../protocol.ts";
+import type { ChatId, SearchHit, WorkspaceId } from "../protocol.ts";
 import { type Listed, listed, moved, opensPalette, parts } from "./hits.ts";
 import "./palette.css";
 
@@ -45,15 +45,18 @@ export function Palette({ api, workspace, enabled, openChat }: { api: Api; works
 
 function Search({ api, workspace, close, openChat }: { api: Api; workspace: WorkspaceId; close(): void; openChat(chat: ChatId): void }) {
   const [text, setText] = useState("");
-  const [found, setFound] = useState<Loaded<SearchAnswer>>({ value: undefined, problem: undefined });
-  const [loader] = useState(() => new Loader<SearchAnswer>(setFound));
+  // Each answer keeps the text it is for, so a slow one never lists, or opens, for text since changed.
+  const [found, setFound] = useState<Loaded<Answered>>({ value: undefined, problem: undefined });
+  const [loader] = useState(() => new Loader<Answered>(setFound));
   const [at, setAt] = useState(0);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     input.current?.focus();
     return () => loader.stop();
   }, [loader]);
-  const hits = text.trim() === "" ? [] : listed(found.value?.hits ?? []);
+  const asked = text.trim() !== "";
+  const answered = asked && found.value?.text === text;
+  const hits = answered ? listed(found.value?.hits ?? []) : [];
   const choose = (hit: Listed | undefined) => {
     if (hit?.chat !== undefined) {
       openChat(hit.chat);
@@ -76,7 +79,7 @@ function Search({ api, workspace, close, openChat }: { api: Api; workspace: Work
             setText(typed);
             setAt(0);
             if (typed.trim() !== "") {
-              void loader.load(() => api.search(workspace, { text: typed }));
+              void loader.load(() => search(api, workspace, typed));
             }
           }}
           onKeyDown={(event) => {
@@ -109,8 +112,15 @@ function Search({ api, workspace, close, openChat }: { api: Api; workspace: Work
             </li>
           ))}
         </ul>
-        {text.trim() !== "" && found.value !== undefined && hits.length === 0 && <p className="muted">Nothing found.</p>}
+        {answered && hits.length === 0 && <p className="muted">Nothing found.</p>}
       </div>
     </div>
   );
+}
+
+type Answered = { text: string; hits: SearchHit[] };
+
+async function search(api: Api, workspace: WorkspaceId, text: string): Promise<Answer<Answered>> {
+  const answer = await api.search(workspace, { text });
+  return answer.ok ? { ok: true, value: { text, hits: answer.value.hits } } : answer;
 }

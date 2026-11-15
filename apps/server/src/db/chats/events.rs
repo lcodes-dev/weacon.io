@@ -5,6 +5,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
 
 use super::super::changes::Versioned;
+use super::super::search::message_item;
 use super::super::{Workspace, failed, stored, unreadable};
 use super::{chat_not_found, count, number, unstorable};
 
@@ -143,7 +144,8 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-            self.index_message(&mut *transaction, (chat, row.seq), row.event, row.at)
+            let item = message_item(chat, row.seq);
+            self.index_message(&mut *transaction, &item, row.event, row.at)
                 .await?;
         }
         self.keep_runs(&mut *transaction, chat, runs).await?;

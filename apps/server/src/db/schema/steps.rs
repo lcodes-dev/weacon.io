@@ -400,7 +400,7 @@ FROM search;
 ";
 
 // Chats join the search: each chat by its title, and each message its log keeps, a person's
-// prompt or an agent's text, as `chat/seq`.
+// prompt or an agent's text, as `chat/seq`. An event that isn't JSON is left out.
 pub(crate) const SEARCH_CHATS: &str = "
 CREATE TEMP TABLE found AS
 SELECT (SELECT COALESCE(MAX(rowid), 0) FROM search) + ROW_NUMBER() OVER () AS row, *
@@ -410,13 +410,14 @@ FROM (
     UNION ALL
     SELECT workspace_id, 'message', chat_id || '/' || seq, '', text, at
     FROM (SELECT workspace_id, chat_id, seq, at,
-              CASE json_extract(body, '$.kind')
-                  WHEN 'prompt' THEN json_extract(body, '$.text')
-                  WHEN 'outside_prompt' THEN json_extract(body, '$.text')
-                  WHEN 'run' THEN CASE json_extract(body, '$.update.event.event')
-                      WHEN 'text' THEN json_extract(body, '$.update.event.text') END
+              CASE
+                  WHEN json_extract(body, '$.kind') IN ('prompt', 'outside_prompt')
+                      THEN json_extract(body, '$.text')
+                  WHEN json_extract(body, '$.kind') = 'run'
+                      AND json_extract(body, '$.update.event.event') = 'text'
+                      THEN json_extract(body, '$.update.event.text')
               END AS text
-          FROM chat_events)
+          FROM chat_events WHERE json_valid(body))
     WHERE text IS NOT NULL
 );
 
