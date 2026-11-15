@@ -16,6 +16,8 @@ const WEEK: u64 = 7 * DAY;
 
 /// How often the daemon asks itself whether a check is due.
 pub(crate) const CHECK_EVERY: Duration = Duration::from_hours(1);
+/// How often the daemon looks whether an install it started is over.
+const INSTALL_LOOK: Duration = Duration::from_secs(10);
 
 /// The latest release, once its signature checks out.
 pub(crate) type Latest = fn() -> Result<ReleaseManifest, Fault>;
@@ -62,17 +64,37 @@ impl Watch {
     }
 
     /// Checks every [`CHECK_EVERY`], first at once, asking `busy` each time whether an agent
-    /// is on a turn.
-    pub(crate) async fn run<F: Future<Output = bool>>(
+    /// is on a turn, which pauses new turns when none is, and telling `over` once the check,
+    /// and any install it started that left the daemon running, is done.
+    pub(crate) async fn run<F: Future<Output = bool>, G: Future<Output = ()>>(
         mut self,
         busy: impl Fn() -> F,
+        over: impl Fn() -> G,
         log: &Logger,
     ) -> ! {
         let mut ticks = tokio::time::interval(CHECK_EVERY);
         loop {
             ticks.tick().await;
             let joined = self.start(busy().await).await;
+            let started = matches!(joined, Ok(Ok(Found::Started(_))));
             self.finished(joined, log);
+            if started {
+                self.installed().await;
+            }
+            over().await;
+        }
+    }
+
+    // Waits for the install it started to let go of the update lock; one that restarts the
+    // daemon ends this with it.
+    async fn installed(&self) {
+        loop {
+            tokio::time::sleep(INSTALL_LOOK).await;
+            let dir = self.state_dir.clone();
+            let free = tokio::task::spawn_blocking(move || super::lock(&dir)).await;
+            if !matches!(free, Ok(Err(ref fault)) if fault.code() == &code!("update.busy")) {
+                return;
+            }
         }
     }
 
@@ -568,7 +590,12 @@ mod tests {
             version("1.0.0"),
             hooks(UNREACHABLE, STARTS),
         );
-        let running = tokio::spawn(async move { watch.run(busy, &log).await });
+        let (done, mut was_done) = tokio::sync::mpsc::unbounded_channel();
+        let over = move || {
+            done.send(()).unwrap_or_default();
+            std::future::ready(())
+        };
+        let running = tokio::spawn(async move { watch.run(busy, over, &log).await });
 
         // Bounded, so a check that never runs fails the test instead of hanging it.
         let within = Duration::from_secs(10);
@@ -577,7 +604,23 @@ mod tests {
             .unwrap();
         let logged = tokio::time::timeout(within, logged(&records));
         logged.await.unwrap();
+        // A check that started no install lets turns go on at once.
+        tokio::time::timeout(within, was_done.recv()).await.unwrap();
         running.abort();
         assert_eq!(messages(&records), ["update check failed"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_install_started_is_over_once_it_lets_go_of_the_update_lock() {
+        let dir = TempDir::new().unwrap();
+        let watch = Watch::new(dir.to_path_buf(), version("1.0.0"), hooks(NEWER, STARTS));
+        let installing = super::super::lock(&dir).unwrap();
+
+        let waited = tokio::time::timeout(INSTALL_LOOK * 3, watch.installed()).await;
+        waited.unwrap_err();
+        drop(installing);
+
+        let over = tokio::time::timeout(INSTALL_LOOK * 2, watch.installed());
+        over.await.unwrap();
     }
 }

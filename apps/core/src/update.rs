@@ -316,10 +316,16 @@ pub(crate) fn watch(state_dir: &Path, version: &str) -> Option<Watch> {
     Some(Watch::new(state_dir.to_owned(), own, hooks))
 }
 
-/// Whether an agent is on a turn; an engine that doesn't answer in time counts as busy.
+/// Whether an agent is on a turn, as [`WeakChats::pause_unless_busy`] says, pausing new turns
+/// when none is; an engine that doesn't answer in time counts as busy.
 pub(crate) async fn agents_busy(chats: &WeakChats) -> bool {
-    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.busy()).await;
+    let answer = tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.pause_unless_busy()).await;
     answer.map_or(true, |busy| busy.unwrap_or(true))
+}
+
+/// Lets the engine's turns go on after a check; one that doesn't take it in time is left.
+async fn installed(chats: &WeakChats) {
+    drop(tokio::time::timeout(ENGINE_ANSWERS_WITHIN, chats.installed()).await);
 }
 
 /// Checks for releases on the daemon's schedule while it serves; a build that isn't a
@@ -331,7 +337,10 @@ pub(crate) async fn schedule(
     log: &Logger,
 ) -> ! {
     match watch(state_dir, version) {
-        Some(updates) => updates.run(|| agents_busy(chats), log).await,
+        Some(updates) => {
+            let over = || installed(chats);
+            updates.run(|| agents_busy(chats), over, log).await
+        }
         None => std::future::pending().await,
     }
 }

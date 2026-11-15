@@ -62,9 +62,13 @@ impl<A: Agent> Engine<A> {
             (true, false) => self.log.info("turns resumed", &[]),
             _ => {}
         }
-        if full {
-            return;
+        if !full {
+            self.go_on().await;
         }
+    }
+
+    // Lets every chat with prompts queued go on, where nothing else holds its turns back.
+    pub(super) async fn go_on(&mut self) {
         let queued: Vec<ChatKey> = self
             .runs
             .records()

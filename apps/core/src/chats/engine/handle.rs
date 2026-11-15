@@ -21,6 +21,8 @@ pub(crate) struct Chats {
 pub(super) enum Ask {
     Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
+    /// An install the engine paused turns for is over.
+    Installed,
     Query(
         ChatQuery,
         Client,
@@ -39,13 +41,22 @@ fn stopped() -> Fault {
 pub(crate) struct WeakChats(mpsc::WeakSender<Ask>);
 
 impl WeakChats {
-    /// Whether an agent is on a turn or waits on a person, or a session or a turn's end the
-    /// journal couldn't save yet is only in memory, which a restart would cut off or lose.
-    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
+    /// Whether an agent is on a turn, waits on a person, starts or is carried on by hand, or a
+    /// session or a turn's end the journal couldn't save yet is only in memory, which a
+    /// restart would cut off or lose. When none is, no new turn starts until
+    /// [`WeakChats::installed`], so an install may restart the daemon.
+    pub(crate) async fn pause_unless_busy(&self) -> Result<bool, Fault> {
         let asks = self.0.upgrade().ok_or_else(stopped)?;
         let (answer, answered) = oneshot::channel();
         asks.send(Ask::Busy(answer)).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())
+    }
+
+    /// Lets turns go on after an install that left the daemon running, or none at all.
+    pub(crate) async fn installed(&self) {
+        if let Some(asks) = self.0.upgrade() {
+            drop(asks.send(Ask::Installed).await);
+        }
     }
 }
 
@@ -113,6 +124,10 @@ impl<A: Agent> Engine<A> {
             }
             Ask::Busy(answer) => {
                 self.answer_busy(answer).await;
+                None
+            }
+            Ask::Installed => {
+                self.go_on_after_install().await;
                 None
             }
             Ask::Left => {
