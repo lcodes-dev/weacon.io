@@ -4,7 +4,9 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<
   Envelope,
-  { type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" }
+  {
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "worktree_answer";
+  }
 >;
 
 /** A run message, checked. */
@@ -36,9 +38,10 @@ export type Routes = {
   answers?(message: Extract<Incoming, { type: "receipt" | "error" }>): void;
   changes?(message: Extract<Incoming, { type: "diff_answer" | "error" }>): void;
   chat?(message: ChatMessage | ErrorMessage): void;
+  worktree?(message: Extract<Incoming, { type: "worktree_answer" | "error" }>): void;
 };
 
-/** Hands `message` to the handlers it may be for; an error may answer a command, a chat query or the diff query. */
+/** Hands `message` to the handlers it may be for; an error may answer any of their requests. */
 export function route(message: Incoming, to: Routes): void {
   switch (message.type) {
     case "run":
@@ -50,6 +53,9 @@ export function route(message: Incoming, to: Routes): void {
     case "diff_answer":
       to.changes?.(message);
       return;
+    case "worktree_answer":
+      to.worktree?.(message);
+      return;
     case "chat":
     case "chat_answer":
       to.chat?.(message);
@@ -58,6 +64,7 @@ export function route(message: Incoming, to: Routes): void {
       to.answers?.(message);
       to.changes?.(message);
       to.chat?.(message);
+      to.worktree?.(message);
       return;
     case "welcome":
     case "workspace":
@@ -81,6 +88,8 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   chat: (fields) => text(fields, "workspace") && text(fields, "chat") && isEntry(fields["entry"]),
   chat_answer: (fields) => text(fields, "workspace") && text(fields, "chat") && isChatAnswer(fields["answer"]),
   workspace: (fields) => text(fields, "workspace") && Number.isSafeInteger(fields["seq"]) && isChange(fields["change"]),
+  worktree_answer: (fields) =>
+    text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isWorktreeAnswer(fields["answer"]),
   machine_settings_answer: (fields) =>
     text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
 };
@@ -237,6 +246,24 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
       return typeof one === "object" && one !== null && text(one, "agent") && text(one, "state");
     })
   );
+}
+
+// A state needs its three flags and a page its https address; a newer kind passes, to be ignored.
+function isWorktreeAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  switch (fields?.["kind"]) {
+    case "state":
+      return ["removed", "uncommitted", "unpushed"].every((key) => typeof fields[key] === "boolean");
+    case "pull_request_opened":
+    case "pull_request_page":
+      return isHttps(fields["url"]);
+    default:
+      return typeof fields?.["kind"] === "string";
+  }
+}
+
+function isHttps(url: unknown): boolean {
+  return typeof url === "string" && URL.canParse(url) && new URL(url).protocol === "https:";
 }
 
 // An answer of a kind this app reads has every field the diff view reads; others are dropped.

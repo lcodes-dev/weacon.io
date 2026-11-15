@@ -266,7 +266,7 @@ function WorkspaceChats({
       <section>
         <Heading title={open?.title ?? workspace.name} status={status} />
         {open !== undefined && (
-          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={owns(workspace.member, open)} away={away} />
+          <ChatScreen key={open.id} link={socket} live={status.state === "live"} chatRef={{ workspace: workspace.id, chat: open.id }} mine={owns(workspace.member, open)} away={away} title={open.title} />
         )}
       </section>
     </div>

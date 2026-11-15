@@ -101,8 +101,10 @@ function markedIn(file: Locator): (mark: string) => Promise<number[]> {
     );
 }
 
-// Presses on row `from`'s gutter and lets go on row `to`'s.
+// Presses on row `from`'s gutter and lets go on row `to`'s, once both are in view.
 async function dragGutter(page: Page, file: Locator, from: number, to: number): Promise<void> {
+  await file.locator(`.line[data-row="${to}"]`).scrollIntoViewIfNeeded();
+  await file.locator(`.line[data-row="${from}"]`).scrollIntoViewIfNeeded();
   const gutter = async (row: number) => {
     const box = await file.locator(`.line[data-row="${row}"]`).boundingBox();
     assert.ok(box !== null);
