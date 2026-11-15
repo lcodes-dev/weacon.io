@@ -107,18 +107,7 @@ impl Worktrees {
                 action,
                 ..
             } = command;
-            let answer = match action {
-                WorktreeAction::OpenTerminal => terminals::open_in_chat(
-                    inner.workspaces.state_dir(),
-                    inner.work_root.as_deref(),
-                    &ChatKey::new(&workspace, &chat),
-                    inner.open_terminal,
-                )?,
-                action @ (WorktreeAction::Remove
-                | WorktreeAction::Restore
-                | WorktreeAction::OpenPullRequest { .. }
-                | WorktreeAction::Newer) => inner.act(&workspace, &chat, action)?,
-            };
+            let answer = inner.act(&workspace, &chat, action)?;
             Ok(WorktreeAnswer {
                 request,
                 workspace,
@@ -222,6 +211,12 @@ impl Inner {
         chat: &ChatId,
         action: WorktreeAction,
     ) -> Result<WorktreeAnswerKind, Fault> {
+        // The terminal needs only the chat's folder, not its worktree.
+        if matches!(action, WorktreeAction::OpenTerminal) {
+            let key = ChatKey::new(workspace, chat);
+            let (state_dir, work_root) = (self.workspaces.state_dir(), self.work_root.as_deref());
+            return terminals::open_in_chat(state_dir, work_root, &key, self.open_terminal);
+        }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
         match action {

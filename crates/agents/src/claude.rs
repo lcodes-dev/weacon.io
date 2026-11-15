@@ -77,6 +77,9 @@ fn shell_quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
+/// Only the workspace's own settings: a repository's could allow tools or add hooks.
+const USER_SETTINGS: [&str; 2] = ["--setting-sources", "user"];
+
 fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
     let mut command = launch.with_workspace_sign_in(&VENDOR);
     command.args([
@@ -88,9 +91,8 @@ fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
         "stream-json",
         "--permission-prompt-tool",
         "stdio",
-        // Only the workspace's own settings: a repository's could allow tools or add hooks.
-        "--setting-sources",
-        "user",
+    ]);
+    command.args(USER_SETTINGS).args([
         // So no setting's mode skips the prompts the access level answers.
         "--permission-mode",
         "default",
@@ -161,8 +163,9 @@ fn own_sign_in(status: &[u8]) -> bool {
 /// chat works in. Weacon's own limits are left out: the person answers its prompts.
 fn resume(launch: &Launch, session: &AgentSession) -> Command {
     let mut command = launch.with_workspace_sign_in(&VENDOR);
-    // As on every run: a repository's settings could add hooks that run as the person.
-    command.args(["--setting-sources", "user", "--resume", session.as_str()]);
+    command
+        .args(USER_SETTINGS)
+        .args(["--resume", session.as_str()]);
     command.current_dir(&launch.cwd);
     command
 }

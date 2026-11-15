@@ -739,7 +739,6 @@ mod tests {
                 request,
                 workspace,
                 chat,
-                // Opening a terminal is the ask that most needs to be its owner's.
                 action: WorktreeAction::OpenTerminal,
                 by,
             }),

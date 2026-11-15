@@ -34,13 +34,13 @@ impl<A: Agent> Engine<A> {
         let installing = self.installing;
         let chat = self.open(key).await?;
         let holder = chat.held.as_ref().filter(|holder| !holder.is_gone());
-        if holder.is_some_and(|holder| holder.is(client)) {
-            return Ok(());
-        }
-        if holder.is_some() {
+        if let Some(holder) = holder {
+            if holder.is(client) {
+                return Ok(());
+            }
             return Err(Fault::new(
                 code!("chat.held"),
-                "Someone else carries the chat on by hand",
+                "Someone else carries this chat on by hand already",
             ));
         }
         // A live run, a starting one, a session still to save or an install's restart would race
@@ -49,7 +49,7 @@ impl<A: Agent> Engine<A> {
         if busy || chat.pending_session.is_some() {
             return Err(Fault::new(
                 code!("chat.busy"),
-                "The chat's agent is running here",
+                "The chat's agent is running here; carry on once it sleeps",
             ));
         }
         chat.held = Some(client.clone());

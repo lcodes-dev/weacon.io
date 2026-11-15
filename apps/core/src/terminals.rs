@@ -2,7 +2,6 @@
 //! web app. Only a person at this machine can turn it on, so a server's operator never can.
 
 use std::ffi::OsString;
-use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use weacon_observability::Fault;
 use weacon_protocol::{WorktreeAnswerKind, code};
 
-use crate::app::{App, state_unavailable};
+use crate::app::{App, read_json};
 use crate::platform::{self, Env};
 use crate::reports::Answer;
 use crate::runs::ChatKey;
@@ -30,15 +29,20 @@ fn file(state_dir: &Path) -> PathBuf {
 
 /// Whether the person turned it on; off until they do, and while the answer can't be read.
 pub(crate) fn allowed(state_dir: &Path) -> bool {
-    fs::read(file(state_dir))
+    read_json::<Stored>(&file(state_dir))
         .ok()
-        .and_then(|json| serde_json::from_slice::<Stored>(&json).ok())
+        .flatten()
         .is_some_and(|stored| stored.open)
+}
+
+// Whether a terminal opens here at all; any absolute folder tells, so the state folder does.
+fn has_desktop(state_dir: &Path, env: Env<'_>) -> bool {
+    platform::terminal_in(state_dir, env, &[]).is_some()
 }
 
 /// Whether a terminal can be opened here from the web app: turned on, and with a desktop.
 pub(crate) fn offered(state_dir: &Path, env: Env<'_>) -> bool {
-    allowed(state_dir) && platform::terminal_in(state_dir, env, &[]).is_some()
+    allowed(state_dir) && has_desktop(state_dir, env)
 }
 
 /// Opens the owner's terminal in the chat's folder, where it resumes the chat if the terminal
@@ -89,7 +93,7 @@ pub(crate) fn run(
     env: Env<'_>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
+    let state_dir = app.state_dir()?;
     if let Some(answer) = answer {
         let open = answer == Answer::On;
         write(state_dir, open).map_err(|error| {
@@ -113,10 +117,7 @@ pub(crate) fn run(
 
 /// One line for `weacon terminals` and `weacon doctor`.
 pub(crate) fn describe(state_dir: &Path, env: Env<'_>) -> &'static str {
-    match (
-        allowed(state_dir),
-        platform::terminal_in(state_dir, env, &[]).is_some(),
-    ) {
+    match (allowed(state_dir), has_desktop(state_dir, env)) {
         (true, true) => "Terminals from the web app: on.\n",
         (true, false) => {
             "Terminals from the web app: on, but this machine has no desktop terminal.\n"
@@ -173,14 +174,14 @@ mod tests {
     #[test]
     fn an_answer_that_cant_be_read_is_off() {
         let dir = TempDir::new().unwrap();
-        fs::write(file(&dir), "not json").unwrap();
+        std::fs::write(file(&dir), "not json").unwrap();
         assert!(!allowed(&dir));
     }
 
     #[test]
     fn an_answer_that_cant_be_saved_says_so() {
         let dir = TempDir::new().unwrap();
-        fs::create_dir(file(&dir)).unwrap();
+        std::fs::create_dir(file(&dir)).unwrap();
         let app = test_support::app(Some(&dir), None);
         let fault = run(&app, Some(Answer::On), &env(&[]), &mut Vec::new()).unwrap_err();
         assert_eq!(fault.code().as_str(), "terminals.not_saved");
