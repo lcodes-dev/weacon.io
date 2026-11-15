@@ -303,8 +303,8 @@ mod tests {
     use super::*;
     use crate::claude;
     use crate::test_support::{
-        self, Done, FakeRun, SESSION, answer, ended, ends_as_recorded, is_asked, is_finished,
-        run_id, text, tool_call, tool_done, until,
+        self, Done, FakeRun, SESSION, answer, delta, ended, ends_as_recorded, is_asked,
+        is_finished, run_id, text, tool_call, tool_done, until,
     };
 
     fn claude_wire() -> Wire {
@@ -352,6 +352,79 @@ mod tests {
         );
         let again = run.answer(&answer("run-1", true)).await.unwrap_err();
         assert_eq!(again.code().as_str(), "agent.no_such_prompt");
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn text_comes_in_pieces_before_each_whole_block_with_a_tool_between() {
+        let (mut run, done) = fake(include_str!("../replays/claude/partial.replay"));
+        let command = json!({ "command": "cargo test -p parser" });
+
+        run.send("Run the parser tests").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_asked).await.get(..8),
+            Some(
+                [
+                    started(),
+                    delta("I'll run"),
+                    delta(" them."),
+                    text("I'll run them."),
+                    tool_call("toolu_01", "Bash", command),
+                    delta("Then I'll"),
+                    delta(" report."),
+                    text("Then I'll report."),
+                ]
+                .as_slice()
+            )
+        );
+        run.answer(&answer("run-1", true)).await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                tool_done("toolu_01", false),
+                delta("All 12"),
+                delta(" tests"),
+                delta(" pass."),
+                text("All 12 tests pass."),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_output_the_driver_doesnt_know_is_skipped_and_the_turn_goes_on() {
+        let (mut run, done) = fake(include_str!("../replays/claude/partial_unknown.replay"));
+
+        run.send("Explain the build").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(),
+                delta("Cargo"),
+                delta(" builds it."),
+                text("Cargo builds it."),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    // Pieces are shown but never kept, so a turn cut off before its whole message has no text.
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_cut_off_mid_message_gave_only_its_pieces() {
+        let (mut run, done) = fake(include_str!("../replays/claude/partial_cut_off.replay"));
+
+        run.send("Bump the version").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(),
+                delta("Bumping"),
+                delta(" it"),
+                ended(Outcome::Unknown),
+            ]
+        );
         ends_as_recorded(run, done).await;
     }
 

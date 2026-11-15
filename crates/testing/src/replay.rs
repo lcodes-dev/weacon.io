@@ -26,9 +26,9 @@ pub struct Replay {
 }
 
 /// Replays `recording` on the current tokio runtime. A line starting `< ` is one the agent
-/// prints; a line starting `> ` is one the driver must send, compared as JSON. After the last
-/// line the fake hangs up, as an agent that exits, and anything the driver still sends is
-/// a mismatch too.
+/// prints; a line starting `> ` is one the driver must send, compared as JSON; a line starting
+/// `#` is a comment. After the last line the fake hangs up, as an agent that exits, and anything
+/// the driver still sends is a mismatch too.
 #[must_use]
 pub fn replay(recording: &str) -> Replay {
     let (stdin, fake_in) = duplex(BUFFER);
@@ -86,11 +86,12 @@ pub(crate) enum Step<'a> {
     Reads(&'a str),
 }
 
-/// The steps of `recording`, skipping blank lines; a line marked neither way is a failure.
+/// The steps of `recording`, skipping blank lines and `#` comments; a line marked neither way is
+/// a failure.
 pub(crate) fn steps(recording: &str) -> impl Iterator<Item = Result<Step<'_>, Failure>> {
     recording
         .lines()
-        .filter(|line| !line.trim().is_empty())
+        .filter(|line| !line.trim().is_empty() && !line.starts_with('#'))
         .map(|step| {
             if let Some(line) = step.strip_prefix("< ") {
                 Ok(Step::Prints(line))
@@ -127,7 +128,7 @@ mod tests {
 
     #[tokio::test]
     async fn plays_the_agents_lines_and_checks_the_drivers() {
-        let recording = "< {\"a\":1}\n\n> {\"b\":2, \"c\":[3]}\n< {\"d\":4}\n";
+        let recording = "# A comment.\n< {\"a\":1}\n\n> {\"b\":2, \"c\":[3]}\n< {\"d\":4}\n";
 
         assert_eq!(
             run(recording, &["{\"c\":[3],\"b\":2}\n"]).await,
