@@ -1998,6 +1998,37 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_-]+$"
     },
+    "MemberList": {
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`.",
+      "type": "object",
+      "properties": {
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MemberSummary"
+          }
+        }
+      },
+      "required": [
+        "members"
+      ]
+    },
+    "MemberSummary": {
+      "description": "A member as the workspace's other members see them, under the name the server shows for\nthem.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ]
+    },
     "MergeHunk": {
       "description": "A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the\nwhole body.",
       "oneOf": [

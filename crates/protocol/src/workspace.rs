@@ -64,6 +64,21 @@ pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
 }
 
+/// A member as the workspace's other members see them, under the name the server shows for
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MemberSummary {
+    pub id: MemberId,
+    pub name: String,
+}
+
+/// A workspace's members, past ones included, in the order they were added, from the server to
+/// clients that have the capability `workspace.members`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MemberList {
+    pub members: Vec<MemberSummary>,
+}
+
 /// What changed in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -103,6 +118,21 @@ mod tests {
 
     use super::*;
     use crate::test_support::{chat, round_trips, workspace};
+
+    #[test]
+    fn a_member_list_names_each_member() {
+        let list = MemberList {
+            members: vec![MemberSummary {
+                id: "m-1".parse().unwrap(),
+                name: "Ada".to_owned(),
+            }],
+        };
+
+        round_trips(
+            &list,
+            json!({ "members": [{ "id": "m-1", "name": "Ada" }] }),
+        );
+    }
 
     #[test]
     fn an_update_carries_its_workspace_and_order() {
