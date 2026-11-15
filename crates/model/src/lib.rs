@@ -12,7 +12,7 @@ mod task;
 mod title;
 
 pub use chat::{ChatRuns, Waiting};
-pub use doc::{Doc, DocText, DocTextError, ReviseError};
+pub use doc::{Doc, DocText, DocTextError, ReviseError, relinked};
 pub use merge::Merged;
 pub use order::OrderKey;
 pub use revision::{Attribution, Revision};

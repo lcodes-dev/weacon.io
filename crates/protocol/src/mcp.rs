@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::ProposalChange;
+
 /// From an agent the core started, to that core's MCP: one tool call, by name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(tag = "tool", rename_all = "snake_case")]
@@ -23,6 +25,8 @@ pub enum McpCall {
     Search(SearchArgs),
     /// The files that change often and that much depends on.
     Hotspots(MapArgs),
+    /// A change to a doc or task of the run's workspace, for a person to accept.
+    Propose(ProposeArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other, skip_serializing)]
     Newer,
@@ -35,6 +39,7 @@ impl McpCall {
     pub const DOCS_FOR: &str = "docs_for";
     pub const SEARCH: &str = "search";
     pub const HOTSPOTS: &str = "hotspots";
+    pub const PROPOSE: &str = "propose";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
     #[must_use]
@@ -46,6 +51,7 @@ impl McpCall {
             Self::DocsFor(_) => Some(Self::DOCS_FOR),
             Self::Search(_) => Some(Self::SEARCH),
             Self::Hotspots(_) => Some(Self::HOTSPOTS),
+            Self::Propose(_) => Some(Self::PROPOSE),
             Self::Newer => None,
         }
     }
@@ -97,6 +103,12 @@ pub struct SearchArgs {
     pub budget: Option<u32>,
 }
 
+/// From a run's agent, under `McpCall::Propose`: the change it proposes, in the protocol's form.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ProposeArgs {
+    pub change: ProposalChange,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -142,6 +154,10 @@ mod tests {
             (McpCall::DOCS_FOR, json!({"path": "a::b"})),
             (McpCall::SEARCH, json!({"words": "a b"})),
             (McpCall::HOTSPOTS, json!({"budget": 2000})),
+            (
+                McpCall::PROPOSE,
+                json!({"change": {"kind": "new_task", "title": "Ship"}}),
+            ),
         ] {
             assert_eq!(call(name, arguments).unwrap().name(), Some(name));
         }

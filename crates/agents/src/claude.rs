@@ -78,6 +78,9 @@ fn shell_quoted(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''"))
 }
 
+/// Only the workspace's own settings: a repository's could allow tools or add hooks.
+const USER_SETTINGS: [&str; 2] = ["--setting-sources", "user"];
+
 fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
     let mut command = launch.with_workspace_sign_in(&VENDOR);
     command.args([
@@ -89,9 +92,8 @@ fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
         "stream-json",
         "--permission-prompt-tool",
         "stdio",
-        // Only the workspace's own settings: a repository's could allow tools or add hooks.
-        "--setting-sources",
-        "user",
+    ]);
+    command.args(USER_SETTINGS).args([
         // So no setting's mode skips the prompts the access level answers.
         "--permission-mode",
         "default",
@@ -162,7 +164,9 @@ fn own_sign_in(status: &[u8]) -> bool {
 /// chat works in. Weacon's own limits are left out: the person answers its prompts.
 fn resume(launch: &Launch, session: &AgentSession) -> Command {
     let mut command = launch.with_workspace_sign_in(&VENDOR);
-    command.args(["--resume", session.as_str()]);
+    command
+        .args(USER_SETTINGS)
+        .args(["--resume", session.as_str()]);
     command.current_dir(&launch.cwd);
     command
 }
@@ -380,7 +384,12 @@ mod tests {
         let by_hand = resume(&claude, &session.unwrap());
         assert_eq!(
             by_hand.as_std().get_args().collect::<Vec<_>>(),
-            ["--resume", "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"]
+            [
+                "--setting-sources",
+                "user",
+                "--resume",
+                "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d"
+            ]
         );
         assert_eq!(by_hand.as_std().get_current_dir(), Some(Path::new("/work")));
         let commands = [

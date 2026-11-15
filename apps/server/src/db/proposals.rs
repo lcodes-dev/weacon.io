@@ -1,4 +1,5 @@
 mod accept;
+mod machines;
 mod read;
 mod target;
 
@@ -6,14 +7,16 @@ use sha2::{Digest, Sha256};
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentRef, Author, DocId, MachineId, MemberId, ProposalChange, ProposalId, TaskId, code,
+    AgentRef, Author, DocId, MAX_PROPOSAL, MachineId, MemberId, ProposalChange, ProposalId, TaskId,
+    code,
 };
 
 use super::changes::Versioned;
-use super::{Workspace, author_columns, failed, stored};
+use super::{Workspace, author_columns, failed, parsed, stored};
+use machines::kept_findings;
 use target::Target;
 
-/// The most proposals one member's agents may have open in a workspace.
+/// The most proposals one machine may have open in a workspace.
 const MAX_OPEN: u32 = 100;
 /// What each proposal counts toward the doc quota besides its change: its row and its feed
 /// entries.
@@ -31,21 +34,16 @@ const DOC_EDIT: &str = "doc_edit";
 const TASK_EDIT: &str = "task_edit";
 const NEW_DOC: &str = "new_doc";
 const NEW_TASK: &str = "new_task";
+const NEEDS_UPDATE: &str = "needs_update";
 
 /// A proposal as a core sent it, with who the server knows sent it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the machine socket sends proposals in its own change"
-    )
-)]
 pub(crate) struct Proposed {
     pub(crate) id: ProposalId,
     pub(crate) change: ProposalChange,
-    /// The member whose agent proposes it, as `agent` names them.
+    /// The member whose agent or core proposes it, as `agent` names them.
     pub(crate) owner: MemberId,
-    pub(crate) agent: AgentRef,
+    /// None for what the core proposes of its own, as when the code moved.
+    pub(crate) agent: Option<AgentRef>,
     pub(crate) machine: MachineId,
     /// The id a new doc or task gets once accepted.
     pub(crate) fresh: String,
@@ -56,31 +54,47 @@ impl Workspace {
     /// Stores `proposed` as open. The same id sent again by the same machine with the same
     /// change does nothing; with another change or from another machine it is
     /// `proposal.conflict`. An edit supersedes the same machine's open edit of the same doc or
-    /// task.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the machine socket sends proposals in its own change"
-        )
-    )]
+    /// task, and a "needs an update" one the same machine's of the same doc.
     pub(crate) async fn propose(&self, proposed: &Proposed) -> Result<(), Fault> {
+        self.propose_all(std::slice::from_ref(proposed)).await
+    }
+
+    /// Stores each of `proposals` as [`Workspace::propose`] does, all or none of them.
+    pub(crate) async fn propose_all(&self, proposals: &[Proposed]) -> Result<(), Fault> {
+        let mut transaction = self.db.write().await?;
+        for proposed in proposals {
+            self.stage(&mut transaction, proposed).await?;
+        }
+        transaction.commit().await.map_err(failed)
+    }
+
+    async fn stage(
+        &self,
+        transaction: &mut SqliteConnection,
+        proposed: &Proposed,
+    ) -> Result<(), Fault> {
         let agent = stored_agent(proposed)?;
         let change = serde_json::to_string(&proposed.change).map_err(|_| invalid())?;
+        if change.len() > MAX_PROPOSAL {
+            return Err(too_large());
+        }
         let hash: [u8; 32] = Sha256::digest(change.as_bytes()).into();
-        let mut transaction = self.db.write().await?;
-        if self.sent_before(&mut transaction, proposed, &hash).await? {
+        if self.sent_before(transaction, proposed, &hash).await? {
             return Ok(());
         }
-        let target = self.proposal_target(&mut transaction, proposed).await?;
-        if target.base.is_some() {
-            self.supersede(&mut transaction, proposed, &target).await?;
+        let target = self.proposal_target(transaction, proposed).await?;
+        let change = self
+            .superseding(transaction, proposed, &target, change)
+            .await?;
+        // Findings it kept may take it past the limit.
+        if change.len() > MAX_PROPOSAL {
+            return Err(too_large());
         }
-        self.room_for_proposal(&mut transaction, &proposed.owner)
+        self.room_for_proposal(transaction, &proposed.machine)
             .await?;
         // At least what its revision will count, so that accepting it fits in what it frees.
         let bytes = i64::try_from(OVERHEAD + change.len() + agent.len()).map_err(|_| invalid())?;
-        self.charge(&mut transaction, bytes).await?;
+        self.charge(transaction, bytes).await?;
         sqlx::query(
             "INSERT INTO proposals (workspace_id, proposal_id, kind, doc_id, task_id, new_id, base,
                  change, change_hash, snapshot, bytes, author_member, agent, machine_id, state,
@@ -107,9 +121,30 @@ impl Workspace {
         .await
         .map_err(failed)?;
         let versioned = Versioned::Proposal(&proposed.id);
-        self.record_change(&mut transaction, versioned, &proposed.owner)
+        self.record_change(transaction, versioned, &proposed.owner)
+            .await
+    }
+
+    /// `change`, the JSON of `proposed`'s, once the edits it supersedes are closed, with the
+    /// findings it keeps of theirs.
+    async fn superseding(
+        &self,
+        transaction: &mut SqliteConnection,
+        proposed: &Proposed,
+        target: &Target<'_>,
+        change: String,
+    ) -> Result<String, Fault> {
+        if target.base.is_none() {
+            return Ok(change);
+        }
+        let agent = stored_agent(proposed)?;
+        let older = self
+            .supersede(transaction, proposed, target, &agent)
             .await?;
-        transaction.commit().await.map_err(failed)
+        match kept_findings(&proposed.change, older) {
+            Some(merged) => serde_json::to_string(&merged).map_err(|_| invalid()),
+            None => Ok(change),
+        }
     }
 
     /// Whether the same machine sent the same proposal before; `proposal.conflict` when its
@@ -138,18 +173,18 @@ impl Workspace {
         }
     }
 
-    /// Refuses a proposal from a member whose agents have [`MAX_OPEN`] open already.
+    /// Refuses a proposal from a machine that has [`MAX_OPEN`] open here already.
     async fn room_for_proposal(
         &self,
         transaction: &mut SqliteConnection,
-        owner: &MemberId,
+        machine: &MachineId,
     ) -> Result<(), Fault> {
         let open: u32 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM proposals
-             WHERE workspace_id = ? AND author_member = ? AND state = ?",
+             WHERE workspace_id = ? AND machine_id = ? AND state = ?",
         )
         .bind(self.id.as_str())
-        .bind(owner.as_str())
+        .bind(machine.as_str())
         .bind(OPEN)
         .fetch_one(&mut *transaction)
         .await
@@ -157,27 +192,30 @@ impl Workspace {
         if open >= MAX_OPEN {
             return Err(Fault::new(
                 code!("proposal.too_many"),
-                "The member's agents have as many proposals open as they may",
+                "The machine has as many proposals open as it may",
             ));
         }
         Ok(())
     }
 
-    /// Supersedes the same machine's open edits of the doc or task `target` is to; one of
-    /// `doc_id` and `task_id` is bound to null, which matches nothing.
+    /// Supersedes the open edits of the doc or task `target` is to that the same machine made
+    /// for the same `agent`, or of its own, and gives what they changed; one of `doc_id` and
+    /// `task_id` is bound to null, which matches nothing.
     async fn supersede(
         &self,
         transaction: &mut SqliteConnection,
         proposed: &Proposed,
         target: &Target<'_>,
-    ) -> Result<(), Fault> {
-        let older: Vec<String> = sqlx::query_scalar(
-            "SELECT proposal_id FROM proposals
-             WHERE workspace_id = ? AND machine_id = ? AND state = ? AND kind = ?
+        agent: &str,
+    ) -> Result<Vec<ProposalChange>, Fault> {
+        let older: Vec<(String, String)> = sqlx::query_as(
+            "SELECT proposal_id, change FROM proposals
+             WHERE workspace_id = ? AND machine_id = ? AND agent = ? AND state = ? AND kind = ?
                  AND (doc_id = ? OR task_id = ?)",
         )
         .bind(self.id.as_str())
         .bind(proposed.machine.as_str())
+        .bind(agent)
         .bind(OPEN)
         .bind(target.kind)
         .bind(target.doc.map(DocId::as_str))
@@ -185,12 +223,14 @@ impl Workspace {
         .fetch_all(&mut *transaction)
         .await
         .map_err(failed)?;
-        for older in older {
+        let mut changes = Vec::new();
+        for (older, change) in older {
             let older: ProposalId = stored(older)?;
             self.close_proposal(transaction, &older, Closing::Superseded, &proposed.owner)
                 .await?;
+            changes.push(parsed(&change)?);
         }
-        Ok(())
+        Ok(changes)
     }
 
     /// What the open proposal `id` counts toward the quota; `proposal.not_found` when there's
@@ -271,15 +311,22 @@ impl Workspace {
 
 /// `proposed`'s agent as its versions will store it, checked as any version an agent makes is,
 /// so that accepting it can't be refused.
+/// An empty one for none, which [`agent_of`] reads back.
 fn stored_agent(proposed: &Proposed) -> Result<String, Fault> {
     let author = Author::Agent {
         owner: proposed.owner.clone(),
-        agent: Some(proposed.agent.clone()),
+        agent: proposed.agent.clone(),
     };
     match author_columns(&author) {
         Some((_, _, Some(agent))) => Ok(agent),
-        _ => Err(invalid()),
+        Some((_, _, None)) => Ok(String::new()),
+        None => Err(invalid()),
     }
+}
+
+/// The agent stored in a proposal's `agent` column, if it has one.
+fn agent_of(column: &str) -> Option<&str> {
+    Some(column).filter(|agent| !agent.is_empty())
 }
 
 /// How an open proposal closes.
@@ -287,6 +334,7 @@ enum Closing<'a> {
     Accepted { by: &'a MemberId, version: i64 },
     Rejected { by: &'a MemberId },
     Superseded,
+    Withdrawn,
 }
 
 impl Closing<'_> {
@@ -296,12 +344,20 @@ impl Closing<'_> {
             Self::Accepted { by, version } => (ACCEPTED, Some(by), Some(version)),
             Self::Rejected { by } => (REJECTED, Some(by), None),
             Self::Superseded => (SUPERSEDED, None, None),
+            Self::Withdrawn => (WITHDRAWN, None, None),
         }
     }
 }
 
 fn invalid() -> Fault {
     Fault::new(code!("proposal.invalid"), "The proposal isn't valid")
+}
+
+fn too_large() -> Fault {
+    Fault::new(
+        code!("proposal.too_large"),
+        "The proposal is larger than the limit",
+    )
 }
 
 fn conflict() -> Fault {
@@ -402,17 +458,11 @@ mod tests {
         assert_eq!(first.about, ProposalAbout::Doc { doc: id("d1") });
         assert_eq!(first.change, Some(revise("d1", 1, "One\n")));
         assert_eq!(first.at, 0);
-        let Author::Agent {
-            owner,
-            agent: Some(agent),
-        } = &first.author
-        else {
-            panic!("{:?}", first.author);
+        let author = Author::Agent {
+            owner: member_id("m1"),
+            agent: proposed("p1", "mc1", new_task).agent,
         };
-        assert_eq!(
-            (owner, agent),
-            (&member_id("m1"), &proposed("p1", "mc1", new_task).agent)
-        );
+        assert_eq!(first.author, author);
         assert_eq!(list[0].about, ProposalAbout::NewTask { task: id("new-p2") });
         let changes = one.changes_since(0, 100).await.unwrap();
         let heard: Vec<_> = changes
@@ -578,7 +628,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_members_agents_hold_only_so_many_open_proposals() {
+    async fn one_machine_holds_only_so_many_open_proposals_in_a_workspace() {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
         let task = || ProposalChange::NewTask {
@@ -591,13 +641,16 @@ mod tests {
         }
 
         let past = one
-            .propose(&proposed("over", "mc2", task()))
+            .propose(&proposed("over", "mc1", task()))
             .await
             .unwrap_err();
         assert_eq!(code(&past), "proposal.too_many");
+        one.propose(&proposed("elsewhere", "mc2", task()))
+            .await
+            .unwrap();
         let mut bo = proposed("bo", "mc3", task());
         bo.owner = member_id("m3");
-        bo.agent.owner = AgentOwner::Member {
+        bo.agent.as_mut().unwrap().owner = AgentOwner::Member {
             member: member_id("m3"),
         };
         one.propose(&bo).await.unwrap();
@@ -685,7 +738,7 @@ mod tests {
         // w1's doc and task aren't w2's to propose to.
         let mut theirs = proposed("p1", "mc1", revise("d1", 1, "One\n"));
         theirs.owner = member_id("m2");
-        theirs.agent.owner = AgentOwner::Member {
+        theirs.agent.as_mut().unwrap().owner = AgentOwner::Member {
             member: member_id("m2"),
         };
         assert_eq!(
@@ -705,11 +758,11 @@ mod tests {
             title: "Ship".to_owned(),
         };
         let mut someone_elses = proposed("p1", "mc1", task());
-        someone_elses.agent.owner = AgentOwner::Member {
+        someone_elses.agent.as_mut().unwrap().owner = AgentOwner::Member {
             member: member_id("m3"),
         };
         let mut unknown = proposed("p2", "mc1", task());
-        unknown.agent.kind = AgentKind::Newer;
+        unknown.agent.as_mut().unwrap().kind = AgentKind::Newer;
 
         for refused in [someone_elses, unknown] {
             let fault = one.propose(&refused).await.unwrap_err();
@@ -740,7 +793,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_member_at_the_most_open_may_still_replace_an_edit() {
+    async fn a_machine_at_the_most_open_may_still_replace_an_edit() {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
         one.propose(&proposed("edit", "mc1", revise("d1", 1, "A\n")))
@@ -750,7 +803,7 @@ mod tests {
             let task = ProposalChange::NewTask {
                 title: "Ship".to_owned(),
             };
-            one.propose(&proposed(&format!("p{n}"), "mc2", task))
+            one.propose(&proposed(&format!("p{n}"), "mc1", task))
                 .await
                 .unwrap();
         }
@@ -799,5 +852,185 @@ mod tests {
                 .unwrap_err();
             assert_eq!(code(&fault), "db.failed");
         }
+    }
+
+    fn stale_of(pins: &[&str]) -> ProposalChange {
+        ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 1,
+            anchors: pins
+                .iter()
+                .map(|pin| weacon_protocol::StaleAnchor {
+                    pin: pin.parse().unwrap(),
+                    change: weacon_protocol::AnchorChange::Gone {
+                        was: "fn a::go  a.rs:1".to_owned(),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_same_authors_edit_is_superseded_and_needs_updates_keep_earlier_findings() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let text = weacon_model::DocText::new(
+            weacon_model::Title::try_from("P".to_owned()).unwrap(),
+            "[a](sym:a::go) [b](sym:a::run)\n".to_owned(),
+            Some(anchors),
+        )
+        .unwrap();
+        one.add_doc(&Doc::new(id("p"), text), &by("m1"))
+            .await
+            .unwrap();
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+
+        one.propose(&proposed("agent", "mc1", revise("d1", 1, "A\n")))
+            .await
+            .unwrap();
+        one.propose(&core("own", revise("d1", 1, "B\n")))
+            .await
+            .unwrap();
+        one.propose(&core("first", stale_of(&[go]))).await.unwrap();
+        one.propose(&core("second", stale_of(&[run])))
+            .await
+            .unwrap();
+
+        let state = |list: &[ProposalRecord], proposal: &str| {
+            list.iter()
+                .find(|record| record.id.as_str() == proposal)
+                .unwrap()
+                .state
+                .clone()
+        };
+        let list = one.proposals().await.unwrap();
+        assert_eq!(state(&list, "agent"), ProposalState::Open);
+        assert_eq!(state(&list, "own"), ProposalState::Open);
+        assert_eq!(state(&list, "first"), ProposalState::Superseded);
+        let second = one.proposal(&id("second")).await.unwrap();
+        assert_eq!(second.change, Some(stale_of(&[run, go])));
+    }
+
+    #[tokio::test]
+    async fn a_change_of_exactly_the_most_bytes_is_checked_and_a_larger_one_refused() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let titled = |length: usize| ProposalChange::NewTask {
+            title: "x".repeat(length),
+        };
+        let overhead = serde_json::to_string(&titled(0)).unwrap().len();
+
+        let most = one
+            .propose(&proposed("p1", "mc1", titled(MAX_PROPOSAL - overhead)))
+            .await;
+        let over = one
+            .propose(&proposed("p2", "mc1", titled(MAX_PROPOSAL - overhead + 1)))
+            .await;
+
+        // The most bytes pass the size check, to be refused for their long title.
+        assert_eq!(code(&most.unwrap_err()), "proposal.invalid");
+        assert_eq!(code(&over.unwrap_err()), "proposal.too_large");
+    }
+
+    #[tokio::test]
+    async fn a_needs_update_names_some_of_the_docs_pins_and_keeps_only_findings_of_its_revision() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let text = |body: &str| {
+            let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
+            weacon_model::DocText::new(title, body.to_owned(), Some(anchors.clone())).unwrap()
+        };
+        one.add_doc(
+            &Doc::new(id("p"), text("[a](sym:a::go) [b](sym:a::run)\n")),
+            &by("m1"),
+        )
+        .await
+        .unwrap();
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+        let foreign = stale_of(&["sym:a::other#0123456789abcdef"]);
+
+        let none = one.propose(&core("none", stale_of(&[]))).await.unwrap_err();
+        let elsewhere = one.propose(&core("foreign", foreign)).await.unwrap_err();
+        one.propose(&core("first", stale_of(&[go]))).await.unwrap();
+        let revised = text("[a](sym:a::go) and [b](sym:a::run)\n");
+        one.revise_doc(&id("p"), weacon_model::Revision::new(1), revised, &by("m1"))
+            .await
+            .unwrap();
+        let ProposalChange::NeedsUpdate { anchors, .. } = stale_of(&[run]) else {
+            panic!();
+        };
+        let later = ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 2,
+            anchors,
+        };
+        one.propose(&core("second", later.clone())).await.unwrap();
+
+        assert_eq!(
+            (code(&none), code(&elsewhere)),
+            ("proposal.invalid", "proposal.invalid")
+        );
+        let second = one.proposal(&id("second")).await.unwrap();
+        assert_eq!(second.change, Some(later));
+    }
+
+    #[tokio::test]
+    async fn findings_kept_past_the_limit_are_refused_and_up_to_it_kept() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = workspaces(&dir).await;
+        let (go, run) = ("sym:a::go#0123456789abcdef", "sym:a::run#0123456789abcdef");
+        let anchors = weacon_protocol::DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![go.parse().unwrap(), run.parse().unwrap()],
+        };
+        let title = weacon_model::Title::try_from("P".to_owned()).unwrap();
+        let body = "[a](sym:a::go) [b](sym:a::run)\n".to_owned();
+        let text = weacon_model::DocText::new(title, body, Some(anchors)).unwrap();
+        one.add_doc(&Doc::new(id("p"), text), &by("m1"))
+            .await
+            .unwrap();
+        let stale = |pin: &str, bytes: usize| weacon_protocol::StaleAnchor {
+            pin: pin.parse().unwrap(),
+            change: weacon_protocol::AnchorChange::Gone {
+                was: "x".repeat(bytes),
+            },
+        };
+        let needs = |anchors| ProposalChange::NeedsUpdate {
+            doc: id("p"),
+            base: 1,
+            anchors,
+        };
+        let long = |pin: &str| needs(vec![stale(pin, MAX_PROPOSAL / 2)]);
+        let merged = needs(vec![stale(go, MAX_PROPOSAL / 2), stale(run, 0)]);
+        let room = MAX_PROPOSAL - serde_json::to_string(&merged).unwrap().len();
+        let core = |proposal: &str, change| Proposed {
+            agent: None,
+            ..proposed(proposal, "mc1", change)
+        };
+
+        one.propose(&core("first", long(go))).await.unwrap();
+        let both = one.propose(&core("second", long(run))).await.unwrap_err();
+
+        assert_eq!(code(&both), "proposal.too_large");
+        let first = one.proposal(&id("first")).await.unwrap();
+        assert_eq!(first.state, ProposalState::Open);
+        let fits = needs(vec![stale(run, room)]);
+        one.propose(&core("third", fits)).await.unwrap();
     }
 }

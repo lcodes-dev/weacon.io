@@ -31,6 +31,7 @@ mod outside;
 mod pair;
 mod picks;
 mod platform;
+mod proposals;
 mod reports;
 mod resume;
 mod runs;
@@ -44,6 +45,7 @@ mod symbols;
     expect(dead_code, reason = "the sign-in terminal, which uses it, comes next")
 )]
 mod terminal;
+mod terminals;
 #[cfg(test)]
 mod test_support;
 mod update;
@@ -110,6 +112,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
+        Command::Terminals { answer } => terminals::run(app, answer, env, &mut io::stdout().lock()),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
         Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),

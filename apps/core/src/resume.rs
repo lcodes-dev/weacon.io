@@ -8,7 +8,7 @@ use weacon_client::Connection;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
     AgentKind, AgentSession, Capability, ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind,
-    Envelope, Message, RequestId, RunState, WorkspaceId, code,
+    Code, Envelope, Message, RequestId, RunState, WorkspaceId, code,
 };
 
 use crate::app::{App, runtime};
@@ -22,7 +22,7 @@ const HOLD: u32 = 2;
 const BARRIER: u32 = 3;
 const RELEASE: u32 = 4;
 /// How long the daemon may take to answer whether it holds the chat.
-const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+const ANSWER_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Runs the chat's agent here until the person ends it.
 pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(), Fault> {
@@ -48,6 +48,7 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
                 Fault::new(code!("runs.unreadable"), "The runs journal can't be read")
                     .because(error)
             })??;
+        launch.require_sign_in().await?;
         log.info("resume started", &[]);
         launch.resume_by_hand(&session).await
     };
@@ -154,18 +155,23 @@ async fn answer(daemon: &mut Connection) -> Result<(), Fault> {
         match frame {
             Ok(Envelope {
                 id: HOLD,
-                message: Message::Error(refused),
-            }) => {
-                return Err(Fault::new(
-                    refused.code,
-                    "The daemon wouldn't hold the chat",
-                ));
-            }
+                message: Message::Error(error),
+            }) => return Err(refused(error.code)),
             Ok(Envelope { id: BARRIER, .. }) => return Ok(()),
             _ => {}
         }
     }
     Err(no_answer())
+}
+
+// Why the daemon wouldn't hold the chat, in words the person can act on.
+fn refused(code: Code) -> Fault {
+    let why = match code.as_str() {
+        "chat.busy" => "The chat's agent is running here; carry on once it sleeps",
+        "chat.held" => "Someone else carries this chat on by hand already",
+        _ => "The daemon wouldn't hold the chat",
+    };
+    Fault::new(code, why)
 }
 
 fn no_answer() -> Fault {
@@ -324,6 +330,28 @@ mod tests {
         assert!(!dir.join("work").exists());
     }
 
+    // A stand-in for Claude Code: signed in from its config folder, or not.
+    #[cfg(unix)]
+    const SIGNED_IN: &str =
+        "[ \"$1\" = auth ] && { printf '{\"authMethod\":\"claude.ai\"}'; exit 0; }";
+    #[cfg(unix)]
+    const RECORDS: &str = "printf '%s %s %s' \"$*\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > \"$0.ran\"\n";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_chat_whose_agent_isnt_signed_in_from_its_workspace_isnt_carried_on() {
+        use weacon_testing::platform::write_program;
+
+        let dir = TempDir::new().unwrap();
+        chat_left(&dir.join("state"), RunState::Sleeping, Some(SESSION));
+        let script = format!("#!/bin/sh\n[ \"$1\" = auth ] && exit 1\n{RECORDS}");
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        write_program(&dir.join("bin/claude"), &script).unwrap();
+
+        assert_eq!(code_of(resume(&dir)), "agent.signed_out");
+        assert!(!dir.join("bin/claude.ran").exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_sleeping_chat_is_carried_on_in_its_folder_with_the_workspaces_sign_in() {
@@ -334,9 +362,9 @@ mod tests {
         for state in [RunState::Sleeping, RunState::Ended] {
             let dir = TempDir::new().unwrap();
             chat_left(&dir.join("state"), state, Some(SESSION));
-            let script = "#!/bin/sh\nprintf '%s %s %s' \"$*\" \"$PWD\" \"$CLAUDE_CONFIG_DIR\" > \"$0.ran\"\n";
+            let script = format!("#!/bin/sh\n{SIGNED_IN}\n{RECORDS}");
             fs::create_dir_all(dir.join("bin")).unwrap();
-            write_program(&dir.join("bin/claude"), script).unwrap();
+            write_program(&dir.join("bin/claude"), &script).unwrap();
             resume(&dir).unwrap();
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
             let (workspace, chat) = ids();
@@ -350,7 +378,7 @@ mod tests {
             .unwrap();
             let config = dir.join("state/workspaces").join(workspace).join("claude");
             let expected = format!(
-                "--resume {SESSION} {} {}",
+                "--setting-sources user --resume {SESSION} {} {}",
                 folder.display(),
                 config.display()
             );
@@ -523,6 +551,40 @@ mod tests {
         let refused = held(&socket).await.map(|_| ());
 
         assert_eq!(code_of(refused), "chat.busy");
+    }
+
+    #[tokio::test]
+    async fn a_hold_refused_for_a_running_agent_or_another_holder_says_which() {
+        let said = [
+            (
+                "chat.busy",
+                "The chat's agent is running here; carry on once it sleeps",
+            ),
+            (
+                "chat.held",
+                "Someone else carries this chat on by hand already",
+            ),
+            ("chat.unknown", "The daemon wouldn't hold the chat"),
+        ];
+        for (code, why) in said {
+            let dir = TempDir::new().unwrap();
+            let socket = dir.join("weacon.sock");
+            let refusal = Some(Code::new(code));
+            let _received = daemon(
+                &socket,
+                Fake {
+                    refusal,
+                    ..holding()
+                },
+            );
+
+            let fault = held(&socket).await.map(|_| ()).unwrap_err();
+
+            assert_eq!(
+                (fault.code().as_str(), fault.to_string().as_str()),
+                (code, why)
+            );
+        }
     }
 
     #[tokio::test(start_paused = true)]

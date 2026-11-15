@@ -1,5 +1,5 @@
-//! The Claude Code plugin the core gives its runs: the files in `integrations/claude`, with this
-//! build's version and this program's path filled in.
+//! What the core gives its runs: the Claude Code plugin in `integrations/claude`, with this
+//! build's version and this program's path filled in, and Codex's hooks in `integrations/codex`.
 
 use std::fs;
 use std::io::{self, Read};
@@ -17,6 +17,7 @@ use crate::platform::remove_tree;
 const MANIFEST: &str = include_str!("../../../integrations/claude/.claude-plugin/plugin.json");
 const HOOKS: &str = include_str!("../../../integrations/claude/hooks/hooks.json");
 const SKILL: &str = include_str!("../../../integrations/claude/skills/weacon-map/SKILL.md");
+const CODEX_HOOKS: &str = include_str!("../../../integrations/codex/hooks.json");
 
 const COMMAND: &str = "/hooks/SessionStart/0/hooks/0/command";
 // So a program that moved or was removed still prints nothing and succeeds.
@@ -27,6 +28,7 @@ const QUIET: &str = "2>/dev/null || true";
 pub(crate) struct Plugin {
     dir: PathBuf,
     files: [(&'static str, String); 3],
+    codex: String,
     log: Logger,
     // Held through each launch, so two never clash; true once the folders beside it are swept.
     swept: Arc<Mutex<bool>>,
@@ -49,6 +51,7 @@ impl Plugin {
         log: &Logger,
     ) -> Result<Self, Fault> {
         let files = render(program, version)?;
+        let codex = hooks(CODEX_HOOKS, program)?;
         let dir = state_dir
             .join("integrations")
             .join("claude")
@@ -56,6 +59,7 @@ impl Plugin {
         Ok(Self {
             dir,
             files,
+            codex,
             log: log.clone(),
             swept: Arc::default(),
         })
@@ -78,6 +82,23 @@ impl Plugin {
         )
     }
 
+    /// Gives the Codex config folder `config` the start-of-session hook unless it has a hooks
+    /// file already. Codex runs it only once a person has reviewed it there, in Codex's `/hooks`.
+    pub(crate) fn give_codex(&self, config: &Path) {
+        let file = config.join("hooks.json");
+        // Written aside, then linked into place, which never replaces a file already there: it
+        // may be the person's own, a link, or another launch's.
+        let staged = aside(&file, "part");
+        let written = fs::write(&staged, &self.codex)
+            .and_then(|()| unless_there(fs::hard_link(&staged, &file)));
+        drop(fs::remove_file(&staged));
+        if let Err(error) = written {
+            let fault = failed().because(error);
+            self.log
+                .warn("codex hooks failed", &[("err", Field::error(&fault))]);
+        }
+    }
+
     // A folder an agent changed goes, since every later run would load it; it is renamed first
     // so that a folder that can't be removed still isn't loaded.
     fn ensure(&self) -> io::Result<PathBuf> {
@@ -93,23 +114,36 @@ impl Plugin {
     }
 }
 
+// A file already there is kept, so that is no error.
+fn unless_there(linked: io::Result<()>) -> io::Result<()> {
+    match linked {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(()),
+    }
+}
+
 fn logged<T>(log: &Logger, made: Result<T, Fault>) -> Option<T> {
     made.inspect_err(|fault| log.warn("plugin failed", &[("err", Field::error(fault))]))
         .ok()
 }
 
 fn render(program: &Path, version: &Version) -> Result<[(&'static str, String); 3], Fault> {
-    let program = program.to_str().ok_or_else(failed)?;
     let mut manifest: Value = serde_json::from_str(MANIFEST).map_err(|_| failed())?;
     *manifest.get_mut("version").ok_or_else(failed)? = version.version.into();
-    let mut hooks: Value = serde_json::from_str(HOOKS).map_err(|_| failed())?;
-    *hooks.pointer_mut(COMMAND).ok_or_else(failed)? =
-        format!("{} hook session-start {QUIET}", quoted(program)).into();
     Ok([
         (".claude-plugin/plugin.json", manifest.to_string()),
-        ("hooks/hooks.json", hooks.to_string()),
+        ("hooks/hooks.json", hooks(HOOKS, program)?),
         ("skills/weacon-map/SKILL.md", SKILL.to_owned()),
     ])
+}
+
+// `file`, a hooks file of either agent, with its session-start command running `program`.
+fn hooks(file: &str, program: &Path) -> Result<String, Fault> {
+    let program = program.to_str().ok_or_else(failed)?;
+    let mut hooks: Value = serde_json::from_str(file).map_err(|_| failed())?;
+    *hooks.pointer_mut(COMMAND).ok_or_else(failed)? =
+        format!("{} hook session-start {QUIET}", quoted(program)).into();
+    Ok(hooks.to_string())
 }
 
 // Claude Code runs a hook's command in a POSIX shell, on Windows too.
@@ -281,6 +315,48 @@ mod tests {
         assert_eq!(skill, SKILL);
         let manifest = dir.join(".claude-plugin/plugin.json");
         assert!(fs::metadata(manifest).unwrap().permissions().readonly());
+    }
+
+    #[test]
+    fn only_a_file_already_there_is_no_error() {
+        let kind = |kind| unless_there(Err(io::Error::from(kind))).map_err(|error| error.kind());
+
+        assert_eq!(unless_there(Ok(())).map_err(|error| error.kind()), Ok(()));
+        assert_eq!(kind(io::ErrorKind::AlreadyExists), Ok(()));
+        assert_eq!(
+            kind(io::ErrorKind::Unsupported),
+            Err(io::ErrorKind::Unsupported)
+        );
+    }
+
+    #[test]
+    fn a_codex_folder_gets_the_hook_once_and_keeps_a_file_already_there() {
+        let temp = TempDir::new().unwrap();
+        let (log, records) = recording_logger();
+        let plugin = Plugin::at(&temp, Path::new("/opt/weacon"), &VERSION, &log).unwrap();
+        let (fresh, own, missing) = (temp.join("fresh"), temp.join("own"), temp.join("missing"));
+        fs::create_dir_all(&fresh).unwrap();
+        fs::create_dir_all(&own).unwrap();
+        fs::write(own.join("hooks.json"), "{}").unwrap();
+
+        plugin.give_codex(&fresh);
+        plugin.give_codex(&own);
+
+        let hooks = json(&fresh, "hooks.json");
+        assert_eq!(
+            hooks.pointer(COMMAND).unwrap(),
+            "'/opt/weacon' hook session-start 2>/dev/null || true"
+        );
+        let shipped: Value = serde_json::from_str(CODEX_HOOKS).unwrap();
+        assert_eq!(hooks["description"], shipped["description"]);
+        assert_eq!(fs::read_to_string(own.join("hooks.json")).unwrap(), "{}");
+        // Nothing set aside is left beside either.
+        for folder in [&fresh, &own] {
+            assert_eq!(fs::read_dir(folder).unwrap().count(), 1);
+        }
+        assert!(messages(&records).is_empty());
+        plugin.give_codex(&missing);
+        assert_eq!(messages(&records), ["codex hooks failed"]);
     }
 
     #[cfg(unix)]

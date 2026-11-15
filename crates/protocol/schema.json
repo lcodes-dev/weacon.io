@@ -387,6 +387,32 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "proposal_query"
+        }
+      },
+      "$ref": "#/$defs/ProposalQuery",
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "proposal_answer"
+        }
+      },
+      "$ref": "#/$defs/ProposalAnswer",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -563,6 +589,47 @@
         "state"
       ]
     },
+    "AnchorChange": {
+      "description": "What a move did to an anchor's code, each item described in a line such as\n`fn a::run  a/src/lib.rs:3`.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "changed"
+            },
+            "now": {
+              "type": "string"
+            },
+            "was": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "was",
+            "now"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "gone"
+            },
+            "was": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "was"
+          ]
+        }
+      ]
+    },
     "App": {
       "description": "A program, such as `weacon-core`, and the exact build it is.",
       "type": "object",
@@ -638,6 +705,22 @@
             "owner"
           ]
         }
+      ]
+    },
+    "Batched": {
+      "description": "One proposal of a [`ProposalAction::Batch`].",
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/ProposalChange"
+        },
+        "proposal": {
+          "$ref": "#/$defs/ProposalId"
+        }
+      },
+      "required": [
+        "proposal",
+        "change"
       ]
     },
     "BuildTarget": {
@@ -2540,6 +2623,28 @@
         "html"
       ]
     },
+    "PinnedDoc": {
+      "description": "A doc's anchors at its revision `version`.",
+      "type": "object",
+      "properties": {
+        "anchors": {
+          "$ref": "#/$defs/DocAnchors"
+        },
+        "id": {
+          "$ref": "#/$defs/DocId"
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "anchors"
+      ]
+    },
     "ProposalAbout": {
       "description": "The doc or task a proposal is about; a new one has the id it gets once accepted.",
       "oneOf": [
@@ -2652,6 +2757,102 @@
             "kind",
             "proposal"
           ]
+        },
+        {
+          "description": "Proposes `proposals` together, as the core's own for its owner rather than an agent's:\nwhat one move of the code did to one doc's anchors. All are stored, or none is.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "batch"
+            },
+            "proposals": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Batched"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "proposals"
+          ]
+        }
+      ]
+    },
+    "ProposalAnswer": {
+      "description": "The server's answer to a [`ProposalQuery`], under its `request`.",
+      "type": "object",
+      "properties": {
+        "answer": {
+          "$ref": "#/$defs/ProposalAnswerKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        }
+      },
+      "required": [
+        "request",
+        "answer"
+      ]
+    },
+    "ProposalAnswerKind": {
+      "oneOf": [
+        {
+          "description": "Docs that pin code, by id; `more` when others follow the last.",
+          "type": "object",
+          "properties": {
+            "docs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PinnedDoc"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "pinned"
+            },
+            "more": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "docs",
+            "more"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocRecord"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/Code"
+            },
+            "kind": {
+              "type": "string",
+              "const": "failed"
+            }
+          },
+          "required": [
+            "kind",
+            "code"
+          ]
         }
       ]
     },
@@ -2747,6 +2948,36 @@
           "required": [
             "kind",
             "title"
+          ]
+        },
+        {
+          "description": "The code that some of the doc's anchors pin changed or went, as of its revision `base`,\nso its text may need an update; accepting it changes nothing but says a person saw it.",
+          "type": "object",
+          "properties": {
+            "anchors": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/StaleAnchor"
+              }
+            },
+            "base": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "needs_update"
+            }
+          },
+          "required": [
+            "kind",
+            "doc",
+            "base",
+            "anchors"
           ]
         }
       ]
@@ -2884,6 +3115,63 @@
           "required": [
             "outcome",
             "edits"
+          ]
+        }
+      ]
+    },
+    "ProposalQuery": {
+      "description": "What a core asks a server that offers `workspace.proposals` about its owner's workspace,\nto propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].",
+      "type": "object",
+      "properties": {
+        "query": {
+          "$ref": "#/$defs/ProposalQueryKind"
+        },
+        "request": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "request",
+        "workspace",
+        "query"
+      ]
+    },
+    "ProposalQueryKind": {
+      "oneOf": [
+        {
+          "description": "The docs that pin code, by id, from the first after `after`.",
+          "type": "object",
+          "properties": {
+            "after": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "pinned"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "One doc as it is now, or as the core's own open re-anchor of its revision would make it.",
+          "type": "object",
+          "properties": {
+            "doc": {
+              "$ref": "#/$defs/DocId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "doc"
+            }
+          },
+          "required": [
+            "kind",
+            "doc"
           ]
         }
       ]
@@ -3791,6 +4079,23 @@
       "required": [
         "text",
         "marks"
+      ]
+    },
+    "StaleAnchor": {
+      "description": "An anchor of a doc whose code a move changed.",
+      "type": "object",
+      "properties": {
+        "change": {
+          "$ref": "#/$defs/AnchorChange"
+        },
+        "pin": {
+          "description": "The pin as the doc has it.",
+          "$ref": "#/$defs/DocPin"
+        }
+      },
+      "required": [
+        "pin",
+        "change"
       ]
     },
     "Symbol": {

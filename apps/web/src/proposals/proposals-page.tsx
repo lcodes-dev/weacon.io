@@ -10,7 +10,7 @@ import { useReloadOn } from "../shell/feed-hooks.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { DiffLines } from "../diff/diff-lines.tsx";
 import "./proposals.css";
-import { aboutText, conflictText, pinChanges, stateText, taskEditText } from "./proposals.ts";
+import { aboutText, askText, conflictText, pinChanges, staleText, stateText, taskEditText } from "./proposals.ts";
 
 type Props = { api: Api; workspace: WorkspaceId; socket: WorkspaceSocket; names: Names };
 
@@ -102,6 +102,17 @@ function Changes({ api, workspace, change, tasks }: { api: Api; workspace: Works
         <>
           <DiffLines before="" after={change.content.body} label="Its text" />
           <Pins before={undefined} after={change.content.anchors} />
+        </>
+      );
+    case "needs_update":
+      return (
+        <>
+          <ul className="edits" aria-label="What changed">
+            {change.anchors.map((anchor, at) => (
+              <li key={at}>{staleText(anchor)}</li>
+            ))}
+          </ul>
+          <p className="muted">{askText(change)}</p>
         </>
       );
     default:
