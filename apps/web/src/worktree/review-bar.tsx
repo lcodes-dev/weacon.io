@@ -1,5 +1,3 @@
-import { useState } from "react";
-
 import type { useWorktree } from "./use-worktree.ts";
 import { busy, removeQuestion, stateLine } from "./worktree.ts";
 import "./worktree.css";
@@ -9,8 +7,8 @@ import "./worktree.css";
  * remove it to the Trash after saying what goes, restore it, and open a terminal where the core can.
  */
 export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>; title: string }) {
-  const [drafting, setDrafting] = useState(false);
-  const { worktree, terminals } = bar;
+  const { worktree, terminals, draft } = bar;
+  const drafting = draft !== undefined;
   const { standing, confirming, outcome } = worktree;
   const waiting = busy(worktree);
   const present = standing.kind === "state" && !standing.removed;
@@ -23,7 +21,7 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
           <div className="actions">
             {present && (
               <>
-                <button type="button" disabled={waiting} onClick={() => setDrafting(true)}>
+                <button type="button" disabled={waiting} onClick={() => bar.editDraft({ title, body: "" })}>
                   Open pull request
                 </button>
                 <button type="button" disabled={waiting} onClick={bar.remove}>
@@ -60,15 +58,8 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
           </button>
         </div>
       )}
-      {drafting && (
-        <PullRequestForm
-          title={title}
-          open={(chosen, body) => {
-            setDrafting(false);
-            bar.openPullRequest(chosen, body);
-          }}
-          cancel={() => setDrafting(false)}
-        />
+      {draft !== undefined && (
+        <PullRequestForm draft={draft} edit={bar.editDraft} waiting={waiting} open={bar.openPullRequest} cancel={() => bar.editDraft(undefined)} />
       )}
       {outcome?.kind === "link" && (
         <p>
@@ -84,26 +75,37 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
   );
 }
 
-function PullRequestForm({ title, open, cancel }: { title: string; open: (title: string, body: string) => void; cancel: () => void }) {
-  const [chosen, setChosen] = useState(title);
-  const [body, setBody] = useState("");
+// The draft stays, as typed, until the core opens the pull request or the person cancels.
+function PullRequestForm({
+  draft,
+  edit,
+  waiting,
+  open,
+  cancel,
+}: {
+  draft: { title: string; body: string };
+  edit: (draft: { title: string; body: string }) => void;
+  waiting: boolean;
+  open: () => void;
+  cancel: () => void;
+}) {
   return (
     <form
       className="pull-request"
       onSubmit={(event) => {
         event.preventDefault();
-        open(chosen.trim(), body);
+        open();
       }}
     >
       <label>
         Title
-        <input value={chosen} onChange={(event) => setChosen(event.target.value)} />
+        <input value={draft.title} onChange={(event) => edit({ ...draft, title: event.target.value })} />
       </label>
       <label>
         Description
-        <textarea value={body} onChange={(event) => setBody(event.target.value)} />
+        <textarea value={draft.body} onChange={(event) => edit({ ...draft, body: event.target.value })} />
       </label>
-      <button type="submit" disabled={chosen.trim() === ""}>
+      <button type="submit" disabled={waiting || draft.title.trim() === ""}>
         Open draft pull request
       </button>
       <button type="button" onClick={cancel}>
