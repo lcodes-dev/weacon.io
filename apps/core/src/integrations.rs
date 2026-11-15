@@ -319,11 +319,14 @@ mod tests {
 
     #[test]
     fn only_a_file_already_there_is_no_error() {
-        let error = |kind| Err(io::Error::from(kind));
+        let kind = |kind| unless_there(Err(io::Error::from(kind))).map_err(|error| error.kind());
 
-        assert!(unless_there(Ok(())).is_ok());
-        assert!(unless_there(error(io::ErrorKind::AlreadyExists)).is_ok());
-        assert!(unless_there(error(io::ErrorKind::Unsupported)).is_err());
+        assert_eq!(unless_there(Ok(())).map_err(|error| error.kind()), Ok(()));
+        assert_eq!(kind(io::ErrorKind::AlreadyExists), Ok(()));
+        assert_eq!(
+            kind(io::ErrorKind::Unsupported),
+            Err(io::ErrorKind::Unsupported)
+        );
     }
 
     #[test]
