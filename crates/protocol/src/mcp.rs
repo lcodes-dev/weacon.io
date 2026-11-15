@@ -19,6 +19,8 @@ pub enum McpCall {
     DocsFor(SymbolArgs),
     /// The items and docs that match some words.
     Search(SearchArgs),
+    /// The files that change often and that much depends on.
+    Hotspots(MapArgs),
     /// A tool this build doesn't offer; only ever received.
     #[serde(other, skip_serializing)]
     Newer,
@@ -30,6 +32,7 @@ impl McpCall {
     pub const FLOW: &str = "flow";
     pub const DOCS_FOR: &str = "docs_for";
     pub const SEARCH: &str = "search";
+    pub const HOTSPOTS: &str = "hotspots";
 
     /// The tool's name, as `parse` takes it; none for a tool this build doesn't offer.
     #[must_use]
@@ -40,6 +43,7 @@ impl McpCall {
             Self::Flow(_) => Some(Self::FLOW),
             Self::DocsFor(_) => Some(Self::DOCS_FOR),
             Self::Search(_) => Some(Self::SEARCH),
+            Self::Hotspots(_) => Some(Self::HOTSPOTS),
             Self::Newer => None,
         }
     }
@@ -55,7 +59,7 @@ impl McpCall {
     }
 }
 
-/// From a run's agent, under `McpCall::Map`: how much of the map it wants.
+/// From a run's agent, under `McpCall::Map` or `McpCall::Hotspots`: how much of the map it wants.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 pub struct MapArgs {
     /// The most bytes the answer may hold; the core clamps it to its own bounds.
@@ -133,6 +137,7 @@ mod tests {
             (McpCall::FLOW, json!({})),
             (McpCall::DOCS_FOR, json!({"path": "a::b"})),
             (McpCall::SEARCH, json!({"words": "a b"})),
+            (McpCall::HOTSPOTS, json!({"budget": 2000})),
         ] {
             assert_eq!(call(name, arguments).unwrap().name(), Some(name));
         }

@@ -1,7 +1,7 @@
 //! What agents' hooks print. A hook that can't answer in time prints nothing and succeeds, so
 //! it never stops an agent.
 
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,8 +19,18 @@ const LIMIT: Duration = Duration::from_secs(5);
 
 /// Prints what `command`'s hook adds for the current folder, or nothing.
 pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Ending {
+    run_in(app, command, std::env::current_dir(), out)
+}
+
+/// Prints what `command`'s hook adds for `folder`, or nothing when it can't be found.
+fn run_in(
+    app: &App,
+    command: HookCommand,
+    folder: io::Result<PathBuf>,
+    out: &mut impl Write,
+) -> Ending {
     let HookCommand::SessionStart = command;
-    let printed = std::env::current_dir()
+    let printed = folder
         .map_err(|error| skipped().because(error))
         .and_then(session_start)
         .and_then(|text| {
@@ -121,14 +131,26 @@ mod tests {
     }
 
     #[test]
-    fn the_hook_prints_the_current_folders_map_and_always_succeeds() {
+    fn the_hook_prints_its_folders_map_and_always_succeeds() {
+        let dir = TempDir::new().unwrap();
+        repository(&dir.join("a"), "marker_item_1");
         let app = app(None, None);
-        let mut out = Vec::new();
+        let printed = |folder: io::Result<PathBuf>| {
+            let mut out = Vec::new();
+            let ending = run_in(&app, HookCommand::SessionStart, folder, &mut out);
+            (ending, String::from_utf8(out).unwrap())
+        };
 
-        let ending = run(&app, HookCommand::SessionStart, &mut out);
-
+        let (ending, map) = printed(Ok(dir.to_path_buf()));
         assert_eq!(ending, Ending::Done);
-        assert!(!out.is_empty() && out.len() <= 4000, "{}", out.len());
+        assert!(map.contains("marker_item_1") && map.len() <= 4000, "{map}");
+        let empty = TempDir::new().unwrap();
+        assert_eq!(
+            printed(Ok(empty.to_path_buf())),
+            (Ending::Done, String::new())
+        );
+        let unknown = Err(io::ErrorKind::NotFound.into());
+        assert_eq!(printed(unknown), (Ending::Done, String::new()));
     }
 
     #[test]

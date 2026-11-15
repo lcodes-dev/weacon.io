@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use clap::error::ErrorKind;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
@@ -189,12 +189,30 @@ pub(crate) enum MapSubcommand {
         #[arg(required = true)]
         words: Vec<String>,
     },
+    /// Print the text the MCP's `hotspots` tool answers: the files that change often and that
+    /// much depends on.
+    Hotspots,
     /// Print the areas of the code and how they depend on one another.
     Architecture,
     /// Print the commands, routes and other contracts the code declares.
-    Contracts,
+    Contracts {
+        /// Only the contracts of this kind.
+        #[arg(long)]
+        kind: Option<ContractFilter>,
+    },
     /// Read pinned anchors on stdin, one per line, and print those that no longer match.
     CheckAnchors,
+}
+
+/// A kind of contract `map contracts` can be limited to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ContractFilter {
+    Command,
+    Code,
+    Route,
+    Serde,
+    Table,
+    McpTool,
 }
 
 impl Cli {
@@ -396,8 +414,9 @@ mod tests {
 
         for (name, view) in [
             ("flows", MapSubcommand::Flows),
+            ("hotspots", MapSubcommand::Hotspots),
             ("architecture", MapSubcommand::Architecture),
-            ("contracts", MapSubcommand::Contracts),
+            ("contracts", MapSubcommand::Contracts { kind: None }),
         ] {
             let Some(Cli {
                 command: Command::Map(map),
@@ -408,7 +427,16 @@ mod tests {
             };
             assert_eq!((map.command, map.budget), (Some(view), Some(2000)));
         }
-        assert!(map(&["hotspots"]).is_none());
+        let Some(Cli {
+            command: Command::Map(tools),
+            ..
+        }) = map(&["contracts", "--kind", "mcp-tool"])
+        else {
+            panic!("contracts --kind")
+        };
+        let kind = Some(ContractFilter::McpTool);
+        assert_eq!(tools.command, Some(MapSubcommand::Contracts { kind }));
+        assert!(map(&["contracts", "--kind", "tool"]).is_none());
     }
 
     #[test]

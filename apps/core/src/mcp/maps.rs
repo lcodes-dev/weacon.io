@@ -18,7 +18,7 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{McpCall, RepoId, WorkspaceId, code};
 
 use super::grants::{Grant, Grants};
-use super::tools::{NO_MAP, answer_from, budget, found};
+use super::tools::{CHURN_COMMITS, NO_MAP, answer_from, budget, found};
 use crate::app::WarnOnce;
 use crate::chats::Places;
 use crate::codemap::{Repo, Watch, locate, off_runtime, repo_map, watch, worktree_index};
@@ -220,8 +220,9 @@ impl Stores {
         Ok(found)
     }
 
-    /// The answer to `call` from the map of `folder`, or none when it isn't in a repository
-    /// `workspace` registered; a search looks through the worktree's stored layer.
+    /// The answer to `call` from the map of `folder`, with the churn of its worktree for
+    /// `hotspots`; none when [`Self::index`] finds no map. A search looks through the
+    /// worktree's stored layer.
     async fn answer(
         &self,
         call: &McpCall,
@@ -231,17 +232,23 @@ impl Stores {
         let Some((watched, index)) = self.index(workspace, folder).await? else {
             return Ok(None);
         };
-        let McpCall::Search(args) = call else {
-            return Ok(Some(answer_from(call, &index)));
+        if let McpCall::Search(args) = call {
+            let store = self.db.workspace(&watched.workspace);
+            let map = repo_map(&store, &self.git, watched.main);
+            let hits = map.search(Some(&watched.worktree), &args.words, Looking::Everything);
+            return Ok(Some(found(&hits.await?, budget(args.budget))));
+        }
+        let churn = if matches!(call, McpCall::Hotspots(_)) {
+            let (git, worktree) = (self.git.clone(), watched.worktree);
+            off_runtime(move || git.churn(&worktree, CHURN_COMMITS)).await?
+        } else {
+            Vec::new()
         };
-        let store = self.db.workspace(&watched.workspace);
-        let map = repo_map(&store, &self.git, watched.main);
-        let hits = map.search(Some(&watched.worktree), &args.words, Looking::Everything);
-        Ok(Some(found(&hits.await?, budget(args.budget))))
+        Ok(Some(answer_from(call, &index, &churn)))
     }
 
     /// The index of `folder` and its worktree, or none when it isn't in a repository
-    /// `workspace` registered: its watch's when it has one, else read now, which stores it.
+    /// `workspace` registered: its watch's index when it has one, else read now, which stores it.
     async fn index(
         &self,
         workspace: WorkspaceId,
@@ -406,6 +413,39 @@ mod tests {
 
         assert!(answer.contains("fn marker::run"), "{answer}");
         assert!(setup.stored(&one, &main).await);
+        assert!(records.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn hotspots_count_the_commits_of_the_runs_own_worktree_from_its_root() {
+        let dir = TempDir::new().unwrap();
+        let setup = setup(&dir).await;
+        let one = workspace("one");
+        let main = crate_repo(&dir, "marker");
+        setup.register(&one, "site", &main);
+        let chat = dir.join("chat");
+        let add = [
+            "worktree",
+            "add",
+            "--quiet",
+            "-b",
+            "chat",
+            chat.to_str().unwrap(),
+        ];
+        fixture(&dir, &main, &add);
+        fs::write(chat.join("src/lib.rs"), "pub fn run() { }\n").unwrap();
+        fixture(&dir, &chat, &["commit", "--quiet", "--all", "-m", "Change"]);
+        let (log, records) = recording_logger();
+        let hotspots = McpCall::Hotspots(MapArgs::default());
+        let ask = async |folder: &Path| {
+            let grant = grant(&one, folder);
+            setup.maps.answer(&hotspots, &grant, permit(), &log).await
+        };
+
+        let title = "Hotspots: files that change often and that much depends on.\n";
+        let line = |commits| format!("{title}- src/lib.rs  {commits} commits, 0 edges in\n");
+        assert_eq!(ask(&chat.join("src")).await, line(2));
+        assert_eq!(ask(&main).await, line(1));
         assert!(records.lock().unwrap().is_empty());
     }
 
