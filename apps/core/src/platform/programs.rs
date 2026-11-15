@@ -25,12 +25,13 @@ pub(crate) fn plant_link(target: &std::path::Path, link: &std::path::Path) -> bo
     made.is_ok()
 }
 
-/// Writes an empty program `name` into `dir`, with Unix permissions `mode`.
+/// Writes a program `name` into `dir` that can't run, with Unix permissions `mode`.
 #[cfg(test)]
 pub(crate) fn plant_program(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
     let file = dir.join(format!("{name}{FILE_ENDING}"));
     std::fs::create_dir_all(dir).unwrap();
-    std::fs::write(&file, "").unwrap();
+    // An empty file would run on macOS, as an empty shell script; a missing interpreter can't.
+    std::fs::write(&file, "#!/weacon-missing-interpreter\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

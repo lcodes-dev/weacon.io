@@ -371,10 +371,13 @@ mod tests {
             let ran = fs::read_to_string(dir.join("bin/claude.ran")).unwrap();
             let (workspace, chat) = ids();
             let workspace = crate::workspaces::folder_name(&workspace);
-            let folder = dir
-                .join("work")
-                .join(&workspace)
-                .join(chats::file_stem(&chat));
+            // The shell's $PWD has no links in it: macOS's temporary folder is one.
+            let folder = fs::canonicalize(
+                dir.join("work")
+                    .join(&workspace)
+                    .join(chats::file_stem(&chat)),
+            )
+            .unwrap();
             let config = dir.join("state/workspaces").join(workspace).join("claude");
             let expected = format!(
                 "--setting-sources user --resume {SESSION} {} {}",

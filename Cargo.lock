@@ -2633,8 +2633,10 @@ name = "weacon-testing"
 version = "0.0.0"
 dependencies = [
  "futures-util",
+ "rcgen",
  "serde_json",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "weacon-model",
  "weacon-observability",
