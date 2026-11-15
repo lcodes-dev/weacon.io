@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
-import { newRequestId } from "../ids.ts";
+import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./changes.ts";
@@ -28,7 +28,7 @@ export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, 
   const askable = chatRef !== undefined && live && offered;
   useEffect(() => {
     if (shown && askable && needsAsking(changes)) {
-      const { query, changes: asked } = ask(link.nextId(), newRequestId(), chatRef.workspace, chatRef.chat, changes);
+      const { query, changes: asked } = ask(link.nextId(), newId(), chatRef.workspace, chatRef.chat, changes);
       setChanges(asked);
       link.send(query);
     }
