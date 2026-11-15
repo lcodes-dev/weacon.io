@@ -20,14 +20,16 @@ pub(crate) fn send_all(
     machine: &MachineId,
     messages: Vec<Message>,
 ) -> Result<(), Fault> {
-    let envelopes = messages
-        .into_iter()
-        .map(|message| envelope(shared, machine, message));
-    let serve = Capability::new(SERVE);
-    shared
-        .links
-        .send_all(machine, &serve, envelopes.collect())
-        .map_err(|_| offline())
+    let sender = shared.links.sender(machine, &Capability::new(SERVE));
+    let sender = sender.and_then(|to| to.upgrade()).ok_or_else(offline)?;
+    // Room first, so a command is remembered as sent only once it is.
+    let permits = sender
+        .try_reserve_many(messages.len())
+        .map_err(|_| offline())?;
+    for (permit, message) in permits.zip(messages) {
+        permit.send(envelope(shared, machine, message));
+    }
+    Ok(())
 }
 
 /// One connection of a machine whose core serves chats, kept apart from any newer one.
@@ -50,11 +52,12 @@ impl Route {
     /// sockets' timing allows; refuses with `machine.offline` when it has ended or has no room.
     pub(crate) async fn deliver(&self, shared: &Shared, message: Message) -> Result<(), Fault> {
         let sender = self.to.upgrade().ok_or_else(offline)?;
-        let envelope = envelope(shared, &self.machine, message);
-        match timeout(shared.sockets.room_within, sender.send(envelope)).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(_)) | Err(_) => Err(offline()),
-        }
+        let room = timeout(shared.sockets.room_within, sender.reserve()).await;
+        let Ok(Ok(permit)) = room else {
+            return Err(offline());
+        };
+        permit.send(envelope(shared, &self.machine, message));
+        Ok(())
     }
 
     pub(crate) const fn machine(&self) -> &MachineId {

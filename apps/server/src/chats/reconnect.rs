@@ -171,7 +171,10 @@ async fn send_first(
     first: OpenRequest,
 ) -> Result<(), Fault> {
     let request = first.command.request.clone();
-    workspace.mark_sent(&request, true).await?;
+    // Claimed first; one its chat's sender forgot meanwhile is never sent.
+    if !workspace.claim(&request).await? {
+        return Ok(());
+    }
     let sent = route
         .deliver(shared, Message::ChatCommand(first.command))
         .await;
@@ -683,6 +686,54 @@ mod tests {
         workspace.forget_request(&id("r-c-2")).await.unwrap();
         assert!(workspace.has_request(&id("r-c-2")).await.unwrap());
         assert_eq!(sent(&mut attached), [resent("c-2")]);
+    }
+
+    #[tokio::test]
+    async fn a_resend_with_no_room_leaves_the_last_send_the_one_whose_answer_counts() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        link::send_all(shared, &ada.machine, vec![resent("c-1")]).unwrap();
+        let first = tokio::time::timeout(crate::test_support::PATIENCE, attached.incoming.recv());
+        let first = first.await.unwrap().unwrap();
+        let queued = (0..crate::links::QUEUE).map(|_| follow_query("c-9"));
+        link::send_all(shared, &ada.machine, queued.collect()).unwrap();
+        let route = Route::open_now(shared, &ada.machine).unwrap();
+
+        route.deliver(shared, resent("c-1")).await.unwrap_err();
+
+        assert!(
+            shared
+                .chats
+                .sent
+                .answered(&ada.machine, first.id)
+                .unwrap()
+                .current
+        );
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_forgotten_while_it_was_picked_up_is_never_sent() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        let workspace = &ada.member.workspace;
+        begin(workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.move_chats_to(&ada.machine).await;
+        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let route = Route::open_now(shared, &ada.machine).unwrap();
+        let first = workspace
+            .open_requests(&id("c-1"))
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        workspace.forget_chat(&id("c-1")).await.unwrap();
+        send_first(shared, workspace, &route, first).await.unwrap();
+
+        assert!(sent(&mut attached).is_empty());
     }
 
     #[tokio::test]

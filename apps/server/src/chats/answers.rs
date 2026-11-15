@@ -35,7 +35,7 @@ pub(crate) struct Asked {
     workspace: WorkspaceId,
     chat: ChatId,
     request: RequestId,
-    current: bool,
+    pub(super) current: bool,
 }
 
 impl Sent {
@@ -74,6 +74,9 @@ impl Sent {
         kept.order.retain(|each| *each != key);
         let request = (asked.workspace.clone(), asked.request.clone());
         asked.current = kept.latest.get(&request) == Some(&id);
+        if asked.current {
+            kept.latest.remove(&request);
+        }
         Some(asked)
     }
 }
@@ -198,6 +201,8 @@ mod tests {
         assert!(open.iter().all(|request| !request.refused), "{open:?}");
         let newer = sent.answered(&machine, 8).unwrap();
         assert!(newer.current);
+        // Answered, the request is let go of.
+        assert!(sent.kept.lock().unwrap().latest.is_empty());
         take(shared, &machine, newer, for_now()).await.unwrap_err();
     }
 
