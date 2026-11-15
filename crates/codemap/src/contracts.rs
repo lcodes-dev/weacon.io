@@ -319,10 +319,10 @@ mod tests {
     #[test]
     fn finds_mcp_tools_by_their_literal_names() {
         let lib = "fn list() -> [Tool; 6] { [Tool::new(\"search\", \"Finds\", schema()),\n\
-                   rmcp::model::Tool::new(\"fetch\", d, s), Tool::new(NAME, d, s), Other::new(\"x\"),\n\
+                   rmcp::model::Tool::new(r\"fetch\", d, s), Tool::new(NAME, d, s), Other::new(\"x\"),\n\
                    Tool::open(\"y\"), new(\"z\")] }\n\
                    struct Server;\nimpl Server {\n\
-                   #[tool(description = \"Adds\", name = \"sum\")]\nasync fn add(&self) {}\n\
+                   #[tool(description = \"Adds\", name = r#\"sum\"#)]\nasync fn add(&self) {}\n\
                    #[rmcp::tool(description = \"Echoes\", annotations(name = \"inner\"))]\n\
                    /// Says it again.\nfn echo(&self) {}\n\
                    #[tool]\nfn ping(&self) {}\n#[tooling]\nfn not_a_tool(&self) {} }\n\

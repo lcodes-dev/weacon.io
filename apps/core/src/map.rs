@@ -4,13 +4,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use weacon_appkit::Ending;
-use weacon_codemap::{Churn, ContractKind, Index, SourceFile, index};
+use weacon_codemap::{ContractKind, Index, SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, code};
 
 use crate::app::App;
 use crate::cli::{ContractFilter, MapCommand, MapSubcommand};
-use crate::codemap::{LARGEST, churn, index_failed, read_failed};
+use crate::codemap::{LARGEST, index_failed, read_failed};
 use crate::git::Git;
 use crate::mcp::tools;
 
@@ -51,8 +51,9 @@ pub(crate) fn run(
 /// What the MCP's `hotspots` tool answers for `root`, weighed by the churn git counts there.
 fn hotspots(app: &App, budget: Option<u32>, root: &Path) -> Result<String, Fault> {
     let git = Git::open(app.state_dir()?, app.path.as_deref())?;
-    let churn = churn(&git, root)?;
-    with_churn(&McpCall::Hotspots(MapArgs { budget }), root, &churn)
+    let churn = git.churn(root, tools::CHURN_COMMITS)?;
+    let call = McpCall::Hotspots(MapArgs { budget });
+    index_folder(root).map(|(map, _)| tools::answer_from(&call, &map, &churn))
 }
 
 const fn contract_kind(filter: ContractFilter) -> ContractKind {
@@ -115,12 +116,7 @@ fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
 
 /// What the MCP's tool answers to `call` from the code in `folder`, read now; it blocks.
 fn answer(call: &McpCall, folder: &Path) -> Result<String, Fault> {
-    with_churn(call, folder, &[])
-}
-
-/// [`answer`], weighing `churn` for `hotspots`.
-fn with_churn(call: &McpCall, folder: &Path, churn: &[Churn]) -> Result<String, Fault> {
-    index_folder(folder).map(|(map, _)| tools::answer_from(call, &map, churn))
+    index_folder(folder).map(|(map, _)| tools::answer_from(call, &map, &[]))
 }
 
 /// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
@@ -414,46 +410,50 @@ mod tests {
 
     #[test]
     fn contracts_can_be_limited_to_one_kind() {
+        let lib = "#[derive(Serialize)]\npub struct Reply;\n#[tool]\nfn search() {}\n\
+                   fn fail() { code!(\"store.full\"); }\n\
+                   fn router() { r.route(\"/version\", get(v)); }\n\
+                   #[derive(Subcommand)]\nenum Command { Daemon }\n\
+                   const SQL: &str = \"CREATE TABLE notes (id INTEGER)\";\n";
         let root = repo(&[
             ("Cargo.toml", "[package]\nname = \"a\"\n"),
-            (
-                "src/lib.rs",
-                "#[derive(Serialize)]\npub struct Reply;\n#[tool]\nfn search() {}\n",
-            ),
+            ("src/lib.rs", lib),
         ]);
         let kinds = [
             (
                 ContractFilter::McpTool,
-                "- mcp tool search  a::search  src/lib.rs:3\n",
+                "mcp tool search  a::search  src/lib.rs:3",
             ),
             (
                 ContractFilter::Serde,
-                "- serde a::Reply  a::Reply  src/lib.rs:2\n",
+                "serde a::Reply  a::Reply  src/lib.rs:2",
             ),
-            (ContractFilter::Table, "No contracts.\n"),
+            (
+                ContractFilter::Code,
+                "code store.full  a::fail  src/lib.rs:5",
+            ),
+            (
+                ContractFilter::Route,
+                "route GET /version  a::router  src/lib.rs:6",
+            ),
+            (
+                ContractFilter::Command,
+                "command daemon  a::Command  src/lib.rs:8",
+            ),
+            (ContractFilter::Table, "table notes  a::SQL  src/lib.rs:9"),
         ];
         for (kind, listed) in kinds {
             let view = MapSubcommand::Contracts { kind: Some(kind) };
-            assert_eq!(printed(&root, Some(view), None), listed);
+            assert_eq!(printed(&root, Some(view), None), format!("- {listed}\n"));
         }
-        let all = [
-            ContractFilter::Command,
-            ContractFilter::Code,
-            ContractFilter::Route,
-            ContractFilter::Serde,
-            ContractFilter::Table,
-            ContractFilter::McpTool,
-        ];
-        let kinds = all.map(contract_kind);
-        let expected = [
-            ContractKind::Command,
-            ContractKind::ErrorCode,
-            ContractKind::Route,
-            ContractKind::Serde,
-            ContractKind::Table,
-            ContractKind::McpTool,
-        ];
-        assert_eq!(kinds, expected);
+        let none = repo(&[
+            ("Cargo.toml", "[package]\nname = \"a\"\n"),
+            ("src/lib.rs", "fn a() {}\n"),
+        ]);
+        let tools = MapSubcommand::Contracts {
+            kind: Some(ContractFilter::McpTool),
+        };
+        assert_eq!(printed(&none, Some(tools), None), "No contracts.\n");
     }
 
     #[test]

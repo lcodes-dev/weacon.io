@@ -12,13 +12,11 @@ pub(super) fn created(call: Node<'_>, source: &[u8]) -> Option<Declared> {
     let [.., kind, new] = function.as_slice() else {
         return None;
     };
-    if kind != "Tool" || new != "new" {
-        return None;
-    }
+    (kind == "Tool" && new == "new").then_some(())?;
     let tool = call
         .child_by_field_name("arguments")?
         .named_child(0)
-        .filter(|tool| tool.kind() == "string_literal")?;
+        .filter(|tool| is_string(*tool))?;
     Some(declared(call, Declares::McpTool(literal(tool, source))))
 }
 
@@ -49,12 +47,14 @@ fn given_name(arguments: Node<'_>, source: &[u8]) -> Option<String> {
     let tokens: Vec<Node<'_>> = arguments.named_children(&mut cursor).collect();
     tokens.windows(2).find_map(|pair| match pair {
         [key, value]
-            if key.kind() == "identifier"
-                && text(*key, source) == "name"
-                && value.kind() == "string_literal" =>
+            if key.kind() == "identifier" && text(*key, source) == "name" && is_string(*value) =>
         {
             Some(literal(*value, source))
         }
         _ => None,
     })
+}
+
+fn is_string(node: Node<'_>) -> bool {
+    matches!(node.kind(), "string_literal" | "raw_string_literal")
 }

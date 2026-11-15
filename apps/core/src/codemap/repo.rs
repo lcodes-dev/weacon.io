@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use weacon_codemap::{Churn, Index};
+use weacon_codemap::Index;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
@@ -16,8 +16,6 @@ use crate::platform;
 
 /// The largest file the map reads; a larger one is left out, likely generated or not code.
 pub(crate) const LARGEST: u64 = 1 << 20;
-/// How many of the latest commits hotspots count changes in.
-const CHURN_COMMITS: u32 = 500;
 
 /// A repository on disk, its main worktree at `repo`.
 #[derive(Clone, Debug)]
@@ -96,17 +94,6 @@ fn repo_map(workspace: &Workspace, git: &Git, main: PathBuf) -> RepoMap<Repo> {
             repo: main,
         },
     }
-}
-
-/// How many of the latest [`CHURN_COMMITS`] commits up to its head changed each file under
-/// `folder`, by its path from `folder`; it blocks.
-pub(crate) fn churn(git: &Git, folder: &Path) -> Result<Vec<Churn>, Fault> {
-    let head = git.head(folder)?;
-    let churn = git.churn(folder, &head, CHURN_COMMITS)?;
-    Ok(churn
-        .into_iter()
-        .map(|(file, commits)| Churn { file, commits })
-        .collect())
 }
 
 /// The canonical paths of the main worktree of `folder`'s repository and of the worktree

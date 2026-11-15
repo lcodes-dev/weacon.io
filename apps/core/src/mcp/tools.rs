@@ -12,6 +12,9 @@ const BUDGET: u32 = 6000;
 const LEAST: u32 = 1000;
 const MOST: u32 = 16_000;
 
+/// How many of the latest commits `hotspots` counts changes in.
+pub(crate) const CHURN_COMMITS: u32 = 500;
+
 pub(crate) const NO_MAP: &str = "No code map for this folder.\n";
 
 /// Longer than any item's path, and too long to echo back within a budget.

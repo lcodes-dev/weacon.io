@@ -18,10 +18,10 @@ use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{McpCall, WorkspaceId, code};
 
 use super::grants::{Grant, Grants};
-use super::tools::{NO_MAP, answer_from};
+use super::tools::{CHURN_COMMITS, NO_MAP, answer_from};
 use crate::app::WarnOnce;
 use crate::chats::Places;
-use crate::codemap::{Repo, Watch, churn, locate, off_runtime, watch, worktree_index};
+use crate::codemap::{Repo, Watch, locate, off_runtime, watch, worktree_index};
 use crate::db::Db;
 use crate::git::Git;
 use crate::git::repos::Repo as Registered;
@@ -178,7 +178,7 @@ impl Stores {
         };
         let churn = if matches!(call, McpCall::Hotspots(_)) {
             let git = self.git.clone();
-            off_runtime(move || churn(&git, &worktree)).await?
+            off_runtime(move || git.churn(&worktree, CHURN_COMMITS)).await?
         } else {
             Vec::new()
         };

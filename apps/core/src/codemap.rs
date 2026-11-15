@@ -7,7 +7,7 @@ mod fake;
 mod repo;
 mod watch;
 
-pub(crate) use repo::{LARGEST, Repo, churn, locate, watch, worktree_index};
+pub(crate) use repo::{LARGEST, Repo, locate, watch, worktree_index};
 pub(crate) use watch::Watch;
 
 use std::collections::{BTreeMap, BTreeSet};

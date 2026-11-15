@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Stdio;
 
+use weacon_codemap::Churn;
 use weacon_observability::Fault;
 use weacon_protocol::{CommitId, code};
 
@@ -108,22 +109,26 @@ impl Git {
         Ok(paths)
     }
 
-    /// How many of the last `commits` commits up to `commit`, merges left out, changed each
-    /// file under `folder`, by its path from `folder`; paths that aren't UTF-8 are left out.
-    pub(crate) fn churn(
-        &self,
-        folder: &Path,
-        commit: &CommitId,
-        commits: u32,
-    ) -> Result<BTreeMap<String, u32>, Fault> {
+    /// How many of the last `commits` commits up to the head, merges left out, changed each
+    /// file under `folder`, by its path from `folder`; none before the first commit, and paths
+    /// that aren't UTF-8 are left out.
+    pub(crate) fn churn(&self, folder: &Path, commits: u32) -> Result<Vec<Churn>, Fault> {
+        let head = self
+            .command(folder)
+            .args(["rev-parse", "--verify", "--quiet", "HEAD"])
+            .output()
+            .map_err(not_run)?;
+        // `--quiet` makes git exit 1, not 128, only for a head with no commit yet.
+        if head.status.code() == Some(1) {
+            return Ok(Vec::new());
+        }
         let out = run(self
             .command(folder)
             .args(["log", "--format=", "--name-only", "-z", "--relative"])
             .args(["--no-renames", "--no-merges"])
             .arg(format!("--max-count={commits}"))
-            .arg(commit.as_str())
-            .arg("--"))?;
-        let mut churn = BTreeMap::new();
+            .args(["HEAD", "--"]))?;
+        let mut churn: BTreeMap<String, u32> = BTreeMap::new();
         let files = out
             .split(|byte| *byte == 0)
             .filter_map(|path| std::str::from_utf8(path).ok())
@@ -131,7 +136,10 @@ impl Git {
         for file in files {
             *churn.entry(file.to_owned()).or_default() += 1;
         }
-        Ok(churn)
+        Ok(churn
+            .into_iter()
+            .map(|(file, commits)| Churn { file, commits })
+            .collect())
     }
 }
 
@@ -256,12 +264,11 @@ mod tests {
         commit(&[("src/a.rs", "1"), ("-n", "1")]);
         commit(&[("src/a.rs", "2"), ("src/b.rs", "1")]);
         commit(&[("src/a.rs", "3"), ("README.md", "# More\n")]);
-        let head = git.head(&repo).unwrap();
-        let counted = |folder: &Path, commits| {
-            let churn = git.churn(folder, &head, commits).unwrap();
-            churn.into_iter().collect::<Vec<_>>()
+        let counted = |folder: &Path, commits| git.churn(folder, commits).unwrap();
+        let pair = |file: &str, commits| Churn {
+            file: file.to_owned(),
+            commits,
         };
-        let pair = |path: &str, commits| (path.to_owned(), commits);
 
         assert_eq!(
             counted(&repo, 10),
@@ -284,6 +291,18 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let git = git(&dir);
         assert_eq!(git.head(&dir).unwrap_err().code().as_str(), "git.failed");
+        let churn = git.churn(&dir, 10).unwrap_err();
+        assert_eq!(churn.code().as_str(), "git.failed");
+    }
+
+    #[test]
+    fn a_repository_with_no_commit_yet_has_no_churn() {
+        let dir = TempDir::new().unwrap();
+        let repo = dir.join("new");
+        fs::create_dir_all(&repo).unwrap();
+        fixture(&dir, &repo, &["init", "--quiet"]);
+        fs::write(repo.join("a.rs"), "fn a() {}\n").unwrap();
+        assert_eq!(git(&dir).churn(&repo, 10).unwrap(), []);
     }
 
     #[test]
