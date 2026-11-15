@@ -349,3 +349,52 @@ FROM changes;
 DROP TABLE changes;
 ALTER TABLE changes_with_proposals RENAME TO changes;
 ";
+
+// The text search finds: each task's title, and each doc's title and current body with its
+// pins, without the bytes `db::search` marks matches with. Each row's id, and when its
+// source last changed, are in `search_rows`.
+pub(crate) const SEARCH: &str = "
+CREATE VIRTUAL TABLE search USING fts5(
+    workspace_id UNINDEXED,
+    kind UNINDEXED,
+    item UNINDEXED,
+    title,
+    body,
+    tokenize = 'trigram remove_diacritics 1'
+);
+
+CREATE TABLE search_rows (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    kind TEXT NOT NULL,
+    item TEXT NOT NULL,
+    row INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, kind, item)
+) STRICT;
+
+CREATE INDEX search_rows_by_row ON search_rows (workspace_id, row);
+
+INSERT INTO search (workspace_id, kind, item, title, body)
+SELECT workspace_id, 'task', task_id, replace(replace(title, char(1), ' '), char(2), ' '), ''
+FROM tasks;
+
+INSERT INTO search (workspace_id, kind, item, title, body)
+SELECT workspace_id, 'doc', doc_id,
+    replace(replace(title, char(1), ' '), char(2), ' '),
+    replace(replace(body || COALESCE(
+        (SELECT char(10) || group_concat(pin, char(10) ORDER BY position) FROM doc_pins
+         WHERE doc_pins.workspace_id = docs.workspace_id AND doc_pins.doc_id = docs.doc_id
+             AND doc_pins.version = docs.version), ''), char(1), ' '), char(2), ' ')
+FROM docs JOIN doc_versions USING (workspace_id, doc_id, version);
+
+INSERT INTO search_rows (workspace_id, kind, item, row, at)
+SELECT workspace_id, kind, item, rowid, COALESCE(
+    (SELECT at FROM tasks JOIN task_versions USING (workspace_id, task_id, version)
+     WHERE kind = 'task' AND tasks.workspace_id = search.workspace_id
+         AND tasks.task_id = search.item),
+    (SELECT at FROM docs JOIN doc_versions USING (workspace_id, doc_id, version)
+     WHERE kind = 'doc' AND docs.workspace_id = search.workspace_id
+         AND docs.doc_id = search.item),
+    0)
+FROM search;
+";
