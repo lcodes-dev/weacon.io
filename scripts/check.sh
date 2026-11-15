@@ -107,6 +107,14 @@ other_checks() {
   [ -x apps/web/node_modules/.bin/tsc ] || die "the web app's packages are missing; run scripts/setup.sh"
   npm --prefix apps/web run --silent check
 
+  step "Links"
+  local link
+  git ls-files -s | awk '$1 == "120000" { print $4 }' | while read -r link; do
+    case $(readlink "$link") in
+      /*) die "$link is a link to an absolute path; a tracked link stays inside the repository" ;;
+    esac
+  done
+
   step "Shell scripts"
   if command -v shellcheck >/dev/null; then
     shellcheck scripts/*.sh
