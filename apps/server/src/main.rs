@@ -16,7 +16,6 @@ mod feed;
 mod http;
 mod limit;
 mod links;
-mod outbox;
 mod pairing;
 mod proposals;
 mod relay;
@@ -50,7 +49,6 @@ use weacon_protocol::code;
 
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::outbox::Outbox;
 use crate::secret::Secret;
 use crate::shared::Shared;
 
@@ -100,13 +98,11 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
     let Serve {
         listen,
         db,
-        outbox,
         secret,
         max_connections,
         trusted_proxy,
         sign_up,
     } = args;
-    usable_outbox(outbox.clone()).await?;
     let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
@@ -116,7 +112,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         log: app.log.clone(),
         reporter: Arc::clone(&app.reporter),
         db: db.clone(),
-        outbox: Outbox::new(outbox),
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
@@ -150,21 +145,6 @@ fn signals() -> Result<weacon_appkit::Signals, Fault> {
         )
         .because(error)
     })
-}
-
-/// Checks that `outbox` is a folder; otherwise every sign-in would fail after its answer, and
-/// only the logs would say so.
-async fn usable_outbox(outbox: PathBuf) -> Result<(), Fault> {
-    let usable = tokio::task::spawn_blocking(move || outbox.is_dir())
-        .await
-        .map_err(|error| app::panicked().because(error))?;
-    if usable {
-        return Ok(());
-    }
-    Err(Fault::new(
-        code!("server.outbox_unusable"),
-        "The outbox folder doesn't exist",
-    ))
 }
 
 async fn open_secret(path: PathBuf, log: Logger) -> Result<Secret, Fault> {

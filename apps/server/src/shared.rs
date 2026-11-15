@@ -9,7 +9,6 @@ use crate::chats;
 use crate::client::Net;
 use crate::db::Db;
 use crate::links::Links;
-use crate::outbox::Outbox;
 use crate::pairing;
 use crate::relay::Relay;
 use crate::secret::Secret;
@@ -25,7 +24,6 @@ pub(crate) struct Shared {
     pub(crate) log: Logger,
     pub(crate) reporter: Arc<Reporter>,
     pub(crate) db: Db,
-    pub(crate) outbox: Outbox,
     pub(crate) secret: Arc<Secret>,
     pub(crate) clock: Arc<Clock>,
     /// How long a connection may take to send a request's head, or sit idle between requests.

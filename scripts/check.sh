@@ -4,6 +4,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/tools.sh
+. scripts/tools.sh
+use_mise
 mkdir -p .dev
 
 step() {

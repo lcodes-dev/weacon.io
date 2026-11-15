@@ -1,11 +1,10 @@
 use std::fs;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
-use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, broadcast, oneshot};
 use tokio::task::JoinHandle;
@@ -28,7 +27,6 @@ pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_s
 use crate::connections;
 use crate::db::Db;
 use crate::http;
-use crate::outbox::Outbox;
 use crate::pairing;
 use crate::secret::Secret;
 use crate::shared::Shared;
@@ -58,12 +56,14 @@ pub(crate) const PATIENCE: Duration = Duration::from_secs(10);
 const START: u64 = 1_762_077_600;
 
 /// A server's shared state on a temporary database holding workspace `w1`, whose member `m1`
-/// is ada@example.com, with an outbox tests read and a clock they move.
+/// is ada@example.com, with the mail it prints for tests to read and a clock they move.
 pub(crate) struct Fixture {
     dir: TempDir,
     pub(crate) shared: Shared,
     pub(crate) records: Records,
     clock: Arc<AtomicU64>,
+    /// How many of the printed mails tests have taken.
+    taken: AtomicUsize,
 }
 
 impl Fixture {
@@ -80,7 +80,6 @@ impl Fixture {
         let (log, records) = recording_logger();
         // Its own logger: off Unix it warns, and tests read the fixture's records.
         let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
-        fs::create_dir(dir.join("outbox")).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
         let shared = Shared {
@@ -88,7 +87,6 @@ impl Fixture {
             log,
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
-            outbox: Outbox::new(dir.join("outbox")),
             secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
             proxies: Arc::new([]),
@@ -120,6 +118,7 @@ impl Fixture {
             shared,
             records,
             clock,
+            taken: AtomicUsize::new(0),
         }
     }
 
@@ -162,31 +161,39 @@ impl Fixture {
         drop(self.shared.sign_ins.acquire_many(every).await.unwrap());
     }
 
-    pub(crate) fn letters(&self) -> Vec<PathBuf> {
-        fs::read_dir(self.dir.join("outbox"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "json")
-            })
+    /// Who each printed sign-in mail that no test has taken is for, and the code in it.
+    pub(crate) fn letters(&self) -> Vec<(String, String)> {
+        let records = self.records.lock().unwrap();
+        let text = |record: &weacon_observability::Record, key: &str| {
+            record.fields[key].as_str().unwrap().to_owned()
+        };
+        let mails = records.iter().filter(|record| {
+            record.msg == "mail printed" && text(record, "subject") == sign_in::SUBJECT
+        });
+        mails
+            .skip(self.taken.load(Ordering::Relaxed))
+            .map(|mail| (text(mail, "to"), code_in(&text(mail, "text"))))
             .collect()
     }
 
     /// The one code the server sent once every sign-in has done its work, and who it is for.
     pub(crate) async fn letter(&self) -> (String, String) {
         self.settled().await;
-        let [file] = self.letters().try_into().unwrap();
-        letter_in(&file)
+        let [letter] = self.letters().try_into().unwrap();
+        self.taken.fetch_add(1, Ordering::Relaxed);
+        letter
     }
 }
 
-/// Who the letter in `file` is for and its code, taking it out of the outbox.
-pub(crate) fn letter_in(file: &Path) -> (String, String) {
-    let letter: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
-    fs::remove_file(file).unwrap();
-    let text = |key: &str| letter[key].as_str().unwrap().to_owned();
-    (text("to"), text("code"))
+/// The code in a sign-in mail's `text`: its one word with a dash in the middle.
+fn code_in(text: &str) -> String {
+    let words = text.split(|letter: char| !letter.is_ascii_alphanumeric() && letter != '-');
+    let [code] = words
+        .filter(|word| word.len() == 9 && word.get(4..5) == Some("-"))
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    code.to_owned()
 }
 
 /// A database holding workspace `w1`, whose member `m1` is ada@example.com.
@@ -242,7 +249,8 @@ mod tests {
     #[tokio::test]
     async fn what_is_stored_includes_the_files_in_the_folders_inside() {
         let fixture = Fixture::new().await;
-        fs::write(fixture.dir.join("outbox/letter.json"), "MARKER-NESTED").unwrap();
+        fs::create_dir(fixture.dir.join("nested")).unwrap();
+        fs::write(fixture.dir.join("nested/file"), "MARKER-NESTED").unwrap();
 
         let stored = String::from_utf8_lossy(&fixture.stored()).into_owned();
         assert!(stored.contains("MARKER-NESTED"));

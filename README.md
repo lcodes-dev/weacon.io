@@ -45,7 +45,7 @@ Weacon is open source, under the MIT licence.
 - **Workspaces never mix.** An agent only runs with a sign-in from its own workspace. Nothing one workspace sees reveals another.
 - **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies. What it serves to its own agents listens on 127.0.0.1 only.
 - **Agents propose, people decide.** Changes that agents make to docs and tasks arrive as proposals that a person accepts.
-- **No content in logs.** Messages, prompts, code and credentials never reach a log line or an error report.
+- **No content in logs.** Messages, prompts, code and credentials never reach a log line or an error report. The one exception: until the server sends mail itself, it prints each mail it would send, sign-in codes included, to its own log.
 
 ## Status
 
@@ -53,8 +53,8 @@ Weacon is in early development. This is what works on `main` today:
 
 | Area | Works today | Not yet |
 | --- | --- | --- |
-| Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: they wait in a folder for a mail relay |
-| Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Telling an invited address by email |
+| Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: nothing sends mail yet, so the server prints each one to its log |
+| Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Sending invitations by email: the server prints each one to its log |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
 | Chats | **New chat** picks a machine, a repository and an agent; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it | |
@@ -74,29 +74,20 @@ These steps run the server, a TLS front for it and the core on one Mac or Linux 
 
 ### 1. Install the tools
 
-On macOS:
+Install [mise](https://mise.jdx.dev). It provides the Node and Rust versions the project pins in `.node-version` and `rust-toolchain.toml`, and the scripts find them without a line in your shell profile.
+
+On macOS, with [Homebrew](https://brew.sh):
 
 ```bash
 xcode-select --install
+brew install mise
 ```
 
-Install Rust with rustup from [rustup.rs](https://rustup.rs). The project pins its Rust version in `rust-toolchain.toml`, and rustup picks it up by itself.
-
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-Install a Node version manager, such as [fnm](https://github.com/Schniz/fnm), with [Homebrew](https://brew.sh), and let your shell use it. Then open a new terminal. Step 2 installs the Node version the project pins in `.node-version`.
-
-```bash
-brew install fnm
-echo 'eval "$(fnm env --use-on-cd --shell zsh)"' >> ~/.zshrc
-```
-
-On Linux (Debian or Ubuntu), install git, a C compiler and curl, then rustup as above, and fnm with its own install script:
+On Linux (Debian or Ubuntu), install git, a C compiler and curl, then mise with its own install script, which puts it in `~/.local/bin`:
 
 ```bash
 sudo apt-get install -y git build-essential curl
+curl https://mise.run | sh
 ```
 
 To run an agent, install it and sign in to it yourself, with the vendor's own instructions. Weacon never installs or signs in an agent for you without asking.
@@ -108,20 +99,12 @@ Clone into a short path, such as `~/code/weacon.io`: the core's socket lives und
 ```bash
 git clone https://github.com/lcodes-dev/weacon.io.git ~/code/weacon.io
 cd ~/code/weacon.io
-```
-
-Install and use the pinned Node. fnm reads `.node-version` itself:
-
-```bash
-fnm install
-fnm use
-```
-
-```bash
 scripts/setup.sh
 ```
 
-The first run takes a while: it fetches the dependencies, builds the check tools and installs the web app's and the extension's packages. Its log is in `.dev/setup.log`. It is safe to run again.
+To run `cargo` or `npm` yourself, put `mise exec --` before it, or activate mise in your shell and run `mise trust` once in the clone.
+
+The first run takes a while: mise installs the pinned Node and Rust, then the script fetches the dependencies, builds the check tools and installs the web app's and the extension's packages and the Chromium the web app's tests drive. Its log is in `.dev/setup.log`. It is safe to run again, and `scripts/dev.sh` asks you to when the web app's packages are missing or out of date.
 
 ### 3. Start Weacon
 
@@ -136,7 +119,7 @@ It builds the web app, the server, the core and a TLS front, then starts them an
 ```text
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
-  Sign-in codes:  .dev/server/outbox, one JSON file per code
+  Sign-in codes:  shown here, in each mail the server prints
   Pair the core:  WEACON_STATE_DIR=.dev/state target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
   Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and .dev/state/logs/
 ```
@@ -147,13 +130,14 @@ Leave it running, and open a second terminal in the same folder for the next ste
 
 ### 4. Sign in
 
-Open <http://localhost:8080> in Chrome, enter your email and choose **Send code**. The server writes the code to a file in `.dev/server/outbox` instead of sending an email. Read the newest one:
+Open <http://localhost:8080> in Chrome, enter your email and choose **Send code**. Nothing sends email yet, so the server prints the mail to its log instead, and `scripts/dev.sh` shows it in the first terminal:
 
-```bash
-cat "$(ls -t .dev/server/outbox/*.json | head -n 1)"
+```text
+Mail to you@example.com: Your Weacon sign-in code
+  Your code is ABCD-EFGH. It works for 10 minutes; if you didn't ask for it, ignore this mail.
 ```
 
-Enter its `code` and choose **Sign in**. You see **Workspaces**, with your **Personal** workspace. Make more under **New workspace**.
+Enter the code and choose **Sign in**. You see **Workspaces**, with your **Personal** workspace. Make more under **New workspace**.
 
 ### 5. Pair the core
 
@@ -253,7 +237,7 @@ Ctrl-C in the first terminal stops the server, the TLS front and the core. `scri
 
 | Folder | What it holds |
 | --- | --- |
-| `.dev/server/` | The server's database, its key for sign-in codes, and the codes in `outbox/` |
+| `.dev/server/` | The server's database and its key for pairing codes |
 | `.dev/tls/` | The TLS front's certificate and key |
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
@@ -346,12 +330,12 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 ## Troubleshooting
 
 - **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev/state`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
-- **`scripts/setup.sh` says Weacon needs another Node.** Install the version in `.node-version` and make it the one on your `PATH`, then run it again.
+- **`scripts/setup.sh` says Weacon needs another Node, or to install mise.** Install mise as in step 1, then run it again. Without mise, the Node on your `PATH` must be exactly the one in `.node-version`, and rustup must be installed.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.
 - **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
-- **The sign-in page never accepts the code.** Use the newest file in `.dev/server/outbox`, and request a new code if it expired.
+- **The sign-in page never accepts the code.** Use the newest mail `scripts/dev.sh` shows, and request a new code if it expired.
 
 ## Licence
 

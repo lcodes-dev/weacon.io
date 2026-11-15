@@ -7,6 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use weacon_observability::Fault;
 use weacon_protocol::{Code, Invitation, MemberAction, MemberCommand, WorkspaceId, code};
 
 use crate::app::{fresh, new_id};
@@ -41,7 +42,7 @@ pub(crate) async fn command(
     let (workspace, by, now) = (&member.workspace, &member.id, shared.now());
     let done = match body.action {
         MemberAction::Invite { email } => match Email::parse(email.expose()) {
-            Ok(email) => workspace.invite(by, &email, now).await,
+            Ok(email) => invite(&shared, &member, &email).await,
             Err(_) => return invalid(code!("email.invalid")),
         },
         MemberAction::Revoke { email } => match Email::parse(email.expose()) {
@@ -58,6 +59,25 @@ pub(crate) async fn command(
         }
         Err(fault) => Refused::<Team>::from(fault).into_response(),
     }
+}
+
+/// Invites `email`, and mails it the workspace's name and how to take the invitation up.
+async fn invite(shared: &Shared, member: &Member, email: &Email) -> Result<(), Fault> {
+    let workspace = &member.workspace;
+    workspace.invite(&member.id, email, shared.now()).await?;
+    if let Some(summary) = workspace.summary(&member.id).await? {
+        let text = format!(
+            "You're invited to the workspace {} on Weacon. Sign in with this address to accept; \
+             the invitation lasts 7 days.",
+            summary.name
+        );
+        shared.log.mail(
+            email.as_str(),
+            "You're invited to a Weacon workspace",
+            &text,
+        );
+    }
+    Ok(())
 }
 
 /// `POST /api/workspaces/{workspace}/accept`: takes up the invitation to the signed-in account's
@@ -176,6 +196,24 @@ mod tests {
         let newer = command(&ada, &crew, json!({ "kind": "transfer" })).await;
 
         assert_eq!(bo, ("http/1.1 204 no content".to_owned(), Value::Null));
+        let records = fixture.records.lock().unwrap();
+        let mails: Vec<_> = records
+            .iter()
+            .filter(|record| {
+                record.msg == "mail printed" && record.fields["to"] != "ada@example.com"
+            })
+            .map(|mail| (mail.fields["to"].clone(), mail.fields["text"].clone()))
+            .collect();
+        let text = "You're invited to the workspace Crew on Weacon. Sign in with this address to \
+                    accept; the invitation lasts 7 days.";
+        assert_eq!(
+            mails,
+            [
+                (json!("bo@example.com"), json!(text)),
+                (json!("cy@example.com"), json!(text))
+            ]
+        );
+        drop(records);
         assert_eq!(cy, bo);
         assert_eq!(again.0, "http/1.1 409 conflict");
         assert_eq!(again.1["code"], "invitation.exists");

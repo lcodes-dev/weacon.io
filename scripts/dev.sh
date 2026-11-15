@@ -7,6 +7,9 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/tools.sh
+. scripts/tools.sh
+use_mise
 
 log() {
   printf '==> %s\n' "$*" >&2
@@ -15,6 +18,24 @@ log() {
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
+}
+
+# The string field named $1 of the JSON record $2, still escaped.
+field() {
+  sed -E "s/.*\"$1\":\"(([^\"\\\\]|\\\\.)*)\".*/\\1/" <<<"$2"
+}
+
+# Shows each mail the server prints as its log lines go by.
+show_mails() {
+  local line
+  while IFS= read -r line; do
+    case $line in
+      *'"msg":"mail printed"'*)
+        printf '\nMail to %s: %s\n  %s\n\n' "$(field to "$line")" "$(field subject "$line")" \
+          "$(field text "$line")"
+        ;;
+    esac
+  done
 }
 
 email=${1:-}
@@ -31,7 +52,9 @@ esac
 if [ ! -e "$data/weacon.db" ] && [ -z "$email" ]; then
   die "the first run makes your account: scripts/dev.sh you@example.com"
 fi
-mkdir -p "$data/outbox"
+[ apps/web/node_modules/.package-lock.json -nt apps/web/package-lock.json ] \
+  || die "the web app's packages are missing or older than its package-lock.json; run scripts/setup.sh"
+mkdir -p "$data"
 
 log "Building the web app, the server, the core and the TLS front"
 npm --prefix apps/web run --silent build
@@ -42,8 +65,8 @@ server='' tls='' core=''
 trap 'kill $server $tls $core 2>/dev/null || true; wait' EXIT
 trap 'exit 130' INT TERM
 
-"$bin/weacon-server" serve --db "$data/weacon.db" --outbox "$data/outbox" --secret "$data/secret" \
-  >>.dev/server.log 2>&1 &
+"$bin/weacon-server" serve --db "$data/weacon.db" --secret "$data/secret" \
+  > >(trap '' INT; tee -a .dev/server.log | show_mails) 2>&1 &
 server=$!
 "$bin/dev-tls" .dev/tls >>.dev/tls.log 2>&1 &
 tls=$!
@@ -80,7 +103,7 @@ cat <<EOF
 
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
-  Sign-in codes:  $data/outbox, one JSON file per code
+  Sign-in codes:  shown here, in each mail the server prints
   Pair the core:  WEACON_STATE_DIR=$state $bin/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
   Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and $state/logs/
 EOF
