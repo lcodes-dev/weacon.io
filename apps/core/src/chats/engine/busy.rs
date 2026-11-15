@@ -9,7 +9,7 @@ use super::{Agent, Engine};
 impl<A: Agent> Engine<A> {
     // Saves what it can first, so one failed write doesn't keep the engine busy for good.
     pub(super) async fn answer_busy(&mut self, answer: oneshot::Sender<bool>) {
-        self.save_pending_sessions().await;
+        self.save_pending().await;
         // An asker that's gone needs no answer.
         answer.send(self.busy()).unwrap_or_default();
     }
@@ -20,7 +20,9 @@ impl<A: Agent> Engine<A> {
                 && self.runs.of(key).is_some_and(|record| {
                     record.turn.is_some() || record.state == RunState::Waiting
                 });
-            live || chat.pending_session.is_some() || chat.pending_end.is_some()
+            live || chat.launching.is_some()
+                || chat.pending_session.is_some()
+                || chat.pending_end.is_some()
         })
     }
 }

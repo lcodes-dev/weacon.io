@@ -872,6 +872,7 @@ mod tests {
 
         let sent = soon(async { Some(bench.chats.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
+        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;

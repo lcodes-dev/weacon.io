@@ -439,8 +439,8 @@ mod tests {
         });
         assert!(on.engine.busy());
 
-        on.engine.open(&key()).await.unwrap().pending_end = None;
-        assert!(!on.engine.busy());
+        on.engine.save_pending().await;
+        assert!(!on.engine.busy(), "its end is saved");
     }
 
     #[tokio::test(start_paused = true)]

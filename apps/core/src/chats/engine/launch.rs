@@ -43,20 +43,25 @@ impl<A: Agent> Engine<A> {
         kept
     }
 
-    // Tries again to save every session the journal couldn't; one that still fails stays.
-    pub(super) async fn save_pending_sessions(&mut self) {
+    // Tries again to save every session and turn's end the journal or the log couldn't; one
+    // that still fails stays.
+    pub(super) async fn save_pending(&mut self) {
         let pending: Vec<ChatKey> = (self.open_chats.iter())
-            .filter(|(_, chat)| chat.pending_session.is_some())
+            .filter(|(_, chat)| chat.pending_session.is_some() || chat.pending_end.is_some())
             .map(|(key, _)| key.clone())
             .collect();
         for key in pending {
-            if let Err(fault) = self.save_pending_session(&key).await {
+            let saved = match self.save_pending_session(&key).await {
+                Ok(()) => self.save_ended(&key).await,
+                failed => failed,
+            };
+            if let Err(fault) = saved {
                 let fields = [
                     ("workspace_id", key.workspace.as_str().into()),
                     ("chat_id", key.chat.as_str().into()),
                     ("err", Field::error(&fault)),
                 ];
-                self.log.warn("session not saved", &fields);
+                self.log.warn("chat not saved", &fields);
             }
         }
     }
@@ -168,7 +173,7 @@ mod tests {
             .unwrap();
         on.engine.settle(&key());
         assert!(on.engine.busy(), "its session is only in memory");
-        on.engine.save_pending_sessions().await;
+        on.engine.save_pending().await;
         assert!(!on.engine.busy(), "its session is saved");
         on.engine
             .command(&key(), prompt("r-2", "More"))
