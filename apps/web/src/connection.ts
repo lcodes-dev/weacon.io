@@ -13,6 +13,7 @@ export type WebCapability =
   | "chat.events"
   | "log.forward"
   | "machine.settings"
+  | "sessions.read"
   | "worktree.manage"
   | "worktree.open_terminal";
 

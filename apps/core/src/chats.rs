@@ -13,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use weacon_agents::{Launch, SpawnPolicy};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{App, ChatId, WorkspaceId, code};
+use weacon_protocol::{AgentKind, App, ChatId, WorkspaceId, code};
 
 pub(crate) use engine::Chats;
 use engine::{Engine, Host, RunAs};
@@ -36,6 +36,8 @@ pub(crate) struct Places {
     pub(crate) mcp: Option<Mcp>,
     /// The Claude Code plugin each run is given.
     pub(crate) plugin: Option<Plugin>,
+    /// The person's own agent folders, read for the sessions they ran outside Weacon.
+    pub(crate) agent_homes: Vec<(AgentKind, PathBuf)>,
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
@@ -198,6 +200,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: Some(mcp.clone()),
             plugin: None,
+            agent_homes: Vec::new(),
         };
         let run_as = RunAs {
             key: key(),
@@ -234,6 +237,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: None,
             plugin: Some(plugin.unwrap()),
+            agent_homes: Vec::new(),
         };
         let roots = Workspaces::new(&dir.join("state"), places.path.clone());
         let run_as = RunAs {
@@ -269,6 +273,7 @@ mod tests {
             work_root: Some(dir.join("Weacon")),
             mcp: None,
             plugin: None,
+            agent_homes: Vec::new(),
         };
         let (chats, engine) = start(&dir, places, app, SpawnPolicy::default(), log).unwrap();
         tokio::spawn(engine.serve());

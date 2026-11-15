@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{Envelope, FrameError, Message, code};
+use weacon_protocol::{Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, code};
 
 use super::worktrees::{self, Late};
-use super::{Shared, command_chat, keep, query_chat};
+use super::{Shared, command_chat, query_chat};
 use crate::chats::feed::Client;
 use crate::machine_settings::{self, Host, Identity};
+use crate::outside::Outside;
+use crate::picks::KeepError;
 use crate::session::{Reply, Session};
 use crate::uplink::{self, failure, refusal};
 use crate::{app, machine};
@@ -41,7 +43,44 @@ pub(super) async fn route(
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),
+        // The socket is its owner's alone, so only a query the server relays names who asked.
+        Message::SessionsQuery(query) if query.by.is_none() => {
+            shared.outside.reply(id, query, &shared.log).await
+        }
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
+    }
+}
+
+// The receipt for a pick the extension sent, once it is kept.
+async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
+    let (picks, request) = (shared.picks.clone(), pick.request.clone());
+    let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
+        .await
+        .unwrap_or_else(|error| Err(KeepError::Io(error.into())));
+    let outcome = match kept {
+        Ok(()) => {
+            let request_id = request.as_str().into();
+            shared
+                .log
+                .info("element picked", &[("request_id", request_id)]);
+            Outcome::Completed
+        }
+        Err(KeepError::Conflict) => return Reply::error(id, code!("request.conflict"), false),
+        Err(KeepError::Io(error)) => {
+            shared
+                .log
+                .warn("pick not kept", &[("err", Field::error(&error))]);
+            Outcome::Failed {
+                code: code!("pick.not_kept"),
+            }
+        }
+    };
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::Receipt(Receipt { request, outcome }),
+        }),
+        close: false,
     }
 }
 
@@ -54,6 +93,7 @@ pub(super) async fn server(app: &app::App, state_dir: &Path) -> ! {
         state_dir: state_dir.to_owned(),
         path: app.path.clone(),
         reporter: Arc::clone(&app.reporter),
+        outside: Outside::new(app.agent_homes.clone(), state_dir),
         log: app.log.child(&[("component", "asks".into())]),
     };
     tokio::select! {
@@ -107,19 +147,30 @@ async fn one_by_one(
 /// would only echo.
 async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
     let Envelope { id, message } = ask;
-    let answered = if let Message::Error(_) = message {
-        return None;
-    } else if let Message::ChatCommand(command) = message {
-        return Some(refusal(id, &command, code!("chat.unavailable")));
-    } else if let Message::MachineSettingsQuery(query) = message {
-        async { machine_settings::query(host, &owner(host).await?, query).await }.await
-    } else if let Message::MachineSettingsCommand(command) = message {
-        async { machine_settings::command(host, &owner(host).await?, command).await }.await
-    } else {
-        Err(Fault::new(
+    #[expect(
+        clippy::wildcard_enum_match_arm,
+        reason = "the server relays no other ask a core answers"
+    )]
+    let answered = match message {
+        Message::Error(_) => return None,
+        Message::ChatCommand(command) => {
+            return Some(refusal(id, &command, code!("chat.unavailable")));
+        }
+        Message::MachineSettingsQuery(query) => {
+            async { machine_settings::query(host, &owner(host).await?, query).await }
+                .await
+                .map(Message::MachineSettingsAnswer)
+        }
+        Message::MachineSettingsCommand(command) => {
+            async { machine_settings::command(host, &owner(host).await?, command).await }
+                .await
+                .map(Message::MachineSettingsAnswer)
+        }
+        Message::SessionsQuery(query) => sessions(host, query).await,
+        _ => Err(Fault::new(
             code!("request.unknown"),
             "This core doesn't answer that request",
-        ))
+        )),
     };
     Some(answered.map_or_else(
         |fault| {
@@ -127,11 +178,26 @@ async fn relayed(host: &Host, ask: Envelope) -> Option<Envelope> {
                 .warn("ask failed", &[("err", Field::error(&fault))]);
             failure(id, fault.code().clone())
         },
-        |answer| Envelope {
-            id,
-            message: Message::MachineSettingsAnswer(answer),
-        },
+        |message| Envelope { id, message },
     ))
+}
+
+/// The machine owner's own sessions outside Weacon, for them alone.
+async fn sessions(host: &Host, query: SessionsQuery) -> Result<Message, Fault> {
+    let owner = owner(host).await?;
+    if query.by.as_ref() != Some(&owner.account) {
+        return Err(Fault::new(
+            code!("sessions.not_owner"),
+            "Only this machine's owner can read its sessions",
+        ));
+    }
+    let answer = host.outside.answer(query).await.ok_or_else(|| {
+        Fault::new(
+            code!("message.unsupported"),
+            "This core doesn't know that query",
+        )
+    })?;
+    Ok(Message::SessionsAnswer(answer))
 }
 
 /// The machine and its owner, as the pairing kept now says.
@@ -152,9 +218,10 @@ mod tests {
     use std::sync::Arc;
 
     use weacon_protocol::{
-        AccountId, Asker, ChatAction, ChatCommand, ErrorBody, MachineSettingsAction,
+        AccountId, AgentKind, Asker, ChatAction, ChatCommand, ErrorBody, MachineSettingsAction,
         MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
-        MachineSettingsQueryKind, Outcome, SessionsQuery, SessionsQueryKind,
+        MachineSettingsQueryKind, Outcome, SessionsAnswer, SessionsAnswerKind, SessionsQuery,
+        SessionsQueryKind,
     };
     use weacon_testing::TempDir;
 
@@ -177,6 +244,10 @@ mod tests {
             state_dir: dir.to_path_buf(),
             path: Some(dir.join("bin").into_os_string()),
             reporter: Arc::clone(&app.reporter),
+            outside: Outside::new(
+                vec![(AgentKind::Claude, claude_home(dir))],
+                &dir.join("state"),
+            ),
             log,
         };
         (host, records)
@@ -274,12 +345,7 @@ mod tests {
         };
         let other = Envelope {
             id: 4,
-            message: Message::SessionsQuery(SessionsQuery {
-                request: id("r-3"),
-                machine: id("mc-1"),
-                query: SessionsQueryKind::List,
-                by: Some(id("a-1")),
-            }),
+            message: Message::Pick(test_support::pick("r-3", "<p>Hi</p>")),
         };
         let error = Envelope {
             id: 5,
@@ -309,6 +375,87 @@ mod tests {
             Some("request.unknown")
         );
         assert_eq!(echoed, None);
+    }
+
+    const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
+
+    // The person's own Claude Code folder, holding one session run in a marked folder.
+    fn claude_home(dir: &TempDir) -> std::path::PathBuf {
+        let home = dir.join("claude");
+        let project = home.join("projects").join("-work");
+        std::fs::create_dir_all(&project).unwrap();
+        let line = serde_json::json!({
+            "type": "user", "cwd": "/MARKER-FOLDER", "message": { "content": "MARKER-PROMPT" },
+        });
+        std::fs::write(
+            project.join(format!("{SESSION}.jsonl")),
+            format!("{line}\n"),
+        )
+        .unwrap();
+        home
+    }
+
+    fn sessions(by: Option<&str>, query: SessionsQueryKind) -> Envelope {
+        Envelope {
+            id: 9,
+            message: Message::SessionsQuery(SessionsQuery {
+                request: id("r-4"),
+                machine: id("mc-1"),
+                query,
+                by: by.map(id),
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn only_the_machines_owner_reads_its_sessions_and_none_of_them_is_logged() {
+        let dir = TempDir::new().unwrap();
+        pair(&dir);
+        let (host, records) = host(&dir);
+        let open = SessionsQueryKind::Open {
+            agent: AgentKind::Claude,
+            session: id(SESSION),
+            after: 0,
+        };
+
+        let listed = relayed(&host, sessions(Some("a-1"), SessionsQueryKind::List)).await;
+        let opened = relayed(&host, sessions(Some("a-1"), open)).await.unwrap();
+        let stranger = relayed(&host, sessions(Some("a-2"), SessionsQueryKind::List)).await;
+        let nobody = relayed(&host, sessions(None, SessionsQueryKind::List)).await;
+        let newer = relayed(&host, sessions(Some("a-1"), SessionsQueryKind::Newer)).await;
+
+        let listed = listed.unwrap();
+        assert_eq!(listed.id, 9);
+        let Message::SessionsAnswer(answer) = listed.message else {
+            panic!("expected an answer, got {:?}", listed.message);
+        };
+        assert_eq!(answer.request.as_str(), "r-4");
+        let SessionsAnswerKind::List { sessions } = answer.answer else {
+            panic!("expected a list, got {:?}", answer.answer);
+        };
+        assert_eq!(
+            sessions.first().and_then(|found| found.folder.as_deref()),
+            Some("/MARKER-FOLDER")
+        );
+        assert!(matches!(
+            opened.message,
+            Message::SessionsAnswer(SessionsAnswer {
+                answer: SessionsAnswerKind::Opened { ref events, more: false },
+                ..
+            }) if events.len() == 1
+        ));
+        for refused in [stranger, nobody] {
+            assert_eq!(
+                test_support::error_code(&refused.unwrap().message),
+                Some("sessions.not_owner")
+            );
+        }
+        assert_eq!(
+            test_support::error_code(&newer.unwrap().message),
+            Some("message.unsupported")
+        );
+        let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
     }
 
     fn reports(envelope: u32, send: bool) -> Envelope {

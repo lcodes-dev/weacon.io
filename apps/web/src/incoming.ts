@@ -5,7 +5,7 @@ import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
 export type Incoming = Extract<
   Envelope,
   {
-    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "worktree_answer";
+    type: "welcome" | "error" | "receipt" | "run" | "diff_answer" | "chat" | "chat_answer" | "workspace" | "machine_settings_answer" | "sessions_answer" | "worktree_answer";
   }
 >;
 
@@ -69,6 +69,7 @@ export function route(message: Incoming, to: Routes): void {
     case "welcome":
     case "workspace":
     case "machine_settings_answer":
+    case "sessions_answer":
       return;
   }
 }
@@ -92,6 +93,7 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isWorktreeAnswer(fields["answer"]),
   machine_settings_answer: (fields) =>
     text(fields, "request") && text(fields, "machine") && text(fields, "workspace") && isMachineSettingsAnswer(fields["answer"]),
+  sessions_answer: (fields) => text(fields, "request") && text(fields, "machine") && isSessionsAnswer(fields["answer"]),
 };
 
 function isIncoming(value: unknown): value is Incoming {
@@ -313,5 +315,36 @@ function isHunk(hunk: unknown): boolean {
       const parts = record(line);
       return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
     })
+  );
+}
+
+// A list holds sessions with every field the list shows; an opened page holds entries.
+function isSessionsAnswer(answer: unknown): boolean {
+  const fields = record(answer);
+  if (fields === undefined) {
+    return false;
+  }
+  switch (fields["kind"]) {
+    case "list": {
+      const sessions = fields["sessions"];
+      return Array.isArray(sessions) && sessions.every(isOutsideSession);
+    }
+    case "opened": {
+      const events = fields["events"];
+      return Array.isArray(events) && events.every(isEntry) && typeof fields["more"] === "boolean";
+    }
+    default:
+      return typeof fields["kind"] === "string";
+  }
+}
+
+function isOutsideSession(session: unknown): boolean {
+  const fields = record(session);
+  return (
+    fields !== undefined &&
+    text(fields, "agent") &&
+    text(fields, "session") &&
+    Number.isSafeInteger(fields["modified_at"]) &&
+    (fields["folder"] === undefined || text(fields, "folder"))
   );
 }

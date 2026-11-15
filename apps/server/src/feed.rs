@@ -19,7 +19,7 @@ use crate::auth::{Member, Session};
 use crate::connections::Place;
 use crate::http::failure;
 use crate::proposals::PROPOSALS;
-use crate::relay::{self, Ask, Refusal, SETTINGS};
+use crate::relay::{self, Ask, RELAYED, Refusal};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
 
@@ -143,9 +143,11 @@ async fn run(
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
     let feed_offer = Capability::new(FEED);
-    let offered = [FEED, TASKS, DOCS, SETTINGS, PROPOSALS]
+    let offered = [FEED, TASKS, DOCS, PROPOSALS]
+        .into_iter()
+        .chain(RELAYED)
         .map(Capability::new)
-        .to_vec();
+        .collect();
     let greeted = greet(socket, shared, offered, &feed_offer);
     let hello = timeout(shared.sockets.hello_within, greeted)
         .await
@@ -187,7 +189,7 @@ async fn received(
     feed: &Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if feed.hears(SETTINGS) && relay::carries(&envelope.message) {
+    if relay::needs(&envelope.message).is_some_and(|needs| feed.hears(needs)) {
         return relay(socket, shared, feed, envelope).await;
     }
     Ok(())
@@ -269,6 +271,7 @@ mod tests {
     use super::*;
     use crate::auth::SESSION_COOKIE;
     use crate::db::Workspace;
+    use crate::relay::{SESSIONS, SETTINGS};
     use crate::sign_in::SESSION_LIFETIME;
     use crate::socket::refusal;
     use crate::test_support::socket::{
@@ -352,7 +355,7 @@ mod tests {
         };
         assert_eq!(
             welcome.capabilities,
-            [FEED, TASKS, DOCS, SETTINGS, PROPOSALS].map(Capability::new)
+            [FEED, TASKS, DOCS, PROPOSALS, SETTINGS, SESSIONS].map(Capability::new)
         );
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));

@@ -240,7 +240,7 @@ pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<Si
         let checks: Vec<_> = together
             .iter()
             .cloned()
-            .map(|launch| tokio::spawn(async move { launch.sign_in().await }))
+            .map(|launch| tokio::spawn(async move { launch.sign_in_status().await }))
             .collect();
         for check in checks {
             answers.push(match check.await {

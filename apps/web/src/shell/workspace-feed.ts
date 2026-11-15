@@ -3,7 +3,7 @@ import type { Incoming } from "../incoming.ts";
 import type { WorkspaceId } from "../protocol.ts";
 
 /** What a workspace's feed asks of the server: its changes, chats' included. */
-export const FEED: Asks = { needs: "workspace.feed", offers: ["workspace.chats", "workspace.chat_commands", "diff.view", "worktree.manage", "worktree.open_terminal", "machine.settings", "log.forward"] };
+export const FEED: Asks = { needs: "workspace.feed", offers: ["workspace.chats", "workspace.chat_commands", "diff.view", "worktree.manage", "worktree.open_terminal", "machine.settings", "sessions.read", "log.forward"] };
 
 /** The WebSocket of `workspace`'s changes after `since`, on this page's own server. */
 export function feedUrl(location: { protocol: string; host: string }, workspace: WorkspaceId, since: number): string {

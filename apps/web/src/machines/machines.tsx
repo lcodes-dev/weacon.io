@@ -13,6 +13,7 @@ import { fingerprint } from "./fingerprint.ts";
 import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
+import { OutsideSessions } from "./outside-sessions.tsx";
 import type { Pins } from "./pins.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
@@ -105,6 +106,9 @@ function Machine({
   }, [justPaired]);
   // A machine's settings are kept for each workspace, so they show only while one is open.
   const settable = useOffers(socket, "machine.settings");
+  // Outside sessions belong to no workspace, but the open one's socket is the way to the machine.
+  const readable = useOffers(socket, "sessions.read");
+  const [reading, setReading] = useState(false);
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -151,6 +155,12 @@ function Machine({
       {socket !== undefined && settable && open && (
         <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} />
       )}
+      {socket !== undefined && readable && (
+        <button type="button" aria-label={`${machine.name} sessions`} aria-expanded={reading} onClick={() => setReading(!reading)}>
+          {reading ? "Hide sessions" : "Sessions"}
+        </button>
+      )}
+      {socket !== undefined && readable && reading && <OutsideSessions machine={machine} socket={socket} later={later} />}
     </li>
   );
 }

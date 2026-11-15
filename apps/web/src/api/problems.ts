@@ -16,6 +16,8 @@ const PROBLEMS = new Map<Code, string>([
   ["machine.no_answer", "The machine didn't answer. Try again."],
   ["relay.busy", "The server is busy. Try again in a moment."],
   ["settings.not_owner", "Only this machine's owner can see or change its settings."],
+  ["sessions.not_owner", "Only this machine's owner can see its sessions."],
+  ["session.missing", "This session isn't on the machine any more."],
 ]);
 
 /** What the page says when a request fails with `code`; codes it doesn't know get a general line. */
