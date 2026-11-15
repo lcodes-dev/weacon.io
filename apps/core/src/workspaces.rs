@@ -1,18 +1,18 @@
 //! What this machine keeps for each workspace: a folder of its own, holding each agent's
 //! config folder and so its sign-in.
 
-mod access;
+pub(crate) mod access;
 
 use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use weacon_agents::{Launch, SignIn};
+use weacon_agents::{Launch, SignIn, resolve};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{AccessLevel, AgentKind, SignInState, WorkspaceId, code};
 
-pub(crate) use access::{Settings, parse_level, run as access, store as store_access};
+pub(crate) use access::{Settings, run as access, store as store_access};
 
 use crate::app::{App, runtime};
 use crate::{names, platform};
@@ -149,6 +149,33 @@ impl Workspaces {
             .join(format!("{}.json", folder_name(workspace)))
     }
 
+    /// What this machine's owner chose for `workspace`.
+    pub(crate) fn settings(&self, workspace: &WorkspaceId) -> Result<Settings, Fault> {
+        Settings::read(&self.settings_file(workspace))
+    }
+
+    /// Holds `workspace`'s settings for one read, change and save at a time, across processes,
+    /// until the returned file is dropped.
+    pub(crate) fn hold(&self, workspace: &WorkspaceId) -> io::Result<fs::File> {
+        platform::private_dir(&self.settings)?;
+        let lock = self
+            .settings
+            .join(format!("{}.lock", folder_name(workspace)));
+        let file = fs::File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(lock)?;
+        file.lock()?;
+        Ok(file)
+    }
+
+    /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
+    pub(crate) fn save(&self, workspace: &WorkspaceId, settings: &Settings) -> io::Result<()> {
+        platform::private_dir(&self.root(workspace))?;
+        settings.write(&self.settings_file(workspace))
+    }
+
     /// How to start `agent` in `cwd` with `workspace`'s own config folder; the only place runs
     /// get an agent, and none when the workspace's access level doesn't let agents run.
     pub(crate) fn launch(
@@ -170,16 +197,23 @@ impl Workspaces {
                 "This workspace's agents are turned off on this machine",
             ));
         }
+        let launch = self.prepared(workspace, agent, cwd)?;
+        // Claude Code answers a pre-tool hook; that is where the command guard runs.
+        let hook = launch
+            .takes_hook()
+            .then(|| guard_hook(workspace, &launch.cwd))
+            .transpose()?;
         Ok(Launch {
             access,
-            ..self.prepared(workspace, agent, cwd)?
+            hook,
+            ..launch
         })
     }
 
     // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
     // a folder that can't be resolved counts as one that does.
     fn overlaps_state(&self, cwd: &Path) -> bool {
-        let (Some(state), Some(cwd)) = (resolved(&self.state), resolved(cwd)) else {
+        let (Some(state), Some(cwd)) = (resolve(&self.state), resolve(cwd)) else {
             return true;
         };
         cwd.starts_with(&state) || state.starts_with(&cwd)
@@ -201,30 +235,6 @@ impl Workspaces {
             .because(error)
         })?;
         Ok(launch)
-    }
-}
-
-// `path` with its deepest existing folder resolved, so a missing path compares like an existing
-// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
-pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
-    let mut missing = Vec::new();
-    let mut base = path;
-    loop {
-        match base.canonicalize() {
-            Ok(found) => {
-                return Some(
-                    missing
-                        .iter()
-                        .rev()
-                        .fold(found, |path, name| path.join(name)),
-                );
-            }
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
-            Err(_) if base.symlink_metadata().is_ok() => return None,
-            Err(_) => {}
-        }
-        missing.push(base.file_name()?);
-        base = base.parent()?;
     }
 }
 
@@ -301,6 +311,28 @@ fn workspace_id(name: &str) -> Option<WorkspaceId> {
     WorkspaceId::try_from(names::case_safe_id(FOLDER_PREFIX, name)?).ok()
 }
 
+// The core's own `guard check` for the run's hook; a run without its guard doesn't start.
+fn guard_hook(workspace: &WorkspaceId, cwd: &Path) -> Result<Vec<String>, Fault> {
+    let unavailable = || {
+        Fault::new(
+            code!("workspace.guard_unavailable"),
+            "The guard for the agent's run couldn't be set up",
+        )
+    };
+    let exe = std::env::current_exe().map_err(|error| unavailable().because(error))?;
+    let (Some(exe), Some(cwd)) = (exe.to_str(), cwd.to_str()) else {
+        return Err(unavailable());
+    };
+    // Each value joined to its option, so none can be read as an option of its own.
+    Ok(vec![
+        exe.to_owned(),
+        "guard".to_owned(),
+        "check".to_owned(),
+        format!("--workspace={}", workspace.as_str()),
+        format!("--worktree={cwd}"),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -338,18 +370,19 @@ mod tests {
         let codex = launch("w1", AgentKind::Codex);
         let other = launch("w2", AgentKind::Claude);
 
+        assert_eq!(claude.program, program(&dir, "claude"));
+        assert_eq!(claude.config_dir, dir.join("workspaces/w-w1/claude"));
+        assert_eq!(claude.access, AccessLevel::AskFirst);
+        assert_eq!((claude.mcp.as_ref(), claude.plugin.as_ref()), (None, None));
+        // Claude Code answers the guard's pre-tool hook; Codex has none.
+        let hook = claude.hook.clone().unwrap();
         assert_eq!(
-            claude,
-            Launch {
-                agent: AgentKind::Claude,
-                program: program(&dir, "claude"),
-                config_dir: dir.join("workspaces/w-w1/claude"),
-                cwd: PathBuf::from("/work"),
-                access: AccessLevel::AskFirst,
-                mcp: None,
-                plugin: None,
-            }
+            hook.get(1..3),
+            Some(["guard".to_owned(), "check".to_owned()].as_slice())
         );
+        assert!(hook.contains(&"--workspace=w1".to_owned()));
+        assert!(hook.contains(&"--worktree=/work".to_owned()));
+        assert!(codex.hook.is_none());
         assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));
         assert_eq!(other.config_dir, dir.join("workspaces/w-w2/claude"));
@@ -617,6 +650,7 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
             plugin: None,
         };
@@ -651,6 +685,7 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
             plugin: None,
         };
@@ -733,5 +768,22 @@ mod tests {
         let error = require_sign_in(&launch).unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
+    }
+
+    #[test]
+    fn a_workspaces_settings_are_held_by_one_change_at_a_time() {
+        let dir = TempDir::new().unwrap();
+        let workspaces = Workspaces::new(&dir.join("state"), None);
+
+        let held = workspaces.hold(&id("w1")).unwrap();
+        let lock = workspaces
+            .settings
+            .join(format!("{}.lock", folder_name(&id("w1"))));
+        let again = fs::File::open(&lock).unwrap();
+
+        assert!(again.try_lock().is_err());
+        workspaces.hold(&id("w2")).unwrap();
+        drop(held);
+        again.try_lock().unwrap();
     }
 }

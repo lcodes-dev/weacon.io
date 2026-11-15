@@ -3,6 +3,7 @@
 mod access;
 mod claude;
 mod codex;
+pub mod guard;
 mod launch;
 mod lines;
 mod platform;
@@ -16,6 +17,7 @@ mod transcript;
 mod vendor;
 mod wire;
 
+pub use access::resolve;
 pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
 pub use spawn::SpawnPolicy;

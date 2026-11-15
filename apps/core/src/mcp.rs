@@ -721,6 +721,7 @@ mod tests {
             config_dir: PathBuf::from("/state/w/agent"),
             cwd: PathBuf::from("/work"),
             access: weacon_protocol::AccessLevel::AskFirst,
+            hook: None,
             mcp: None,
             plugin: None,
         };

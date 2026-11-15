@@ -97,6 +97,14 @@ fn change(
         }
         MachineSettingsAction::SetAccess { level, team } if *level != AccessLevel::Newer => {
             let workspaces = Workspaces::new(&host.state_dir, None);
+            // Held so this read-modify-write doesn't lose a guard addition saved at the same time.
+            let _held = workspaces.hold(workspace).map_err(|error| {
+                Fault::new(
+                    code!("access.not_saved"),
+                    "The access level couldn't be saved",
+                )
+                .because(error)
+            })?;
             store_access(&workspaces, workspace, *level, *team, &host.log).map(drop)
         }
         MachineSettingsAction::SetAccess { .. } | MachineSettingsAction::Newer => Err(unknown()),

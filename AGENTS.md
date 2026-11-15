@@ -49,7 +49,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - Only `crates/agents` starts agent processes.
 - `integrations/` holds only JSON and Markdown. Its text reaches people's agents, so it follows the UI copy rules and names no real project.
 - Only `crates/observability` depends on Sentry's crates.
-- A source file holds at most 400 lines before its test module, and no TODO or FIXME: finish the work, or leave the note out.
+- A source file holds at most 400 lines before its test module, and no TODO or FIXME: finish the work, or leave the note out. Split a file by job before it reaches the limit; never compress code to fit.
 
 ## Code style
 
@@ -74,7 +74,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Hooks and helpers** that agents run never block them: when Weacon isn't there, they print nothing and exit cleanly.
 - **Screenshots and demos** use made-up data, never real project names.
 - **Errors** that Weacon raises are a `Fault` from `crates/observability`: a dotted code from `crates/protocol`, written `code!("store.full")` so it is checked when compiled, and a short fixed message with no user content in it; these are the only messages that reach logs. A crate may have its own error enum and convert it into a `Fault` where it is logged or crosses a process boundary.
-- **Tests** sit at the end of the file they test, in a `#[cfg(test)] mod tests`, and are deterministic: no sleeps, no fixed ports, no shared state between tests, temporary folders, and per-worktree state in `.dev/`. They test behaviour strongly enough that the mutation tests find no surviving mutant. Temporary folders come from `weacon_testing::TempDir`, recorded logs from its `recording_logger`, and tests that need a whole app build it through one `test_support::app()`, as the core's do. Fakes speak the `protocol` types, never hand-written JSON.
+- **Tests** sit at the end of the file they test, in a `#[cfg(test)] mod tests`, and are deterministic: no sleeps, no fixed ports, no shared state between tests, temporary folders, and per-worktree state in `.dev/`. They test behaviour strongly enough that the mutation tests find no surviving mutant. Exclude an equivalent mutant in `.cargo/mutants.toml` with its reason; don't rewrite clear code around it. Temporary folders come from `weacon_testing::TempDir`, recorded logs from its `recording_logger`, and tests that need a whole app build it through one `test_support::app()`, as the core's do. Fakes speak the `protocol` types, never hand-written JSON.
 - **UI copy:** short, plain sentences in sentence case. Vendor names in plain text, no vendor logos.
 
 ## Logs, error reports and versions
