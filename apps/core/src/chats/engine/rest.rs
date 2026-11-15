@@ -23,7 +23,8 @@ impl<A: Agent> Engine<A> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in idle {
-            if let Err(fault) = self.sleep(&key).await {
+            let slept = self.sleep(&key).await;
+            if let Err(fault) = self.checked(&key, slept).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
             self.settle(&key);
@@ -71,7 +72,8 @@ impl<A: Agent> Engine<A> {
             .map(|record| record.key.clone())
             .collect();
         for key in queued {
-            if let Err(fault) = self.advance(&key).await {
+            let advanced = self.advance(&key).await;
+            if let Err(fault) = self.checked(&key, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -105,7 +107,8 @@ impl<A: Agent> Engine<A> {
             })
             .collect();
         for (key, recent) in awake {
-            if let Err(fault) = self.pick_up(&key, recent).await {
+            let picked = self.pick_up(&key, recent).await;
+            if let Err(fault) = self.checked(&key, picked).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }

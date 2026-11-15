@@ -14,6 +14,7 @@ mod queries;
 mod rest;
 mod said;
 mod turns;
+mod unwritten;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -168,26 +169,13 @@ impl<A: Agent> Engine<A> {
                     },
                     None => return self.log.info("engine stopped", &[]),
                 },
-                Some(said) = self.incoming.recv() => {
-                    let key = said.of.key;
-                    if let Err(fault) = self.heard(&key, &said.of.run, said.heard).await {
-                        let fields = failed(&key, &said.of.run, &fault);
-                        self.log.error("run event not committed", &fields);
-                    }
-                    key
-                }
+                Some(said) = self.incoming.recv() => self.take_said(said).await,
                 Ok(()) = self.disk.changed() => {
                     let full = *self.disk.borrow_and_update();
                     self.set_disk_full(full).await;
                     continue;
                 }
-                Some(launched) = self.started.recv() => {
-                    let (key, run) = (launched.key.clone(), launched.run.clone());
-                    if let Err(fault) = self.finish_launch(launched).await {
-                        self.log.error("run start not handled", &failed(&key, &run, &fault));
-                    }
-                    key
-                }
+                Some(launched) = self.started.recv() => self.take_launched(launched).await,
             };
             self.settle(&key);
         }

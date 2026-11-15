@@ -91,7 +91,8 @@ impl<A: Agent> Engine<A> {
             .collect();
         for key in released {
             self.log.info("chat released", &chat_about(&key));
-            if let Err(fault) = self.advance(&key).await {
+            let advanced = self.advance(&key).await;
+            if let Err(fault) = self.checked(&key, advanced).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }

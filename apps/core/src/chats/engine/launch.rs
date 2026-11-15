@@ -115,12 +115,7 @@ impl<A: Agent> Engine<A> {
         tokio::spawn(drive(agent, of, ordered, self.says.clone()));
         self.open(key).await?.orders = Some(orders);
         self.log.info("run started", &about(key, run));
-        // The agent is up: a status that can't be committed doesn't stop its turn.
-        if let Err(fault) = self.tell_state(key, run, RunState::Starting).await {
-            self.log
-                .warn("run status not committed", &failed(key, run, &fault));
-        }
-        Ok(())
+        self.tell_state(key, run, RunState::Starting).await
     }
 }
 
