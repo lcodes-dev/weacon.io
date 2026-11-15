@@ -215,12 +215,10 @@ async fn matched_code(
     .fetch_all(connection)
     .await
     .map_err(failed)?;
-    Ok(codes
-        .into_iter()
-        .fold(None, |found, (challenge, code)| {
-            let right = bool::from(code.as_bytes().ct_eq(attempt.code.as_bytes()));
-            found.or_else(|| right.then_some(challenge))
-        }))
+    Ok(codes.into_iter().fold(None, |found, (challenge, code)| {
+        let right = bool::from(code.as_bytes().ct_eq(attempt.code.as_bytes()));
+        found.or_else(|| right.then_some(challenge))
+    }))
 }
 
 async fn end_challenge(connection: &mut SqliteConnection, challenge: &str) -> Result<(), Fault> {
@@ -420,14 +418,8 @@ mod tests {
         let db = people(&dir).await;
         challenge(&db, "ada@example.com", "c1", "code", NOW).await;
 
-        assert_eq!(
-            try_as(&db, "bo@example.com", "c1", "code", NOW).await,
-            None
-        );
-        assert_eq!(
-            try_as(&db, "cy@example.com", "c1", "code", NOW).await,
-            None
-        );
+        assert_eq!(try_as(&db, "bo@example.com", "c1", "code", NOW).await, None);
+        assert_eq!(try_as(&db, "cy@example.com", "c1", "code", NOW).await, None);
         assert_eq!(try_code(&db, "c9", "code", NOW).await, None);
         assert!(try_code(&db, "c1", "code", NOW).await.is_some());
     }
@@ -531,10 +523,7 @@ mod tests {
         }
         challenge(&db, "ada@example.com", "c5", "code", NOW).await;
 
-        assert_eq!(
-            try_as(&db, "cy@example.com", "c1", "code", NOW).await,
-            None
-        );
+        assert_eq!(try_as(&db, "cy@example.com", "c1", "code", NOW).await, None);
         assert_eq!(
             try_as(&db, "cy@example.com", "c2", "guess", NOW).await,
             None

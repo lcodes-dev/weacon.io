@@ -114,7 +114,9 @@ async fn send_code(
             shown(&code),
             CODE_LIFETIME / 60
         );
-        shared.log.mail(email.as_str(), "Your Weacon sign-in code", &text);
+        shared
+            .log
+            .mail(email.as_str(), "Your Weacon sign-in code", &text);
     }
     Ok(())
 }
@@ -232,8 +234,8 @@ mod tests {
     use super::*;
     use crate::auth::SESSION_COOKIE;
     use crate::test_support::{
-        Fixture, ask, bearer, email, finish_body, fresh_account, member_id, request,
-        request_with, run, sign_in, start_sign_in, status, workspace_id,
+        Fixture, ask, bearer, email, finish_body, fresh_account, member_id, request, request_with,
+        run, sign_in, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
