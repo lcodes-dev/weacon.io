@@ -160,7 +160,16 @@ mod tests {
             assert!(pattern.is_match(good), "{good}");
         }
         let too_long = "a".repeat(TOKEN_MAX + 1);
-        for bad in ["", "a b", "a/b", "é", "-", "-a", "--help", too_long.as_str()] {
+        for bad in [
+            "",
+            "a b",
+            "a/b",
+            "é",
+            "-",
+            "-a",
+            "--help",
+            too_long.as_str(),
+        ] {
             assert!(!is_token(bad), "{bad}");
             // The schema states the length limit apart from the pattern.
             assert!(bad.len() > TOKEN_MAX || !pattern.is_match(bad), "{bad}");
