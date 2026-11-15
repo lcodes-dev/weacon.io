@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, Message, Outcome, Pick, Receipt, SessionsQuery, SymbolsQuery,
-    TerminalCommand, code,
+    Asker, Envelope, FrameError, MapAnswer, Message, Outcome, Pick, Receipt, SessionsQuery,
+    SymbolsQuery, TerminalCommand, code,
 };
 
 use super::worktrees::{self, Late};
@@ -63,6 +63,18 @@ pub(super) async fn route(
                 Err(fault) => Reply::error(id, fault.code().clone(), false),
             }
         }
+        Message::MapQuery(query) => Reply {
+            envelope: Some(Envelope {
+                id,
+                message: Message::MapAnswer(MapAnswer {
+                    text: shared
+                        .maps
+                        .for_hook(&shared.mcp.grants, query, &shared.log)
+                        .await,
+                }),
+            }),
+            close: false,
+        },
         message => session.answer(Ok(Envelope { id, message }), &shared.app),
     }
 }

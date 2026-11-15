@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatQuery, ChatUpdate, ClientLog, Code, DiffAnswer,
     DiffQuery, InstallCommand, MachineSettingsAnswer, MachineSettingsCommand, MachineSettingsQuery,
-    Pick, ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery, SymbolsAnswer,
-    SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
+    MapAnswer, MapQuery, Pick, ProposalCommand, Receipt, RunUpdate, SessionsAnswer, SessionsQuery,
+    SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
     WorktreeCommand, WorktreeQuery, code,
 };
 
@@ -49,6 +49,8 @@ pub enum Message {
     WorktreeCommand(WorktreeCommand),
     WorktreeAnswer(WorktreeAnswer),
     ProposalCommand(ProposalCommand),
+    MapQuery(MapQuery),
+    MapAnswer(MapAnswer),
     SymbolsQuery(SymbolsQuery),
     SymbolsAnswer(SymbolsAnswer),
     InstallCommand(InstallCommand),
