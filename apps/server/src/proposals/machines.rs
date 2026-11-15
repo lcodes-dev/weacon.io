@@ -134,7 +134,7 @@ async fn answer(
     let (workspace, _, _) = member(shared, machine, &query.workspace).await?;
     match &query.query {
         ProposalQueryKind::Pinned { after } => {
-            let (docs, more) = workspace.pinned_docs(after.as_ref()).await?;
+            let (docs, more) = workspace.pinned_docs(after.as_ref(), &machine.id).await?;
             Ok(ProposalAnswerKind::Pinned { docs, more })
         }
         ProposalQueryKind::Doc { doc } => {

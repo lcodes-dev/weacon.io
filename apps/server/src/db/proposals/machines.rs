@@ -1,3 +1,4 @@
+use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AccountId, DocContent, DocId, MachineId, MachineName, MemberId, PinnedDoc, ProposalChange,
@@ -35,10 +36,11 @@ impl Workspace {
     }
 
     /// The docs whose current revision pins code, by id from the first after `after`, a page
-    /// of them, and whether more follow.
+    /// of them, and whether more follow; each pins what `machine`'s own open re-anchor would.
     pub(crate) async fn pinned_docs(
         &self,
         after: Option<&DocId>,
+        machine: &MachineId,
     ) -> Result<(Vec<PinnedDoc>, bool), Fault> {
         // One snapshot, so no revision lands between the page and its docs.
         let mut reader = self.db.readers.begin().await.map_err(failed)?;
@@ -58,7 +60,10 @@ impl Workspace {
         let mut docs = Vec::new();
         for id in ids {
             let doc = self.read_doc(&mut reader, &stored(id)?, None).await?;
-            let anchors = doc.text.anchors().cloned().ok_or_else(unreadable)?;
+            let own = self.own_change(&mut reader, &doc.id, doc.version.get(), machine);
+            let anchors = own.await?.and_then(|own| own.anchors);
+            let anchors = anchors.or_else(|| doc.text.anchors().cloned());
+            let anchors = anchors.ok_or_else(unreadable)?;
             docs.push(PinnedDoc {
                 id: doc.id,
                 version: doc.version.get(),
@@ -76,6 +81,18 @@ impl Workspace {
         version: u64,
         machine: &MachineId,
     ) -> Result<Option<DocContent>, Fault> {
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        self.own_change(&mut reader, id, version, machine).await
+    }
+
+    /// `own_edit`, read through `connection`.
+    pub(super) async fn own_change(
+        &self,
+        connection: &mut SqliteConnection,
+        id: &DocId,
+        version: u64,
+        machine: &MachineId,
+    ) -> Result<Option<DocContent>, Fault> {
         let base = i64::try_from(version).map_err(|_| unreadable())?;
         let change: Option<String> = sqlx::query_scalar(
             "SELECT change FROM proposals WHERE workspace_id = ? AND machine_id = ? AND agent = ''
@@ -87,7 +104,7 @@ impl Workspace {
         .bind(DOC_EDIT)
         .bind(id.as_str())
         .bind(base)
-        .fetch_optional(&self.db.readers)
+        .fetch_optional(connection)
         .await
         .map_err(failed)?;
         let change: Option<ProposalChange> = change.as_deref().map(parsed).transpose()?;
@@ -159,9 +176,10 @@ pub(super) fn kept_findings(
 #[cfg(test)]
 mod tests {
     use weacon_model::{Doc, DocText, Title};
-    use weacon_protocol::{DocAnchors, ProposalChange, ProposalState};
+    use weacon_protocol::{AnchorChange, DocAnchors, DocPin, ProposalState, StaleAnchor};
     use weacon_testing::TempDir;
 
+    use super::super::Proposed;
     use super::*;
     use crate::db::test_support::{by, code, id};
     use crate::test_support::proposals::proposed;
@@ -199,9 +217,9 @@ mod tests {
             .await
             .unwrap();
 
-        let (first, more) = one.pinned_docs(None).await.unwrap();
+        let (first, more) = one.pinned_docs(None, &id("c1")).await.unwrap();
         assert_eq!((ids(&first), more), (vec!["d1", "d2", "d3", "d4"], true));
-        let (rest, more) = one.pinned_docs(Some(&id("d4"))).await.unwrap();
+        let (rest, more) = one.pinned_docs(Some(&id("d4")), &id("c1")).await.unwrap();
         assert_eq!((ids(&rest), more), (vec!["d5"], false));
         assert_eq!(first[0].version, 1);
     }
@@ -247,8 +265,55 @@ mod tests {
                 .unwrap();
         }
 
-        let (docs, more) = one.pinned_docs(None).await.unwrap();
+        let (docs, more) = one.pinned_docs(None, &id("c1")).await.unwrap();
 
         assert_eq!((docs.len(), more), (PAGE_DOCS, false));
+    }
+
+    #[tokio::test]
+    async fn a_machines_open_re_anchor_is_what_its_docs_pin_for_it_alone() {
+        let dir = TempDir::new().unwrap();
+        let (one, _) = two_teams(&dir).await;
+        one.add_doc(&Doc::new(id("d1"), text(true)), &by("m1"))
+            .await
+            .unwrap();
+        let moved: DocPin = "sym:a::went#0123456789abcdef".parse().unwrap();
+        let anchors = DocAnchors {
+            commit: "a".repeat(40).parse().unwrap(),
+            pins: vec![moved.clone()],
+        };
+        let content = DocContent {
+            title: "Plan".to_owned(),
+            body: "[go](sym:a::went)\n".to_owned(),
+            anchors: Some(anchors.clone()),
+        };
+        let edit = ProposalChange::DocEdit {
+            doc: id("d1"),
+            base: 1,
+            content,
+        };
+        let own = |proposal: &str, machine: &str, change: ProposalChange| Proposed {
+            agent: None,
+            ..proposed(proposal, machine, change)
+        };
+        one.propose(&own("p1", "mc1", edit)).await.unwrap();
+        let stale = ProposalChange::NeedsUpdate {
+            doc: id("d1"),
+            base: 1,
+            anchors: vec![StaleAnchor {
+                pin: moved,
+                change: AnchorChange::Gone {
+                    was: "sym:a::went".to_owned(),
+                },
+            }],
+        };
+
+        let (mine, _) = one.pinned_docs(None, &id("mc1")).await.unwrap();
+        let (theirs, _) = one.pinned_docs(None, &id("mc2")).await.unwrap();
+        assert_eq!(mine[0].anchors, anchors);
+        assert_eq!(theirs[0].anchors, text(true).anchors().cloned().unwrap());
+        let refused = one.propose(&own("p2", "mc2", stale.clone())).await;
+        assert_eq!(code(&refused.unwrap_err()), "proposal.invalid");
+        one.propose(&own("p3", "mc1", stale)).await.unwrap();
     }
 }

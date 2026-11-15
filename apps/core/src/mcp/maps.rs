@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Facts, Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
@@ -56,21 +56,19 @@ struct Stores {
     /// The current index of each watched worktree, by its workspace and paths.
     live: Arc<Mutex<HashMap<Watched, Arc<Index>>>>,
     reads: Arc<Semaphore>,
-    /// Where what a move of a base did to docs' anchors is proposed, and the commit each
-    /// repository's base last moved to, by its workspace and main worktree.
-    proposals: Option<Proposals>,
-    moves: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), Checked>>>,
+    /// Where each move of a repository's base is sent to be checked, if anywhere.
+    moves: Option<Moves>,
 }
 
-/// The commit a repository's base last moved to, and the base before it while checking that
-/// move failed, so the next move is checked from there.
-#[derive(Debug)]
-struct Checked {
-    commit: CommitId,
-    /// How many moves of this repository came before this one.
-    seq: u64,
-    /// The base the oldest failed check started from, and that check's `seq`.
-    failed: Option<(u64, Vec<Facts>)>,
+/// A repository, by its workspace and main worktree.
+type Repository = (WorkspaceId, PathBuf);
+
+/// The commit each repository's base last moved to, and the queue that checks each move,
+/// one at a time and in the order they came.
+#[derive(Clone, Debug)]
+struct Moves {
+    seen: Arc<Mutex<HashMap<Repository, CommitId>>>,
+    checks: mpsc::UnboundedSender<(Repository, Move, Logger)>,
 }
 
 /// A live run's worktree, in a repository its workspace registered, by its canonical paths.
@@ -192,8 +190,14 @@ async fn open(
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
         reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
-        proposals,
-        moves: Arc::default(),
+        moves: proposals.map(|proposals| {
+            let (checks, queued) = mpsc::unbounded_channel();
+            tokio::spawn(check_moves(proposals, queued));
+            Moves {
+                seen: Arc::default(),
+                checks,
+            }
+        }),
     })
 }
 
@@ -319,40 +323,20 @@ impl Stores {
         }
     }
 
-    /// Proposes, on a task of its own, what `moved` did to the anchors of `watched`'s
-    /// workspace's docs, once for each commit a repository's base moves to; a move whose
-    /// check failed is checked again with the next.
-    fn moved(&self, watched: &Watched, mut moved: Move, log: &Logger) {
-        let Some(proposals) = self.proposals.clone() else {
+    /// Queues `moved`, to propose what it did to the anchors of `watched`'s workspace's docs,
+    /// once for each commit a repository's base moves to.
+    fn moved(&self, watched: &Watched, moved: Move, log: &Logger) {
+        let Some(queue) = &self.moves else {
             return;
         };
         let key = (watched.workspace.clone(), watched.main.clone());
-        let mut seen = self.moves.lock().unwrap_or_else(PoisonError::into_inner);
-        let earlier = seen.get(&key);
-        if earlier.is_some_and(|earlier| earlier.commit == moved.commit) {
+        let mut seen = queue.seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if seen.get(&key) == Some(&moved.commit) {
             return;
         }
-        let seq = earlier.map_or(0, |earlier| earlier.seq.saturating_add(1));
-        // A check from a base kept for an older move fails as that move's.
-        let mut from = seq;
-        if let Some((kept, was)) = earlier.and_then(|earlier| earlier.failed.clone()) {
-            (from, moved.was) = (kept, was);
-        }
-        let checked = Checked {
-            commit: moved.commit.clone(),
-            seq,
-            failed: None,
-        };
-        seen.insert(key.clone(), checked);
+        seen.insert(key.clone(), moved.commit.clone());
         drop(seen);
-        let checks = Arc::clone(&self.moves);
-        tokio::spawn(check_move(
-            proposals,
-            (key, from),
-            moved,
-            checks,
-            log.clone(),
-        ));
+        drop(queue.checks.send((key, moved, log.clone())));
     }
 
     // Only the map is guarded, so a poisoned lock still holds a usable one.
@@ -361,33 +345,30 @@ impl Stores {
     }
 }
 
-/// Proposes what `moved`, from the base of the move numbered `seq`, did to the docs of the
-/// workspace in `key`, and when that fails keeps that base in `checks`, for the next move.
-async fn check_move(
+/// Checks each queued move in turn; a move whose check failed is checked again, from its
+/// base, with the repository's next move.
+async fn check_moves(
     proposals: Proposals,
-    (key, seq): ((WorkspaceId, PathBuf), u64),
-    moved: Move,
-    checks: Arc<Mutex<HashMap<(WorkspaceId, PathBuf), Checked>>>,
-    log: Logger,
+    mut queued: mpsc::UnboundedReceiver<(Repository, Move, Logger)>,
 ) {
-    let was = moved.was.clone();
-    let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
-    let checked = async {
-        let (was, now, commit) = off_runtime(assembled).await?;
-        proposals::moved(&proposals, &key.0, &was, &now, &commit).await
-    };
-    let fault = match checked.await {
-        Ok(docs) => return log.info("anchors checked", &[("docs", docs.into())]),
-        Err(fault) => fault,
-    };
-    log.warn("anchors check failed", &[("err", Field::error(&fault))]);
-    // Checks of later moves may fail first; the oldest base failed from is kept, so the next
-    // move covers what each missed.
-    let mut seen = checks.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(checked) = seen.get_mut(&key)
-        && checked.failed.as_ref().is_none_or(|(kept, _)| seq < *kept)
-    {
-        checked.failed = Some((seq, was));
+    let mut failed: HashMap<Repository, Vec<Facts>> = HashMap::new();
+    while let Some((key, mut moved, log)) = queued.recv().await {
+        if let Some(was) = failed.remove(&key) {
+            moved.was = was;
+        }
+        let was = moved.was.clone();
+        let assembled = move || Ok((assemble(&moved.was), assemble(&moved.now), moved.commit));
+        let checked = async {
+            let (was, now, commit) = off_runtime(assembled).await?;
+            proposals::moved(&proposals, &key.0, &was, &now, &commit).await
+        };
+        match checked.await {
+            Ok(docs) => log.info("anchors checked", &[("docs", docs.into())]),
+            Err(fault) => {
+                log.warn("anchors check failed", &[("err", Field::error(&fault))]);
+                failed.insert(key, was);
+            }
+        }
     }
 }
 
@@ -722,28 +703,17 @@ mod tests {
         assert!(!messages(&records).contains(&"anchors check failed"));
         let off = open(&dir, path, None).await.unwrap();
         off.moved(&watched, moved('d'), &log);
-        assert!(off.moves.lock().unwrap().is_empty());
+        assert!(off.moves.is_none());
     }
 
-    async fn until_failed(stores: &Stores, key: &(WorkspaceId, PathBuf)) {
-        let failed = || {
-            let checks = stores.moves.lock().unwrap();
-            checks
-                .get(key)
-                .is_some_and(|checked| checked.failed.is_some())
-        };
-        let waited = async {
-            while !failed() {
-                tokio::task::yield_now().await;
-            }
-        };
-        tokio::time::timeout(Duration::from_secs(10), waited)
+    async fn heard(fake: &Fake) {
+        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn a_move_whose_check_failed_is_checked_again_with_the_next() {
+    async fn a_move_whose_check_failed_is_checked_again_from_its_base_with_the_next() {
         let dir = TempDir::new().unwrap();
         let fake = Fake::default();
         *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
@@ -764,33 +734,26 @@ mod tests {
             worktree: dir.join("main"),
         };
         let (log, _) = recording_logger();
-        let key = (watched.workspace.clone(), watched.main.clone());
-
-        let first = Move {
+        // Later moves change nothing more, so each proposes only what the first one did.
+        let moved = |was: &Vec<Facts>, commit: char| Move {
             was: was.clone(),
             now: now.clone(),
-            commit: "b".repeat(40).parse().unwrap(),
+            commit: commit.to_string().repeat(40).parse().unwrap(),
         };
-        stores.moved(&watched, first, &log);
-        until_failed(&stores, &key).await;
+
+        stores.moved(&watched, moved(&was, 'b'), &log);
+        heard(&fake).await;
+        // Checked from the base the refused check started from.
+        stores.moved(&watched, moved(&now, 'c'), &log);
+        heard(&fake).await;
         *fake.refuse.lock().unwrap() = None;
-        // The next move changes nothing more, so only the failed one has anything to propose.
-        let next = Move {
-            was: now.clone(),
-            now,
-            commit: "c".repeat(40).parse().unwrap(),
-        };
-        stores.moved(&watched, next, &log);
-        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
-            .await
-            .unwrap();
-        tokio::time::timeout(Duration::from_secs(10), fake.heard.notified())
-            .await
-            .unwrap();
+        stores.moved(&watched, moved(&now, 'd'), &log);
+        heard(&fake).await;
 
         let commands = fake.commands();
-        assert_eq!(commands.len(), 2);
+        assert_eq!(commands.len(), 3);
         assert_eq!(commands[0].action, commands[1].action);
+        assert_eq!(commands[1].action, commands[2].action);
     }
 
     #[tokio::test]
@@ -799,101 +762,5 @@ mod tests {
 
         assert!(Maps::off().proposals.is_none());
         assert!(Maps::off().proposing(fake.connect()).proposals.is_some());
-    }
-
-    #[tokio::test]
-    async fn a_failed_check_keeps_the_oldest_base_a_later_move_started_after() {
-        let fake = Fake::default();
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
-        let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");
-        let base = |text: &str| facts(&[manifest, ("src/lib.rs", text)]);
-        let anchor: weacon_codemap::Anchor = "sym:a::go".parse().unwrap();
-        let pin = weacon_codemap::Pin {
-            fingerprint: assemble(&base("pub fn go() {}\n"))
-                .fingerprint(&anchor)
-                .unwrap(),
-            anchor,
-        };
-        fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
-        let key = (workspace("one"), PathBuf::from("/main"));
-        let commit = |digit: char| -> CommitId { digit.to_string().repeat(40).parse().unwrap() };
-        let checks: Arc<Mutex<HashMap<_, Checked>>> = Arc::default();
-        let (log, _) = recording_logger();
-        // The check of move 1, from base `go`, fails with `failed` kept so far.
-        let check = |failed: Option<(u64, Vec<Facts>)>| {
-            let checked = Checked {
-                commit: commit('d'),
-                seq: 3,
-                failed,
-            };
-            checks.lock().unwrap().insert(key.clone(), checked);
-            let moved = Move {
-                was: base("pub fn go() {}\n"),
-                now: base("pub fn go() { let x = 1; }\n"),
-                commit: commit('b'),
-            };
-            let at = (key.clone(), 1);
-            check_move(fake.connect(), at, moved, Arc::clone(&checks), log.clone())
-        };
-        let failed = || checks.lock().unwrap().get(&key).unwrap().failed.clone();
-        let (go, older, newer) = (
-            base("pub fn go() {}\n"),
-            base("pub fn older() {}\n"),
-            base("pub fn newer() {}\n"),
-        );
-
-        check(None).await;
-        assert_eq!(failed(), Some((1, go.clone())));
-        // A base kept by an older move's failed check stays.
-        check(Some((0, older.clone()))).await;
-        assert_eq!(failed(), Some((0, older)));
-        // A later move's check that failed first gives way to this older one.
-        check(Some((2, newer))).await;
-        assert_eq!(failed(), Some((1, go)));
-    }
-
-    #[tokio::test]
-    async fn a_move_from_a_kept_base_fails_as_the_older_move_it_came_from() {
-        let dir = TempDir::new().unwrap();
-        let fake = Fake::default();
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
-        let path = std::env::var_os("PATH");
-        let stores = open(&dir, path, Some(fake.connect())).await.unwrap();
-        let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");
-        let base = |text: &str| facts(&[manifest, ("src/lib.rs", text)]);
-        let watched = Watched {
-            workspace: workspace("one"),
-            main: dir.join("main"),
-            worktree: dir.join("main"),
-        };
-        let key = (watched.workspace.clone(), watched.main.clone());
-        let commit = |digit: char| -> CommitId { digit.to_string().repeat(40).parse().unwrap() };
-        let kept = base("pub fn a() {}\n");
-        // Pinned in the kept base only, so the check proposes, and is refused, only from it.
-        let anchor: weacon_codemap::Anchor = "sym:a::a".parse().unwrap();
-        let pin = weacon_codemap::Pin {
-            fingerprint: assemble(&kept).fingerprint(&anchor).unwrap(),
-            anchor,
-        };
-        fake.docs.lock().unwrap().push(pinned_doc(&pin.to_string()));
-        let checked = Checked {
-            commit: commit('c'),
-            seq: 2,
-            failed: Some((0, kept.clone())),
-        };
-        stores.moves.lock().unwrap().insert(key.clone(), checked);
-        let (log, _) = recording_logger();
-
-        let moved = Move {
-            was: base("pub fn c() {}\n"),
-            now: base("pub fn d() {}\n"),
-            commit: commit('d'),
-        };
-        stores.moved(&watched, moved, &log);
-        until_failed(&stores, &key).await;
-
-        let checks = stores.moves.lock().unwrap();
-        let now = checks.get(&key).unwrap();
-        assert_eq!((now.seq, now.failed.clone()), (3, Some((0, kept))));
     }
 }
