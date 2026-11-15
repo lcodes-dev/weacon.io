@@ -50,6 +50,18 @@ test("an owner invites someone, who signs in and joins, then is removed and leav
   const row = members(page).getByRole("list", { name: "Members" }).getByRole("listitem").filter({ hasText: "bo" });
   await row.getByText("Member", { exact: true }).waitFor();
   assert.equal(await members(page).getByRole("list", { name: "Invitations" }).count(), 0);
+
+  // bo leaves, and is told so; invited again and back, the owner removes them.
+  await bo.getByRole("button", { name: "Settings", exact: true }).click();
+  await members(bo).getByRole("button", { name: "Leave" }).click();
+  await members(bo).getByRole("button", { name: "Leave" }).click();
+  await bo.getByRole("button", { name: "Back" }).click();
+  await bo.getByText("You left Crew.").waitFor();
+  await row.getByText("Past member").waitFor();
+  await invite(page, "bo@example.com");
+  await offer.getByRole("button", { name: "Accept" }).click();
+  await bo.getByRole("heading", { name: "Crew" }).waitFor();
+  await row.getByText("Member", { exact: true }).waitFor();
   await row.getByRole("button", { name: "Remove" }).click();
   await row.getByRole("button", { name: "Remove" }).click();
   await row.getByText("Past member").waitFor();

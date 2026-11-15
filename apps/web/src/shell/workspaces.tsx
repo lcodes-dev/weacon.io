@@ -75,14 +75,20 @@ export function Workspaces({
     setNotice(text);
     void loaded.load();
   };
+  // The one the person chose to leave, whose refusals that follow are no news.
+  const departed = useRef<WorkspaceId>(undefined);
   useEffect(() => {
-    if (left !== undefined) {
+    if (left !== undefined && left.workspace !== departed.current) {
       const name = list?.find(({ id }) => id === left.workspace)?.name;
       leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
     }
   }, [left]);
   const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={choose} />;
-  const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: leave } : undefined;
+  const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
+          departed.current = workspace.id;
+          leave(text);
+        },
+      } : undefined;
   return (
     <Frame right={who}>
       <div className={page === undefined ? "pane" : "pane away"}>

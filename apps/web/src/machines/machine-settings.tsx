@@ -61,7 +61,7 @@ export function MachineSettingsView({ machine, socket, later, pins, relays, team
     if (stale && !changing.busy) {
       set({ kind: "set_access", level: shown.access, team });
     }
-  }, [stale]);
+  }, [stale, changing.busy]);
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
