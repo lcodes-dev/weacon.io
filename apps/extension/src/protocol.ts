@@ -812,6 +812,23 @@ export type MachineSummary = {
 export type MemberId = string;
 
 /**
+ * A workspace's members, past ones included, in the order they were added, from the server to
+ * clients that have the capability `workspace.members`.
+ */
+export type MemberList = {
+  members: Array<MemberSummary>;
+};
+
+/**
+ * A member as the workspace's other members see them, under the name the server shows for
+ * them.
+ */
+export type MemberSummary = {
+  id: MemberId;
+  name: string;
+};
+
+/**
  * A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the
  * whole body.
  */
