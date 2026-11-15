@@ -142,7 +142,7 @@ impl Maps {
 
     /// What search finds for `words` among the items of each repository `workspace`
     /// registered, at its main worktree's commit, best first in each; one that can't be read is
-    /// left out.
+    /// left out. A base read past the limit goes on, so the next search finds it stored.
     pub(crate) async fn symbols(
         &self,
         workspace: &WorkspaceId,
@@ -150,18 +150,16 @@ impl Maps {
         log: &Logger,
     ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
         let stores = self.stores(log).await.ok_or_else(failed)?;
-        let (listing, asked) = (stores.clone(), workspace.clone());
-        let repos = off_runtime(move || listing.mains(&asked)).await?;
-        let store = stores.db.workspace(workspace);
-        let mut found = Vec::new();
-        for (repo, main) in repos {
-            let map = repo_map(&store, &stores.git, main);
-            match map.search_head(words, Looking::Items).await {
-                Ok(hits) => found.push((repo, hits)),
-                Err(fault) => log.warn("symbols repo failed", &[("err", Field::error(&fault))]),
-            }
+        let (workspace, words, log) = (workspace.clone(), words.to_owned(), log.clone());
+        let reading = tokio::spawn(async move { stores.symbols(workspace, &words, &log).await });
+        match tokio::time::timeout(self.limit, reading).await {
+            Err(_) => Err(Fault::new(
+                code!("symbols.still_reading"),
+                "The code map is still being read",
+            )),
+            Ok(Ok(found)) => found,
+            Ok(Err(error)) => Err(failed().because(error)),
         }
-        Ok(found)
     }
 
     /// The stores, opened at the first use; none, logged once, when either can't be.
@@ -189,6 +187,39 @@ async fn open(state_dir: &Path, path: Option<OsString>) -> Result<Stores, Fault>
 }
 
 impl Stores {
+    /// What [`Maps::symbols`] finds, reading a repository's base, when it must, as one of the
+    /// reads at once.
+    async fn symbols(
+        &self,
+        workspace: WorkspaceId,
+        words: &str,
+        log: &Logger,
+    ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
+        let (listing, asked) = (self.clone(), workspace.clone());
+        let repos = off_runtime(move || listing.mains(&asked)).await?;
+        let store = self.db.workspace(&workspace);
+        let mut found = Vec::new();
+        for (repo, main) in repos {
+            let _read = self
+                .reads
+                .acquire()
+                .await
+                .map_err(|error| failed().because(error))?;
+            let map = repo_map(&store, &self.git, main);
+            match map.search_head(words, Looking::Items).await {
+                Ok(hits) => found.push((repo, hits)),
+                Err(fault) => {
+                    let about = [
+                        ("repo", repo.as_str().into()),
+                        ("err", Field::error(&fault)),
+                    ];
+                    log.warn("symbols repo failed", &about);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// The answer to `call` from the map of `folder`, or none when it isn't in a repository
     /// `workspace` registered; a search looks through the worktree's stored layer.
     async fn answer(
@@ -480,6 +511,10 @@ mod tests {
         assert_eq!(names(&theirs), [("b".to_owned(), run("beta::run"))]);
         let off = Maps::off().symbols(&one, "run", &log).await;
         assert_eq!(off.unwrap_err().code().as_str(), "mcp.map_failed");
+        let mut slow = setup.maps.clone();
+        slow.limit = Duration::ZERO;
+        let late = slow.symbols(&one, "run", &log).await.unwrap_err();
+        assert_eq!(late.code().as_str(), "symbols.still_reading");
     }
 
     #[tokio::test]

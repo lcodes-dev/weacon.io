@@ -22,7 +22,8 @@ pub struct SymbolsQuery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SymbolsQueryKind {
-    /// The items whose path holds every word, or a word's start, best first.
+    /// The items whose path, or a contract they declare, holds every word, or a word's start,
+    /// best first.
     Search { words: String },
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]

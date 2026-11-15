@@ -92,7 +92,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
         <input
           ref={input}
           aria-label="Search"
-          placeholder="Search tasks, docs and chats"
+          placeholder={coded.offered ? "Search tasks, docs, chats and code" : "Search tasks, docs and chats"}
           role="combobox"
           aria-expanded={count > 0}
           aria-controls="palette-hits"
@@ -179,7 +179,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
 
 type Answered = { text: string; hits: SearchHit[] };
 
-type Coded = { text: string; symbols: CodeSymbol[] };
+type Coded = { machine: MachineId; text: string; symbols: CodeSymbol[] };
 
 /**
  * The symbols on the person's machine that match `text`, once its answer is for that text; none
@@ -209,16 +209,17 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | und
     if (typeof machine === "string" && text.trim() !== "") {
       void loader.load(async () => {
         const answer = await symbols(socket, machine, text, later);
-        return answer.ok ? { ok: true, value: { text, symbols: answer.value } } : answer;
+        return answer.ok ? { ok: true, value: { machine, text, symbols: answer.value } } : answer;
       });
     }
   }, [loader, socket, machine, text]);
   const asking = typeof machine === "string";
-  const answered = asking && coded.value?.text === text;
+  const answered = asking && coded.value?.machine === machine && coded.value.text === text;
   return {
     symbols: answered ? (coded.value?.symbols ?? []) : [],
     problem: asking ? coded.problem : undefined,
     settled: !offered || machine === null || answered || coded.problem !== undefined,
+    offered,
   };
 }
 

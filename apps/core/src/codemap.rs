@@ -247,6 +247,9 @@ impl<S: Source> RepoMap<S> {
         words: &str,
         looking: Looking,
     ) -> Result<Vec<Hit>, Fault> {
+        if words.trim().is_empty() {
+            return Ok(Vec::new());
+        }
         let head = self.head().await?;
         if self.map.commit_of(BASE).await?.as_deref() != Some(head.as_str()) {
             self.base().await?;
@@ -637,6 +640,9 @@ mod tests {
         let again = repo.search_head("gone", Looking::Items).await;
         assert_eq!(names(again), ["a::gone"]);
         assert_eq!(source.trees_read(), 0);
+        source.heads_read();
+        assert!(repo.search_head("  ", Looking::Items).await.unwrap().is_empty());
+        assert_eq!(source.heads_read(), 0);
     }
 
     #[test]

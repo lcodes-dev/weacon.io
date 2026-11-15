@@ -8,6 +8,7 @@ use weacon_protocol::{
     code,
 };
 
+use crate::codemap::SEARCHED;
 use crate::db::Hit;
 use crate::mcp::Maps;
 
@@ -46,8 +47,12 @@ pub(crate) async fn query(
     })
 }
 
-/// The best of each repository's hits in turn, at most [`MOST`], and whether any were left out.
+/// The best of each repository's hits in turn, at most [`MOST`], and whether any were left out,
+/// a repository's own search among them when it found as many as it returns.
 fn best(found: Vec<(RepoId, Vec<Hit>)>) -> (Vec<Symbol>, bool) {
+    let cut = found
+        .iter()
+        .any(|(_, hits)| u32::try_from(hits.len()).unwrap_or(u32::MAX) >= SEARCHED);
     let mut each: Vec<_> = found
         .into_iter()
         .map(|(repo, hits)| hits.into_iter().filter_map(move |hit| symbol(&repo, hit)))
@@ -60,7 +65,7 @@ fn best(found: Vec<(RepoId, Vec<Hit>)>) -> (Vec<Symbol>, bool) {
             break;
         }
     }
-    let more = symbols.len() > MOST;
+    let more = cut || symbols.len() > MOST;
     symbols.truncate(MOST);
     (symbols, more)
 }
@@ -196,8 +201,11 @@ mod tests {
         assert_eq!(names(&symbols), ["a0", "b0", "a1", "a2"]);
         assert!(!more);
         assert_eq!(symbols[1].repo, two);
+        let (symbols, more) = best(vec![(one.clone(), hits("a", MOST - 1))]);
+        assert_eq!((symbols.len(), more), (MOST - 1, false));
+        // A repository that found as many as it returns may have found more.
         let (symbols, more) = best(vec![(one.clone(), hits("a", MOST))]);
-        assert_eq!((symbols.len(), more), (MOST, false));
+        assert_eq!((symbols.len(), more), (MOST, true));
         let (symbols, more) = best(vec![(one, hits("a", 30)), (two, hits("b", 30))]);
         assert_eq!((symbols.len(), more), (MOST, true));
         assert_eq!(names(&symbols).last().map(String::as_str), Some("b24"));
