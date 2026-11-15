@@ -110,7 +110,16 @@ function useKeptPlace(
 function LineView({ line, formatted, answering }: { line: Line; formatted: boolean; answering: Answerer | undefined }) {
   switch (line.kind) {
     case "prompt":
-      return <div className="row prompt">{line.text}</div>;
+      return (
+        <div className="row prompt">
+          {line.text}
+          {line.pick === undefined ? null : (
+            <div className="picked">
+              Picked <code>{line.pick.selector}</code> on {line.pick.title === "" ? line.pick.url : line.pick.title}
+            </div>
+          )}
+        </div>
+      );
     case "agent":
       return <div className="row agent">{line.label}</div>;
     case "ask":

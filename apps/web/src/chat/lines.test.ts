@@ -54,3 +54,10 @@ test("lines keep their keys as older events load before them and as text commits
   assert.deepEqual(keys(committed), keys(streaming));
   assert.deepEqual(keys(widened), ["t0-r-1", "t0-r-1.0", "t0-r-1.1", "p3", "t3-r-1", "t3-r-1.0"]);
 });
+
+test("a prompt that carried a picked element shows the note of it", () => {
+  const pick = { url: "http://localhost:3000/", title: "Home", selector: "main > button" };
+  const chat = fromSnapshot({ seq: 1, runs: new Map(), waiting: [], events: [{ seq: 1, event: { kind: "prompt", request: "q-1", text: "Make it blue", pick } }] });
+
+  assert.deepEqual(lines(chat), [{ key: "p1", kind: "prompt", text: "Make it blue", pick }]);
+});

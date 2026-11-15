@@ -209,6 +209,10 @@ function isEntry(value: unknown): value is ChatEntry {
   }
   switch (event["kind"]) {
     case "prompt":
+      // A malformed note is dropped as the message is parsed: rejecting the prompt would leave a gap.
+      if (event["pick"] !== undefined && !isPickNote(event["pick"])) {
+        delete event["pick"];
+      }
       return typeof event["request"] === "string" && typeof event["text"] === "string";
     case "outside_prompt":
       return typeof event["text"] === "string";
@@ -221,6 +225,11 @@ function isEntry(value: unknown): value is ChatEntry {
     default:
       return true;
   }
+}
+
+function isPickNote(value: unknown): boolean {
+  const note = record(value);
+  return ["url", "title", "selector"].every((key) => typeof note?.[key] === "string");
 }
 
 // A malformed agent, or one whose owner is of a newer kind, is dropped as the message is parsed:
