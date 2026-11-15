@@ -203,7 +203,7 @@ Sign the agent in first, as in step 6, and give the workspace a repository.
 
 The chat opens with your prompt at the top. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. What the agent says appears under **Agent**, each message once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
-When the agent asks to use a tool, the chat says "Asks to use a tool" with **Allow** and **Deny**; with the access level at ask first, it waits for you. It never shows the command or the file's contents, because a tool's input doesn't leave your machine. To see exactly what the agent wants to run, look on the machine, with **Open terminal** or `weacon resume` (step 8).
+When the agent asks to use a tool, the chat says "Asks to use a tool" with **Allow** and **Deny**; with the access level at ask first, it waits for you. It never shows the command or the file's contents, because a tool's input doesn't leave your machine, so you can't see them before you answer. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 
 **Stop** ends the agent's turn. Send another prompt in the same chat to carry on. Reloading the page keeps the chat as it was.
 
@@ -218,8 +218,8 @@ Codex works differently from Claude Code: it asks you before every file change a
 - **Tasks**: type a title under **New task** and choose **Add**. Change its status from the list.
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
 - **Proposals**: changes to docs and tasks wait here until someone accepts or rejects them. Agents propose them from their chats. While an agent works in a repository, the core also proposes what a new commit in the repository's folder did to docs that pin its code.
-- **Resume**: once a chat's agent has stopped running, `target/debug/weacon resume --workspace <workspace id> --chat <chat id>` carries it on in your terminal, on the chat's machine.
-- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It's off until you allow it, on that machine:
+- **Resume**: once a chat's agent has stopped running, `target/debug/weacon resume --workspace <workspace id> --chat <chat id>` carries it on in your terminal, on the chat's machine. There you answer the agent's own prompts yourself, whatever the workspace's access level.
+- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. It's off until you allow it, on that machine:
 
 ```bash
 target/debug/weacon terminals on
