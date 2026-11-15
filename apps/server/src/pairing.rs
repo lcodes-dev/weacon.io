@@ -203,7 +203,12 @@ async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed
 /// `GET /api/machines`: the machines paired with the signed-in account.
 pub(crate) async fn machines(State(shared): State<Shared>, session: Session) -> Response {
     match shared.db.machines_of(&session.account).await {
-        Ok(machines) => Json(MachineList { machines }).into_response(),
+        Ok(mut machines) => {
+            for machine in &mut machines {
+                machine.capabilities = shared.links.offers(&machine.id);
+            }
+            Json(MachineList { machines }).into_response()
+        }
         Err(fault) => failure(fault),
     }
 }
@@ -297,6 +302,30 @@ mod tests {
         assert_eq!(paired["token"].as_str().unwrap().len(), 64);
         assert_eq!(again, paired);
         assert_eq!(list, json!({ "machines": [machine] }));
+    }
+
+    #[tokio::test]
+    async fn the_list_says_what_a_connected_machines_core_offers() {
+        use crate::test_support::socket::{next, open, say};
+
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let list = async || {
+            ask(server.address, "GET /api/machines", &paired.proof, "")
+                .await
+                .1
+        };
+        let offline = list().await;
+        let mut core = open(server.address, "/api/machines/connect", &paired.token)
+            .await
+            .unwrap();
+        say(&mut core, &["machine.connect", "symbols.search"]).await;
+        next(&mut core).await;
+
+        assert_eq!(offline["machines"][0].get("capabilities"), None);
+        let offers = &list().await["machines"][0]["capabilities"];
+        assert_eq!(*offers, json!(["machine.connect", "symbols.search"]));
     }
 
     #[tokio::test]

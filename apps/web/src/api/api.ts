@@ -283,7 +283,9 @@ const isMachine = (value: unknown): value is MachineSummary =>
   fields(value, ["id", "name", "os", "key"]) &&
   isId((value as MachineSummary).id) &&
   isMachineKey((value as MachineSummary).key) &&
-  typeof (value as MachineSummary).paired_at === "number";
+  typeof (value as MachineSummary).paired_at === "number" &&
+  isOffers((value as { capabilities?: unknown }).capabilities);
+const isOffers = (offers: unknown): boolean => offers === undefined || (Array.isArray(offers) && offers.every((offer) => typeof offer === "string"));
 const isMachineList = listOf<MachineList>("machines", isMachine);
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);

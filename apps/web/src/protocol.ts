@@ -809,6 +809,10 @@ export type MachineSettingsQueryKind = (
  * epoch.
  */
 export type MachineSummary = {
+  /**
+   * What the machine's core offers while it is connected; none while it isn't.
+   */
+  capabilities?: Array<Capability>;
   id: MachineId;
   key: MachineKey;
   name: MachineName;

@@ -1,6 +1,7 @@
 //! A fake server that answers a web client's hello on a WebSocket, then streams a recorded run
 //! to it, one message per text frame, keeps what the client sends, accepts its prompts and
-//! answers its diff queries with a made-up change of 40 files.
+//! answers its diff queries with a made-up change of 40 files and its symbols queries with
+//! made-up items.
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -18,7 +19,7 @@ use crate::fake_chat::FakeChat;
 use crate::fake_worktree::FakeWorktree;
 use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
-use crate::{fake_core, fake_diff};
+use crate::{fake_core, fake_diff, fake_symbols};
 
 const OFFERED: &[Capability] = &[
     Capability::new(code!("log.forward")),
@@ -26,12 +27,13 @@ const OFFERED: &[Capability] = &[
     Capability::new(code!("workspace.chat_commands")),
     Capability::new(code!("diff.view")),
     Capability::new(code!("worktree.manage")),
+    Capability::new(code!("symbols.search")),
 ];
 
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
 /// each text frame the client sends after its hello to `received`, one per line. It offers
 /// `workspace.chats` and `workspace.chat_commands`, committing a receipt that accepts each
-/// command to the chat, `diff.view` and `worktree.manage`; it refuses a message it doesn't know.
+/// command to the chat, `diff.view`, `worktree.manage` and `symbols.search`; it refuses a message it doesn't know.
 ///
 /// # Errors
 /// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
@@ -177,6 +179,7 @@ fn reply_to(
     }
     send_texts(replies, &fake_diff::answers(&envelope));
     send_texts(replies, worktree.answer(&envelope).as_slice());
+    send_texts(replies, fake_symbols::answer(&envelope).as_slice());
     if let Ok(mut chat) = chat.lock() {
         send_texts(replies, &chat.answer(&envelope));
     }
@@ -302,7 +305,8 @@ mod tests {
                 "workspace.chats",
                 "workspace.chat_commands",
                 "diff.view",
-                "worktree.manage"
+                "worktree.manage",
+                "symbols.search"
             ])
         );
         assert_eq!(streamed, expected);
@@ -495,6 +499,42 @@ mod tests {
             .map(|answer| (answer["id"].clone(), answer["answer"]["removed"].clone()))
             .collect();
         assert_eq!(told, [(json!(9), json!(false)), (json!(10), json!(true))]);
+    }
+
+    #[tokio::test]
+    async fn a_symbols_query_is_answered_with_made_up_items_under_its_id() {
+        let dir = TempDir::new().unwrap();
+        let (mut client, served) = start(String::new(), dir.join("received.jsonl")).await;
+        client.send(hello(PROTOCOL)).await.unwrap();
+        texts(&mut client, 1).await;
+        let query = Message::SymbolsQuery(weacon_protocol::SymbolsQuery {
+            request: request("q-1"),
+            machine: "mc-1".parse().unwrap(),
+            workspace: workspace(),
+            query: weacon_protocol::SymbolsQueryKind::Search {
+                words: "plant".to_owned(),
+            },
+            by: None,
+        });
+        let query = envelope_text(&Envelope {
+            id: 9,
+            message: query,
+        })
+        .unwrap();
+        client.send(Frame::text(query)).await.unwrap();
+        // A deadline, so a server that never answers fails the test instead of hanging it.
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 1))
+            .await
+            .unwrap();
+        client.close(None).await.unwrap();
+        served.await.unwrap().unwrap();
+
+        let answer = &answers[0];
+        assert_eq!(
+            (&answer["type"], &answer["id"]),
+            (&json!("symbols_answer"), &json!(9))
+        );
+        assert_eq!(answer["answer"]["symbols"][0]["name"], "garden::plant");
     }
 
     // In memory rather than over TCP, so the paused clock only moves once both sides are idle.

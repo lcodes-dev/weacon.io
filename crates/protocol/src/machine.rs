@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
-use crate::{AccountId, Secret};
+use crate::{AccountId, Capability, Secret};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -142,6 +142,9 @@ pub struct MachineSummary {
     pub os: MachineOs,
     pub key: MachineKey,
     pub paired_at: i64,
+    /// What the machine's core offers while it is connected; none while it isn't.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<Capability>,
 }
 
 /// The machines paired with the signed-in account.

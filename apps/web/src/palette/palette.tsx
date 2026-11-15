@@ -2,14 +2,30 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Answer, Api } from "../api/api.ts";
 import { type Loaded, Loader } from "../api/loaded.ts";
-import type { SearchHit, WorkspaceId } from "../protocol.ts";
+import { later } from "../connection.ts";
+import type { MachineId, SearchHit, Symbol as CodeSymbol, WorkspaceId } from "../protocol.ts";
 import type { Place } from "../shell/place.ts";
+import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { composing, picker } from "../composer/keys.ts";
 import { type Listed, listed, opensPalette, parts } from "./hits.ts";
+import { place, searcher, symbols } from "./symbols.ts";
 import "./palette.css";
 
-/** The search palette over `workspace`'s tasks, docs and chats, opened with ⌘K while `enabled`; choosing a hit goes to its place. */
-export function Palette({ api, workspace, enabled, go }: { api: Api; workspace: WorkspaceId; enabled: boolean; go(place: Place): void }) {
+type Props = {
+  api: Api;
+  workspace: WorkspaceId;
+  socket: WorkspaceSocket;
+  /** The open chat's machine, by name, whose code the palette searches first. */
+  chatMachine?: string;
+  enabled: boolean;
+  go(place: Place): void;
+};
+
+/**
+ * The search palette over `workspace`'s tasks, docs and chats, and the code on one of the person's
+ * machines, opened with ⌘K while `enabled`; choosing a hit goes to its place, and a symbol copies where it is.
+ */
+export function Palette({ enabled, go, ...props }: Props) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!enabled) {
@@ -31,8 +47,7 @@ export function Palette({ api, workspace, enabled, go }: { api: Api; workspace: 
   const close = () => setOpen(false);
   return (
     <Search
-      api={api}
-      workspace={workspace}
+      {...props}
       close={close}
       go={(place) => {
         close();
@@ -42,8 +57,9 @@ export function Palette({ api, workspace, enabled, go }: { api: Api; workspace: 
   );
 }
 
-function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceId; close(): void; go(place: Place): void }) {
+function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, "enabled"> & { close(): void }) {
   const [text, setText] = useState("");
+  const coded = useSymbols(api, socket, chatMachine, text);
   // Each answer keeps the text it is for, so a slow one never lists, or opens, for text since changed.
   const [found, setFound] = useState<Loaded<Answered>>({ value: undefined, problem: undefined });
   const [loader] = useState(() => new Loader<Answered>(setFound));
@@ -59,9 +75,15 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
   const asked = text.trim() !== "";
   const answered = asked && found.value?.text === text;
   const hits = answered ? listed(found.value?.hits ?? []) : [];
-  const choose = (hit: Listed | undefined) => {
+  const count = hits.length + coded.symbols.length;
+  const choose = (index: number) => {
+    const hit: Listed | undefined = hits[index];
+    const symbol = coded.symbols[index - hits.length];
     if (hit !== undefined) {
       go(hit.place);
+    } else if (symbol !== undefined) {
+      void navigator.clipboard.writeText(place(symbol)).catch(() => {});
+      close();
     }
   };
   return (
@@ -72,9 +94,9 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
           aria-label="Search"
           placeholder="Search tasks, docs and chats"
           role="combobox"
-          aria-expanded={hits.length > 0}
+          aria-expanded={count > 0}
           aria-controls="palette-hits"
-          aria-activedescendant={hits[at] === undefined ? undefined : `palette-${at}`}
+          aria-activedescendant={at < count ? `palette-${at}` : undefined}
           value={text}
           onChange={(event) => {
             const typed = event.target.value;
@@ -93,12 +115,12 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
               event.preventDefault();
               return;
             }
-            const action = picker(event.nativeEvent, hits.length, at);
+            const action = picker(event.nativeEvent, count, at);
             if (action === "close") {
               close();
             } else if (action === "pick") {
               event.preventDefault();
-              choose(hits[at]);
+              choose(at);
             } else if (action !== undefined) {
               event.preventDefault();
               setAt(action);
@@ -114,7 +136,7 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
               role="option"
               aria-selected={index === at}
               onMouseEnter={() => setAt(index)}
-              onClick={() => choose(hit)}
+              onClick={() => choose(index)}
             >
               <span className="muted">{hit.kind}</span> <span className="title">{hit.title}</span>
               <span className="snippet">
@@ -122,14 +144,83 @@ function Search({ api, workspace, close, go }: { api: Api; workspace: WorkspaceI
               </span>
             </li>
           ))}
+          {(coded.symbols.length > 0 || coded.problem !== undefined) && (
+            <li role="group" aria-label="Symbols">
+              <span className="muted">Symbols</span>
+              {coded.problem !== undefined && <span role="alert">{coded.problem}</span>}
+              <ul role="none">
+                {coded.symbols.map((symbol, cut) => {
+                  const index = hits.length + cut;
+                  return (
+                    <li
+                      key={`${symbol.repo}:${symbol.name}:${place(symbol)}`}
+                      id={`palette-${index}`}
+                      role="option"
+                      aria-selected={index === at}
+                      onMouseEnter={() => setAt(index)}
+                      onClick={() => choose(index)}
+                    >
+                      <span className="muted">{symbol.kind}</span> <span className="title">{symbol.name}</span>
+                      <span className="snippet">
+                        {symbol.repo} · {place(symbol)}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </li>
+          )}
         </ul>
-        {answered && hits.length === 0 && <p className="muted">Nothing found.</p>}
+        {answered && count === 0 && coded.settled && <p className="muted">Nothing found.</p>}
       </div>
     </div>
   );
 }
 
 type Answered = { text: string; hits: SearchHit[] };
+
+type Coded = { text: string; symbols: CodeSymbol[] };
+
+/**
+ * The symbols on the person's machine that match `text`, once its answer is for that text; none
+ * while no machine of theirs offers them. `settled` once nothing is left to wait for.
+ */
+function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: string | undefined, text: string) {
+  const offered = useOffers(socket, "symbols.search");
+  const [machine, setMachine] = useState<MachineId | undefined>(undefined);
+  const [asked, setAsked] = useState(false);
+  const [coded, setCoded] = useState<Loaded<Coded>>({ value: undefined, problem: undefined });
+  const [loader] = useState(() => new Loader<Coded>(setCoded));
+  useEffect(() => {
+    let live = true;
+    if (offered) {
+      void api.machines().then((answer) => {
+        if (live) {
+          setMachine(answer.ok ? searcher(answer.value.machines, chatMachine) : undefined);
+          setAsked(true);
+        }
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [api, offered, chatMachine]);
+  useEffect(() => () => loader.stop(), [loader]);
+  useEffect(() => {
+    if (machine !== undefined && text.trim() !== "") {
+      void loader.load(async () => {
+        const answer = await symbols(socket, machine, text, later);
+        return answer.ok ? { ok: true, value: { text, symbols: answer.value } } : answer;
+      });
+    }
+  }, [loader, socket, machine, text]);
+  const answered = coded.value?.text === text;
+  return {
+    symbols: machine !== undefined && answered ? (coded.value?.symbols ?? []) : [],
+    problem: machine === undefined ? undefined : coded.problem,
+    settled: !offered || (asked && (machine === undefined || answered || coded.problem !== undefined)),
+  };
+}
 
 async function search(api: Api, workspace: WorkspaceId, text: string): Promise<Answer<Answered>> {
   const answer = await api.search(workspace, { text });

@@ -1997,6 +1997,13 @@
       "description": "A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix\nepoch.",
       "type": "object",
       "properties": {
+        "capabilities": {
+          "description": "What the machine's core offers while it is connected; none while it isn't.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Capability"
+          }
+        },
         "id": {
           "$ref": "#/$defs/MachineId"
         },

@@ -97,6 +97,14 @@ impl Links {
         link.to_machine.try_send(envelope).map_err(|_| Offline)
     }
 
+    /// What `machine`'s core offers, while its connection is open; none while it isn't.
+    pub(crate) fn offers(&self, machine: &MachineId) -> Vec<Capability> {
+        self.lock()
+            .get(machine)
+            .map(|link| link.offers.clone())
+            .unwrap_or_default()
+    }
+
     /// Whether `machine` has a connection open now.
     pub(crate) fn is_open(&self, machine: &MachineId) -> bool {
         self.lock().contains_key(machine)
@@ -191,6 +199,8 @@ mod tests {
         assert_eq!(sent(&links, "mc-2", 3), Err(Offline));
         bare.incoming.try_recv().unwrap_err();
         assert_eq!(sent(&links, "mc-3", 4), Err(Offline));
+        assert_eq!(links.offers(&machine("mc-1")), [settings()]);
+        assert!(links.offers(&machine("mc-3")).is_empty());
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-1"));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-2"));
     }

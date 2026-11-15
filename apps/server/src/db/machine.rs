@@ -327,6 +327,7 @@ fn stored_machine((id, name, os, key, paired_at): Row) -> Result<MachineSummary,
         os: stored_os(&os)?,
         key: stored(key)?,
         paired_at,
+        capabilities: Vec::new(),
     })
 }
 
@@ -470,6 +471,7 @@ mod tests {
                 os: MachineOs::Linux,
                 key: key(),
                 paired_at: NOW + 1,
+                capabilities: Vec::new(),
             }]
         );
     }
