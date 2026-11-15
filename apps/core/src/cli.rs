@@ -85,7 +85,7 @@ pub(crate) enum Command {
         chat: ChatId,
     },
     /// Choose whether a chat's owner may open their terminal here from the web app, or show
-    /// the answer. Only someone at this machine can turn it on.
+    /// the answer. Only this machine's user can turn it on.
     Terminals {
         /// on or off; left out, shows the answer.
         #[arg(value_enum)]

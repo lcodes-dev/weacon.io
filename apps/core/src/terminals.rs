@@ -1,5 +1,5 @@
 //! `weacon terminals`: whether a chat's owner may open their terminal on this machine from the
-//! web app. Only a person at this machine can turn it on, so a server's operator never can.
+//! web app. Only this machine's own user can turn it on, never the server or its operator.
 
 use std::ffi::OsString;
 use std::io::{self, Write};

@@ -11,10 +11,21 @@ use crate::platform::{Env, find_program, var};
 /// as an option of its own.
 pub(super) fn desktop_terminal(folder: &Path, env: Env<'_>, run: &[OsString]) -> Option<Command> {
     var(env, "WAYLAND_DISPLAY").or_else(|| var(env, "DISPLAY"))?;
-    let program = find_program("xdg-terminal-exec", &var(env, "PATH")?)?;
+    let path = var(env, "PATH")?;
+    let terminal = find_program("xdg-terminal-exec", &path)?;
     let mut dir = OsString::from("--dir=");
     dir.push(folder);
-    let mut command = Command::new(program);
+    // Under a systemd service, a scope of its own keeps the window open when the service restarts.
+    let scope = var(env, "INVOCATION_ID").and_then(|_| find_program("systemd-run", &path));
+    let mut command = match scope {
+        Some(systemd_run) => {
+            let mut command = Command::new(systemd_run);
+            command.args(["--user", "--scope", "--collect", "--quiet", "--"]);
+            command.arg(terminal);
+            command
+        }
+        None => Command::new(terminal),
+    };
     command.arg(dir).args(run);
     Some(command)
 }
@@ -52,5 +63,39 @@ mod tests {
         assert!(terminal_in(&folder, &no_desktop, &[]).is_none());
         let no_terminal = env(&[("PATH", "/nowhere"), ("DISPLAY", ":0")]);
         assert!(terminal_in(&folder, &no_terminal, &[]).is_none());
+        let no_scope = env(&[("PATH", path), ("DISPLAY", ":0"), ("INVOCATION_ID", "1f")]);
+        let direct = terminal_in(&folder, &no_scope, &[]).unwrap();
+        assert_eq!(direct.get_program(), program.as_os_str());
+    }
+
+    #[test]
+    fn under_a_service_the_terminal_gets_a_scope_of_its_own() {
+        let dir = TempDir::new().unwrap();
+        let bin = dir.join("bin");
+        let terminal = crate::platform::plant_program(&bin, "xdg-terminal-exec", 0o755);
+        let systemd_run = crate::platform::plant_program(&bin, "systemd-run", 0o755);
+        let path = bin.to_str().unwrap();
+        let folder = dir.join("chat");
+        let run = ["/opt/weacon", "resume"].map(OsString::from);
+        let service = env(&[("PATH", path), ("DISPLAY", ":0"), ("INVOCATION_ID", "1f")]);
+
+        let command = terminal_in(&folder, &service, &run).unwrap();
+
+        assert_eq!(command.get_program(), systemd_run.as_os_str());
+        let dir_arg = OsString::from(format!("--dir={}", folder.display()));
+        let scope = ["--user", "--scope", "--collect", "--quiet", "--"].map(OsString::from);
+        let expected: Vec<OsString> = scope
+            .into_iter()
+            .chain([terminal.into_os_string(), dir_arg])
+            .chain(run)
+            .collect();
+        assert!(
+            command
+                .get_args()
+                .eq(expected.iter().map(OsString::as_os_str))
+        );
+        let desktop = env(&[("PATH", path), ("DISPLAY", ":0")]);
+        let direct = terminal_in(&folder, &desktop, &[]).unwrap();
+        assert_ne!(direct.get_program(), systemd_run.as_os_str());
     }
 }

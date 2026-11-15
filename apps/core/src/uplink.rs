@@ -70,7 +70,8 @@ enum Ended {
 pub(crate) struct Uplink {
     pub(crate) state_dir: PathBuf,
     pub(crate) app: App,
-    pub(crate) capabilities: Vec<Capability>,
+    /// What it offers the server, worked out again at each hello from its state folder.
+    pub(crate) capabilities: fn(&Path) -> Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
     pub(crate) chats: Chats,
@@ -212,7 +213,7 @@ impl Uplink {
             message: Message::Hello(Hello {
                 protocol: PROTOCOL,
                 app: self.app.clone(),
-                capabilities: self.capabilities.clone(),
+                capabilities: (self.capabilities)(&self.state_dir),
             }),
         };
         send(socket, &hello).await;
@@ -377,7 +378,7 @@ pub(crate) fn new(
     Uplink {
         state_dir: state_dir.to_owned(),
         app: weacon_appkit::build(&app.version),
-        capabilities: crate::session::offered(state_dir, &|key| std::env::var_os(key)),
+        capabilities: |dir| crate::session::offered(dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
         chats,
@@ -430,7 +431,7 @@ mod tests {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
-            capabilities: vec![Capability::new(CONNECT)],
+            capabilities: |_| vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
             // A way to an engine that has stopped.
