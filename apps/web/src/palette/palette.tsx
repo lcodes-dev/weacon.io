@@ -16,7 +16,7 @@ type Props = {
   workspace: WorkspaceId;
   socket: WorkspaceSocket;
   /** The open chat's machine, by name, whose code the palette searches first. */
-  chatMachine?: string;
+  chatMachine?: string | undefined;
   enabled: boolean;
   go(place: Place): void;
 };
