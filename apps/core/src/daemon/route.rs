@@ -346,7 +346,8 @@ mod tests {
             log,
         };
         let no_trash = |_: &Path, _| Err(std::io::ErrorKind::Unsupported.into());
-        let worktrees = Worktrees::new(dir, None, None, no_trash);
+        let no_desktop = |_: &Path, _: &[std::ffi::OsString]| Ok(false);
+        let worktrees = Worktrees::new(dir, None, None, no_trash, no_desktop);
         (Asked { host, worktrees }, records)
     }
 

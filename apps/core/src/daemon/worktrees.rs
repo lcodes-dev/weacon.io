@@ -1,6 +1,7 @@
 //! The daemon's answers about chats' worktrees. Each is sent once git is done, from a task of
 //! its own, so a slow git never holds up the connection or the chats' events on it.
 
+use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::path::Path;
@@ -32,7 +33,22 @@ const NONE: Reply = Reply {
 
 pub(super) fn worktrees(state_dir: &Path, places: &Places) -> Worktrees {
     let (path, work_root) = (places.path.clone(), places.work_root.clone());
-    Worktrees::new(state_dir, path, work_root, to_trash)
+    Worktrees::new(state_dir, path, work_root, to_trash, open_terminal)
+}
+
+// The terminal runs this very core, so it's the same build that answered.
+fn open_terminal(folder: &Path, args: &[OsString]) -> io::Result<bool> {
+    let run: Vec<OsString> = std::iter::once(std::env::current_exe()?.into_os_string())
+        .chain(args.iter().cloned())
+        .collect();
+    let Some(mut command) = platform::terminal_in(folder, &|key| std::env::var_os(key), &run)
+    else {
+        return Ok(false);
+    };
+    let mut child = command.spawn()?;
+    // Reaped once the terminal's own launcher exits, which may be when its window closes.
+    std::thread::spawn(move || child.wait());
+    Ok(true)
 }
 
 fn to_trash(path: &Path, now: SystemTime) -> io::Result<Trashed> {

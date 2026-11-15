@@ -31,15 +31,8 @@ pub(crate) fn allowed(state_dir: &Path) -> bool {
 }
 
 /// Whether a terminal can be opened here from the web app: turned on, and with a desktop.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the worktree command's handler, which offers it, comes next"
-    )
-)]
 pub(crate) fn offered(state_dir: &Path, env: Env<'_>) -> bool {
-    allowed(state_dir) && platform::terminal_in(state_dir, env).is_some()
+    allowed(state_dir) && platform::terminal_in(state_dir, env, &[]).is_some()
 }
 
 fn write(state_dir: &Path, open: bool) -> io::Result<()> {
@@ -80,7 +73,7 @@ pub(crate) fn run(
 pub(crate) fn describe(state_dir: &Path, env: Env<'_>) -> &'static str {
     match (
         allowed(state_dir),
-        platform::terminal_in(state_dir, env).is_some(),
+        platform::terminal_in(state_dir, env, &[]).is_some(),
     ) {
         (true, true) => "Terminals from the web app: on.\n",
         (true, false) => {
