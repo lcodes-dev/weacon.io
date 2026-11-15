@@ -50,6 +50,13 @@ impl Stores {
         ChatRepos::new(self.workspace.clone(), self.folder.join("chats.json"))
     }
 
+    /// A hold on adding worktrees: git can fail when two are added to a repository at once.
+    pub(crate) fn hold_worktrees(&self) -> Result<Hold, Fault> {
+        take(&self.folder.join("worktrees.lock")).map_err(|error| {
+            Fault::new(code!("git.hold_failed"), "The worktrees couldn't be held").because(error)
+        })
+    }
+
     pub(crate) fn removed(&self, git: Git) -> Journal {
         Journal::new(
             self.workspace.clone(),

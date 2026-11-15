@@ -638,9 +638,10 @@ mod tests {
     #[tokio::test]
     async fn dropping_the_server_stops_it_and_its_open_connections() {
         let (log, _records) = recording_logger();
+        // Long enough that the open connection never stalls out before the server is dropped.
         let limits = Limits {
+            stall: Duration::from_secs(600),
             connections: 1,
-            ..LIMITS
         };
         let (mcp, server) =
             listen(&weacon_appkit::build(&VERSION), &log, Maps::off(), limits).unwrap();

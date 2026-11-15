@@ -35,6 +35,7 @@ pub(crate) fn chat_tree(
             "The chat's worktree is in the Trash; restore it to go on",
         ));
     }
+    let _held = stores.hold_worktrees()?;
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
         let start = match tree.start {
@@ -148,6 +149,18 @@ mod tests {
         let chats = bench.stores().chats();
         assert!(chats.get(&bench.key.chat).unwrap().is_some());
         assert!(chats.get(&other.chat).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_worktree_is_made_only_under_the_workspaces_hold() {
+        let bench = bench();
+        // A folder where the hold's lock file goes, so the hold can't be taken.
+        fs::create_dir_all(bench.dir.join("state/workspaces/w-w-1/git/worktrees.lock")).unwrap();
+
+        let error = bench.tree(&bench.site).unwrap_err();
+
+        assert_eq!(error.code().as_str(), "git.hold_failed");
+        assert!(!bench.dir.join("work/w-w-1/c-c-1").exists());
     }
 
     #[test]
