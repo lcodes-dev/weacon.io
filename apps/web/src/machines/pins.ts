@@ -4,6 +4,7 @@ import { isMachineKey } from "./fingerprint.ts";
 /** Where pinned keys are kept: IndexedDB in the browser, a map in tests. */
 export interface PinStore {
   get(machine: MachineId): Promise<MachineKey | undefined>;
+  /** Keeps `key` unless another key is kept for `machine`, and then rejects, in one step. */
   put(machine: MachineId, key: MachineKey): Promise<void>;
   delete(machine: MachineId): Promise<void>;
 }
@@ -12,8 +13,9 @@ export interface PinStore {
 export type KeyCheck = "match" | "mismatch" | "unpinned";
 
 /**
- * The machine keys this browser trusts, each pinned when the person confirmed a pairing here.
- * Only that confirm calls `pin`: nothing else may trust a key without asking the person.
+ * The machine keys this browser trusts, each pinned when the person confirmed a pairing here or,
+ * on another browser, the key itself in Settings. Only those confirms call `pin`: nothing else may
+ * trust a key without asking the person.
  */
 export class Pins {
   #store: PinStore;
@@ -26,7 +28,7 @@ export class Pins {
     return this.#store.get(machine);
   }
 
-  /** Refuses a key that isn't one, which no fingerprint could have shown. */
+  /** Refuses a key that isn't one, which no fingerprint could have shown, and never replaces another. */
   async pin(machine: MachineId, key: MachineKey): Promise<void> {
     if (!isMachineKey(key)) {
       throw new RangeError("not a machine key");
@@ -76,7 +78,23 @@ export function browserStore(): PinStore {
       return typeof key === "string" ? key : undefined;
     },
     put: async (machine, key) => {
-      await run("readwrite", (pins) => pins.put(key, machine));
+      const db = await database();
+      await new Promise<void>((resolve, reject) => {
+        const transaction = db.transaction(PINS, "readwrite");
+        const pins = transaction.objectStore(PINS);
+        let other = false;
+        const kept = pins.get(machine);
+        kept.onsuccess = () => {
+          other = kept.result !== undefined && kept.result !== key;
+          if (other) {
+            transaction.abort();
+          } else {
+            pins.put(key, machine);
+          }
+        };
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = () => reject(other ? new Error("another key is pinned") : (transaction.error ?? new Error("IndexedDB aborted")));
+      });
     },
     delete: async (machine) => {
       await run("readwrite", (pins) => pins.delete(machine));

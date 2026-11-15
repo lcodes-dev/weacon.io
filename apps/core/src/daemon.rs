@@ -19,12 +19,16 @@ use weacon_protocol::{
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
 use crate::disk;
+use crate::git::service::Worktrees;
 use crate::mcp;
 use crate::memory;
 use crate::picks::{KeepError, Picks};
 use crate::platform::{self, Listener, Owner, Stream};
 use crate::session::{Reply, Session};
 use crate::uplink;
+
+mod route;
+mod worktrees;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
@@ -76,6 +80,7 @@ struct Shared {
     app: App,
     picks: Picks,
     chats: Chats,
+    worktrees: Worktrees,
     log: Logger,
 }
 
@@ -130,6 +135,7 @@ impl Daemon {
         }
         let (mcp, mcp_server) = mcp::start(&app, &log)?;
         places.mcp = Some(mcp);
+        let worktrees = worktrees::worktrees(state_dir, &places);
         let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         let engine = tokio::spawn(engine.serve());
@@ -142,6 +148,7 @@ impl Daemon {
                 app,
                 picks: Picks::new(state_dir),
                 chats,
+                worktrees,
                 log,
             },
             disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
@@ -161,7 +168,10 @@ impl Daemon {
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                _ = disk_check.tick() => self.disk.check(&self.shared.log).await,
+                _ = disk_check.tick() => {
+                    self.disk.check(&self.shared.log).await;
+                    self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
+                }
                 _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
@@ -177,6 +187,8 @@ impl Daemon {
         drop(self.listener);
         drop(fs::remove_file(&self.socket));
         clients.shutdown().await;
+        // Worktree work outlives its asker; it ends before the lock goes.
+        self.shared.worktrees.drain().await;
         drop(self.mcp);
         // The engine stops once the last way to it is gone; its writes end before the lock goes.
         let log = self.shared.log.clone();
@@ -208,6 +220,7 @@ struct Connection {
     session: Session,
     decoder: LineDecoder,
     client: Client,
+    late: worktrees::Late,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -215,10 +228,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let mut buf = [0; READ_CHUNK];
     let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let (push, mut pushed) = mpsc::channel(feed::QUEUE);
+    let (late, mut answered) = mpsc::channel(worktrees::LATE);
     let mut connection = Connection {
         session: Session::default(),
         decoder: LineDecoder::default(),
         client: Client { push },
+        late,
     };
     loop {
         // Until the hello, reading counts against the deadline, as `answer`'s replies do.
@@ -227,6 +242,12 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
             read = within(limit, reader.read(&mut buf)) => read,
             Some(message) = pushed.recv() => {
                 if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
+                    writer.write_all(&line).await?;
+                }
+                continue;
+            }
+            Some(envelope) = answered.recv() => {
+                if let Ok(line) = encode_line(&envelope) {
                     writer.write_all(&line).await?;
                 }
                 continue;
@@ -266,6 +287,7 @@ async fn answer(
         session,
         decoder,
         client,
+        late,
     } = connection;
     for received in decoder.push(bytes) {
         let limit = (!session.greeted()).then_some(deadline);
@@ -280,21 +302,7 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = match received {
-            Ok(Envelope {
-                id,
-                message: Message::Pick(pick),
-            }) if session.greeted() => keep(shared, id, pick).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatCommand(command),
-            }) if session.greeted() => command_chat(shared, id, command).await,
-            Ok(Envelope {
-                id,
-                message: Message::ChatQuery(query),
-            }) if session.greeted() => query_chat(shared, id, query, client).await,
-            received => session.answer(received, &shared.app),
-        };
+        let reply = route::route(shared, session, received, client, late).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -393,7 +401,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{Capability, ErrorBody, PROTOCOL, Welcome};
+    use weacon_protocol::{Capability, ChatId, ErrorBody, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -428,6 +436,8 @@ mod tests {
             Places::default(),
             log,
         )?;
+        // The machine's own disk may be nearly full; a test reads its disk from a fake.
+        daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -497,18 +507,25 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_disk_is_checked_at_start_and_again_each_minute() {
+        use crate::chats::test_support::bench;
+
         let dir = TempDir::new().unwrap();
         fs::write(dir.join("free"), "0").unwrap();
         let watched = dir.to_path_buf();
+        let bench = bench();
+        let chats = bench.chats.clone();
         let running = start_as(&dir, |daemon| {
             daemon.disk = disk::Watch::new(watched, free_in_file);
+            daemon.shared.chats = chats;
         })
         .unwrap();
 
         logs(&running.records, "disk full").await;
+        logs(&bench.records, "turns paused").await;
         fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
         tokio::time::sleep(DISK_CHECK).await;
         logs(&running.records, "disk ok").await;
+        logs(&bench.records, "turns resumed").await;
         let records = running.stop().await;
 
         let disk: Vec<_> = messages(&records)
@@ -617,7 +634,8 @@ mod tests {
         running.stop().await;
     }
 
-    #[tokio::test(start_paused = true)]
+    // In real time: a hang-up can take a moment to arrive, which a paused clock would skip past.
+    #[tokio::test]
     async fn another_protocol_is_hung_up_on_at_once() {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
@@ -659,7 +677,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let running = start(&dir).unwrap();
         let mut client = connect(&running.socket).await;
-        let read = timeout(HANDSHAKE_TIMEOUT * 2, client.read(&mut [0; 16])).await;
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        // The hang-up itself comes in real time.
+        tokio::time::resume();
+        let read = timeout(HANDSHAKE_TIMEOUT, client.read(&mut [0; 16])).await;
 
         assert_eq!(read.unwrap().unwrap(), 0);
         running.stop().await;
@@ -785,17 +806,100 @@ mod tests {
         let running = start(&dir).unwrap();
         let client = connect(&running.socket).await;
 
-        // The daemon stops reading while its replies back up, then hangs up at the deadline.
-        timeout(HANDSHAKE_TIMEOUT * 2, flood(client))
-            .await
-            .unwrap()
-            .unwrap_err();
+        // The daemon stops reading while its replies back up, then hangs up at the deadline,
+        // which comes in real time.
+        let flooding = tokio::spawn(flood(client));
+        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
+        tokio::time::resume();
+        let flooded = timeout(HANDSHAKE_TIMEOUT, flooding).await;
+        flooded.unwrap().unwrap().unwrap_err();
         running.stop().await;
+    }
+
+    // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.
+    fn worktree_asks(workspace: &WorkspaceId, chat: &ChatId) -> Vec<u8> {
+        use weacon_protocol::{
+            DiffQuery, DiffQueryKind, RequestId, WorktreeAction, WorktreeCommand, WorktreeQuery,
+            WorktreeQueryKind,
+        };
+
+        let line = |id, message| encode_line(&Envelope { id, message }).unwrap();
+        let request = RequestId::try_from("r-1".to_owned()).unwrap();
+        let other = ChatId::try_from("c-2".to_owned()).unwrap();
+        let diff = |chat: &ChatId| DiffQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: chat.clone(),
+            query: DiffQueryKind::Changes,
+            by: None,
+        };
+        let query = WorktreeQuery {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            query: WorktreeQueryKind::State,
+            by: None,
+        };
+        let command = WorktreeCommand {
+            request: request.clone(),
+            workspace: workspace.clone(),
+            chat: other.clone(),
+            action: WorktreeAction::Remove,
+            by: None,
+        };
+        [
+            hello(PROTOCOL),
+            line(2, Message::DiffQuery(diff(chat))),
+            line(3, Message::DiffQuery(diff(&other))),
+            line(4, Message::WorktreeQuery(query)),
+            line(5, Message::WorktreeCommand(command)),
+        ]
+        .concat()
+    }
+
+    fn diff_answer(message: &Message) -> Option<&weacon_protocol::DiffAnswerKind> {
+        let Message::DiffAnswer(answer) = message else {
+            return None;
+        };
+        Some(&answer.answer)
+    }
+
+    #[tokio::test]
+    async fn a_chats_changes_are_pushed_and_one_without_a_worktree_is_refused() {
+        use weacon_protocol::DiffAnswerKind;
+
+        let dir = TempDir::new().unwrap();
+        let (worktrees, workspace, chat, worktree) = crate::git::service::with_chat(&dir);
+        fs::write(worktree.join("agent.txt"), "mine\n").unwrap();
+        let running = start_as(&dir, |daemon| daemon.shared.worktrees = worktrees).unwrap();
+        let bytes = worktree_asks(&workspace, &chat);
+
+        let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 5).await;
+        running.stop().await;
+
+        let pushed = replies.iter().find_map(diff_answer);
+        let Some(DiffAnswerKind::File { files: 1, file }) = pushed else {
+            panic!("no change pushed: {replies:?}");
+        };
+        assert_eq!(file.path, "agent.txt");
+        let refused: Vec<&str> = replies.iter().filter_map(error_code).collect();
+        assert_eq!(refused, ["worktree.none"; 3]);
+    }
+
+    // A chat's pushed events in brief, and the other replies. The run starts off the engine's
+    // loop, so a snapshot can come before it is up.
+    fn events_and_answers(replies: &[Message]) -> (Vec<String>, Vec<&Message>) {
+        use crate::chats::test_support::brief;
+
+        let (events, answers): (Vec<_>, Vec<_>) = replies
+            .iter()
+            .partition(|reply| matches!(reply, Message::Chat(_)));
+        (events.into_iter().map(brief).collect(), answers)
     }
 
     #[tokio::test]
     async fn chat_commands_and_queries_reach_the_engine_and_its_events_come_back() {
-        use crate::chats::test_support::{bench, brief, prompt, query, soon};
+        use crate::chats::test_support::{bench, prompt, query, soon};
         use weacon_protocol::ChatQueryKind;
 
         let dir = TempDir::new().unwrap();
@@ -816,23 +920,17 @@ mod tests {
         let (replies, _stream) = exchange(connect(&running.socket).await, &bytes, 7).await;
         let records = running.stop().await;
 
-        let offered = [
-            code!("chat.send"),
-            code!("chat.events"),
-            code!("chat.agent"),
-            code!("run.stream"),
-        ];
         let Message::Welcome(welcome) = &replies[0] else {
             panic!("no welcome");
         };
-        for capability in offered {
-            assert!(welcome.capabilities.contains(&Capability::new(capability)));
-        }
-        assert_eq!(error_code(&replies[1]), Some("chat.empty_prompt"));
-        assert!(matches!(&replies[2], Message::ChatAnswer(answer)
-            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq: 4, .. })));
+        // Not diff.view or worktree.manage until chats are given worktrees.
+        assert_eq!(welcome.capabilities, crate::session::CAPABILITIES);
+        let (events, answers) = events_and_answers(&replies[1..]);
+        assert_eq!(error_code(answers[0]), Some("chat.empty_prompt"));
+        assert!(matches!(answers[1], Message::ChatAnswer(answer)
+            if matches!(answer.answer, weacon_protocol::ChatAnswerKind::Snapshot { seq, .. } if seq >= 2)));
         assert_eq!(
-            replies[3..].iter().map(brief).collect::<Vec<_>>(),
+            events,
             [
                 "1 prompt r-1 MARKER-PROMPT",
                 "2 receipt r-1 accepted",

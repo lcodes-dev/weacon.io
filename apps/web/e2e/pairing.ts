@@ -38,6 +38,26 @@ export function pinned(page: Page, machine: string): Promise<unknown> {
   );
 }
 
+/** Sets the key this browser pinned for `machine`, or forgets it, straight in its IndexedDB, as another browser's store would hold it. */
+export function setPin(page: Page, machine: string, key: string | undefined): Promise<unknown> {
+  return page.evaluate(
+    ([machine, key]) =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open("weacon", 1);
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const pins = open.result.transaction("pins", "readwrite").objectStore("pins");
+          const set = key === undefined ? pins.delete(machine) : pins.put(key, machine);
+          set.onsuccess = () => {
+            open.result.close();
+            resolve(undefined);
+          };
+        };
+      }),
+    [machine, key] as const,
+  );
+}
+
 /** Claims a confirmed pairing as its core does, and gives the machine and its token. */
 export async function claim(page: Page, claim: PairClaim): Promise<{ machine: string; token: string }> {
   const claimed = await page.request.post(new URL("/api/machines/pair/claim", page.url()).href, { data: claim });
@@ -46,15 +66,15 @@ export async function claim(page: Page, claim: PairClaim): Promise<{ machine: st
   return { machine: paired.machine, token: paired.token };
 }
 
-/** Pairs a machine through the page as a person would, then claims it; gives the core's token. */
-export async function pair(page: Page): Promise<string> {
+/** Pairs a machine through the page as a person would, then claims it; gives the machine and the core's token. */
+export async function pair(page: Page): Promise<{ machine: string; token: string }> {
   const { pairing, code, secret } = await startPairing(page);
   await page.getByLabel("Code").fill(code);
   await page.getByRole("button", { name: "Look up" }).click();
   const confirmed = page.waitForResponse((response) => response.url().endsWith("/api/machines/pair/confirm") && response.ok());
   await page.getByRole("button", { name: "Confirm" }).click();
   await confirmed;
-  return (await claim(page, { pairing, secret })).token;
+  return claim(page, { pairing, secret });
 }
 
 /** A machine's core, connected to the server, that keeps `settings` and answers for them; once told to refuse, it refuses changes as a core does a stranger's. */

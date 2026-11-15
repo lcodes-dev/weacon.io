@@ -13,6 +13,27 @@ export function mayHaveRun(settled: Settled): boolean {
   return settled === "lost" || settled === "unsure";
 }
 
+/**
+ * What a command was about, for saying how it ended: its subject, what didn't happen when it was
+ * refused or never left, what may not have, and what a chat whose machine is gone no longer does.
+ */
+export type Subject = { subject: string; refused: string; unsent: string; unsure: string; gone: string };
+
+const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+
+const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => string> = {
+  refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
+  offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
+  detached: ({ gone }) => `This chat's machine is gone, so ${gone}.`,
+  lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
+  unsure: ({ subject, unsure }) => `The server didn't answer. ${capital(subject)} ${unsure}.`,
+};
+
+/** What a person reads once a command about `about` ended as `settled`: nothing when it was taken. */
+export function settledText(settled: Settled, about: Subject): string | undefined {
+  return settled === "accepted" ? undefined : SETTLED_TEXT[settled](about);
+}
+
 // How long a command waits for the server's word on it.
 const WAIT_MS = 15_000;
 

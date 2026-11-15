@@ -110,7 +110,7 @@ pub(crate) fn random_token() -> Result<String, Fault> {
     Ok(to_hex(&random::<32>()?))
 }
 
-/// A random number, for a code's digits or letters.
+/// A random number, for a code's letters.
 pub(crate) fn random_u64() -> Result<u64, Fault> {
     Ok(u64::from_le_bytes(random()?))
 }

@@ -50,8 +50,9 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
           <label>
             Code
             <input
-              inputMode="numeric"
               autoComplete="one-time-code"
+              autoCapitalize="characters"
+              spellCheck={false}
               required
               value={code}
               onChange={(event) => setCode(event.target.value)}

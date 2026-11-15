@@ -5,6 +5,7 @@ mod app;
 mod auth;
 mod cli;
 mod client;
+mod codes;
 mod connections;
 mod db;
 mod docs;
