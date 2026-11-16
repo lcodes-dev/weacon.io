@@ -10,7 +10,6 @@ test("a label names the agent, whether it is shared, and where it runs, as far a
     [{ kind: "codex", owner: { kind: "shared", member: "m-2", owner: "m-1" }, machine: "team VPS" }, "Shared Codex · team VPS"],
     [{ kind: "claude", owner: { kind: "member", member: "m-1" } }, "Claude Code"],
     [{ kind: "codex", owner: { kind: "shared", member: "m-2", owner: "m-1" } }, "Shared Codex"],
-    [{ kind: "gemini" as AgentRef["kind"], owner: { kind: "member", member: "m-1" } }, "Agent"],
     [undefined, "Agent"],
   ];
 

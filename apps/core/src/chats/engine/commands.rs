@@ -104,7 +104,6 @@ impl<A: Agent> Engine<A> {
     ) -> Result<AgentKind, Fault> {
         let chosen = self.open(key).await?.log.agent();
         match (named, chosen) {
-            (Some(AgentKind::Newer), _) => Err(unsupported()),
             (Some(named), Some(chosen)) if named != chosen => Err(Fault::new(
                 code!("chat.agent_conflict"),
                 "The chat already runs another agent",

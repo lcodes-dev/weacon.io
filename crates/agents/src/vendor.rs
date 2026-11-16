@@ -1,8 +1,7 @@
 //! What differs between the vendors' agents, one row each.
 
 use tokio::process::Command;
-use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, AgentSession, App, code};
+use weacon_protocol::{AgentKind, AgentSession, App};
 
 use crate::launch::{Launch, OtherSignIns};
 use crate::wire::Wire as RunWire;
@@ -27,16 +26,9 @@ pub(crate) struct Vendor {
     pub(crate) resume: Option<fn(&Launch, &AgentSession) -> Command>,
 }
 
-/// # Errors
-/// `agent.unknown` for an agent this build doesn't know.
-pub(crate) fn vendor(agent: AgentKind) -> Result<&'static Vendor, Fault> {
+pub(crate) const fn vendor(agent: AgentKind) -> &'static Vendor {
     match agent {
-        AgentKind::Claude => Ok(&claude::VENDOR),
-        AgentKind::Codex => Ok(&codex::VENDOR),
-        AgentKind::Newer => Err(unknown()),
+        AgentKind::Claude => &claude::VENDOR,
+        AgentKind::Codex => &codex::VENDOR,
     }
-}
-
-pub(crate) fn unknown() -> Fault {
-    Fault::new(code!("agent.unknown"), "This build doesn't know that agent")
 }

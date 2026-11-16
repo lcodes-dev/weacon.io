@@ -1062,21 +1062,11 @@ mod tests {
             fake.answer(&query(3, "c-1", ChatQueryKind::Newer)),
             [refusal(3, code!("message.unsupported"))]
         );
-        let unnamed = command(ChatAction::Prompt {
-            quotes: Vec::new(),
-            pick: None,
-            text: "Hi".to_owned(),
-            repo: None,
-            machine: None,
-            agent: Some(AgentKind::Newer),
-            task: None,
-        });
-        for newer in [command(ChatAction::Newer), unnamed] {
-            assert_eq!(
-                fake.answer(&newer),
-                [refusal(newer.id, code!("message.unsupported"))]
-            );
-        }
+        let newer = command(ChatAction::Newer);
+        assert_eq!(
+            fake.answer(&newer),
+            [refusal(newer.id, code!("message.unsupported"))]
+        );
         assert_eq!(fake.seq(), seq);
         assert!(
             fake.answer(&played(RunEvent::Text {

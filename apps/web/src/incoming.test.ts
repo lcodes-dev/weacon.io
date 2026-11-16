@@ -61,8 +61,9 @@ test("only the messages this app acts on pass, each with the fields it reads", (
   }
 });
 
-test("a run message passes only with the event fields this app reads; unknown events pass", () => {
+test("a run message passes only with an event the protocol names and the fields this app reads", () => {
   const good: unknown[] = [
+    { event: "started", session: "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d" },
     { event: "text_delta", text: "x" },
     { event: "text", text: "x" },
     { event: "tool_call", call: "c-1", tool: "Read", input: {} },
@@ -74,7 +75,6 @@ test("a run message passes only with the event fields this app reads; unknown ev
     { event: "permission_asked", run: "r-1", prompt: 3, tool: "Bash", input: null, wants: { text: "ls", cut: true } },
     { event: "permission_withdrawn", run: "r-1", prompt: 2 },
     { event: "permission_answered", answer: { run: "r-1", prompt: 2, allow: false } },
-    { event: "newer" },
   ];
   const bad: unknown[] = [
     undefined,
@@ -82,6 +82,8 @@ test("a run message passes only with the event fields this app reads; unknown ev
     "text",
     {},
     { event: 3 },
+    { event: "thinking" },
+    { event: "started" },
     { event: "text_delta" },
     { event: "text", text: 4 },
     { event: "tool_call", call: "c-1" },
@@ -151,6 +153,7 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
     { kind: "receipt", receipt: { request: "q-1", state: "queued" } },
     { kind: "receipt", receipt: { state: "accepted" } },
     { kind: "run", update: { run: "r-1", event: { event: "finished", outcome: { state: "queued" } } } },
+    { kind: "run_status", status: { run: "r-1", state: "paused" } },
     { kind: 3 },
     { kind: "prompt", text: "Hi" },
     { kind: "outside_prompt" },
@@ -176,17 +179,17 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
   assert.equal(parse(frame({ id: 7, type: "chat", workspace: "w-1", chat: "c-1", entry: null })), undefined);
 });
 
-test("a run's status keeps a well-formed agent and drops any other", () => {
+test("a run's status passes with a well-formed agent or none, and with no other", () => {
   const agentOf = (agent: unknown) => {
     const message = parse(entry({ kind: "run_status", status: { run: "r-1", state: "running", agent } }));
-    return message?.type === "chat" && message.entry.event.kind === "run_status" ? message.entry.event.status.agent : "dropped";
+    return message?.type === "chat" && message.entry.event.kind === "run_status" ? message.entry.event.status.agent : "refused";
   };
   const kept = [
     { kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "Ada's laptop" },
     { kind: "codex", owner: { kind: "shared", member: "m-2", owner: "m-1" } },
-    { kind: "gemini", owner: { kind: "shared", member: "m-2", owner: "m-1" } },
   ];
   const lost = [
+    { kind: "gemini", owner: { kind: "shared", member: "m-2", owner: "m-1" } },
     { kind: 4, owner: { kind: "shared", member: "m-2", owner: "m-1" } },
     { kind: "codex", owner: { kind: "shared" } },
     { kind: "codex", owner: { kind: "shared", member: "m-2" } },
@@ -201,7 +204,7 @@ test("a run's status keeps a well-formed agent and drops any other", () => {
     assert.deepEqual(agentOf(agent), agent);
   }
   for (const agent of lost) {
-    assert.equal(agentOf(agent), undefined, JSON.stringify(agent));
+    assert.equal(agentOf(agent), "refused", JSON.stringify(agent));
   }
   assert.equal(agentOf(undefined), undefined);
 });
@@ -246,6 +249,8 @@ test("a machine's settings answer passes with the fields the page reads, and no 
     { ...current, sign_ins: [{ agent: "claude", state: "expired" }] },
     { kind: "repos" },
     { kind: "agents", agents: [7] },
+    { kind: "agents", agents: ["gemini"] },
+    { ...current, sign_ins: [{ agent: "gemini", state: "signed_in" }] },
     { kind: "later" },
   ];
 
@@ -291,6 +296,7 @@ test("a sessions answer passes with the fields the list and the transcript read,
     { kind: "list", sessions: [{ ...session, agent: undefined }] },
     { kind: "list", sessions: [{ ...session, session: undefined }] },
     { kind: "list", sessions: [null] },
+    { kind: "list", sessions: [{ ...session, agent: "gemini" }] },
     { kind: "opened", events: [entry] },
     { kind: "opened", events: [{ seq: 0, event: entry.event }], more: false },
     { kind: "opened", events: "none", more: false },

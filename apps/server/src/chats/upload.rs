@@ -159,8 +159,7 @@ fn kept_run(RunUpdate { run, event }: RunUpdate, leg: &Leg) -> Option<RunUpdate>
         RunEvent::Started { .. }
         | RunEvent::TextDelta { .. }
         | RunEvent::ToolCall { .. }
-        | RunEvent::ToolDone { .. }
-        | RunEvent::Newer => return None,
+        | RunEvent::ToolDone { .. } => return None,
     };
     let run = leg.chat_run(&run)?;
     Some(RunUpdate { run, event })
@@ -509,11 +508,8 @@ mod tests {
         let told = |entry: ChatEntry| match entry.event {
             ChatEvent::Prompt { author, text, .. } => Some((author, text)),
             ChatEvent::RunStatus { status } => {
-                let member = status.agent.and_then(|agent| match agent.owner {
-                    AgentOwner::Shared { member, .. } | AgentOwner::Member { member } => {
-                        Some(member)
-                    }
-                    AgentOwner::Newer => None,
+                let member = status.agent.map(|agent| match agent.owner {
+                    AgentOwner::Shared { member, .. } | AgentOwner::Member { member } => member,
                 });
                 Some((member, "status".to_owned()))
             }
@@ -701,7 +697,6 @@ mod tests {
         };
         let leg = leg();
         assert_eq!(kept(ChatEvent::Newer, &leg, &leg.member), None);
-        assert_eq!(kept(run(RunEvent::Newer), &leg, &leg.member), None);
         assert_eq!(kept(run(done), &leg, &leg.member), None);
         let ended = kept(run(finished.clone()), &leg, &leg.member).map(|kept| core_named(&kept));
         assert_eq!(ended, Some(run(finished)));

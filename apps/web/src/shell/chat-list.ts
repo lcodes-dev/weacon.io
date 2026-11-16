@@ -53,9 +53,9 @@ const RUNS: Record<RunState, string> = {
 
 /**
  * What a chat's row says under its title: who started it, once their name is known, what its latest
- * run is doing, and its state's note; a run state this app doesn't know is left out.
+ * run is doing, and its state's note.
  */
 export function rowNote(chat: ChatSummary, names: Names): string {
-  const run = chat.run !== undefined && Object.hasOwn(RUNS, chat.run) ? RUNS[chat.run] : undefined;
+  const run = chat.run === undefined ? undefined : RUNS[chat.run];
   return [names.get(chat.owner), run, stateNote(chat.state)].filter((part) => part !== undefined).join(" · ");
 }

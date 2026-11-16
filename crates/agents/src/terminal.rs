@@ -161,10 +161,6 @@ mod tests {
                 )),
                 "{codex}"
             );
-            launch(AgentKind::Newer, &dir)
-                .open_login(Size::new(80, 24).unwrap())
-                .err()
-                .unwrap();
         }
 
         #[tokio::test]

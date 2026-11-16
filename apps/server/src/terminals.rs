@@ -73,10 +73,6 @@ async fn sent(
         id: shared.links.next_id(),
         message: Message::TerminalCommand(command.clone()),
     };
-    // A newer client's command this server can't send on would drop the machine's connection.
-    if envelope.to_json().is_err() {
-        return Err(relay::refused(code!("relay.unknown"), false));
-    }
     let key = (command.machine.clone(), command.terminal.clone());
     shared
         .terminals

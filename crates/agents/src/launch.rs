@@ -13,7 +13,7 @@ use crate::access::Rules;
 use crate::platform;
 use crate::run::{self, AgentRun};
 use crate::terminal::{Events, Size, Terminal};
-use crate::vendor::{Vendor, unknown, vendor};
+use crate::vendor::{Vendor, vendor};
 
 /// How to start one of the person's own agents for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,14 +66,14 @@ impl Launch {
     /// config folder named after it in `workspace_dir`.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, or its program isn't installed.
+    /// When its program isn't installed.
     pub fn new(
         agent: AgentKind,
         find: impl FnOnce(&str) -> Option<PathBuf>,
         workspace_dir: &Path,
         cwd: PathBuf,
     ) -> Result<Self, Fault> {
-        let name = agent.name().ok_or_else(unknown)?;
+        let name = agent.name();
         Ok(Self {
             agent,
             program: find(name).ok_or_else(not_installed)?,
@@ -89,14 +89,14 @@ impl Launch {
     /// that record their client.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, or its program can't be started.
+    /// When its program can't be started.
     pub fn start(
         &self,
         app: &App,
         run: RunId,
         session: Option<&AgentSession>,
     ) -> Result<AgentRun, Fault> {
-        let (command, wire) = (self.vendor()?.drive)(self, app, session);
+        let (command, wire) = (self.vendor().drive)(self, app, session);
         let rules = Rules {
             level: self.access,
             cwd: self.cwd.clone(),
@@ -113,9 +113,9 @@ impl Launch {
     /// the sign-in comes from: signed in only from the workspace's own config folder.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, or the command can't be run or doesn't end.
+    /// When the command can't be run or doesn't end.
     pub async fn sign_in_status(&self) -> Result<SignIn, Fault> {
-        let vendor = self.vendor()?;
+        let vendor = self.vendor();
         let mut command = self.status_command(vendor);
         command.stdin(Stdio::null()).kill_on_drop(true);
         let failed = || {
@@ -153,10 +153,9 @@ impl Launch {
     /// finish there. Nothing that passes between them is read.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, its program can't be run, or the sign-in ends
-    /// without success.
+    /// When its program can't be run, or the sign-in ends without success.
     pub async fn log_in(&self) -> Result<(), Fault> {
-        let mut command = self.login_command(self.vendor()?);
+        let mut command = self.login_command(self.vendor());
         let failed = || Fault::new(code!("agent.login_failed"), "The sign-in didn't finish");
         match command.status().await {
             Ok(exit) if exit.success() => Ok(()),
@@ -172,7 +171,7 @@ impl Launch {
     /// # Errors
     /// When this agent can't be resumed by hand, or its program can't be run.
     pub async fn resume_by_hand(&self, session: &AgentSession) -> Result<(), Fault> {
-        let resume = self.vendor()?.resume.ok_or_else(|| {
+        let resume = self.vendor().resume.ok_or_else(|| {
             Fault::new(
                 code!("agent.no_resume_by_hand"),
                 "This agent can't be carried on by hand yet",
@@ -197,9 +196,9 @@ impl Launch {
     /// arguments and config folder as [`Launch::log_in`], and no shell.
     ///
     /// # Errors
-    /// When this build doesn't know the agent, or its program can't be started.
+    /// When its program can't be started.
     pub fn open_login(&self, size: Size) -> Result<(Terminal, Events), Fault> {
-        let mut command = self.login_command(self.vendor()?);
+        let mut command = self.login_command(self.vendor());
         // What the browser's terminal emulates, whatever this process runs under.
         command.env("TERM", "xterm-256color");
         Terminal::open(command, size).map_err(|error| {
@@ -210,7 +209,7 @@ impl Launch {
     /// Whether a run of this agent is pointed at the core's MCP.
     #[must_use]
     pub fn takes_mcp(&self) -> bool {
-        self.vendor().is_ok_and(|vendor| vendor.takes_mcp)
+        self.vendor().takes_mcp
     }
 
     pub(crate) fn with_workspace_sign_in(&self, vendor: &Vendor) -> Command {
@@ -233,7 +232,7 @@ impl Launch {
         command
     }
 
-    fn vendor(&self) -> Result<&'static Vendor, Fault> {
+    const fn vendor(&self) -> &'static Vendor {
         vendor(self.agent)
     }
 }
@@ -321,10 +320,6 @@ mod tests {
             codex.unwrap_err().code().as_str(),
             "agent.no_resume_by_hand"
         );
-        let newer = launch(AgentKind::Newer, &dir)
-            .resume_by_hand(&session)
-            .await;
-        assert_eq!(newer.unwrap_err().code().as_str(), "agent.unknown");
     }
 
     #[test]
@@ -364,7 +359,6 @@ mod tests {
 
         assert!(takes(AgentKind::Claude));
         assert!(!takes(AgentKind::Codex));
-        assert!(!takes(AgentKind::Newer));
     }
 
     #[test]
@@ -372,7 +366,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let first_arg = |agent| {
             let launch = launch(agent, &dir);
-            let (command, wire) = (launch.vendor().unwrap().drive)(&launch, &app(), None);
+            let (command, wire) = (launch.vendor().drive)(&launch, &app(), None);
             let command = command.as_std();
             assert_eq!(command.get_program(), dir.join("agent"));
             (command.get_args().next().map(ToOwned::to_owned), wire)
@@ -417,7 +411,6 @@ mod tests {
                 "/state/w/codex".into()
             )
         );
-        assert_eq!(code(new(AgentKind::Newer, installed)), "agent.unknown");
         assert_eq!(
             code(new(AgentKind::Claude, |_| None)),
             "agent.not_installed"
@@ -438,7 +431,6 @@ mod tests {
 
         assert_eq!(code(AgentKind::Claude), "agent.not_started");
         assert_eq!(code(AgentKind::Codex), "agent.not_started");
-        assert_eq!(code(AgentKind::Newer), "agent.unknown");
     }
 
     async fn sign_in_code(launch: Launch) -> String {
@@ -447,13 +439,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_program_that_is_gone_or_an_unknown_agent_is_an_error_not_a_sign_in() {
+    async fn a_program_that_is_gone_is_an_error_not_a_sign_in() {
         let dir = TempDir::new().unwrap();
         let code = |agent| sign_in_code(launch(agent, &dir));
 
         assert_eq!(code(AgentKind::Claude).await, "agent.status_failed");
         assert_eq!(code(AgentKind::Codex).await, "agent.status_failed");
-        assert_eq!(code(AgentKind::Newer).await, "agent.unknown");
     }
 
     // `true` and `false` stand in for a vendor's status command: they exit the same whatever
@@ -519,7 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sign_in_needs_a_known_agent_and_a_program_that_is_still_there() {
+    async fn a_sign_in_needs_a_program_that_is_still_there() {
         let dir = TempDir::new().unwrap();
         let code = |agent| log_in_code(launch(agent, &dir));
 
@@ -530,10 +521,6 @@ mod tests {
         assert_eq!(
             code(AgentKind::Codex).await.as_deref(),
             Some("agent.login_failed")
-        );
-        assert_eq!(
-            code(AgentKind::Newer).await.as_deref(),
-            Some("agent.unknown")
         );
     }
 

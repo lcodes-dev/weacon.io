@@ -64,7 +64,7 @@ function step(rows: TranscriptRow[], writing: boolean, event: RunEvent): boolean
       rows.push({ kind: "finished", outcome: event.outcome });
       return false;
     default:
-      // Other events, and a newer server's, leave the rows as they are.
+      // Other events leave the rows as they are.
       return writing;
   }
 }

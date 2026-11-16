@@ -41,7 +41,6 @@ pub(super) fn cut(event: &RunEvent) -> RunEvent {
         | RunEvent::ToolDone { .. }
         | RunEvent::PermissionWithdrawn { .. }
         | RunEvent::PermissionAnswered { .. }
-        | RunEvent::Finished { .. }
-        | RunEvent::Newer) => whole,
+        | RunEvent::Finished { .. }) => whole,
     }
 }

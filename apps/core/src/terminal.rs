@@ -113,10 +113,7 @@ impl Terminals {
         };
         let (inputs, received) = mpsc::channel(WAITING);
         let alive = Arc::new(());
-        log.info(
-            "terminal opened",
-            &[("agent", agent.name().unwrap_or("").into())],
-        );
+        log.info("terminal opened", &[("agent", agent.name().into())]);
         let alive_for = Arc::downgrade(&alive);
         let running = session::run(session, received, alive, self.updates.clone(), log);
         let open = Open {

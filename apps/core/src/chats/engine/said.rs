@@ -88,8 +88,7 @@ impl<A: Agent> Engine<A> {
             | RunEvent::Text { .. }
             | RunEvent::ToolCall { .. }
             | RunEvent::ToolDone { .. }
-            | RunEvent::PermissionAnswered { .. }
-            | RunEvent::Newer => committed.map(drop),
+            | RunEvent::PermissionAnswered { .. } => committed.map(drop),
         }
     }
 

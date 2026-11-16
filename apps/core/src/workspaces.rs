@@ -116,9 +116,9 @@ impl Workspaces {
             .collect();
         let mut states = sign_ins(places).into_iter();
         let lines = known.iter().map(|workspace| {
-            let agents = AGENTS.map(|(_, name)| {
+            let agents = AGENTS.map(|agent| {
                 let state = states.next().unwrap_or(SignInState::Unknown);
-                format!("{name} {}", state_name(state))
+                format!("{} {}", vendor_name(agent), state_name(state))
             });
             let (id, agents) = (workspace.as_str(), agents.join(", "));
             match Settings::read(&self.settings_file(workspace)) {
@@ -133,10 +133,10 @@ impl Workspaces {
     }
 
     /// Each agent this core runs, and how to ask it about `workspace`; none for an agent whose
-    /// program isn't installed, which is the only way the lookup fails for a known agent.
+    /// program isn't installed.
     pub(crate) fn places(&self, workspace: &WorkspaceId) -> [(AgentKind, Option<Launch>); 2] {
         let root = self.root(workspace);
-        AGENTS.map(|(agent, _)| (agent, self.located(workspace, agent, root.clone()).ok()))
+        AGENTS.map(|agent| (agent, self.located(workspace, agent, root.clone()).ok()))
     }
 
     /// The core's state folder, which holds every workspace's.
@@ -269,15 +269,14 @@ pub(crate) async fn sign_ins(log: &Logger, places: Vec<Option<Launch>>) -> Vec<S
 
 const FOLDER_PREFIX: &str = "w-";
 
-const AGENTS: [(AgentKind, &str); 2] = [
-    (AgentKind::Claude, "Claude Code"),
-    (AgentKind::Codex, "Codex"),
-];
+const AGENTS: [AgentKind; 2] = [AgentKind::Claude, AgentKind::Codex];
 
-/// What people call `agent`'s vendor's program; "Agent" for one this build doesn't know.
-pub(crate) fn vendor_name(agent: AgentKind) -> &'static str {
-    let named = AGENTS.iter().find(|(kind, _)| *kind == agent);
-    named.map_or("Agent", |(_, name)| name)
+/// What people call `agent`'s vendor's program.
+pub(crate) const fn vendor_name(agent: AgentKind) -> &'static str {
+    match agent {
+        AgentKind::Claude => "Claude Code",
+        AgentKind::Codex => "Codex",
+    }
 }
 
 /// What a workspace's folders are called, wherever they are.
@@ -392,7 +391,7 @@ mod tests {
                 AgentKind::Claude if in_w2 => SignInState::SignedIn,
                 AgentKind::Codex if in_w2 => SignInState::SignedOut,
                 AgentKind::Claude => SignInState::SignedOut,
-                AgentKind::Codex | AgentKind::Newer => SignInState::Unknown,
+                AgentKind::Codex => SignInState::Unknown,
             }
         };
         let text = workspaces
@@ -519,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_agent_or_an_unusable_folder_is_refused() {
+    fn an_unusable_folder_is_refused() {
         let dir = TempDir::new().unwrap();
         fs::create_dir_all(dir.join("workspaces/w-w1")).unwrap();
         fs::write(dir.join("workspaces/w-w1/claude"), "").unwrap();
@@ -531,7 +530,6 @@ mod tests {
             error.code().as_str().to_owned()
         };
 
-        assert_eq!(code(AgentKind::Newer), "agent.unknown");
         assert_eq!(code(AgentKind::Claude), "workspace.folder_failed");
     }
 

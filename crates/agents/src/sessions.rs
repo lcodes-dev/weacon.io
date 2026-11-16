@@ -106,7 +106,7 @@ impl SessionFile {
 /// first. Only the vendor's session folders are listed, and only files named as sessions are
 /// kept; folders that can't be listed are left out.
 pub fn find(files: &impl Files, agent: AgentKind, config_dir: &Path) -> Vec<SessionFile> {
-    let mut found = match agent {
+    let mut found: Vec<SessionFile> = match agent {
         AgentKind::Claude => dirs(files, &config_dir.join("projects"), |name| {
             !name.starts_with('.')
         })
@@ -120,7 +120,6 @@ pub fn find(files: &impl Files, agent: AgentKind, config_dir: &Path) -> Vec<Sess
             .chain([config_dir.join("archived_sessions")])
             .flat_map(|day| sessions(files, agent, &day, codex_session))
             .collect(),
-        AgentKind::Newer => Vec::new(),
     };
     found.sort_by_key(|file| Reverse(file.modified));
     found
@@ -336,11 +335,10 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_folder_or_an_agent_this_build_doesnt_know_finds_nothing() {
+    fn a_missing_folder_finds_nothing() {
         let dir = TempDir::new().unwrap();
         write(&session(&dir.join("projects").join("-w"), SESSION), "", 0);
 
-        assert_eq!(find(&Disk, AgentKind::Newer, &dir), []);
         assert_eq!(find(&Disk, AgentKind::Codex, &dir), []);
         assert_eq!(find(&Disk, AgentKind::Claude, &dir.join("missing")), []);
     }

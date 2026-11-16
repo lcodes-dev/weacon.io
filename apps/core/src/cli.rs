@@ -96,10 +96,7 @@ pub(crate) enum HookCommand {
 }
 
 fn agent(name: &str) -> Result<AgentKind, &'static str> {
-    serde_json::from_value(name.into())
-        .ok()
-        .filter(|agent| *agent != AgentKind::Newer)
-        .ok_or("not an agent this core runs")
+    serde_json::from_value(name.into()).map_err(|_| "not an agent this core runs")
 }
 
 fn on_or_off(word: &str) -> Result<bool, &'static str> {

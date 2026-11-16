@@ -84,9 +84,8 @@ fn open(
         .find(|file| file.session == *session)?;
     let run = RunId::try_from(session.as_str().to_owned()).ok()?;
     let bytes = file.read(files, 0, WHOLE).ok()?;
-    let steps = Transcript::read(agent, &bytes).map(|read| read.steps);
     let later = (1..)
-        .zip(steps.unwrap_or_default())
+        .zip(Transcript::read(agent, &bytes).steps)
         .skip_while(|(seq, _)| *seq <= after)
         .map(|(seq, step)| ChatEntry {
             seq,
@@ -130,7 +129,7 @@ fn event(run: &RunId, step: Step) -> ChatEvent {
 
 fn folder(files: &impl Files, file: &SessionFile) -> Option<String> {
     let head = file.read(files, 0, HEAD).ok()?;
-    let cwd = Transcript::read(file.agent, &head)?.cwd?;
+    let cwd = Transcript::read(file.agent, &head).cwd?;
     cwd.to_str().map(str::to_owned)
 }
 

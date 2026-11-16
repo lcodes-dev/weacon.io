@@ -260,7 +260,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, never_sent, request, round_trips, travels, workspace};
+    use crate::test_support::{envelope, request, round_trips, travels, workspace};
     use crate::{AgentOwner, AgentRef, Envelope, Message, TaskStatus};
 
     fn content() -> DocContent {
@@ -364,14 +364,6 @@ mod tests {
             &withdraw,
             command(json!({ "kind": "withdraw", "proposal": "p-1" })),
         );
-    }
-
-    #[test]
-    fn a_proposal_by_an_agent_this_build_does_not_know_is_never_sent() {
-        never_sent(proposed(
-            "gemini",
-            json!({ "kind": "new_task", "title": "A" }),
-        ));
     }
 
     fn author() -> Author {

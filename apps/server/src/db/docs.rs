@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_agent_from_before_agents_were_named_reads_as_none_and_a_newer_one_is_refused() {
+    async fn an_agent_from_before_agents_were_named_reads_as_none_and_someone_elses_is_refused() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.db");
         let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
@@ -562,8 +562,11 @@ mod tests {
         database_before(&path, steps::VERSION_AGENTS, rows).await;
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
-        let newer = agent(AgentKind::Newer, shared_owner(), None);
-        let agents = Attribution::accepted(member_id("m1"), Some(newer), member_id("m1"), NOW);
+        let someone_elses = weacon_protocol::AgentOwner::Member {
+            member: member_id("m3"),
+        };
+        let theirs = agent(AgentKind::Codex, someone_elses, None);
+        let agents = Attribution::accepted(member_id("m1"), Some(theirs), member_id("m1"), NOW);
 
         let refused = one
             .revise_doc(&doc_id("d1"), Revision::FIRST, linked(), &agents)

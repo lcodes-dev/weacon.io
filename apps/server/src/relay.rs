@@ -124,7 +124,7 @@ pub(crate) enum Refusal {
 /// server can't send one on, or `machine.no_answer` once it has waited too long.
 ///
 /// # Errors
-/// `relay.unknown` for a kind the relay doesn't carry or a value it can't send on,
+/// `relay.unknown` for a kind the relay doesn't carry,
 /// `machine.not_found` for a machine that isn't the asker's or another workspace's,
 /// `chat.not_found` and `chat.not_owner`, `machine.offline` and `relay.busy`, which may pass,
 /// and the database's failure.
@@ -137,7 +137,6 @@ pub(crate) async fn forward(
     let unknown = || refused(code!("relay.unknown"), false);
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
     let needs = machine_needs(&message).ok_or_else(unknown)?;
-    let message = crate::socket::sendable(message).ok_or_else(unknown)?;
     let machine = machine_for(shared, ask, &asked, &message).await?;
     let relayed = shared.links.next_id();
     let sent_to = Sent {
@@ -1311,19 +1310,7 @@ mod tests {
 
         let sent = envelope(1, settings_answer(&machine));
         let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
-        let Message::SessionsQuery(mut newer) = sessions_query(&machine) else {
-            panic!();
-        };
-        newer.query = SessionsQueryKind::Open {
-            agent: AgentKind::Newer,
-            session: AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned())
-                .unwrap(),
-            after: 0,
-        };
-        let sent = envelope(2, Message::SessionsQuery(newer));
-        let unsendable = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 
-        assert_eq!(code_of(unsendable), Some("relay.unknown".to_owned()));
         assert!(fixture.shared.relay.lock().is_empty());
         assert_eq!(needs(&query(&machine, "w1")), Some(SETTINGS));
         assert_eq!(needs(&command(&machine)), Some(SETTINGS));

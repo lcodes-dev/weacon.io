@@ -159,10 +159,8 @@ export type AccountSignedIn = {
  * Which vendor's agent.
  */
 export type AgentKind = (
-  | (
-    | "claude"
-    | "codex"
-  )
+  | "claude"
+  | "codex"
 );
 
 /**

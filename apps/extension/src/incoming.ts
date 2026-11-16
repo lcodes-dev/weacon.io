@@ -1,4 +1,4 @@
-import type { Envelope } from "./protocol.ts";
+import type { AgentKind, Envelope, Outcome, RunState } from "./protocol.ts";
 
 /** A message from the core that the panel acts on, its fields checked where it arrives. */
 export type Incoming = Extract<Envelope, { type: "welcome" | "error" | "receipt" | "chat" | "chat_answer" | "chats_answer" }>;
@@ -18,7 +18,7 @@ export function parse(value: unknown): Incoming | undefined {
 const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isTexts(fields["capabilities"])),
   error: (fields) => text(fields, "code"),
-  receipt: (fields) => text(fields, "request") && text(fields, "state"),
+  receipt: (fields) => text(fields, "request") && isOutcome(fields),
   chat: (fields) => isAbout(fields) && isEntry(fields["entry"]),
   chat_answer: (fields) => isAbout(fields) && isChatAnswer(fields["answer"]),
   chats_answer: (fields) => {
@@ -57,14 +57,29 @@ function isAbout(fields: Fields): boolean {
   return text(fields, "workspace") && text(fields, "chat");
 }
 
+const AGENT_KINDS: readonly string[] = ["claude", "codex"] satisfies AgentKind[];
+const RUN_STATES: readonly string[] = ["starting", "running", "waiting", "idle", "sleeping", "ended"] satisfies RunState[];
+const OUTCOMES: readonly string[] = ["accepted", "completed", "interrupted", "failed", "unknown"] satisfies Outcome["state"][];
+
 function isLocalChat(value: unknown): boolean {
   const chat = record(value);
   return (
     chat !== undefined &&
-    ["workspace", "chat", "title", "agent"].every((key) => text(chat, key)) &&
+    ["workspace", "chat", "title"].every((key) => text(chat, key)) &&
+    AGENT_KINDS.includes(chat["agent"] as string) &&
     Number.isSafeInteger(chat["updated_at"]) &&
-    (chat["run"] === undefined || text(chat, "run"))
+    (chat["run"] === undefined || RUN_STATES.includes(chat["run"] as string))
   );
+}
+
+function isStatus(value: unknown): boolean {
+  const status = record(value);
+  return text(status, "run") && RUN_STATES.includes(status?.["state"] as string);
+}
+
+function isOutcome(value: unknown): boolean {
+  const outcome = record(value);
+  return OUTCOMES.includes(outcome?.["state"] as string);
 }
 
 // An answer of a kind the panel knows has every field it reads; others are dropped.
@@ -79,7 +94,7 @@ function isChatAnswer(value: unknown): boolean {
       return entries;
     case "snapshot": {
       const { seq, runs, waiting } = answer;
-      const statuses = Array.isArray(runs) && runs.every((run) => text(record(run), "run") && text(record(run), "state"));
+      const statuses = Array.isArray(runs) && runs.every(isStatus);
       return entries && isSeq(seq, 0) && statuses && Array.isArray(waiting) && waiting.every((at) => isSeq(at, 1));
     }
     default:
@@ -100,15 +115,13 @@ function isEntry(value: unknown): boolean {
     case "outside_prompt":
       return text(event, "text");
     case "receipt":
-      return text(record(event["receipt"]), "state");
+      return isOutcome(event["receipt"]);
     case "run": {
       const update = record(event["update"]);
       return text(update, "run") && isRunEvent(update?.["event"]);
     }
-    case "run_status": {
-      const status = record(event["status"]);
-      return text(status, "run") && text(status, "state");
-    }
+    case "run_status":
+      return isStatus(event["status"]);
     default:
       return true;
   }
@@ -122,6 +135,9 @@ function isNote(value: unknown): boolean {
 function isRunEvent(value: unknown): boolean {
   const event = record(value);
   switch (event?.["event"]) {
+    case "started":
+      return text(event, "session");
+    case "text_delta":
     case "text":
       return text(event, "text");
     case "tool_call":
@@ -137,8 +153,8 @@ function isRunEvent(value: unknown): boolean {
       return text(answer, "run") && isSeq(answer?.["prompt"], 0) && typeof answer?.["allow"] === "boolean";
     }
     case "finished":
-      return text(record(event["outcome"]), "state");
+      return isOutcome(event["outcome"]);
     default:
-      return typeof event?.["event"] === "string";
+      return false;
   }
 }

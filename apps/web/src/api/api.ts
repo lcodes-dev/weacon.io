@@ -1,5 +1,6 @@
 import type { End } from "../connection.ts";
 import { isId } from "../ids.ts";
+import { AGENT_KINDS, RUN_STATES } from "../incoming.ts";
 import type {
   AccountSignedIn,
   AccountSignInFinish,
@@ -298,12 +299,15 @@ const isOffer = (value: unknown): value is InvitationOffer =>
 const isList = (value: unknown): value is WorkspaceList => listOf("workspaces", isWorkspace)(value) && listOf("invitations", isOffer)(value);
 // Its machine goes into a machine's query, so it must be an id.
 const isLeg = (value: unknown): value is ChatLeg =>
-  fields(value, ["member", "machine", "agent"]) && isIdText((value as ChatLeg).machine_id) && typeof (value as ChatLeg).detached === "boolean";
+  fields(value, ["member", "machine"]) &&
+  AGENT_KINDS.includes((value as ChatLeg).agent) &&
+  isIdText((value as ChatLeg).machine_id) &&
+  typeof (value as ChatLeg).detached === "boolean";
 const isChat = (value: unknown): value is ChatSummary =>
   fields(value, ["id", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at) &&
-  ["undefined", "string"].includes(typeof (value as ChatSummary).run) &&
+  ((value as ChatSummary).run === undefined || RUN_STATES.includes((value as ChatSummary).run as string)) &&
   listOf("legs", isLeg)(value) &&
   // It goes into the address, so it must be an id.
   ((value as ChatSummary).task === undefined || isIdText((value as ChatSummary).task));

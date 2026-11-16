@@ -261,6 +261,8 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
     { status: 200, body: { chats: [{ ...chat, task: "t-1" }] } },
     { status: 200, body: { chats: [{ ...chat, legs: [] }] } },
     { status: 200, body: { chats: [{ ...chat, run: 7 }] } },
+    { status: 200, body: { chats: [{ ...chat, run: "paused" }] } },
+    { status: 200, body: { chats: [{ ...chat, legs: [{ ...leg, agent: "gemini" }] }] } },
     { status: 200, body: { chats: [{ ...chat, task: "../t" }] } },
     { status: 200, body: { chats: [{ ...chat, legs: [{ ...leg, machine_id: "../mc" }] }] } },
     { status: 200, body: { chats: [{ ...chat, legs: [{ ...leg, detached: undefined }] }] } },
@@ -276,7 +278,7 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
   assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [{ ...chat, task: "t-1" }] } });
   // Starting a chat needs no agent.
   assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [{ ...chat, legs: [] }] } });
-  for (let left = 8; left > 0; left -= 1) {
+  for (let left = 10; left > 0; left -= 1) {
     assert.deepEqual(await api.chats("ws-1"), { ok: false, code: MALFORMED });
   }
   assert.deepEqual(await api.chats("ws-1"), { ok: false, code: "workspace.not_member" });

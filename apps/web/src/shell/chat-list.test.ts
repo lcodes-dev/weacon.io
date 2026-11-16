@@ -55,9 +55,6 @@ test("a chat's row says what its latest run is doing, in plain words, where it i
     ["idle", "ada · Idle"],
     ["sleeping", "ada · Idle"],
     ["ended", "ada · Ended"],
-    ["paused" as RunState, "ada"],
-    ["constructor" as RunState, "ada"],
-    ["__proto__" as RunState, "ada"],
     [undefined, "ada"],
   ];
 

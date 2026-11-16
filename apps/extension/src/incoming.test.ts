@@ -41,12 +41,12 @@ test("each message the panel acts on is parsed as it arrives", () => {
   }
 });
 
-test("newer kinds of event pass, to keep their place, and newer answers don't", () => {
+test("a newer kind of chat event passes, to keep its place, and newer run events and answers don't", () => {
   const newer = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "note" } } };
   const thinking = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: "thinking" } } } } };
 
   assert.deepEqual(parse(newer), newer);
-  assert.deepEqual(parse(thinking), thinking);
+  assert.equal(parse(thinking), undefined);
   assert.equal(parse({ id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "moved" } }), undefined);
   assert.equal(parse({ id: 3, type: "chats_answer", answer: { kind: "page" } }), undefined);
 });

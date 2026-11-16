@@ -393,16 +393,14 @@ mod tests {
         let someone_elses = AgentOwner::Member {
             member: member_id("m3"),
         };
-        let refused = [
-            agent(AgentKind::Newer, shared_owner(), None),
-            agent(AgentKind::Codex, AgentOwner::Newer, None),
-            agent(AgentKind::Codex, someone_elses, None),
-        ]
-        .map(|newer| Attribution::accepted(member_id("m1"), Some(newer), member_id("m3"), NOW));
-        for attribution in &refused {
-            let late = one.edit_task(&task.id, read_at, rename("Late"), attribution);
-            assert_eq!(code(&late.await.unwrap_err()), "task.unknown_value");
-        }
+        let refused = Attribution::accepted(
+            member_id("m1"),
+            Some(agent(AgentKind::Codex, someone_elses, None)),
+            member_id("m3"),
+            NOW,
+        );
+        let late = one.edit_task(&task.id, read_at, rename("Late"), &refused);
+        assert_eq!(code(&late.await.unwrap_err()), "task.unknown_value");
 
         let mut expected = vec![by("m1").author().clone()];
         expected.extend(attributions.iter().map(|made| made.author().clone()));
