@@ -19,14 +19,13 @@ pub(crate) mod socket;
 pub(crate) use data::{agent, email, fresh_account, member_id, new_task, two_teams, workspace_id};
 pub(crate) use requests::{
     Client, Paired, ask, bearer, claim_body, confirm_body, error_code, finish_body, header,
-    lookup_body, pair_machine, pairing_start, request, request_with, sign_in, start_pairing,
-    start_sign_in, status,
+    lookup_body, pair_machine, request, request_with, sign_in, start_pairing, start_sign_in,
+    status,
 };
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::db::Db;
 use crate::http;
-use crate::pairing;
 use crate::secret::Secret;
 use crate::shared::Shared;
 use crate::sign_in;
@@ -87,7 +86,6 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             secret: Arc::new(secret),
-            proxies: Arc::new([]),
             // A short hello; pings far apart, since a client answers them only while its test
             // reads it. Tests about pings ask for them with `pinging`.
             sockets: crate::socket::Timing {
@@ -105,9 +103,7 @@ impl Fixture {
             terminals: Arc::default(),
             sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
             finish_takes: Duration::ZERO,
-            sign_in_limits: Arc::new(sign_in::limits()),
             sign_up: Arc::new([]),
-            pairing_limits: Arc::new(pairing::limits()),
             web: WEB,
         };
         Self {

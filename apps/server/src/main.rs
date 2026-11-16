@@ -5,7 +5,6 @@ mod app;
 mod auth;
 mod chats;
 mod cli;
-mod client;
 mod client_log;
 mod codes;
 mod connections;
@@ -14,7 +13,6 @@ mod docs;
 mod email;
 mod feed;
 mod http;
-mod limit;
 mod links;
 mod pairing;
 mod proposals;
@@ -99,7 +97,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         listen,
         db,
         secret,
-        trusted_proxy,
         sign_up,
     } = args;
     let signals = signals()?;
@@ -113,7 +110,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         db: db.clone(),
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
-        proxies: trusted_proxy.into(),
         sign_up: sign_up.into(),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
@@ -124,8 +120,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         terminals: Arc::default(),
         sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
         finish_takes: sign_in::FINISH_TAKES,
-        sign_in_limits: Arc::new(sign_in::limits()),
-        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     tokio::spawn(chats::follow_machines(shared.clone()));

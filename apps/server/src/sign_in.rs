@@ -17,12 +17,10 @@ use weacon_protocol::{
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
-use crate::client::Client;
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
-use crate::http::{Body, cross_site, failure, report, too_many, unauthorized};
-use crate::limit::{HOUR, Limit};
+use crate::http::{Body, cross_site, failure, report, unauthorized};
 use crate::secret::{random_failed, random_token};
 use crate::shared::Shared;
 use crate::sign_up;
@@ -39,21 +37,6 @@ pub(crate) const AT_ONCE: usize = 64;
 /// How long finishing a sign-in takes at least: longer than any of its database work.
 pub(crate) const FINISH_TAKES: Duration = Duration::from_millis(250);
 
-/// How often each client may start a sign-in and try a code.
-pub(crate) struct Limits {
-    /// How many sign-ins each client may start.
-    pub(crate) starts: Limit,
-    /// How many codes each client may try.
-    pub(crate) tries: Limit,
-}
-
-pub(crate) fn limits() -> Limits {
-    Limits {
-        starts: Limit::new(30, HOUR),
-        tries: Limit::new(60, HOUR),
-    }
-}
-
 pub(crate) fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/sign-in", post(start))
@@ -67,12 +50,8 @@ pub(crate) fn routes() -> Router<Shared> {
 /// so it can't be used to find out.
 pub(crate) async fn start(
     State(shared): State<Shared>,
-    Client(from): Client,
     Body(body): Body<AccountSignInStart>,
 ) -> Response {
-    if !shared.sign_in_limits.starts.allow(from, Instant::now()) {
-        return too_many(code!("sign_in.too_many"));
-    }
     let challenge = match new_challenge() {
         Ok(challenge) => challenge,
         Err(fault) => return failure(fault),
@@ -126,14 +105,10 @@ async fn send_code(
 /// scripts can't read; any other client gets the token.
 pub(crate) async fn finish(
     State(shared): State<Shared>,
-    Client(from): Client,
     headers: HeaderMap,
     Body(body): Body<AccountSignInFinish>,
 ) -> Response {
     let began = Instant::now();
-    if !shared.sign_in_limits.tries.allow(from, began) {
-        return too_many(code!("sign_in.too_many"));
-    }
     let page = sender(&headers);
     if page == Sender::OtherSite {
         return cross_site();
@@ -235,7 +210,7 @@ mod tests {
     use crate::auth::SESSION_COOKIE;
     use crate::test_support::{
         Fixture, ask, bearer, email, finish_body, fresh_account, member_id, request, request_with,
-        run, sign_in, start_sign_in, status, workspace_id,
+        sign_in, start_sign_in, status, workspace_id,
     };
 
     async fn finish_with(address: SocketAddr, body: &str) -> (String, Value) {
@@ -621,77 +596,6 @@ mod tests {
         .await;
 
         assert_eq!(finished, "http/1.1 200 ok");
-    }
-
-    #[tokio::test]
-    async fn each_client_may_start_and_try_only_so_many_times() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.sign_in_limits = Arc::new(Limits {
-            starts: Limit::new(1, HOUR),
-            tries: Limit::new(1, HOUR),
-        });
-        let server = fixture.run().await;
-        let (first, challenge) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
-        let (head, body) = request(
-            server.address,
-            "POST /api/sign-in",
-            &json!({ "email": "ada@example.com" }).to_string(),
-        )
-        .await;
-        fixture.settled().await;
-        let finish = finish_body("ada@example.com", &challenge, "00000000");
-        let wrong = finish_with(server.address, &finish).await;
-        let right = finish_body("ada@example.com", &challenge, &code);
-        let (too_many, answer) = finish_with(server.address, &right).await;
-        let refused = json!({ "code": "sign_in.too_many", "retryable": true });
-
-        assert_eq!(first, "http/1.1 202 accepted");
-        assert_eq!(status(&head), "http/1.1 429 too many requests");
-        assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), refused);
-        assert!(fixture.letters().is_empty());
-        assert_eq!(wrong.0, "http/1.1 401 unauthorized");
-        assert_eq!(too_many, "http/1.1 429 too many requests");
-        assert_eq!(answer, refused);
-    }
-
-    #[tokio::test]
-    async fn behind_a_trusted_proxy_each_forwarded_client_has_its_own_limit() {
-        let fixture = Fixture::new().await;
-        let start = json!({ "email": "ada@example.com" }).to_string();
-        let one_each = || {
-            Arc::new(Limits {
-                starts: Limit::new(1, HOUR),
-                ..limits()
-            })
-        };
-        let direct = Shared {
-            sign_in_limits: one_each(),
-            ..fixture.shared.clone()
-        };
-        let proxied = Shared {
-            sign_in_limits: one_each(),
-            proxies: Arc::new(["127.0.0.1".parse().unwrap()]),
-            ..fixture.shared.clone()
-        };
-        let (direct, proxied) = (run(direct).await, run(proxied).await);
-        let mut statuses = Vec::new();
-        for (server, forwarded) in [
-            (&direct, "198.51.100.1"),
-            (&direct, "198.51.100.2"),
-            (&proxied, "198.51.100.1"),
-            (&proxied, "198.51.100.2"),
-            (&proxied, "198.51.100.1"),
-        ] {
-            let header = format!("x-forwarded-for: {forwarded}\r\n");
-            let (head, _) =
-                request_with(server.address, "POST /api/sign-in", &header, &start).await;
-            statuses.push(status(&head).to_owned());
-        }
-        let (accepted, limited) = ("http/1.1 202 accepted", "http/1.1 429 too many requests");
-
-        // Unless its sender is trusted, the header changes nothing.
-        assert_eq!(statuses, [accepted, limited, accepted, accepted, limited]);
     }
 
     #[tokio::test]

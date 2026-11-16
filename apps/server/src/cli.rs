@@ -6,7 +6,6 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
 
-use crate::client::Net;
 use crate::sign_up::SignUp;
 
 /// Weacon's server: holds every workspace.
@@ -38,12 +37,6 @@ pub(crate) struct Serve {
     /// stop working, and nobody is signed out.
     #[arg(long)]
     pub(crate) secret: PathBuf,
-    /// A reverse proxy in front of the server, as an address or a block such as 10.0.0.0/8;
-    /// repeat it for more. Only these are believed about the client in X-Forwarded-For, where
-    /// they must write bare addresses, without ports. Without any, every request counts as
-    /// coming from the address that connected.
-    #[arg(long)]
-    pub(crate) trusted_proxy: Vec<Net>,
     /// Who may make an account by signing in: `anyone`, or the addresses at one domain, such
     /// as example.com; repeat it for more domains. Without it, only accounts an operator made
     /// with `weacon-server add-account` or `weacon-server add-member` can sign in. The first
@@ -143,17 +136,12 @@ mod tests {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
                 secret: PathBuf::from("secret"),
-                trusted_proxy: Vec::new(),
                 sign_up: Vec::new(),
             }
         );
         let told = [
             "--listen",
             "0.0.0.0:9000",
-            "--trusted-proxy",
-            "10.0.0.0/8",
-            "--trusted-proxy",
-            "::1",
             "--sign-up",
             "anyone",
             "--sign-up",
@@ -161,12 +149,9 @@ mod tests {
         ];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
-        let proxies = ["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
-        assert_eq!(told.trusted_proxy, proxies);
         let sign_up = [SignUp::Anyone, SignUp::Domain("example.com".to_owned())];
         assert_eq!(told.sign_up, sign_up);
         run(&[&args[..], &["--sign-up", "everyone"]].concat()).unwrap_err();
-        run(&[&args[..], &["--trusted-proxy", "proxy.example"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();

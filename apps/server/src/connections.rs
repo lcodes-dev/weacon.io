@@ -1,12 +1,8 @@
 use std::io::{self, ErrorKind};
-use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{ConnectInfo, Request};
-use hyper::body::Incoming;
 use hyper::server::conn::http1;
-use hyper::service::{Service, service_fn};
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::{TcpListener, TcpStream};
@@ -17,8 +13,8 @@ use weacon_observability::{Field, Logger};
 const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
 /// The next connection.
-pub(crate) async fn accept(listener: &TcpListener, log: &Logger) -> (TcpStream, SocketAddr) {
-    retried(|| listener.accept(), log).await
+pub(crate) async fn accept(listener: &TcpListener, log: &Logger) -> TcpStream {
+    retried(|| listener.accept(), log).await.0
 }
 
 /// What `accept` gives once it succeeds. A connection that broke while it waited is skipped;
@@ -48,18 +44,9 @@ fn broke_waiting(error: &io::Error) -> bool {
 
 /// Serves `router` to one connection in a task of its own, which holds `closing` until the
 /// connection closes; once `closing` changes, the connection ends after its open request.
-pub(crate) fn serve(
-    (stream, peer): (TcpStream, SocketAddr),
-    router: Router,
-    mut closing: watch::Receiver<()>,
-) {
-    let router = TowerToHyperService::new(router);
-    let service = service_fn(move |mut request: Request<Incoming>| {
-        request.extensions_mut().insert(ConnectInfo(peer));
-        router.call(request)
-    });
+pub(crate) fn serve(stream: TcpStream, router: Router, mut closing: watch::Receiver<()>) {
     let serving = http1::Builder::new()
-        .serve_connection(TokioIo::new(stream), service)
+        .serve_connection(TokioIo::new(stream), TowerToHyperService::new(router))
         .with_upgrades();
     drop(tokio::spawn(async move {
         tokio::pin!(serving);

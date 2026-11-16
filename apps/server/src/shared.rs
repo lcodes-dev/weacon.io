@@ -6,13 +6,10 @@ use weacon_observability::{Clock, Logger, Reporter};
 use weacon_protocol::{App, MachineId, WorkspaceId};
 
 use crate::chats;
-use crate::client::Net;
 use crate::db::Db;
 use crate::links::Links;
-use crate::pairing;
 use crate::relay::Relay;
 use crate::secret::Secret;
-use crate::sign_in;
 use crate::sign_up::SignUp;
 use crate::socket;
 use crate::terminals::Terminals;
@@ -26,8 +23,6 @@ pub(crate) struct Shared {
     pub(crate) db: Db,
     pub(crate) secret: Arc<Secret>,
     pub(crate) clock: Arc<Clock>,
-    /// Proxies whose `X-Forwarded-For` is believed.
-    pub(crate) proxies: Arc<[Net]>,
     pub(crate) sockets: socket::Timing,
     /// The machines whose connections are open.
     pub(crate) links: Arc<Links>,
@@ -46,8 +41,6 @@ pub(crate) struct Shared {
     pub(crate) finish_takes: Duration,
     /// Who may make an account by signing in.
     pub(crate) sign_up: Arc<[SignUp]>,
-    pub(crate) sign_in_limits: Arc<sign_in::Limits>,
-    pub(crate) pairing_limits: Arc<pairing::Limits>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }
