@@ -208,9 +208,10 @@ test("a chat started with a call has the starter's agent before the chat list do
   chats.legless = false;
   const [started] = sent.flatMap((envelope) => (envelope.type === "chat_command" ? [envelope] : []));
   assert.ok(started !== undefined);
-  const listed = page.waitForResponse((response) => response.url().endsWith("/chats"));
+  // Its new title shows once the second list is on screen.
+  chats.made.set(started.chat, "Sort the shed.");
   push({ id: 0, type: "workspace", workspace: started.workspace, seq: 2, change: { kind: "chat_changed", chat: started.chat } });
-  await listed;
+  await page.getByRole("heading", { name: "Sort the shed." }).waitFor();
   assert.equal(await add.count(), 0);
   assert.equal(await box.inputValue(), "half a thought");
 });
