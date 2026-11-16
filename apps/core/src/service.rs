@@ -114,52 +114,6 @@ fn apply(
     Ok(())
 }
 
-/// Whether `weacon service install` set up this user's service for the binary at `exe` and
-/// `state_dir`; another installation's service is never its to restart.
-pub(crate) fn installed(exe: &Path, state_dir: &Path, env: Env<'_>) -> bool {
-    let Some(text) = unit_path(env).and_then(|path| fs::read_to_string(path).ok()) else {
-        return false;
-    };
-    platform::USER_SERVICES && unit(exe, state_dir).is_ok_and(|ours| ours == text)
-}
-
-/// Restarts the service, so it runs the binary now at its path.
-pub(crate) fn restart(runner: Runner<'_>) -> Result<(), Fault> {
-    run_step(&RESTART, runner)
-}
-
-/// Starts `weacon update` for `state_dir` in a unit of its own, so restarting the service
-/// doesn't stop it; false when no service is installed, an error when it couldn't start.
-pub(crate) fn launch_with(state_dir: &Path, env: Env<'_>, runner: Runner<'_>) -> io::Result<bool> {
-    let exe = std::env::current_exe()?;
-    if !installed(&exe, state_dir, env) {
-        return Ok(false);
-    }
-    // Both are absolute, so neither reads as an option.
-    if !(exe.is_absolute() && state_dir.is_absolute()) {
-        return Ok(false);
-    }
-    let (Some(exe), Some(dir)) = (exe.to_str(), state_dir.to_str()) else {
-        return Ok(false);
-    };
-    let state = format!("--setenv=WEACON_STATE_DIR={dir}");
-    let args = [
-        "--user",
-        "--collect",
-        "--quiet",
-        &state,
-        "--",
-        exe,
-        "update",
-    ];
-    // A launch systemd refused is a failure, so the check that asked for it runs again.
-    if runner("systemd-run", &args)? {
-        Ok(true)
-    } else {
-        Err(io::Error::other("systemd-run failed"))
-    }
-}
-
 fn run_step(step: &Step, runner: Runner<'_>) -> Result<(), Fault> {
     let failed = || Fault::new(code!("service.step_failed"), step.failed);
     match runner(step.program, step.args) {
@@ -284,71 +238,6 @@ mod tests {
         assert_eq!(quoted("/opt/$HOME"), None);
         let error = unit(Path::new("/usr/bin/weacon"), Path::new("/srv/$state")).unwrap_err();
         assert_eq!(error.code().as_str(), "service.bad_path");
-    }
-
-    // Installs the unit for `exe` and `state` in `dir`'s systemd folder.
-    fn unit_in(dir: &Path, exe: &Path, state: &Path) {
-        fs::create_dir_all(dir.join("systemd/user")).unwrap();
-        fs::write(
-            dir.join("systemd/user").join(UNIT),
-            unit(exe, state).unwrap(),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn a_service_counts_as_installed_only_for_the_binary_and_state_it_runs() {
-        let dir = weacon_testing::TempDir::new().unwrap();
-        let config = dir.to_str().unwrap();
-        let env = env(&[("XDG_CONFIG_HOME", config)]);
-        let (exe, state) = (Path::new("/opt/a/weacon"), Path::new("/srv/a"));
-        assert!(!installed(exe, state, &env));
-        unit_in(&dir, exe, state);
-        assert_eq!(installed(exe, state, &env), platform::USER_SERVICES);
-        assert!(!installed(Path::new("/opt/b/weacon"), state, &env));
-        assert!(!installed(exe, Path::new("/srv/b"), &env));
-        assert!(!installed(exe, state, &|_: &str| None));
-    }
-
-    #[test]
-    fn a_scheduled_update_runs_in_a_unit_of_its_own() {
-        let dir = weacon_testing::TempDir::new().unwrap();
-        let env = env(&[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
-        let state = dir.join("state");
-        let mut calls = Calls::new();
-        assert!(!launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap());
-        assert!(calls.is_empty());
-
-        let exe = std::env::current_exe().unwrap();
-        unit_in(&dir, &exe, &state);
-        let launched = launch_with(&state, &env, &mut runner(&mut calls, "")).unwrap();
-        assert_eq!(launched, platform::USER_SERVICES);
-        let expected = format!(
-            "systemd-run --user --collect --quiet --setenv=WEACON_STATE_DIR={} -- {} update",
-            state.display(),
-            exe.display()
-        );
-        if platform::USER_SERVICES {
-            assert_eq!(calls, std::slice::from_ref(&expected));
-            let refused = launch_with(&state, &env, &mut runner(&mut calls, &expected));
-            refused.unwrap_err();
-            calls.pop();
-            // Even a unit made for a relative state folder never puts it on the command line.
-            unit_in(&dir, &exe, Path::new("state"));
-            let relative = launch_with(Path::new("state"), &env, &mut runner(&mut calls, ""));
-            assert!(!relative.unwrap());
-            assert_eq!(calls.len(), 1);
-        }
-    }
-
-    #[test]
-    fn a_restart_restarts_the_unit_and_says_when_it_fails() {
-        let mut calls = Calls::new();
-        restart(&mut runner(&mut calls, "")).unwrap();
-        assert_eq!(calls, ["systemctl --user restart weacon.service"]);
-        let failing = "systemctl --user restart weacon.service";
-        let fault = restart(&mut runner(&mut Calls::new(), failing)).unwrap_err();
-        assert_eq!(fault.code().as_str(), "service.step_failed");
     }
 
     #[cfg(unix)]

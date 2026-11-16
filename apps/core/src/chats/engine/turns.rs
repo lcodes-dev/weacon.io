@@ -73,10 +73,9 @@ impl<A: Agent> Engine<A> {
         let Some(next) = record.queue.first().cloned() else {
             return Ok(());
         };
-        // A run still starting takes the turn once it is up; a full disk, an install or a hold
-        // takes none.
+        // A run still starting takes the turn once it is up; a full disk or a hold takes none.
         let starting = self.open_chats.get(key).is_some_and(Chat::is_starting);
-        if starting || *self.disk.borrow() || self.install.pauses() || self.is_held(key) {
+        if starting || *self.disk.borrow() || self.is_held(key) {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
@@ -446,21 +445,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_turns_end_kept_only_in_memory_keeps_the_engine_busy() {
-        let mut on = on_turn().await;
-        let chat = on.engine.open(&key()).await.unwrap();
-        chat.orders = None;
-        chat.pending_end = Some(PendingEnd {
-            turn: prompt("r-1", "Hi").request,
-            outcome: Outcome::Completed,
-        });
-        assert!(on.engine.busy());
-
-        on.engine.save_pending().await;
-        assert!(!on.engine.busy(), "its end is saved");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_turns_end_saved_late_starts_the_prompt_queued_behind_it() {
         let mut on = on_turn().await;
         on.engine
@@ -474,7 +458,7 @@ mod tests {
             outcome: Outcome::Completed,
         });
 
-        on.engine.save_pending().await;
+        on.engine.advance(&key()).await.unwrap();
         launched(&mut on.engine).await;
         let next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));

@@ -79,7 +79,7 @@ mod tests {
     fn success_exits_cleanly_and_reports_nothing() {
         let (app, records, uploads) = started(Some(DSN));
 
-        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
         assert_eq!(messages(&records), ["app started", "app stopped"]);
         assert!(uploads.lock().unwrap().is_empty());
     }
