@@ -31,7 +31,7 @@ const FOLLOWS_MAX: usize = 512;
 /// What the server asked of the chats, taken up in order.
 #[derive(Debug, PartialEq)]
 enum Ask {
-    Command(ChatCommand),
+    Command(Box<ChatCommand>),
     /// Follow the chat after the seq given.
     Follow(ChatKey, u64),
 }
@@ -85,7 +85,7 @@ impl ChatLink {
             if self.waiting.len() >= QUEUE {
                 return reply(for_now(id, code!("chat.unavailable")));
             }
-            self.queue(Ask::Command(command));
+            self.queue(Ask::Command(Box::new(command)));
             return Step::Nothing;
         }
         if let Message::ChatQuery(ChatQuery {
@@ -223,7 +223,7 @@ async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, l
             Ask::Command(command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let request = Some(command.request.clone());
-                (key, request, chats.command(command, &client).await)
+                (key, request, chats.command(*command, &client).await)
             }
             Ask::Follow(key, after) => {
                 let followed = follow(&chats, &client, &key, after, &mut jumps).await;
@@ -473,7 +473,10 @@ mod tests {
         assert!(matches!(followed, Step::Nothing));
         assert!(matches!(commanded, Step::Nothing));
         assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 7));
-        assert_eq!(asked.try_recv().unwrap(), Ask::Command(prompt("r-1", "Hi")));
+        assert_eq!(
+            asked.try_recv().unwrap(),
+            Ask::Command(Box::new(prompt("r-1", "Hi")))
+        );
         assert_eq!(link.came.get(&key()), Some(&7));
     }
 
@@ -497,9 +500,9 @@ mod tests {
         }
 
         let expected = [
-            Ask::Command(prompt("r-1", "Hi")),
+            Ask::Command(Box::new(prompt("r-1", "Hi"))),
             Ask::Follow(key(), 3),
-            Ask::Command(prompt("r-2", "Hi")),
+            Ask::Command(Box::new(prompt("r-2", "Hi"))),
         ];
         assert_eq!(asks, expected);
         assert!(link.waiting.is_empty());

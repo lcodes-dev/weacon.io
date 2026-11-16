@@ -2,16 +2,17 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    Asker, Envelope, FrameError, MapAnswer, Message, Outcome, Pick, Receipt, SessionsQuery,
-    SymbolsQuery, TerminalCommand, code,
+    Asker, ChatsQuery, ChatsQueryKind, Envelope, FrameError, MapAnswer, Message, Outcome, Pick,
+    Receipt, SessionsQuery, SymbolsQuery, TerminalCommand, code,
 };
 
 use super::Shared;
-use super::chat::{command_chat, query_chat};
+use super::chat::{command_chat, list_chats, query_chat};
 use super::worktrees::{self, Late};
 use crate::chats::Chats;
 use crate::chats::feed::Client;
@@ -49,6 +50,9 @@ pub(super) async fn route(
         Message::Pick(pick) => keep(shared, id, pick).await,
         Message::ChatCommand(command) => command_chat(shared, id, command, client).await,
         Message::ChatQuery(query) => query_chat(shared, id, query, client).await,
+        Message::ChatsQuery(ChatsQuery {
+            query: ChatsQueryKind::List,
+        }) => list_chats(shared, id).await,
         Message::DiffQuery(query) => worktrees::diff(shared, id, query, late),
         Message::WorktreeQuery(query) => worktrees::query(shared, id, query, late),
         Message::WorktreeCommand(command) => worktrees::command(shared, id, command, late),
@@ -81,8 +85,19 @@ pub(super) async fn route(
     }
 }
 
-// The receipt for a pick the extension sent, once it is kept.
+/// Removes the picks kept [`PICKS_LAST`](crate::picks::PICKS_LAST) or longer, warning when
+/// some can't be.
+pub(super) async fn sweep(shared: &Shared) {
+    let picks = shared.picks.clone();
+    if let Err(error) = app::blocking(move || picks.sweep(SystemTime::now())).await {
+        let fields = [("err", Field::error(&error))];
+        shared.log.warn("picks not swept", &fields);
+    }
+}
+
+// The receipt for a pick the extension sent, once it is kept; older picks go first.
 async fn keep(shared: &Shared, id: u32, pick: Pick) -> Reply {
+    sweep(shared).await;
     let (picks, request) = (shared.picks.clone(), pick.request.clone());
     let kept = tokio::task::spawn_blocking(move || picks.keep(&pick))
         .await

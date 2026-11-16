@@ -217,6 +217,7 @@ async fn a_feed_answers_a_chat_query_before_what_its_client_sends_next() {
 // its end.
 fn turn() -> [ChatEvent; 4] {
     let prompted = ChatEvent::Prompt {
+        pick: None,
         request: id("r-1"),
         text: "MARKER-PROMPT".to_owned(),
         repo: None,

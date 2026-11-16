@@ -1,10 +1,12 @@
-import { Failure, pickEnvelope } from "./core.ts";
+import { Failure } from "./core.ts";
 import type { Envelope, Pick } from "./protocol.ts";
 
 /** Must equal `weacon_protocol::MAX_FRAME`, which counts a line's newline too. */
 export const MAX_FRAME = 1024 * 1024;
 const MAX_HTML = 256 * 1024;
 const MAX_TEXT = 4 * 1024;
+const MAX_NAME = 256;
+const MAX_ID = 2 ** 32 - 1;
 const SMALLEST_SCALE = 1 / 32;
 
 /**
@@ -15,13 +17,19 @@ export async function fit(
   base: Omit<Pick, "screenshot_png">,
   shoot?: (scale: number) => Promise<string>,
 ): Promise<Pick> {
-  const pick = {
+  const pick: Pick = {
     request: base.request,
     url: cut(base.url, MAX_TEXT),
     title: cut(base.title, MAX_TEXT),
     selector: cut(base.selector, MAX_TEXT),
     html: cut(base.html, MAX_HTML),
   };
+  if (base.component !== undefined) {
+    pick.component = cut(base.component, MAX_NAME);
+  }
+  if (base.source !== undefined) {
+    pick.source = cut(base.source, MAX_NAME);
+  }
   for (let scale = 1; shoot !== undefined && scale >= SMALLEST_SCALE; scale /= 2) {
     const png = await shoot(scale).catch(() => undefined);
     if (png === undefined) {
@@ -44,9 +52,10 @@ function cut(text: string, length: number): string {
 }
 
 function fits(pick: Pick): boolean {
-  return frameSize(pickEnvelope(pick)) < MAX_FRAME;
+  return fitsFrame({ id: 0, type: "pick", ...pick });
 }
 
-function frameSize(envelope: Envelope): number {
-  return new TextEncoder().encode(JSON.stringify(envelope)).length;
+/** Whether `envelope` fits one frame under any id; the core drops one that doesn't, unanswered. */
+export function fitsFrame(envelope: Envelope): boolean {
+  return new TextEncoder().encode(JSON.stringify({ ...envelope, id: MAX_ID })).length < MAX_FRAME;
 }

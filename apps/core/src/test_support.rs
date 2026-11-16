@@ -63,6 +63,8 @@ pub(crate) fn pick(request: &str, html: &str) -> Pick {
         selector: "main > button".to_owned(),
         html: html.to_owned(),
         screenshot_png: Some("iVBORw0KGgo=".to_owned()),
+        component: None,
+        source: None,
     }
 }
 

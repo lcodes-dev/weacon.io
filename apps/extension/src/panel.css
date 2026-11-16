@@ -1,0 +1,143 @@
+:root {
+  color-scheme: light dark;
+  font: 14px/1.45 system-ui, sans-serif;
+}
+body {
+  margin: 0;
+}
+main {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+}
+h1 {
+  margin: 0;
+  font-size: 15px;
+}
+h2 {
+  margin: 12px 12px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+button {
+  font: inherit;
+  cursor: pointer;
+}
+code {
+  font: 12px ui-monospace, monospace;
+  overflow-wrap: anywhere;
+}
+.quiet {
+  opacity: 0.7;
+  padding: 0 12px;
+}
+.problem {
+  margin: 8px 12px;
+  padding: 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #d33 15%, transparent);
+}
+.chats ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chats button {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.chats button:hover {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+.chats .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chats .state {
+  flex: none;
+  opacity: 0.7;
+}
+.transcript {
+  flex: 1;
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px;
+}
+.transcript li {
+  margin: 6px 0;
+}
+.transcript p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.transcript .prompt {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #2563eb 12%, transparent);
+}
+.transcript .tool,
+.transcript .note {
+  opacity: 0.75;
+  font-size: 12px;
+}
+.transcript .ask {
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 6px;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 0;
+}
+.composer {
+  position: sticky;
+  bottom: 0;
+  padding: 8px 12px;
+  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  background: Canvas;
+}
+.composer textarea {
+  box-sizing: border-box;
+  width: 100%;
+  font: inherit;
+  resize: vertical;
+}
+.composer .actions {
+  justify-content: flex-end;
+}
+.pick {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 0 0 6px;
+}
+.pick img {
+  max-width: 96px;
+  max-height: 64px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+}
+.pick figcaption {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  font-size: 12px;
+}

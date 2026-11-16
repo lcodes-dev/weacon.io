@@ -17,4 +17,4 @@ pub use merge::Merged;
 pub use order::OrderKey;
 pub use revision::{Attribution, Revision};
 pub use task::{EditError, Task, TaskEdit};
-pub use title::Title;
+pub use title::{Title, chat_title};

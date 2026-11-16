@@ -317,6 +317,7 @@ mod tests {
         let (workspace, chat) = ids();
         let root = Workspaces::new(&state, None).root(&workspace);
         let first = weacon_protocol::ChatEvent::Prompt {
+            pick: None,
             request: "r-1".parse().unwrap(),
             text: "Go".to_owned(),
             repo: Some("site".parse().unwrap()),

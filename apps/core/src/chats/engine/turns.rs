@@ -102,7 +102,8 @@ impl<A: Agent> Engine<A> {
             .await?;
         self.tell_state(key, run, RunState::Running).await?;
         // Sent only once the turn is written, so a run a failed write ended is never told it.
-        if !self.order(key, Order::Send(next.text.clone())) {
+        let order = self.order_for(key, &next).await;
+        if !self.order(key, order) {
             // It stopped reading while the journal was saved: the prompt waits for the next run.
             return self
                 .runs
@@ -539,6 +540,7 @@ mod tests {
         drop(gone);
         on.engine.open(&key()).await.unwrap().orders = Some(closed);
         let next = Queued {
+            pick: None,
             request: prompt("r-2", "More").request,
             text: "More".to_owned(),
         };

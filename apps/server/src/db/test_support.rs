@@ -179,6 +179,7 @@ pub(crate) fn prompt(
         workspace: id("w1"),
         chat: id(chat),
         action: ChatAction::Prompt {
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: machine.cloned(),

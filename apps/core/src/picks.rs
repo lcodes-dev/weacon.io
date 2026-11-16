@@ -1,10 +1,27 @@
+mod png;
+pub(crate) mod quote;
+
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use weacon_protocol::{Pick, RequestId};
 
 use crate::app::read_json;
 use crate::platform;
+
+/// Whether `screenshot` is a PNG in base64.
+pub(crate) fn is_png(screenshot: &str) -> bool {
+    png_bytes(screenshot).is_some()
+}
+
+fn png_bytes(screenshot: &str) -> Option<Vec<u8>> {
+    png::decode(screenshot).filter(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n"))
+}
+
+/// How long a pick, and the screenshot file made from it, stay on the machine.
+pub(crate) const PICKS_LAST: Duration = Duration::from_hours(24);
 
 /// Elements picked in Chrome, one file per request.
 #[derive(Clone, Debug)]
@@ -47,6 +64,32 @@ impl Picks {
         read_json(&self.path(request))
     }
 
+    /// The screenshot of the pick kept for `request` as a PNG file beside it, for an agent that
+    /// reads it from there; `None` when the pick has none, or it isn't PNG in base64.
+    pub(crate) fn screenshot_file(&self, pick: &Pick) -> io::Result<Option<PathBuf>> {
+        let Some(png) = pick.screenshot_png.as_deref().and_then(png_bytes) else {
+            return Ok(None);
+        };
+        let path = self.path(&pick.request).with_extension("png");
+        match weacon_appkit::create_private(&path, &png) {
+            Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+            Ok(()) | Err(_) => Ok(Some(path)),
+        }
+    }
+
+    /// Removes the picks and screenshots last changed [`PICKS_LAST`] or more before `now`. One
+    /// that can't be removed doesn't keep the others; the first such error is returned.
+    pub(crate) fn sweep(&self, now: SystemTime) -> io::Result<()> {
+        let entries = match fs::read_dir(&self.dir) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            entries => entries?,
+        };
+        let swept: Vec<_> = entries
+            .map(|entry| entry.and_then(|entry| remove_if_old(&entry, now)))
+            .collect();
+        first_failure(swept)
+    }
+
     // Of two keeps of one request at once, only one is published.
     fn publish(&self, request: &RequestId, json: &[u8]) -> io::Result<()> {
         platform::private_dir(&self.dir)?;
@@ -57,6 +100,26 @@ impl Picks {
         self.dir
             .join(crate::names::case_safe_name("pick-", request.as_str()) + ".json")
     }
+}
+
+// The first of `swept` that failed, leaving out entries another sweep removed first.
+fn first_failure(swept: Vec<io::Result<()>>) -> io::Result<()> {
+    swept
+        .into_iter()
+        .filter(|swept| !matches!(swept, Err(error) if error.kind() == io::ErrorKind::NotFound))
+        .find(Result::is_err)
+        .unwrap_or(Ok(()))
+}
+
+fn remove_if_old(entry: &fs::DirEntry, now: SystemTime) -> io::Result<()> {
+    let changed = entry.metadata()?.modified()?;
+    let old = now
+        .duration_since(changed)
+        .is_ok_and(|age| age >= PICKS_LAST);
+    if old && entry.file_type()?.is_file() {
+        fs::remove_file(entry.path())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -141,6 +204,85 @@ mod tests {
         assert_eq!(picks.read(&lower.request).unwrap(), Some(lower));
         assert!(dir.join("picks/pick-p-.ab.json").exists());
         assert!(dir.join("picks/pick-p-ab.json").exists());
+    }
+
+    #[test]
+    fn a_screenshot_is_written_once_as_png_beside_its_pick() {
+        let dir = TempDir::new().unwrap();
+        let picks = Picks::new(&dir);
+        let shot = pick("p-1", "<p/>");
+        picks.keep(&shot).unwrap();
+
+        let path = picks.screenshot_file(&shot).unwrap().unwrap();
+
+        assert_eq!(path, dir.join("picks/pick-p-1.png"));
+        assert_eq!(fs::read(&path).unwrap(), b"\x89PNG\r\n\x1a\n");
+        assert_ne!(
+            weacon_appkit::is_private(&fs::metadata(&path).unwrap()),
+            Some(false)
+        );
+        assert_eq!(picks.screenshot_file(&shot).unwrap(), Some(path));
+        let mut bare = shot.clone();
+        bare.screenshot_png = None;
+        assert_eq!(picks.screenshot_file(&bare).unwrap(), None);
+        bare.screenshot_png = Some("not base64".to_owned());
+        assert_eq!(picks.screenshot_file(&bare).unwrap(), None);
+        fs::create_dir_all(dir.join("picks/pick-p-2.png")).unwrap();
+        let mut blocked = shot;
+        blocked.request = "p-2".parse().unwrap();
+        assert_eq!(
+            picks.screenshot_file(&blocked).unwrap(),
+            Some(dir.join("picks/pick-p-2.png"))
+        );
+        Picks::new(&dir.join("missing"))
+            .screenshot_file(&blocked)
+            .unwrap_err();
+    }
+
+    #[test]
+    fn a_sweep_removes_only_files_as_old_as_picks_last() {
+        let dir = TempDir::new().unwrap();
+        let picks = Picks::new(&dir);
+        picks.sweep(SystemTime::now()).unwrap();
+        let (old, new) = (pick("p-old", "<p/>"), pick("p-new", "<p/>"));
+        picks.keep(&old).unwrap();
+        picks.keep(&new).unwrap();
+        picks.screenshot_file(&old).unwrap();
+        fs::create_dir(dir.join("picks/folder")).unwrap();
+        // What was just written is old by then; only the new pick is kept younger.
+        let now = SystemTime::now() + PICKS_LAST + Duration::from_mins(1);
+        let changed = |name: &str, at: SystemTime| {
+            let path = dir.join("picks").join(name);
+            let file = fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(at).unwrap();
+        };
+        changed("pick-p-new.json", now - PICKS_LAST + Duration::from_secs(1));
+        changed("pick-p-old.png", now - PICKS_LAST);
+
+        picks.sweep(now).unwrap();
+
+        let mut left: Vec<_> = fs::read_dir(dir.join("picks"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["folder", "pick-p-new.json"]);
+    }
+
+    #[test]
+    fn a_sweep_fails_with_its_first_failure_other_than_one_already_gone() {
+        let failed = |kind: io::ErrorKind| Err(io::Error::from(kind));
+        let swept = vec![
+            Ok(()),
+            failed(io::ErrorKind::NotFound),
+            failed(io::ErrorKind::PermissionDenied),
+            failed(io::ErrorKind::Other),
+        ];
+
+        let first = first_failure(swept).unwrap_err();
+
+        assert_eq!(first.kind(), io::ErrorKind::PermissionDenied);
+        first_failure(vec![Ok(()), failed(io::ErrorKind::NotFound)]).unwrap();
     }
 
     #[test]

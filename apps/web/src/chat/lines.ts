@@ -1,4 +1,4 @@
-import type { RunId } from "../protocol.ts";
+import type { PickNote, RunId } from "../protocol.ts";
 import type { TranscriptRow } from "../transcript/transcript.ts";
 import type { Ask, Chat } from "./chat.ts";
 import type { Names } from "../members/names.ts";
@@ -6,7 +6,7 @@ import { label } from "./label.ts";
 
 /** One line of a chat's transcript, under a key that names it as long as the chat is shown. */
 export type Line =
-  | { key: string; kind: "prompt"; text: string }
+  | { key: string; kind: "prompt"; text: string; pick?: PickNote }
   | { key: string; kind: "agent"; label: string }
   | { key: string; kind: "row"; row: TranscriptRow; writing: boolean }
   | { key: string; kind: "ask"; run: RunId; ask: Ask };
@@ -18,7 +18,7 @@ export type Line =
 export function lines(chat: Chat, names?: Names): Line[] {
   return chat.items.flatMap((item): Line[] => {
     if (item.kind === "prompt") {
-      return [{ key: `p${item.seq}`, kind: "prompt", text: item.text }];
+      return [{ key: `p${item.seq}`, kind: "prompt", text: item.text, ...(item.pick === undefined ? {} : { pick: item.pick }) }];
     }
     const { key, run, transcript, asks } = item.turn;
     const shown: Line[] = [{ key, kind: "agent", label: label(chat.runs.get(run)?.agent, names) }];

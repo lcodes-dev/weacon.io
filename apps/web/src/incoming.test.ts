@@ -390,3 +390,15 @@ test("a run's live update is read with its chat and a run event, and nothing els
   assert.equal(parse(stamped("3")), undefined);
   assert.equal(parse(frame({ id: 0, type: "chat_live", chat: "c-1", update: { run: "r-1", event } })), undefined);
 });
+
+test("a prompt keeps a well-formed pick note and loses a malformed one", () => {
+  const prompt = (pick: unknown) => JSON.stringify({ id: 0, type: "chat", workspace: "w-1", chat: "c-1", entry: { seq: 1, event: { kind: "prompt", request: "q-1", text: "Hi", pick } } });
+  const note = { url: "http://localhost:3000/", title: "Home", selector: "p" };
+  const event = (data: string) => {
+    const message = parse(data);
+    return message?.type === "chat" ? message.entry.event : undefined;
+  };
+
+  assert.deepEqual(event(prompt(note)), { kind: "prompt", request: "q-1", text: "Hi", pick: note });
+  assert.deepEqual(event(prompt({ url: "http://localhost:3000/" })), { kind: "prompt", request: "q-1", text: "Hi" });
+});
