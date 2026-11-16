@@ -67,6 +67,9 @@ export async function open(
 ): Promise<{ page: Page; stop(): Promise<void> }> {
   let browser: Browser | undefined;
   const stop = async () => {
+    // A route still answering as its page closes would fail after its test has ended.
+    const pages = browser?.contexts().flatMap((context) => context.pages()) ?? [];
+    await Promise.all(pages.map((page) => page.unrouteAll({ behavior: "ignoreErrors" })));
     await browser?.close();
     child.kill();
     rmSync(dir, { recursive: true, force: true });
