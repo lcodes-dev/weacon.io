@@ -112,7 +112,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paired = Paired {
             server: "https://weacon.example.com".to_owned(),
-            pinned: None,
             machine: weacon_protocol::MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: weacon_protocol::AccountId::try_from("a-1".to_owned()).unwrap(),
             token: "t0ken-marker".to_owned(),

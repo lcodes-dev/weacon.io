@@ -86,9 +86,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<(), Fault>
         Command::Share { workspace, shared } => {
             workspaces::sharing::run(app, &workspace, shared, &mut io::stdout().lock())
         }
-        Command::Pair { server, name, pin } => {
-            pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
-        }
+        Command::Pair { server, name } => pair::run(app, &server, name, &mut io::stdout().lock()),
         Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
         Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),

@@ -438,7 +438,6 @@ mod tests {
     fn pair_to(dir: &TempDir, owner: &str) {
         let paired = Paired {
             server: "https://weacon.example.com".to_owned(),
-            pinned: None,
             machine: id("mc-1"),
             owner: id(owner),
             token: "t0ken".to_owned(),

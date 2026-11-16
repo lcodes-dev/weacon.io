@@ -21,27 +21,22 @@ const CLAIMS: u32 = 330;
 /// How many failed claims in a row mean the server is gone.
 const FAILED_CLAIMS: u32 = 15;
 
-/// Pairs this machine with the server at `url`, named `name`, trusting the certificates in
-/// the PEM file `pin` in place of the public ones; prints the code to confirm to `out`.
+/// Pairs this machine with the server at `url`, named `name`; prints the code to confirm to
+/// `out`.
 ///
 /// # Errors
-/// When the pin can't be read, the server can't be reached or refuses, nobody confirms in
-/// time, or the pairing can't be kept.
+/// When the server can't be reached or refuses, nobody confirms in time, or the pairing can't
+/// be kept.
 pub(crate) fn run(
     app: &App,
     url: &str,
     name: Option<String>,
-    pin: Option<&Path>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     let state_dir = app.state_dir.as_deref().ok_or_else(state_unavailable)?;
-    let pinned = pin
-        .map(|path| std::fs::read_to_string(path).map_err(|error| bad_pin().because(error)))
-        .transpose()?;
     let asked = Asked {
         url,
         name: name.unwrap_or_else(|| platform::MACHINE_NAME.to_owned()),
-        pinned,
     };
     pair(state_dir, &asked, CLAIM_EVERY, out)
 }
@@ -50,8 +45,6 @@ pub(crate) fn run(
 struct Asked<'a> {
     url: &'a str,
     name: String,
-    /// The certificates to trust in place of the public roots, as PEM.
-    pinned: Option<String>,
 }
 
 fn pair(
@@ -60,7 +53,7 @@ fn pair(
     every: Duration,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
-    let server = Server::new(asked.url, asked.pinned.as_deref().map(str::as_bytes))?;
+    let server = Server::new(asked.url)?;
     let start = PairStart {
         name: MachineName::try_from(asked.name.clone()).map_err(|_| bad_name())?,
         os: platform::MACHINE_OS,
@@ -86,7 +79,6 @@ fn pair(
     };
     let paired = Paired {
         server: asked.url.to_owned(),
-        pinned: asked.pinned.clone(),
         machine,
         owner,
         token: token.into_inner(),
@@ -148,13 +140,6 @@ fn bad_name() -> Fault {
     )
 }
 
-fn bad_pin() -> Fault {
-    Fault::new(
-        code!("server.pin_unreadable"),
-        "The pinned certificate file can't be read",
-    )
-}
-
 fn not_printed() -> Fault {
     Fault::new(
         code!("pairing.output_failed"),
@@ -171,10 +156,7 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::test_support::{
-        self,
-        tls::{Tls, answer, nowhere, read_request},
-    };
+    use crate::test_support::local::{Local, answer, read_request};
 
     fn started() -> PairStarted {
         PairStarted {
@@ -198,10 +180,10 @@ mod tests {
     }
 
     // Answers each request in turn with a status and body, and gives the requests' bodies.
-    async fn serve(tls: &Tls, answers: Vec<(&str, String)>) -> Vec<String> {
+    async fn serve(local: &Local, answers: Vec<(&str, String)>) -> Vec<String> {
         let mut bodies = Vec::new();
         for (status, body) in answers {
-            let mut stream = tls.accept().await.unwrap();
+            let mut stream = local.accept().await;
             let (head, sent) = read_request(&mut stream).await;
             bodies.push(format!(
                 "{} {sent}",
@@ -218,21 +200,17 @@ mod tests {
         printed: String,
     }
 
-    // Pairs as `name` with a server that gives `answers`, pinning its certificate.
+    // Pairs as `name` with a server that gives `answers`.
     async fn pair_with(
         dir: &Path,
-        tls: &Tls,
+        local: &Local,
         name: Option<&str>,
         answers: Vec<(&str, String)>,
     ) -> Outcome {
-        let (dir, url, pem) = (dir.to_path_buf(), tls.url(), tls.pem.clone());
+        let (dir, url) = (dir.to_path_buf(), local.url());
         let name = name.unwrap_or(platform::MACHINE_NAME).to_owned();
         let paired_up = tokio::task::spawn_blocking(move || {
-            let asked = Asked {
-                url: &url,
-                name,
-                pinned: Some(pem),
-            };
+            let asked = Asked { url: &url, name };
             let mut out = Vec::new();
             let done = pair(&dir, &asked, Duration::ZERO, &mut out);
             (done, out)
@@ -244,8 +222,8 @@ mod tests {
             joined
         };
         let server = async {
-            let requests = serve(tls, answers).await;
-            tls.refuse_until(&finished).await;
+            let requests = serve(local, answers).await;
+            local.refuse_until(&finished).await;
             requests
         };
         let (joined, requests) = tokio::join!(client, server);
@@ -259,7 +237,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_core_shows_its_code_and_keeps_the_pairing_once_confirmed() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let answers = vec![
             ("201 Created", json(&started())),
             ("200 OK", json(&PairClaimed::Waiting)),
@@ -270,7 +248,7 @@ mod tests {
             done,
             requests,
             printed,
-        } = pair_with(&dir, &tls, Some("Studio"), answers).await;
+        } = pair_with(&dir, &local, Some("Studio"), answers).await;
 
         done.unwrap();
         let kept = machine::read(&dir).unwrap().unwrap();
@@ -291,8 +269,7 @@ mod tests {
         assert_eq!(
             kept,
             Paired {
-                server: tls.url(),
-                pinned: Some(tls.pem.clone()),
+                server: local.url(),
                 machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
                 owner: AccountId::try_from("a-1".to_owned()).unwrap(),
                 token: "t0ken".to_owned(),
@@ -302,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_pairing_nobody_confirms_in_time_ends() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let gone = ErrorBody {
             code: code!("pairing.not_found"),
             retryable: false,
@@ -312,7 +289,7 @@ mod tests {
             ("404 Not Found", json(&gone)),
         ];
 
-        let outcome = pair_with(&dir, &tls, None, answers).await;
+        let outcome = pair_with(&dir, &local, None, answers).await;
 
         assert_eq!(outcome.done.unwrap_err().code().as_str(), "pairing.expired");
         assert_eq!(machine::read(&dir).unwrap(), None);
@@ -320,7 +297,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refused_start_or_a_bad_name_pairs_nothing() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let busy = ErrorBody {
             code: code!("pairing.too_many"),
             retryable: true,
@@ -328,12 +305,12 @@ mod tests {
 
         let refused = pair_with(
             &dir,
-            &tls,
+            &local,
             None,
             vec![("429 Too Many Requests", json(&busy))],
         )
         .await;
-        let bad_name = pair_with(&dir, &tls, Some(""), Vec::new()).await;
+        let bad_name = pair_with(&dir, &local, Some(""), Vec::new()).await;
 
         assert_eq!(refused.done.unwrap_err().code().as_str(), "pairing.refused");
         assert_eq!(
@@ -345,29 +322,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_stops_answering_ends_the_wait() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let mut answers = vec![("201 Created", json(&started()))];
         answers.extend((0..FAILED_CLAIMS).map(|_| ("200 OK", "<html>".to_owned())));
 
-        let outcome = pair_with(&dir, &tls, None, answers).await;
+        let outcome = pair_with(&dir, &local, None, answers).await;
 
         assert_eq!(
             outcome.done.unwrap_err().code().as_str(),
             "server.answer_invalid"
         );
         assert_eq!(outcome.requests.len(), 16);
-        assert_eq!(machine::read(&dir).unwrap(), None);
-    }
-
-    #[test]
-    fn a_pin_that_cant_be_read_pairs_nothing() {
-        let dir = TempDir::new().unwrap();
-        let app = test_support::app(Some(&dir), None);
-        let missing = dir.join("missing.pem");
-
-        let failed = run(&app, &nowhere(), None, Some(&missing), &mut Vec::new());
-
-        assert_eq!(failed.unwrap_err().code().as_str(), "server.pin_unreadable");
         assert_eq!(machine::read(&dir).unwrap(), None);
     }
 
