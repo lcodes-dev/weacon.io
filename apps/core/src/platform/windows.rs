@@ -92,10 +92,14 @@ pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
     Ok(available)
 }
 
-/// Creates `dir` and makes it private; parents get the access they inherit.
+/// Creates `dir`, making it private if it's new; parents get the access they inherit.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
+    let new = !dir.exists();
     fs::DirBuilder::new().recursive(true).create(dir)?;
-    make_private(dir)
+    if new {
+        make_private(dir)?;
+    }
+    Ok(())
 }
 
 /// Windows runs any file whose name ends in `.exe`.

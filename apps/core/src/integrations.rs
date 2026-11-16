@@ -2,7 +2,7 @@
 //! build's version and this program's path filled in, and Codex's hooks in `integrations/codex`.
 
 use std::fs;
-use std::io::{self, Write as _};
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
@@ -44,6 +44,13 @@ impl Plugin {
         log: &Logger,
     ) -> Result<Self, Fault> {
         let dir = state_dir.join("claude-plugin");
+        // What an earlier build wrote there and this one doesn't would still be loaded.
+        match fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(failed().because(error));
+            }
+            _ => {}
+        }
         for (path, text) in render(program, version)? {
             let file = dir.join(path);
             file.parent()
@@ -65,8 +72,8 @@ impl Plugin {
     /// Gives the Codex config folder `config` the start-of-session hook unless it has a hooks
     /// file already. Codex runs it only once a person has reviewed it there, in Codex's `/hooks`.
     pub(crate) fn give_codex(&self, config: &Path) {
-        let written = fs::File::create_new(config.join("hooks.json"))
-            .and_then(|mut file| file.write_all(self.codex.as_bytes()));
+        let written =
+            weacon_appkit::create_private(&config.join("hooks.json"), self.codex.as_bytes());
         if let Err(error) = unless_there(written) {
             let fault = failed().because(error);
             self.log
@@ -134,7 +141,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let state: &Path = &temp;
 
+        fs::create_dir_all(state.join("claude-plugin/skills/gone")).unwrap();
+        fs::write(state.join("claude-plugin/skills/gone/SKILL.md"), "old").unwrap();
+
         let dir = plugin(state, "/opt/it's here/weacon", VERSION.version).folder();
+
+        assert!(!dir.join("skills/gone").exists());
 
         assert_eq!(dir, state.join("claude-plugin"));
         assert_eq!(json(&dir, ".claude-plugin/plugin.json")["version"], "0.1.0");
