@@ -32,6 +32,14 @@ export function readiness(sends: boolean, machines: MachineSummary[], shared: Sh
   return { kind: machines.some((machine) => machine.connected === true) ? "outdated" : "offline" };
 }
 
+/**
+ * `ready`, or nothing yet while it says no agent can be called and the machines shared with the
+ * workspace, which might say otherwise, aren't known.
+ */
+export function onceSharedKnown(ready: Readiness | undefined, sharedKnown: boolean): Readiness | undefined {
+  return sharedKnown || ready?.kind === "ready" || ready?.kind === "unserved" ? ready : undefined;
+}
+
 const MISSING: Record<Exclude<Readiness["kind"], "ready">, string> = {
   unserved: "This server can't take messages yet.",
   unpaired: "Pair a machine in Settings to call your own agent.",

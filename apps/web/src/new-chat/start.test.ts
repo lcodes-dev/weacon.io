@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MachineSummary, SharedMachine } from "../protocol.ts";
-import { agentMissing, callable, machineLabel, missingText, offeredAgents, readiness, startProblem } from "./start.ts";
+import { agentMissing, callable, machineLabel, missingText, offeredAgents, onceSharedKnown, readiness, startProblem } from "./start.ts";
 
 const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary => ({
   id,
@@ -47,6 +47,18 @@ test("a machine shared with the workspace is called like one's own, marked as sh
   assert.deepEqual(readiness(true, [], [shared("mc-8", true)]), { kind: "ready", machines: [{ id: "mc-8", name: "Box mc-8", own: false, shared: true }] });
   assert.deepEqual(readiness(true, [], [shared("mc-9", false)]), { kind: "unpaired" });
   assert.deepEqual(readiness(false, [], [shared("mc-8", true)]), { kind: "unserved" });
+});
+
+test("nothing is said to be missing until the machines shared with the workspace are known, unless a machine of one's own already serves", () => {
+  const mine = readiness(true, [machine("mc-1", { connected: true })]);
+  const none = readiness(true, []);
+
+  assert.equal(onceSharedKnown(none, false), undefined);
+  assert.deepEqual(onceSharedKnown(none, true), { kind: "unpaired" });
+  assert.equal(onceSharedKnown(readiness(true, [machine("mc-2")]), false), undefined);
+  assert.deepEqual(onceSharedKnown(mine, false), mine);
+  assert.deepEqual(onceSharedKnown(readiness(false, []), false), { kind: "unserved" });
+  assert.equal(onceSharedKnown(undefined, true), undefined);
 });
 
 test("each thing missing to call an agent reads as its own line", () => {

@@ -108,6 +108,14 @@ pub(crate) fn store(
     team: Option<bool>,
     log: &Logger,
 ) -> Result<Settings, Fault> {
+    let unsaved = |error| {
+        Fault::new(
+            code!("access.not_saved"),
+            "The access level couldn't be saved",
+        )
+        .because(error)
+    };
+    let _hold = workspaces.hold_settings(workspace).map_err(unsaved)?;
     let current = workspaces.settings(workspace);
     let settings = match team {
         Some(team) => Settings {
@@ -117,13 +125,7 @@ pub(crate) fn store(
         },
         None => Settings { access, ..current? },
     };
-    workspaces.save(workspace, &settings).map_err(|error| {
-        Fault::new(
-            code!("access.not_saved"),
-            "The access level couldn't be saved",
-        )
-        .because(error)
-    })?;
+    workspaces.save(workspace, &settings).map_err(unsaved)?;
     log.info("access set", &[("workspace_id", workspace.as_str().into())]);
     Ok(settings)
 }

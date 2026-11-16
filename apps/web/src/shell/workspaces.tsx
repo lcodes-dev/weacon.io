@@ -14,7 +14,7 @@ import { DocsPage } from "../docs/docs-page.tsx";
 import { useMembers, useNames } from "../members/use-names.ts";
 import type { ChatId, MachineId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
-import { readiness } from "../new-chat/start.ts";
+import { onceSharedKnown, readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { useTasks } from "../tasks/use-tasks.ts";
@@ -284,7 +284,8 @@ function WorkspaceChats({
   }, [away]);
   const others = shared.value?.machines ?? [];
   // Until the feed is welcomed, whether it takes commands isn't known yet.
-  const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines, others);
+  const found = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines, others);
+  const ready = onceSharedKnown(found, shared.value !== undefined);
   const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);
   const tasks = loadedTasks.value?.tasks;
   // New chat for a task opens with it; going to a chat, however, leaves the new one.
@@ -298,7 +299,7 @@ function WorkspaceChats({
   // The view stays while the feed reconnects; it sends only once the feed is back.
   const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
   const mine = own?.kind === "ready" ? own.machines : [];
-  const missing = <StartMissing ready={ready} problem={machines.problem} check={loadMachines} openSettings={openSettings} />;
+  const missing = <StartMissing ready={ready} problem={machines.problem ?? shared.problem} check={loadMachines} openSettings={openSettings} />;
   const leg = legOf(workspace.member, open);
   const guest = others.some(({ id, owner }) => id === leg?.machine_id && owner !== workspace.member);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
