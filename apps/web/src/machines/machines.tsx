@@ -24,6 +24,7 @@ export function Machines({
   later,
   socket,
   opened,
+  team,
 }: {
   api: Api;
   pins: Pins;
@@ -32,6 +33,8 @@ export function Machines({
   socket: WorkspaceSocket | undefined;
   /** A machine whose settings open by themselves, as one just paired does. */
   opened: MachineId | undefined;
+  /** Whether other people are in the open workspace, once its members are known. */
+  team: boolean | undefined;
 }) {
   const { value, problem, loading, load } = useLoaded(() => api.machines(), api);
   const list = value?.machines;
@@ -63,7 +66,7 @@ export function Machines({
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Machines">
           {list.map((machine) => (
-            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
+            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} team={team} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
           ))}
         </ul>
       )}
@@ -88,6 +91,7 @@ function Machine({
   pins,
   later,
   socket,
+  team,
   machine,
   justPaired,
   unpaired,
@@ -96,6 +100,7 @@ function Machine({
   pins: Pins;
   later: Later;
   socket: WorkspaceSocket | undefined;
+  team: boolean | undefined;
   machine: MachineSummary;
   justPaired: boolean;
   unpaired(): void;
@@ -161,7 +166,7 @@ function Machine({
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} pins={pins} relays={relays} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} pins={pins} relays={relays} team={team} />
       )}
       {socket !== undefined && readable && (
         <>

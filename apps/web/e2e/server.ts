@@ -16,10 +16,12 @@ export type Served = {
   page: Page;
   /** Runs one of the server's admin commands against its database, such as `add-account`. */
   admin(command: string, ...args: string[]): Promise<void>;
-  /** The code in the next mail the server printed, which must be for `email`. */
+  /** The code in the next sign-in mail the server printed, which must be for `email`. */
   code(email: string): Promise<string>;
-  /** How many printed mails no `code` has taken. */
+  /** How many printed sign-in mails no `code` has taken. */
   letters(): number;
+  /** The server's address, for another browser's pages. */
+  url: string;
   close(): Promise<void>;
 };
 
@@ -48,7 +50,8 @@ export async function serve(): Promise<Served> {
   };
   const { page, stop } = await open(dir, child, ready, (address) => `http://${address}/`);
   let taken = 0;
-  const letters = () => records.filter((record) => record.msg === "mail printed").slice(taken);
+  // Sign-in mails only: an invitation's mail holds no code.
+  const letters = () => records.filter((record) => record.msg === "mail printed" && record.subject === "Your Weacon sign-in code").slice(taken);
   return {
     page,
     admin: async (command, ...args) => {
@@ -65,12 +68,13 @@ export async function serve(): Promise<Served> {
       return code;
     },
     letters: () => letters().length,
+    url: page.url(),
     close: stop,
   };
 }
 
 /** The fields of the server's log lines that these tests read. */
-type LogLine = { msg?: string; address?: string; to?: string; text?: string };
+type LogLine = { msg?: string; address?: string; to?: string; subject?: string; text?: string };
 
 /** One of the server's log lines, or nothing from a line that isn't one. */
 function parsed(line: string): LogLine {
@@ -91,9 +95,13 @@ export async function signIn(served: Served): Promise<void> {
 
 /** Signs in as the account `signIn` added, from the sign-in page. */
 export async function signInAgain(served: Served): Promise<void> {
-  const { page } = served;
-  await page.getByLabel("Email").fill(EMAIL);
+  await signInAs(served, served.page, EMAIL);
+}
+
+/** Signs `page` in as `email`, from the sign-in page. */
+export async function signInAs(served: Served, page: Page, email: string): Promise<void> {
+  await page.getByLabel("Email").fill(email);
   await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByLabel("Code").fill(await served.code(EMAIL));
+  await page.getByLabel("Code").fill(await served.code(email));
   await page.getByRole("button", { name: "Sign in" }).click();
 }

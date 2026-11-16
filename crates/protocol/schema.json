@@ -2029,6 +2029,44 @@
         "action"
       ]
     },
+    "Invitation": {
+      "description": "A live invitation as the workspace's owner sees it: its address, and when it ends, in seconds\nsince the Unix epoch.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string"
+        },
+        "expires_at": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "email",
+        "expires_at"
+      ]
+    },
+    "InvitationOffer": {
+      "description": "A live invitation as the person it is addressed to sees it once signed in, which they take up\nwith `POST /api/workspaces/{workspace}/accept`.",
+      "type": "object",
+      "properties": {
+        "expires_at": {
+          "type": "integer",
+          "format": "int64"
+        },
+        "name": {
+          "type": "string"
+        },
+        "workspace": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspace",
+        "name",
+        "expires_at"
+      ]
+    },
     "Level": {
       "oneOf": [
         {
@@ -2515,6 +2553,86 @@
         "end"
       ]
     },
+    "MemberAction": {
+      "oneOf": [
+        {
+          "description": "Invites `email` for seven days; only the owner may. The answer is the same whether or not\nthe address has an account.",
+          "type": "object",
+          "properties": {
+            "email": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "invite"
+            }
+          },
+          "required": [
+            "kind",
+            "email"
+          ]
+        },
+        {
+          "description": "Ends the live invitation to `email`; only the owner may.",
+          "type": "object",
+          "properties": {
+            "email": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "revoke"
+            }
+          },
+          "required": [
+            "kind",
+            "email"
+          ]
+        },
+        {
+          "description": "Ends a member's membership; only the owner may.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "remove"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            }
+          },
+          "required": [
+            "kind",
+            "member"
+          ]
+        },
+        {
+          "description": "Ends the asker's own membership; the owner can't.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "leave"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "MemberCommand": {
+      "description": "Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the\nworkspace.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "$ref": "#/$defs/MemberAction"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
     "MemberId": {
       "description": "A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.",
       "type": "string",
@@ -2522,9 +2640,15 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MemberList": {
-      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`.",
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`. Only its owner gets the live\ninvitations.",
       "type": "object",
       "properties": {
+        "invitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Invitation"
+          }
+        },
         "members": {
           "type": "array",
           "items": {
@@ -2545,6 +2669,10 @@
         },
         "name": {
           "type": "string"
+        },
+        "role": {
+          "description": "Their role; left out for a past member.",
+          "$ref": "#/$defs/WorkspaceRole"
         }
       },
       "required": [
@@ -5031,6 +5159,19 @@
           ]
         },
         {
+          "description": "Someone was invited, joined, left or was removed, or an invitation ended; clients read\nthe members again.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "members_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
           "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
           "type": "object",
           "properties": {
@@ -5131,9 +5272,15 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "WorkspaceList": {
-      "description": "The workspaces the signed-in account is a member of.",
+      "description": "The workspaces the signed-in account is a member of, and the live invitations to its address.",
       "type": "object",
       "properties": {
+        "invitations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/InvitationOffer"
+          }
+        },
         "workspaces": {
           "type": "array",
           "items": {
@@ -5142,14 +5289,15 @@
         }
       },
       "required": [
-        "workspaces"
+        "workspaces",
+        "invitations"
       ]
     },
     "WorkspaceRole": {
       "description": "What a member may do in a workspace.",
       "oneOf": [
         {
-          "description": "Made the workspace.",
+          "description": "Made the workspace; there is one.",
           "type": "string",
           "const": "owner"
         },

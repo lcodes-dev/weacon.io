@@ -7,14 +7,16 @@ use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceSummary, code,
+    Code, Invitation, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
+    WorkspaceSummary, code,
 };
 
 use crate::app::{fresh, new_id};
 use crate::auth::{Member, Session};
-use crate::db::NewWorkspace;
+use crate::db::{MemberRow, NewWorkspace};
 use crate::http::{Body, failure, invalid, unauthorized};
 use crate::shared::Shared;
+use crate::team;
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What the server offers to clients that read a workspace's members.
@@ -26,7 +28,10 @@ pub(crate) fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/workspaces", get(list).post(create))
         .route("/api/workspaces/{workspace}", get(read))
-        .route("/api/workspaces/{workspace}/members", get(members))
+        .route(
+            "/api/workspaces/{workspace}/members",
+            get(members).post(team::command),
+        )
 }
 
 /// `POST /api/workspaces`: makes a workspace that the signed-in account owns.
@@ -56,10 +61,19 @@ fn created(made: Result<WorkspaceSummary, Fault>) -> Response {
     }
 }
 
-/// `GET /api/workspaces`: the signed-in account's workspaces.
+/// `GET /api/workspaces`: the signed-in account's workspaces, and the invitations it may take.
 pub(crate) async fn list(State(shared): State<Shared>, session: Session) -> Response {
-    match shared.db.account(session.account).workspaces().await {
-        Ok(workspaces) => Json(WorkspaceList { workspaces }).into_response(),
+    let account = shared.db.account(session.account);
+    let listed = async {
+        let workspaces = account.workspaces().await?;
+        let invitations = account.invitations(shared.now()).await?;
+        Ok::<_, Fault>(WorkspaceList {
+            workspaces,
+            invitations,
+        })
+    };
+    match listed.await {
+        Ok(list) => Json(list).into_response(),
         Err(fault) => failure(fault),
     }
 }
@@ -75,33 +89,51 @@ pub(crate) async fn read(member: Member) -> Response {
 }
 
 /// `GET /api/workspaces/{workspace}/members`: the workspace's members, past ones too, each named
-/// by their address's part before the `@`, since accounts hold no other name, or by their whole
-/// address where another member's has the same part, so no one can pass as another.
-pub(crate) async fn members(member: Member) -> Response {
-    match member.workspace.members().await {
-        Ok(rows) => Json(MemberList {
-            members: rows
-                .iter()
-                .map(|row| {
-                    let local = row.email.local();
-                    let shared = rows
-                        .iter()
-                        .filter(|other| other.email.local() == local)
-                        .count();
-                    let name = if shared > 1 {
-                        row.email.as_str()
-                    } else {
-                        local
-                    };
-                    MemberSummary {
-                        id: row.id.clone(),
-                        name: name.to_owned(),
-                    }
-                })
-                .collect(),
+/// as [`name_of`] says, and for its owner the live invitations.
+pub(crate) async fn members(State(shared): State<Shared>, member: Member) -> Response {
+    let listed = async {
+        let rows = member.workspace.members().await?;
+        let owns = rows
+            .iter()
+            .any(|row| row.id == member.id && row.role == Some(WorkspaceRole::Owner));
+        let invitations = if owns {
+            let live = member.workspace.invitations(shared.now()).await?;
+            Some(live.into_iter().map(Invitation::from).collect())
+        } else {
+            None
+        };
+        let members = rows
+            .iter()
+            .map(|row| MemberSummary {
+                id: row.id.clone(),
+                name: name_of(&rows, row).to_owned(),
+                role: row.role,
+            })
+            .collect();
+        Ok::<_, Fault>(MemberList {
+            members,
+            invitations,
         })
-        .into_response(),
+    };
+    match listed.await {
+        Ok(list) => Json(list).into_response(),
         Err(fault) => failure(fault),
+    }
+}
+
+/// What `row` is called among `rows`: their address's part before the `@`, since accounts hold
+/// no other name, or their whole address where another member's has the same part, so no one
+/// can pass as another.
+fn name_of<'a>(rows: &[MemberRow], row: &'a MemberRow) -> &'a str {
+    let local = row.email.local();
+    let shared = rows
+        .iter()
+        .filter(|other| other.email.local() == local)
+        .count();
+    if shared > 1 {
+        row.email.as_str()
+    } else {
+        local
     }
 }
 
@@ -226,7 +258,7 @@ mod tests {
         w2.add_member(&member_id("m4"), &fresh_account(), &email("cy@example.com"))
             .await
             .unwrap();
-        w1.unlink(&member_id("m3")).await;
+        w1.leave(&member_id("m3")).await.unwrap();
         let (_server, ada) = fixture.client("ada@example.com").await;
 
         let (listed, members) = ask(
@@ -248,9 +280,9 @@ mod tests {
         assert_eq!(
             members,
             json!({ "members": [
-                { "id": "m1", "name": "ada" },
+                { "id": "m1", "name": "ada", "role": "member" },
                 { "id": "m3", "name": "bo@example.com" },
-                { "id": "m5", "name": "bo@other.example" },
+                { "id": "m5", "name": "bo@other.example", "role": "member" },
             ] })
         );
         assert_eq!(refused, "http/1.1 401 unauthorized");
