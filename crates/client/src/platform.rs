@@ -46,14 +46,39 @@ pub fn pipe_name(id: u128) -> String {
     format!(r"\\.\pipe\weacon-{id:032x}")
 }
 
+/// Whether `name` is a pipe name the daemon could have made, so no network path is opened.
+#[cfg_attr(
+    all(unix, not(test)),
+    expect(dead_code, reason = "only Windows connects by pipe name")
+)]
+fn is_pipe_name(name: &str) -> bool {
+    name.strip_prefix(r"\\.\pipe\weacon-").is_some_and(|hex| {
+        hex.len() == 32
+            && hex
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_pipe_is_named_after_its_id_on_this_machine() {
-        let name = pipe_name(0x0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a);
+    fn only_local_weacon_pipes_are_opened() {
+        let good = pipe_name(0x0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a_0a0a);
 
-        assert_eq!(name, format!(r"\\.\pipe\weacon-{}", "0a".repeat(16)));
+        assert_eq!(good, format!(r"\\.\pipe\weacon-{}", "0a".repeat(16)));
+        assert!(is_pipe_name(&good));
+        assert!(is_pipe_name(&pipe_name(1)));
+        for bad in [
+            format!(r"\\host\pipe\weacon-{}", "0a".repeat(16)),
+            format!(r"\\.\pipe\weacon-{}", "0A".repeat(16)),
+            format!(r"\\.\pipe\weacon-{}", "0a".repeat(15)),
+            format!(r"\\.\pipe\other-{}", "0a".repeat(16)),
+            format!("{good}\n"),
+        ] {
+            assert!(!is_pipe_name(&bad), "{bad}");
+        }
     }
 }

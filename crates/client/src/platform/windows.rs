@@ -15,7 +15,7 @@ use std::task::{Context, Poll};
 
 use security::{Descriptor, elevated, pipe_owner};
 pub use security::{current_user, make_private};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::windows::named_pipe::{
     ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions,
 };
@@ -25,7 +25,18 @@ use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 /// Connects to the daemon's pipe, whose name the daemon writes to `socket`, and checks that
 /// this user owns it. tokio's client lets the server identify the user but not act as them.
 pub(crate) async fn connect(socket: &Path) -> io::Result<Pipe> {
-    let name = tokio::fs::read_to_string(socket).await?;
+    let mut name = String::new();
+    tokio::fs::File::open(socket)
+        .await?
+        .take(64)
+        .read_to_string(&mut name)
+        .await?;
+    if !super::is_pipe_name(&name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "not a Weacon pipe name",
+        ));
+    }
     let pipe = loop {
         match ClientOptions::new().open(&name) {
             Err(error) if error.raw_os_error() == i32::try_from(ERROR_PIPE_BUSY).ok() => {
