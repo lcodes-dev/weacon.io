@@ -90,18 +90,29 @@ pub(crate) struct Uplink {
 
 impl Uplink {
     pub(crate) async fn run(self, mut from_daemon: FromDaemon) -> ! {
-        let mut retry = Retry::default();
+        let (mut retry, mut last) = (Retry::default(), None);
         loop {
-            let wait = self.step(&mut retry, &mut from_daemon).await;
+            let wait = self.step(&mut retry, &mut from_daemon, &mut last).await;
             sleep(wait).await;
         }
     }
 
     /// Connects once if the machine is paired, and says how long to wait before the next try.
-    async fn step(&self, retry: &mut Retry, from_daemon: &mut FromDaemon) -> Duration {
+    /// `last` is the pairing it connected with before: what the daemon queued for that one
+    /// goes to no other.
+    async fn step(
+        &self,
+        retry: &mut Retry,
+        from_daemon: &mut FromDaemon,
+        last: &mut Option<Paired>,
+    ) -> Duration {
         let Some(paired) = self.paired().await else {
             return LOOK_EVERY;
         };
+        if last.as_ref().is_some_and(|last| *last != paired) {
+            while from_daemon.try_recv().is_ok() {}
+        }
+        *last = Some(paired.clone());
         let log = self
             .log
             .child(&[("machine_id", paired.machine.as_str().into())]);
@@ -213,6 +224,10 @@ impl Uplink {
                 }
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
+                    // Nothing more is taken for a pairing that has been replaced.
+                    if self.paired().await.as_ref() != Some(paired) {
+                        return false;
+                    }
                     quiet_at = Instant::now() + self.timing.quiet_within;
                     match self.answer(frame, &paired.owner, link).await {
                         Step::Unpaired => return true,
@@ -515,6 +530,7 @@ mod tests {
 
     // One connection, with a daemon that sends nothing.
     async fn once(link: &Uplink, pairing: &Paired) -> Result<Ended, Fault> {
+        machine::write(&link.state_dir, pairing).unwrap();
         link.connection(pairing, &link.log, &mut mpsc::channel(1).1)
             .await
     }
@@ -1087,6 +1103,7 @@ mod tests {
             }),
         };
         outgoing.send(answer.clone()).await.unwrap();
+        machine::write(&dir, &pairing).unwrap();
         let serve = async {
             let mut peer = welcoming(&tls, &[CONNECT]).await;
             peer.send(text(&query)).await.unwrap();
@@ -1306,6 +1323,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ask_that_comes_after_the_pairing_was_replaced_is_not_taken() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (to_daemon, mut taken) = mpsc::channel(4);
+        let link = with_commands(&dir, to_daemon);
+        let pairing = paired(&tls);
+        machine::write(&dir, &pairing).unwrap();
+        let mut replaced = pairing.clone();
+        replaced.owner = AccountId::try_from("a-other".to_owned()).unwrap();
+        let ask = every_ask(Some(&owner())).swap_remove(0);
+
+        let (_daemon, mut from_daemon) = mpsc::channel(1);
+        let connection = link.connection(&pairing, &link.log, &mut from_daemon);
+        let asking = async {
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            machine::write(&dir, &replaced).unwrap();
+            let envelope = Envelope {
+                id: 9,
+                message: ask,
+            };
+            peer.send(text(&envelope)).await.unwrap();
+            drain(peer).await;
+        };
+        let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), asking);
+
+        assert_eq!(ended.unwrap().unwrap(), Ended::Lost);
+        taken.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
     async fn a_ping_before_the_welcome_is_skipped() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
@@ -1335,19 +1381,45 @@ mod tests {
     async fn after_an_unpairing_or_without_a_pairing_the_core_waits_to_look_again() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
-        let mut retry = Retry::default();
+        let (mut retry, mut last) = (Retry::default(), None);
         let mut from_daemon = mpsc::channel(1).1;
         machine::write(&dir, &paired(&tls)).unwrap();
 
         let (unpaired, ()) = tokio::join!(
-            link.step(&mut retry, &mut from_daemon),
+            link.step(&mut retry, &mut from_daemon, &mut last),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
-        let alone = link.step(&mut retry, &mut from_daemon).await;
+        let alone = link.step(&mut retry, &mut from_daemon, &mut last).await;
 
         assert_eq!(unpaired, LOOK_EVERY);
         assert_eq!(alone, LOOK_EVERY);
         assert_eq!(machine::read(&dir).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn what_was_queued_for_one_pairing_goes_to_no_other() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let link = uplink(&dir);
+        let pairing = paired(&tls);
+        machine::write(&dir, &pairing).unwrap();
+        let mut earlier = pairing.clone();
+        earlier.token = "0lder".to_owned();
+        let (daemon, mut from_daemon) = mpsc::channel(2);
+        // The server refuses each try, so nothing queued is sent.
+        let mut tried = async |last: Paired| {
+            daemon.try_send(command("r-1", None)).unwrap();
+            let refused = refusing(&tls, "403 Forbidden", code!("request.forbidden"));
+            let (mut retry, mut last) = (Retry::default(), Some(last));
+            let step = Box::pin(link.step(&mut retry, &mut from_daemon, &mut last));
+            tokio::join!(step, refused);
+            from_daemon.try_recv().is_ok()
+        };
+
+        let same = tried(pairing).await;
+        let other = tried(earlier).await;
+
+        assert!(same, "the same pairing's queue was dropped");
+        assert!(!other, "another pairing's queue was kept");
     }
 
     #[tokio::test]
@@ -1414,6 +1486,7 @@ mod tests {
             let handed = timeout(Duration::from_secs(10), asks.recv()).await.unwrap();
             (first, handed.map(|envelope| envelope.message))
         };
+        machine::write(&link.state_dir, &pairing).unwrap();
         let (_, (first, handed)) =
             tokio::join!(link.connection(&pairing, &link.log, &mut sent), serve);
         (first, handed, answer)
