@@ -24,8 +24,6 @@ mod kinds;
 pub(crate) use kinds::needs;
 use kinds::{About, Asked, answering, machine_needs, stamped};
 
-/// How many asks may wait for their answers at once, server-wide.
-const MOST_WAITING: usize = 4096;
 /// How long an ask waits for its answer, or a diff for its next file.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 /// What a machine's core offers, and the server offers, to have its settings relayed.
@@ -46,7 +44,6 @@ const TERMINAL: Code = code!("worktree.open_terminal");
 pub(crate) struct Relay {
     /// Each ask that waits, under the id it was relayed with.
     waiting: Mutex<HashMap<u32, Waiter>>,
-    most_waiting: usize,
     answer_within: Duration,
 }
 
@@ -235,16 +232,15 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
 
 impl Default for Relay {
     fn default() -> Self {
-        Self::new(MOST_WAITING, ANSWER_WITHIN)
+        Self::new(ANSWER_WITHIN)
     }
 }
 
 impl Relay {
-    /// A relay where at most `most_waiting` asks wait, each for at most `answer_within`.
-    pub(crate) fn new(most_waiting: usize, answer_within: Duration) -> Self {
+    /// A relay where each ask waits for at most `answer_within`.
+    pub(crate) fn new(answer_within: Duration) -> Self {
         Self {
             waiting: Mutex::default(),
-            most_waiting,
             answer_within,
         }
     }
@@ -311,7 +307,7 @@ impl Relay {
             .filter(|waiter| waiter.back.same_channel(back))
             .count();
         // Within the asker's room, so every answer but a diff's later files fits.
-        if waiting.len() >= self.most_waiting || theirs >= back.capacity() {
+        if theirs >= back.capacity() {
             return Err(refused(code!("relay.busy"), true));
         }
         let Entry::Vacant(entry) = waiting.entry(relayed) else {
@@ -868,7 +864,7 @@ mod tests {
 
     // A relay where `machine`'s own sessions were asked under 41, relayed as 7.
     fn sessions_waiting(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
-        let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
+        let relay = Arc::new(Relay::new(ANSWER_WITHIN));
         let (back, answers) = mpsc::channel(4);
         let waiter = Waiter {
             sent: Sent {
@@ -915,7 +911,7 @@ mod tests {
 
     // A relay where `machine` was asked under 41, relayed as 7; and where its answer goes.
     fn waiting_on(machine: &MachineId) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
-        let relay = Arc::new(Relay::new(MOST_WAITING, ANSWER_WITHIN));
+        let relay = Arc::new(Relay::new(ANSWER_WITHIN));
         let (back, answers) = mpsc::channel(4);
         let waiter = Waiter {
             sent: Sent {
@@ -1080,9 +1076,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_asker_has_room_for_its_answers_and_the_server_for_its_most() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.relay = Arc::new(Relay::new(3, ANSWER_WITHIN));
+    async fn each_asker_has_room_for_its_answers() {
+        let fixture = Fixture::new().await;
         let (machine, asker, _attached) = adas(&fixture).await;
         let w1 = fixture
             .shared
@@ -1107,14 +1102,14 @@ mod tests {
         codes.push(code_of(forward(&fixture.shared, &ask, to(6), &three).await));
 
         let busy = Some("relay.busy".to_owned());
-        assert_eq!(codes, [None, busy.clone(), None, None, busy, None]);
+        assert_eq!(codes, [None, busy, None, None, None, None]);
         assert_eq!(fixture.shared.relay.lock().len(), 3);
     }
 
     #[tokio::test]
     async fn an_ask_unanswered_in_time_is_told_so() {
         let mut fixture = Fixture::new().await;
-        fixture.shared.relay = Arc::new(Relay::new(MOST_WAITING, Duration::ZERO));
+        fixture.shared.relay = Arc::new(Relay::new(Duration::ZERO));
         let (machine, asker, _attached) = adas(&fixture).await;
         let w1 = fixture
             .shared
@@ -1578,7 +1573,7 @@ mod tests {
     // A relay where a diff of c-1 was asked under 41, relayed as 7; and where its answers
     // go, with room for `room`.
     fn diff_waiting(room: usize, within: Duration) -> (Arc<Relay>, mpsc::Receiver<Envelope>) {
-        let relay = Arc::new(Relay::new(MOST_WAITING, within));
+        let relay = Arc::new(Relay::new(within));
         let (back, answers) = mpsc::channel(room);
         let asked = Asked {
             workspace: Some(workspace_id("w1")),
