@@ -8,7 +8,7 @@ pub(crate) use chats::{CHAT_LEGS, CHAT_TASKS, CHATS, REQUESTS_GONE};
 pub(crate) use codes::PLAIN_CODES;
 pub(crate) use cores::CORE_BUILDS;
 pub(crate) use search::{SEARCH, SEARCH_CHATS};
-pub(crate) use team::INVITATIONS;
+pub(crate) use team::{INVITATIONS, SHARED_MACHINES};
 
 pub(crate) const WORKSPACES: &str = "
 CREATE TABLE workspaces (

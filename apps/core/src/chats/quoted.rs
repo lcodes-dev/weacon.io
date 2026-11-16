@@ -28,6 +28,11 @@ pub(crate) fn prompt(text: &str, quotes: &[Quote]) -> String {
 
 fn who(quote: &Quote) -> String {
     match &quote.agent {
+        Some(agent) if agent.shared => format!(
+            "Shared {} on {}",
+            vendor_name(agent.kind),
+            agent.machine.as_str()
+        ),
         Some(agent) => format!(
             "{}'s {} on {}",
             quote.name,
@@ -57,6 +62,27 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_agents_words_are_quoted_as_the_shared_agents_and_no_persons() {
+        let shared = Quote {
+            name: "Grace".to_owned(),
+            agent: Some(QuotedAgent {
+                kind: AgentKind::Codex,
+                machine: "Team VPS".parse().unwrap(),
+                shared: true,
+            }),
+            text: "Done.".to_owned(),
+        };
+
+        let told = prompt("Ship it", &[shared]);
+
+        assert!(
+            told.contains("\nShared Codex on Team VPS wrote:\nDone.\n"),
+            "{told}"
+        );
+        assert!(!told.contains("Grace"), "{told}");
+    }
+
+    #[test]
     fn a_prompt_without_quotes_is_its_owners_text_alone() {
         assert_eq!(prompt("Fix it", &[]), "Fix it");
     }
@@ -68,6 +94,7 @@ mod tests {
             agent: Some(QuotedAgent {
                 kind: AgentKind::Claude,
                 machine: "laptop".parse().unwrap(),
+                shared: false,
             }),
             text: "The tests pass.".to_owned(),
         };

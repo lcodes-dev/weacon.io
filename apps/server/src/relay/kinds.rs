@@ -1,7 +1,8 @@
 //! What each kind the relay carries asks, needs and answers.
 
 use weacon_protocol::{
-    Asker, ChatId, Code, MachineId, Message, RequestId, WorkspaceId, WorktreeAction,
+    Asker, ChatId, Code, MachineId, MachineSettingsQueryKind, Message, RequestId, WorkspaceId,
+    WorktreeAction,
 };
 
 use super::{DIFF, SESSIONS, SETTINGS, SYMBOLS, TERMINAL, WORKTREE};
@@ -78,6 +79,19 @@ pub(super) fn machine_needs(message: &Message) -> Option<Code> {
         return Some(TERMINAL);
     }
     needs(message)
+}
+
+/// Whether `message` is one a member may send to a machine shared with their workspace, and
+/// not only to their own: what reads a chat's changes, and which repositories and agents the
+/// machine has for the workspace.
+pub(super) fn for_members(message: &Message) -> bool {
+    if let Message::MachineSettingsQuery(query) = message {
+        return matches!(
+            query.query,
+            MachineSettingsQueryKind::Repos | MachineSettingsQueryKind::Agents
+        );
+    }
+    matches!(message, Message::DiffQuery(_) | Message::WorktreeQuery(_))
 }
 
 /// What a message the relay carries asks, with `by` stamped on it whatever the client

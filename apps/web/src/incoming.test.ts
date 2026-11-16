@@ -179,14 +179,16 @@ test("a run's status keeps a well-formed agent and drops any other", () => {
   };
   const kept = [
     { kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "Ada's laptop" },
-    { kind: "codex", owner: { kind: "shared" } },
-    { kind: "gemini", owner: { kind: "shared" } },
+    { kind: "codex", owner: { kind: "shared", member: "m-2", owner: "m-1" } },
+    { kind: "gemini", owner: { kind: "shared", member: "m-2", owner: "m-1" } },
   ];
   const lost = [
-    { kind: 4, owner: { kind: "shared" } },
+    { kind: 4, owner: { kind: "shared", member: "m-2", owner: "m-1" } },
+    { kind: "codex", owner: { kind: "shared" } },
+    { kind: "codex", owner: { kind: "shared", member: "m-2" } },
     { kind: "claude", owner: { kind: "team" } },
     { kind: "claude", owner: { kind: "member" } },
-    { kind: "claude", owner: { kind: "shared" }, machine: 5 },
+    { kind: "claude", owner: { kind: "shared", member: "m-2", owner: "m-1" }, machine: 5 },
     { kind: "claude" },
     "claude",
   ];

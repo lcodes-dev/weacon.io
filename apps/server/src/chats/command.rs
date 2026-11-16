@@ -5,7 +5,7 @@ use weacon_model::chat_title;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentKind, AgentOwner, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId,
-    Message, Outcome, Receipt, RunState, code,
+    MemberId, Message, Outcome, Receipt, RunState, code,
 };
 
 use super::admit::{Admitted, admit, detached, not_owner};
@@ -62,17 +62,49 @@ pub(crate) async fn take(
             command,
         } => prompt(from, &chat, machine, command, back).await?,
         Admitted::Act { chat, mut command } => {
-            let leg = member.workspace.leg(&id, &member.id).await?;
-            let leg = leg.filter(|leg| chat.made && leg.core_seq > 0);
-            let leg = leg.ok_or_else(not_owner)?;
-            // Only a run of the asker's own leg is theirs to answer, under its machine's name.
-            if let ChatAction::Permission { answer } = &mut command.action {
-                answer.run = leg.own_run(&answer.run).ok_or_else(not_owner)?;
-            }
+            let leg = acted_on(from, &chat, &mut command).await?;
             serve(from, &leg, command, back).await?;
         }
     }
     Ok(None)
+}
+
+// The leg an answer or a stop is for. An answer is for the run it names, under its machine's
+// name for it, and only from the owner of the machine that runs it. A stop is for the asker's
+// own agent, or from a machine's owner for another member's agent at work on it.
+async fn acted_on(
+    Sender {
+        shared,
+        member,
+        asker,
+    }: Sender<'_>,
+    chat: &Chat,
+    command: &mut ChatCommand,
+) -> Result<Leg, Fault> {
+    let workspace = &member.workspace;
+    let legs = workspace.legs(&command.chat).await?;
+    let mut legs = legs.into_iter().filter(|leg| chat.made && leg.core_seq > 0);
+    if let ChatAction::Permission { answer } = &mut command.action {
+        let asked = legs.find_map(|leg| Some((leg.own_run(&answer.run)?, leg)));
+        let (run, leg) = asked.ok_or_else(not_owner)?;
+        answer.run = run;
+        let owns = shared.db.has_machine(&asker.account, &leg.machine).await?;
+        return owns.then_some(leg).ok_or_else(not_owner);
+    }
+    let at_work = at_work(workspace, chat, &command.chat).await?;
+    let (own, others): (Vec<Leg>, Vec<Leg>) = legs.partition(|leg| leg.member == member.id);
+    let mut working = others
+        .into_iter()
+        .filter(|leg| Some(&leg.member) == at_work.as_ref());
+    if let Some(working) = working.next()
+        && shared
+            .db
+            .has_machine(&asker.account, &working.machine)
+            .await?
+    {
+        return Ok(working);
+    }
+    own.into_iter().next().ok_or_else(not_owner)
 }
 
 // Stores a person's message, in a chat it makes when there is none.
@@ -256,9 +288,10 @@ async fn leg_for(
     }
 }
 
-// The asker's machine `named`, which a first prompt must name, and what it is called.
+// The machine `named`, which a first prompt must name, and what it is called: the asker's own,
+// or one shared with the workspace.
 async fn own_machine(
-    Sender { shared, asker, .. }: Sender<'_>,
+    Sender { member, asker, .. }: Sender<'_>,
     named: Option<MachineId>,
 ) -> Result<(MachineId, weacon_protocol::MachineName), Fault> {
     let named = named.ok_or_else(|| {
@@ -267,10 +300,8 @@ async fn own_machine(
             "Pick a machine for your agent in this chat",
         )
     })?;
-    let owned = shared.db.machines_of(&asker.account, &[]).await?;
-    let found = owned.into_iter().find(|summary| summary.id == named);
-    let summary = found.ok_or_else(crate::db::machine_not_found)?;
-    Ok((summary.id, summary.name))
+    let name = member.workspace.callable(&asker.account, &named).await?;
+    Ok((named, name.ok_or_else(crate::db::machine_not_found)?))
 }
 
 // A chat runs one agent at a time: while another member's works or waits for an answer, on
@@ -282,25 +313,13 @@ async fn one_at_a_time(
     id: &ChatId,
     member: &Member,
 ) -> Result<(), Fault> {
-    let runs = workspace.chat_runs(id).await?;
-    let working = |state| {
-        matches!(
-            state,
-            RunState::Starting | RunState::Running | RunState::Waiting
-        )
-    };
-    let Some(run) = runs.run().filter(|run| working(run.state)) else {
+    let Some(owner) = at_work(workspace, chat, id).await? else {
         return Ok(());
     };
-    // A status from before agents were named is the chat's owner's.
-    let owner = match run.agent.as_ref().map(|agent| &agent.owner) {
-        Some(AgentOwner::Member { member }) => member,
-        _ => &chat.owner,
-    };
-    if *owner == member.id {
+    if owner == member.id {
         return Ok(());
     }
-    let Some(leg) = workspace.leg(id, owner).await?.filter(|leg| !leg.detached) else {
+    let Some(leg) = workspace.leg(id, &owner).await?.filter(|leg| !leg.detached) else {
         return Ok(());
     };
     // A machine that is away, as a closed laptop is, holds no one back.
@@ -310,6 +329,29 @@ async fn one_at_a_time(
     }
 }
 
+// The member whose agent works or waits for an answer in `chat`, if one does.
+async fn at_work(
+    workspace: &Workspace,
+    chat: &Chat,
+    id: &ChatId,
+) -> Result<Option<MemberId>, Fault> {
+    let runs = workspace.chat_runs(id).await?;
+    let working = |state| {
+        matches!(
+            state,
+            RunState::Starting | RunState::Running | RunState::Waiting
+        )
+    };
+    let Some(run) = runs.run().filter(|run| working(run.state)) else {
+        return Ok(None);
+    };
+    // A status from before agents were named is the chat's owner's.
+    Ok(Some(match run.agent.as_ref().map(|agent| &agent.owner) {
+        Some(AgentOwner::Member { member } | AgentOwner::Shared { member, .. }) => member.clone(),
+        _ => chat.owner.clone(),
+    }))
+}
+
 fn agent_working() -> Fault {
     Fault::new(
         code!("chat.agent_working"),
@@ -317,26 +359,42 @@ fn agent_working() -> Fault {
     )
 }
 
-// Relays `command` to the machine of `leg`, the asker's own, while they still own it.
+// Relays `command` to the machine of `leg`, while it still serves the leg's member.
 async fn serve(
-    Sender { shared, member, .. }: Sender<'_>,
+    from: Sender<'_>,
     leg: &Leg,
     command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
+    let Sender { shared, member, .. } = from;
     let workspace = &member.workspace;
-    if leg.detached {
-        return Err(detached());
-    }
-    let held = workspace.leg_on(&command.chat, &leg.machine).await?;
-    if held.is_none() {
-        // A leg whose machine was unpaired can never run again; the chat stays.
-        workspace.detach_leg(&command.chat, &member.id).await?;
-        shared.wake_feeds(workspace.id());
-        return Err(detached());
+    if !ends_own(from, leg, &command).await? {
+        if leg.detached {
+            return Err(detached());
+        }
+        let held = workspace.leg_on(&command.chat, &leg.machine).await?;
+        if held.is_none() {
+            // A leg whose machine no longer serves it can never run again; the chat stays.
+            workspace.detach_leg(&command.chat, &leg.member).await?;
+            shared.wake_feeds(workspace.id());
+            return Err(detached());
+        }
     }
     let follow = link::follow(workspace.id(), &command.chat, leg.core_seq);
     relay::command(shared, &leg.machine, command, follow, back)
+}
+
+// Whether `command` is an answer or a stop from the owner of `leg`'s machine: what still runs
+// there once they stopped sharing it is theirs to end.
+async fn ends_own(
+    Sender { shared, asker, .. }: Sender<'_>,
+    leg: &Leg,
+    command: &ChatCommand,
+) -> Result<bool, Fault> {
+    if matches!(command.action, ChatAction::Prompt { .. }) {
+        return Ok(false);
+    }
+    shared.db.has_machine(&asker.account, &leg.machine).await
 }
 
 /// Gives the task a chat's first words name the title it has now in `workspace`.
@@ -1015,5 +1073,216 @@ mod tests {
             assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
             assert!(sent(&mut serving).is_empty());
         }
+    }
+
+    // Has Ada's machine say it is shared with `workspaces`, as its core does.
+    async fn share(two: &Two, workspaces: &[&str]) {
+        let shared: Vec<_> = workspaces.iter().copied().map(id).collect();
+        let db = &two.fixture.shared.db;
+        db.set_shares(&two.ada.machine, &shared).await.unwrap();
+    }
+
+    fn act(request: &str, action: ChatAction) -> ChatCommand {
+        ChatCommand {
+            action,
+            ..prompt(request, "c-1", "x", None)
+        }
+    }
+
+    fn allow(request: &str, run: &str) -> ChatCommand {
+        let answer = weacon_protocol::PermissionAnswer {
+            run: id(run),
+            prompt: 1,
+            allow: true,
+        };
+        act(request, ChatAction::Permission { answer })
+    }
+
+    fn code(refused: Result<Option<Message>, Fault>) -> String {
+        refused.unwrap_err().code().as_str().to_owned()
+    }
+
+    // The commands among what a machine was sent, each with the account it names as its asker.
+    fn commands(sent: Vec<Message>) -> Vec<(ChatAction, weacon_protocol::AccountId)> {
+        let command = |message| {
+            let Message::ChatCommand(command) = message else {
+                return None;
+            };
+            Some((command.action, command.by?.account))
+        };
+        sent.into_iter().filter_map(command).collect()
+    }
+
+    #[tokio::test]
+    async fn a_member_calls_a_machine_shared_with_their_workspace_until_its_owner_stops_sharing_it()
+    {
+        let mut two = Two::new().await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let workspace = &ada.member.workspace;
+        let call = |request| prompt(request, "c-1", "Go", Some(&ada.machine));
+
+        let unshared = two.ask(grace, call("r-3")).await;
+        share(&two, &["w1"]).await;
+        two.ask(grace, call("r-4")).await.unwrap();
+
+        assert_eq!(code(unshared), "machine.not_found");
+        let called = commands(sent(&mut two.adas));
+        assert_eq!(called.len(), 1);
+        assert_eq!(called[0].1, grace.asker.account);
+        two.up(ada, 1, prompted("r-4", "Go")).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        // Its events are the caller's, and its agent the workspace's shared one.
+        let stored = events(workspace, "c-1").await;
+        let Some(ChatEvent::Prompt { author, .. }) = stored.get(2) else {
+            panic!("no prompt: {stored:?}");
+        };
+        assert_eq!(*author, Some(grace.member.id.clone()));
+        let Some(ChatEvent::RunStatus { status }) = stored.last() else {
+            panic!("no status: {stored:?}");
+        };
+        let agent = status.agent.clone().unwrap();
+        let shared_agent = AgentOwner::Shared {
+            member: grace.member.id.clone(),
+            owner: ada.member.id.clone(),
+        };
+        assert_eq!(agent.owner, shared_agent);
+        assert_eq!(agent.machine.unwrap().as_str(), "Studio");
+        // What it says is quoted to the others' agents as the shared agent's.
+        two.up(ada, 3, said("Done.")).await;
+        let chat = id("c-1");
+        let quoted = quotes::between(workspace, &chat, &ada.member.id, (0, 99));
+        let quoted = quoted.await.unwrap();
+        let by_agent = quoted.iter().find_map(|quote| quote.agent.as_ref());
+        assert!(by_agent.is_some_and(|agent| agent.shared));
+        share(&two, &[]).await;
+        let after = two.ask(grace, prompt("r-5", "c-1", "More", None)).await;
+        assert_eq!(code(after), "chat.detached");
+        assert!(sent(&mut two.adas).is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_a_shared_machines_owner_answers_its_prompts_and_its_caller_or_its_owner_stops_it()
+    {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let call = prompt("r-4", "c-1", "Go", Some(&ada.machine));
+        two.ask(grace, call).await.unwrap();
+        two.up(ada, 1, prompted("r-4", "Go")).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        two.up(ada, 3, crate::db::test_support::asks(1)).await;
+        two.up(ada, 4, status(RunState::Waiting)).await;
+        sent(&mut two.adas);
+
+        let by_caller = two.ask(grace, allow("r-5", "run-1-l1")).await;
+        let another_run = two.ask(ada, allow("r-6", "run-1-l2")).await;
+        two.ask(ada, allow("r-7", "run-1-l1")).await.unwrap();
+        two.ask(grace, act("r-8", ChatAction::Interrupt))
+            .await
+            .unwrap();
+        two.ask(ada, act("r-9", ChatAction::Interrupt))
+            .await
+            .unwrap();
+
+        assert_eq!(code(by_caller), "chat.not_owner");
+        assert_eq!(code(another_run), "chat.not_owner");
+        // The answer names the run as its own machine does.
+        let (owner, caller) = (ada.asker.account.clone(), grace.asker.account.clone());
+        let answer = allow("r-7", "run-1").action;
+        let relayed = [
+            (answer, owner.clone()),
+            (ChatAction::Interrupt, caller),
+            (ChatAction::Interrupt, owner),
+        ];
+        assert_eq!(commands(sent(&mut two.adas)), relayed);
+        assert!(sent(&mut two.graces).is_empty());
+    }
+
+    #[tokio::test]
+    async fn what_still_runs_on_a_machine_no_longer_shared_is_its_owners_to_stop_and_no_one_elses()
+    {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let call = prompt("r-4", "c-1", "Go", Some(&ada.machine));
+        two.ask(grace, call).await.unwrap();
+        two.up(ada, 1, prompted("r-4", "Go")).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        two.up(ada, 3, crate::db::test_support::asks(1)).await;
+        sent(&mut two.adas);
+        share(&two, &[]).await;
+
+        let by_caller = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
+        two.ask(ada, act("r-6", ChatAction::Interrupt))
+            .await
+            .unwrap();
+        two.ask(ada, allow("r-7", "run-1-l1")).await.unwrap();
+        let more = two.ask(grace, prompt("r-8", "c-1", "More", None)).await;
+
+        assert_eq!(code(by_caller), "chat.detached");
+        assert_eq!(code(more), "chat.detached");
+        let owner = ada.asker.account.clone();
+        let ended = [
+            (ChatAction::Interrupt, owner.clone()),
+            (allow("r-7", "run-1").action, owner),
+        ];
+        assert_eq!(commands(sent(&mut two.adas)), ended);
+    }
+
+    #[tokio::test]
+    async fn a_machine_shared_with_one_workspace_is_neither_listed_nor_called_in_another() {
+        let two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let db = &two.fixture.shared.db;
+        let other = db.create_workspace(&id("w9"), "Other").await.unwrap();
+        let address = |name: &str| crate::test_support::email(&format!("{name}@example.com"));
+        for (member, person, name) in [("m1", ada, "ada"), ("m5", grace, "grace")] {
+            let account = &person.asker.account;
+            other
+                .add_member(&id(member), account, &address(name))
+                .await
+                .unwrap();
+        }
+        let there = Member {
+            workspace: other,
+            id: id("m5"),
+            token_hash: [0; 32],
+        };
+        let mut call = prompt("r-3", "c-9", "Go", Some(&ada.machine));
+        call.workspace = id("w9");
+        let (back, _answers) = mpsc::channel(4);
+        let back = Back { id: 4, to: &back };
+
+        let elsewhere = take(&there, &grace.asker, &two.fixture.shared, call, back).await;
+
+        assert_eq!(code(elsewhere), "machine.not_found");
+        assert!(there.workspace.shared_machines().await.unwrap().is_empty());
+        let listed = ada.member.workspace.shared_machines().await.unwrap();
+        let shown: Vec<_> = listed
+            .iter()
+            .map(|machine| (machine.name.as_str(), machine.owner.as_str()))
+            .collect();
+        assert_eq!(shown, [("Studio", "m1")]);
+        // Its core naming a workspace its owner isn't in shares nothing there.
+        let stranger = db.create_workspace(&id("w8"), "Theirs").await.unwrap();
+        share(&two, &["w1", "w8"]).await;
+        assert!(stranger.shared_machines().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_machine_runs_one_members_agent_in_a_chat() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        two.ada_calls().await;
+        two.up(&two.ada, 3, status(RunState::Idle)).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+
+        let second = prompt("r-5", "c-1", "And mine", Some(&ada.machine));
+        let taken = two.ask(grace, second).await;
+
+        assert_eq!(code(taken), "chat.machine_taken");
+        let elsewhere = prompt("r-6", "c-2", "A chat of my own", Some(&ada.machine));
+        two.ask(grace, elsewhere).await.unwrap();
     }
 }

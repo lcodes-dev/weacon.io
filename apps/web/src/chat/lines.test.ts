@@ -3,7 +3,8 @@ import { test } from "node:test";
 
 import type { ChatEntry, RunEvent } from "../protocol.ts";
 import { commit, fromSnapshot, older, stream } from "./chat.ts";
-import { lineAt, lines } from "./lines.ts";
+import { label } from "./label.ts";
+import { answers, lineAt, lines } from "./lines.ts";
 
 const ran = (seq: number, run: string, event: RunEvent): ChatEntry => ({ seq, event: { kind: "run", update: { run, event } } });
 const said = (seq: number, text: string): ChatEntry => ({ seq, event: { kind: "prompt", request: `q-${seq}`, text } });
@@ -40,6 +41,19 @@ test("a chat's lines are its prompts and its turns under their labels, with prom
   assert.deepEqual(lines(chat).at(-1), { ...ask, waitsFor: undefined });
   // Whoever can't answer it reads whose answer it waits for.
   assert.deepEqual(lines(chat, new Map([["m-1", "ada"]])).at(-1), { ...ask, waitsFor: "ada" });
+});
+
+test("a shared agent's turn is labelled as shared, and its prompts wait for its machine's owner, whoever called it", () => {
+  const shared = { kind: "codex" as const, owner: { kind: "shared" as const, member: "m-2", owner: "m-1" }, machine: "Team VPS" };
+  const names = new Map([
+    ["m-1", "ada"],
+    ["m-2", "grace"],
+  ]);
+
+  assert.equal(answers(shared), "m-1");
+  assert.equal(answers(agent), "m-1");
+  assert.equal(answers(undefined), undefined);
+  assert.equal(label(shared, names), "Shared Codex · Team VPS");
 });
 
 test("what a person wrote, to the chat or to their agent, shows under their name", () => {

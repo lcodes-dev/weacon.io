@@ -10,12 +10,12 @@ use weacon_protocol::{
     AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
     MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
     MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, RepoId, RequestId,
-    WorkspaceId, code,
+    SignInState, WorkspaceId, code,
 };
 
 use crate::git::state::Stores;
 use crate::outside::Outside;
-use crate::workspaces::{Settings, Workspaces, sign_ins, states, store_access};
+use crate::workspaces::{Settings, Workspaces, sharing, sign_ins, states, store_access};
 use crate::{app, reports};
 
 /// Who this core is, as pairing made it: the machine and its owner's account.
@@ -35,19 +35,41 @@ pub(crate) struct Host {
     pub(crate) log: Logger,
 }
 
-/// Answers `query` with the settings as they are, for this machine's owner only.
+/// Answers `query` with the settings as they are, for this machine's owner only; a member of
+/// a workspace the machine is shared with is told its repositories and signed-in agents.
 pub(crate) async fn query(
     host: &Host,
     owner: &Identity,
     query: MachineSettingsQuery,
 ) -> Result<MachineSettingsAnswer, Fault> {
-    allowed(owner, &query.machine, query.by.as_ref())?;
+    let for_members = matches!(
+        query.query,
+        MachineSettingsQueryKind::Repos | MachineSettingsQueryKind::Agents
+    );
+    let shared = for_members && sharing::shares(&host.state_dir, &query.workspace).await;
+    allowed(owner, &query.machine, query.by.as_ref(), shared)?;
     match query.query {
         MachineSettingsQueryKind::Current => {}
         MachineSettingsQueryKind::Repos => return repos(host, query).await,
+        MachineSettingsQueryKind::Agents => {
+            let all = answer(host, query.request, query.machine, query.workspace);
+            return all.await.map(signed_in);
+        }
         MachineSettingsQueryKind::Newer => return Err(unknown()),
     }
     answer(host, query.request, query.machine, query.workspace).await
+}
+
+// Of the settings in `answer`, only which agents are signed in.
+fn signed_in(mut answer: MachineSettingsAnswer) -> MachineSettingsAnswer {
+    if let MachineSettingsAnswerKind::Current(settings) = answer.answer {
+        let signed_in = |sign_in: &AgentSignIn| sign_in.state == SignInState::SignedIn;
+        let agents = settings.sign_ins.iter().filter(|one| signed_in(one));
+        answer.answer = MachineSettingsAnswerKind::Agents {
+            agents: agents.map(|sign_in| sign_in.agent).collect(),
+        };
+    }
+    answer
 }
 
 // The ids of the repositories the owner registered for the workspace, sorted; never where they
@@ -75,7 +97,7 @@ pub(crate) async fn command(
     owner: &Identity,
     command: MachineSettingsCommand,
 ) -> Result<MachineSettingsAnswer, Fault> {
-    allowed(owner, &command.machine, command.by.as_ref())?;
+    allowed(owner, &command.machine, command.by.as_ref(), false)?;
     let changing = host.clone();
     let workspace = command.workspace.clone();
     let action = command.action;
@@ -83,14 +105,20 @@ pub(crate) async fn command(
     answer(host, command.request, command.machine, command.workspace).await
 }
 
-fn allowed(owner: &Identity, machine: &MachineId, by: Option<&Asker>) -> Result<(), Fault> {
+// Whether `by` may ask: the machine's owner, or anyone the server names when `shared`.
+fn allowed(
+    owner: &Identity,
+    machine: &MachineId,
+    by: Option<&Asker>,
+    shared: bool,
+) -> Result<(), Fault> {
     if *machine != owner.machine {
         return Err(Fault::new(
             code!("settings.other_machine"),
             "The request is for another machine",
         ));
     }
-    if by.is_none_or(|by| by.account != owner.account) {
+    if by.is_none_or(|by| by.account != owner.account && !shared) {
         return Err(Fault::new(
             code!("settings.not_owner"),
             "Only this machine's owner can see or change its settings",
@@ -114,6 +142,10 @@ fn change(
         MachineSettingsAction::SetAccess { level, team } if *level != AccessLevel::Newer => {
             let workspaces = Workspaces::new(&host.state_dir, None);
             store_access(&workspaces, workspace, *level, *team, &host.log).map(drop)
+        }
+        MachineSettingsAction::SetShared { shared } => {
+            let workspaces = Workspaces::new(&host.state_dir, None);
+            sharing::store(&workspaces, workspace, *shared, &host.log).map(drop)
         }
         MachineSettingsAction::SetAccess { .. } | MachineSettingsAction::Newer => Err(unknown()),
     }
@@ -157,6 +189,7 @@ async fn answer(
             reports,
             access: settings.access,
             team: settings.team,
+            shared: settings.shared,
             sign_ins,
         }),
     })
@@ -298,6 +331,7 @@ mod tests {
                 reports: None,
                 access: AccessLevel::AskFirst,
                 team: false,
+                shared: false,
                 sign_ins: not_installed(),
             }
         );
@@ -374,6 +408,86 @@ mod tests {
         assert_eq!(current(off).reports, Some(false));
         assert!(!host.reporter.agreed());
         assert_eq!(reports::current(&dir), Some(false));
+    }
+
+    #[tokio::test]
+    async fn the_owner_shares_the_machine_and_only_then_a_member_reads_its_repos_and_agents() {
+        let dir = TempDir::new().unwrap();
+        let host = host(&dir, None);
+        let owner = owner();
+        let share = |shared| {
+            let action = MachineSettingsAction::SetShared { shared };
+            command(&host, &owner, told(action, "mc-1", Some(by("a-1"))))
+        };
+        let member = |kind| query(&host, &owner, asked(kind, "mc-1", Some(by("a-2"))));
+        let kinds = || {
+            [
+                MachineSettingsQueryKind::Repos,
+                MachineSettingsQueryKind::Agents,
+                MachineSettingsQueryKind::Current,
+            ]
+        };
+        let code = |result: Result<MachineSettingsAnswer, Fault>| {
+            result.unwrap_err().code().as_str().to_owned()
+        };
+
+        for kind in kinds() {
+            assert_eq!(code(member(kind).await), "settings.not_owner");
+        }
+        let by_member = MachineSettingsAction::SetShared { shared: true };
+        let forged = command(&host, &owner, told(by_member, "mc-1", Some(by("a-2")))).await;
+        assert_eq!(code(forged), "settings.not_owner");
+        assert!(current(share(true).await.unwrap()).shared);
+
+        let [repos, agents, all] = kinds().map(member);
+        assert_eq!(
+            repos.await.unwrap().answer,
+            MachineSettingsAnswerKind::Repos { repos: Vec::new() }
+        );
+        // No agent is installed here, so none is signed in.
+        assert_eq!(
+            agents.await.unwrap().answer,
+            MachineSettingsAnswerKind::Agents { agents: Vec::new() }
+        );
+        assert_eq!(code(all.await), "settings.not_owner");
+        // One with no asker named is no member's.
+        let unnamed = query(
+            &host,
+            &owner,
+            asked(MachineSettingsQueryKind::Repos, "mc-1", None),
+        )
+        .await;
+        assert_eq!(code(unnamed), "settings.not_owner");
+        assert!(!current(share(false).await.unwrap()).shared);
+        assert_eq!(
+            code(member(MachineSettingsQueryKind::Repos).await),
+            "settings.not_owner"
+        );
+    }
+
+    #[test]
+    fn of_a_machines_sign_ins_members_are_told_only_the_agents_signed_in() {
+        let sign_in = |agent, state| AgentSignIn { agent, state };
+        let answer = MachineSettingsAnswer {
+            request: id("r-1"),
+            machine: id("mc-1"),
+            workspace: id("w1"),
+            answer: MachineSettingsAnswerKind::Current(MachineSettings {
+                reports: Some(true),
+                access: AccessLevel::Full,
+                team: true,
+                shared: true,
+                sign_ins: vec![
+                    sign_in(AgentKind::Claude, SignInState::SignedOut),
+                    sign_in(AgentKind::Codex, SignInState::SignedIn),
+                ],
+            }),
+        };
+
+        let told = signed_in(answer).answer;
+
+        let agents = vec![AgentKind::Codex];
+        assert_eq!(told, MachineSettingsAnswerKind::Agents { agents });
     }
 
     #[tokio::test]

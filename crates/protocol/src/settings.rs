@@ -5,8 +5,9 @@ use crate::{AccessLevel, AgentKind, Asker, MachineId, RepoId, RequestId, Workspa
 
 /// From the owner of `machine` to its core, which offers `machine.settings`: what the machine
 /// keeps for `workspace`. The server relays it only from the machine's owner, and the core
-/// answers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
-/// `request`.
+/// answers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered
+/// to, any member of a workspace the machine is shared with. The answer is a
+/// [`MachineSettingsAnswer`] that echoes `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineSettingsQuery {
     pub request: RequestId,
@@ -27,6 +28,8 @@ pub enum MachineSettingsQueryKind {
     /// The repositories the owner registered for the workspace, of a core that offers
     /// `repo.list`; an older core answers `request.unknown`.
     Repos,
+    /// The agents signed in on the machine for the workspace.
+    Agents,
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
@@ -62,6 +65,8 @@ pub enum MachineSettingsAction {
         #[schemars(with = "bool")]
         team: Option<bool>,
     },
+    /// Whether every member of `workspace` may call agents on the machine.
+    SetShared { shared: bool },
     /// An action this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
@@ -87,6 +92,10 @@ pub enum MachineSettingsAnswerKind {
     Repos {
         repos: Vec<RepoId>,
     },
+    /// The agents signed in for the workspace, in the order the core lists them.
+    Agents {
+        agents: Vec<AgentKind>,
+    },
     /// An answer this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
@@ -103,6 +112,9 @@ pub struct MachineSettings {
     pub access: AccessLevel,
     /// Whether other people are in the workspace.
     pub team: bool,
+    /// Whether every member of the workspace may call agents on the machine.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
     /// Each agent the core runs, signed in or not with the workspace's own config folder.
     pub sign_ins: Vec<AgentSignIn>,
 }
@@ -189,6 +201,7 @@ mod tests {
             reports,
             access: AccessLevel::AskFirst,
             team: true,
+            shared: false,
             sign_ins,
         }
     }
@@ -297,6 +310,48 @@ mod tests {
             .unwrap_err();
     }
 
+    #[test]
+    fn sharing_is_set_and_shown_and_the_agents_signed_in_are_asked_for_by_kind_alone() {
+        travels(
+            &command(MachineSettingsAction::SetShared { shared: true }),
+            stamped(wire(
+                "machine_settings_command",
+                "action",
+                json!({ "kind": "set_shared", "shared": true }),
+            )),
+        );
+        let shared = MachineSettings {
+            shared: true,
+            ..settings(None, Vec::new())
+        };
+        travels(
+            &answer(MachineSettingsAnswerKind::Current(shared)),
+            wire(
+                "machine_settings_answer",
+                "answer",
+                json!({ "kind": "current", "access": "ask_first", "team": true, "shared": true,
+                        "sign_ins": [] }),
+            ),
+        );
+        travels(
+            &query(MachineSettingsQueryKind::Agents, Some(asker())),
+            stamped(wire(
+                "machine_settings_query",
+                "query",
+                json!({ "kind": "agents" }),
+            )),
+        );
+        let agents = vec![AgentKind::Claude, AgentKind::Codex];
+        travels(
+            &answer(MachineSettingsAnswerKind::Agents { agents }),
+            wire(
+                "machine_settings_answer",
+                "answer",
+                json!({ "kind": "agents", "agents": ["claude", "codex"] }),
+            ),
+        );
+    }
+
     // What a newer peer sends: it parses, and is never sent on.
     fn newer(message: &str, field: &str, body: Value) -> Message {
         never_sent(wire(message, field, body)).message
@@ -350,7 +405,9 @@ mod tests {
         let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "team": false, "sign_ins": sign_ins });
         let sign_in = |answer: MachineSettingsAnswerKind| match answer {
             MachineSettingsAnswerKind::Current(settings) => settings.sign_ins.first().cloned(),
-            MachineSettingsAnswerKind::Repos { .. } | MachineSettingsAnswerKind::Newer => None,
+            MachineSettingsAnswerKind::Repos { .. }
+            | MachineSettingsAnswerKind::Agents { .. }
+            | MachineSettingsAnswerKind::Newer => None,
         };
 
         assert_eq!(
