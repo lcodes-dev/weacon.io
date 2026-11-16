@@ -11,17 +11,16 @@ use crate::shared::Shared;
 /// What a core must offer to be sent chats' commands and queries.
 pub(crate) const SERVE: Code = code!("chat.serve");
 
-/// Sends `messages` to `machine`, all of them or none, refusing with `machine.offline` when it
-/// isn't connected, doesn't serve chats or hasn't room for them all.
+/// Sends `messages` to `machine` under their envelope ids, all of them or none, refusing with
+/// `machine.offline` when it isn't connected, doesn't serve chats or hasn't room for them all.
 pub(crate) fn send_all(
     shared: &Shared,
     machine: &MachineId,
-    messages: Vec<Message>,
+    messages: Vec<(u32, Message)>,
 ) -> Result<(), Fault> {
-    let envelopes = messages.into_iter().map(|message| Envelope {
-        id: shared.links.next_id(),
-        message,
-    });
+    let envelopes = messages
+        .into_iter()
+        .map(|(id, message)| Envelope { id, message });
     let serve = Capability::new(SERVE);
     shared
         .links

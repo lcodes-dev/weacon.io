@@ -1,5 +1,4 @@
 mod events;
-mod ledger;
 mod list;
 mod runs;
 mod task;
@@ -13,7 +12,6 @@ use weacon_protocol::{
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
-pub(crate) use ledger::{NewRequest, Recorded};
 pub(crate) use runs::Snapshot;
 
 use super::changes::Versioned;
@@ -61,14 +59,10 @@ type ChatRow = (
 );
 
 impl Workspace {
-    /// Makes the chat `chat` with the request that makes it, before that is sent: feeds hear
-    /// of it once [`Self::chat_made`] says it was. A chat id or request id already in this
-    /// workspace is `db.exists`, and a machine its owner doesn't own `machine.not_found`.
-    pub(crate) async fn add_chat(
-        &self,
-        chat: &NewChat<'_>,
-        request: &NewRequest<'_>,
-    ) -> Result<(), Fault> {
+    /// Makes the chat `chat` before its first prompt is sent: feeds hear of it once
+    /// [`Self::chat_made`] says it was. A chat id already in this workspace is `db.exists`, and
+    /// a machine its owner doesn't own `machine.not_found`.
+    pub(crate) async fn add_chat(&self, chat: &NewChat<'_>) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         sqlx::query(
             "INSERT INTO chats (workspace_id, chat_id, owner_member, title, repo, machine_id,
@@ -95,7 +89,6 @@ impl Workspace {
         if let Some(task) = chat.task {
             self.link_task(&mut transaction, chat.id, task).await?;
         }
-        self.insert_request(&mut transaction, request).await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -128,12 +121,6 @@ impl Workspace {
         if self.made(&mut transaction, chat).await? {
             return Ok(());
         }
-        sqlx::query("DELETE FROM chat_requests WHERE workspace_id = ? AND chat_id = ?")
-            .bind(self.id.as_str())
-            .bind(chat.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
         self.unlink_task(&mut transaction, chat).await?;
         sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
@@ -268,37 +255,12 @@ impl Workspace {
         Ok(())
     }
 
-    /// The open chats on `machine`, whose owner still owns it, whose first prompt never
-    /// reached it, each with its owner.
-    pub(crate) async fn unmade_on(
+    /// The open chats made on `machine`, whose owner still owns it, each with the last of its
+    /// events it has: those with a run at work, then the latest used, `most` of them at most.
+    pub(crate) async fn open_on(
         &self,
         machine: &MachineId,
-    ) -> Result<Vec<(ChatId, MemberId)>, Fault> {
-        sqlx::query_as::<_, (String, String)>(
-            "SELECT c.chat_id, c.owner_member FROM chats AS c
-             JOIN members AS m ON m.workspace_id = c.workspace_id AND m.member_id = c.owner_member
-             JOIN machines AS d ON d.machine_id = c.machine_id AND d.account_id = m.account_id
-             WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
-                 AND NOT EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
-                     AND h.chat_id = c.chat_id)
-             ORDER BY c.chat_id",
-        )
-        .bind(self.id.as_str())
-        .bind(machine.as_str())
-        .fetch_all(&self.db.readers)
-        .await
-        .map_err(failed)?
-        .into_iter()
-        .map(|(chat, owner)| Ok((stored(chat)?, stored(owner)?)))
-        .collect()
-    }
-
-    /// The open chats made on `machine`, whose owner still owns it, and whose turn may not be
-    /// over, a run at work or a command no receipt has ended, each with the last of its events
-    /// it has.
-    pub(crate) async fn unsettled_on(
-        &self,
-        machine: &MachineId,
+        most: u32,
     ) -> Result<Vec<(ChatId, u64)>, Fault> {
         sqlx::query_as::<_, (String, i64)>(
             "SELECT c.chat_id, c.core_seq FROM chats AS c
@@ -307,13 +269,13 @@ impl Workspace {
              WHERE c.workspace_id = ? AND c.machine_id = ? AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
-                 AND (json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
-                     OR EXISTS (SELECT 1 FROM chat_requests AS r WHERE r.workspace_id = c.workspace_id
-                         AND r.chat_id = c.chat_id AND r.open = 1))
-             ORDER BY c.chat_id",
+             ORDER BY COALESCE(json_extract(c.run_status, '$.state')
+                     IN ('starting', 'running', 'waiting'), 0) DESC, c.updated_at DESC, c.chat_id
+             LIMIT ?",
         )
         .bind(self.id.as_str())
         .bind(machine.as_str())
+        .bind(most)
         .fetch_all(&self.db.readers)
         .await
         .map_err(failed)?
@@ -374,7 +336,7 @@ mod tests {
     use weacon_protocol::{ChatSummary, RunState};
 
     use super::*;
-    use crate::db::test_support::{NOW, append, begin, code, command, id, make, status};
+    use crate::db::test_support::{NOW, append, begin, code, id, make, status};
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
@@ -445,10 +407,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_follows_again_only_its_open_chats_whose_turn_may_not_be_over() {
+    async fn a_machine_follows_again_its_open_chats_made_there() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
-        for chat in ["c-1", "c-2", "c-3", "c-4", "c-5"] {
+        for chat in ["c-1", "c-2", "c-3", "c-4"] {
             make(&one, chat, "m1", NOW).await.unwrap();
         }
         // Its first prompt never reached the machine.
@@ -457,31 +419,46 @@ mod tests {
         make(&one, "c-7", "m3", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
-        for chat in ["c-2", "c-3"] {
-            one.close_request(chat, &format!("r-{chat}")).await;
-        }
-        let running = status(RunState::Running);
-        let idle = status(RunState::Idle);
-        append(&one, "c-2", &[(Some(4), idle)]).await.unwrap();
-        append(&one, "c-3", &[(Some(7), running)]).await.unwrap();
-        one.set_chat_state(&id("c-4"), ChatState::Detached)
+        append(&one, "c-2", &[(Some(4), status(RunState::Idle))])
             .await
             .unwrap();
-        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-5'")
+        one.set_chat_state(&id("c-3"), ChatState::Detached)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chats SET machine_id = 'mc-2' WHERE chat_id = 'c-4'")
             .execute(&one.db.writer)
             .await
             .unwrap();
 
-        let unsettled = one.unsettled_on(&id("mc-1")).await.unwrap();
-        let ids: Vec<_> = unsettled
+        let open = one.open_on(&id("mc-1"), 9).await.unwrap();
+        let ids: Vec<_> = open
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-1", 0), ("c-3", 7)]);
-        assert_eq!(two.unsettled_on(&id("mc-1")).await.unwrap().len(), 1);
-        let unmade = one.unmade_on(&id("mc-1")).await.unwrap();
-        assert_eq!(unmade, [(id("c-6"), member_id("m1"))]);
-        assert!(two.unmade_on(&id("mc-1")).await.unwrap().is_empty());
+        assert_eq!(ids, [("c-1", 0), ("c-2", 4)]);
+        assert_eq!(two.open_on(&id("mc-1"), 9).await.unwrap().len(), 1);
+        // A run at work comes first, so it is followed whatever the bound.
+        append(&one, "c-2", &[(Some(5), status(RunState::Running))])
+            .await
+            .unwrap();
+        let first = one.open_on(&id("mc-1"), 1).await.unwrap();
+        assert_eq!(first, [(id("c-2"), 5)]);
+    }
+
+    #[tokio::test]
+    async fn a_chat_with_no_run_yet_counts_as_at_rest_and_the_latest_used_comes_first() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW - 60).await.unwrap();
+        append(&one, "c-1", &[(Some(1), status(RunState::Idle))])
+            .await
+            .unwrap();
+        make(&one, "c-2", "m1", NOW).await.unwrap();
+        one.pair_for("m1", "mc-1").await;
+
+        let first = one.open_on(&id("mc-1"), 1).await.unwrap();
+
+        assert_eq!(first, [(id("c-2"), 0)]);
     }
 
     #[tokio::test]
@@ -490,12 +467,6 @@ mod tests {
         let (one, _two) = two_teams(&dir).await;
         one.pair_for("m1", "mc-1").await;
         let (chat, owner, name) = (id("c-1"), member_id("m1"), id("Ada's laptop"));
-        let asked = command("r-1", "c-1", "Fix the build");
-        let request = NewRequest {
-            command: &asked,
-            member: &owner,
-            at: NOW,
-        };
         let on = |machine_id| NewChat {
             id: &chat,
             owner: &owner,
@@ -508,12 +479,11 @@ mod tests {
         };
         // Unpaired since its owner chose it.
         let (theirs, ours) = (id::<MachineId>("mc-2"), id::<MachineId>("mc-1"));
-        let unpaired = one.add_chat(&on(&theirs), &request).await;
+        let unpaired = one.add_chat(&on(&theirs)).await;
 
         assert_eq!(code(&unpaired.unwrap_err()), "machine.not_found");
         assert_eq!(one.chat(&chat).await.unwrap(), None);
-        assert!(!one.has_request(&id("r-1")).await.unwrap());
-        one.add_chat(&on(&ours), &request).await.unwrap();
+        one.add_chat(&on(&ours)).await.unwrap();
         assert!(one.chat(&chat).await.unwrap().is_some());
     }
 
@@ -544,12 +514,10 @@ mod tests {
         one.forget_chat(&id("c-2")).await.unwrap();
 
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), None);
-        assert!(!one.has_request(&id("r-c-1")).await.unwrap());
         assert!(!one.chat_made(&id("c-1"), &member_id("m1")).await.unwrap());
         assert_eq!(ids(&one.chats().await.unwrap()), ["c-2"]);
         assert_eq!(indexed(&two, "c-1").await, 1);
         assert!(one.chat(&id("c-2")).await.unwrap().is_some());
-        assert!(one.has_request(&id("r-c-2")).await.unwrap());
         assert_eq!(indexed(&one, "c-2").await, 1);
     }
 }

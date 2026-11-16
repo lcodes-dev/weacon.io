@@ -11,7 +11,7 @@ import { vendorName } from "../chat/label.ts";
 import { current, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Readiness, Starts, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
+import { type Readiness, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
 
 /**
@@ -62,19 +62,6 @@ export function NewChat({
   const [taskId, setTaskId] = useState(task);
   const forTask = tasks?.find(({ id }) => id === taskId);
   const commands = useChatCommands(socket, undefined, live, () => {});
-  const [starts] = useState(() => new Starts());
-  const opened = useRef(started);
-  opened.current = started;
-  useEffect(
-    () =>
-      commands.lates((late) => {
-        const chat = starts.end(late.request, late.settled);
-        if (chat !== undefined) {
-          opened.current(chat);
-        }
-      }),
-    [commands.lates],
-  );
   const shownRepos = listed.value;
   const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
   // Once the machine answers, only the agents signed in there for this workspace are offered.
@@ -88,11 +75,10 @@ export function NewChat({
     // The server gives the task its title, so a task picked before the list loaded still goes;
     // one the loaded list doesn't have doesn't.
     const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
-    const choice = { machine: machine.id, repo: chosenRepo, agent: chosenAgent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
-    const start = starts.begin(request, socket.workspace, text, choice, newId);
-    const sent = await commands.start(start.chatRef, start.action, request);
-    const chat = starts.end(request, sent);
-    if (chat !== undefined) {
+    const chat = newId();
+    const action = { kind: "prompt" as const, text, machine: machine.id, repo: chosenRepo, agent: chosenAgent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
+    const sent = await commands.start({ workspace: socket.workspace, chat }, action, request);
+    if (sent === "accepted") {
       started(chat);
     }
     return sent;
@@ -152,7 +138,7 @@ export function NewChat({
         </p>
       )}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
-      <Composer send={send} blocked={blocked} hidden={false} lates={commands.lates} explain={startProblem} />
+      <Composer send={send} blocked={blocked} hidden={false} explain={startProblem} />
     </section>
   );
 }

@@ -2,7 +2,7 @@ use futures_util::TryStreamExt as _;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RequestId, code};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, code};
 
 use super::super::changes::Versioned;
 use super::super::{Workspace, failed, stored, unreadable};
@@ -138,9 +138,6 @@ impl Workspace {
         }
         self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
-        for request in rows.iter().filter_map(|row| ended(row.event)) {
-            self.end_request(&mut *transaction, chat, request).await?;
-        }
         let turn = rows.iter().rfind(|row| turns(row.event)).map(|row| row.at);
         if turn.is_none() && !moved {
             return Ok(());
@@ -362,21 +359,13 @@ fn sized(body: String) -> Result<String, Fault> {
     Ok(body)
 }
 
-/// The request a receipt in `event` ends, when it ends one.
-fn ended(event: &ChatEvent) -> Option<&RequestId> {
-    let ChatEvent::Receipt { receipt } = event else {
-        return None;
-    };
-    (!matches!(receipt.outcome, Outcome::Accepted)).then_some(&receipt.request)
-}
-
 /// Whether `event` begins a turn, a prompt from Weacon or from outside it, or ends one, a
 /// receipt that ends its command.
 pub(crate) fn turns(event: &ChatEvent) -> bool {
     matches!(
         event,
         ChatEvent::Prompt { .. } | ChatEvent::OutsidePrompt { .. }
-    ) || ended(event).is_some()
+    ) || matches!(event, ChatEvent::Receipt { receipt } if receipt.outcome != Outcome::Accepted)
 }
 
 fn size(rows: &[Row<'_>]) -> Result<i64, Fault> {
@@ -614,7 +603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_turn_ending_closes_its_request_and_tells_the_feed_and_the_list() {
+    async fn a_turn_ending_tells_the_feed_and_the_list() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
@@ -625,7 +614,6 @@ mod tests {
         let accepted = receipt("r-c-1", Outcome::Accepted);
         let events = [(Some(1), accepted), (Some(2), said("working"))];
         append(&one, "c-1", &events).await.unwrap();
-        assert_eq!(one.open_requests(&id("c-1")).await.unwrap().len(), 1);
         assert_eq!(
             (changed_chats(&one).await.len(), updated_at(&one).await),
             (1, NOW)
@@ -638,16 +626,13 @@ mod tests {
         };
         one.append_events(&id("c-1"), &[done]).await.unwrap();
 
-        assert!(one.open_requests(&id("c-1")).await.unwrap().is_empty());
         assert_eq!(changed_chats(&one).await, [made.clone(), made]);
         assert_eq!(updated_at(&one).await, NOW + 40);
-        assert_eq!(two.open_requests(&id("c-1")).await.unwrap().len(), 1);
         assert_eq!(changed_chats(&two).await.len(), 1);
 
         make(&one, "c-2", "m1", NOW).await.unwrap();
         let elsewhere = [(Some(10), receipt("r-c-2", Outcome::Completed))];
         append(&one, "c-1", &elsewhere).await.unwrap();
-        assert_eq!(one.open_requests(&id("c-2")).await.unwrap().len(), 1);
 
         let before = changed_chats(&one).await.len();
         let typed = ChatEvent::OutsidePrompt {
