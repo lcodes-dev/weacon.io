@@ -175,9 +175,11 @@ impl<A: Agent> Engine<A> {
                 answer: answer.clone(),
             },
         };
-        self.commit(key, ChatEvent::Run { update }).await?;
+        let logged = self.commit(key, ChatEvent::Run { update }).await;
         let run = answer.run.clone();
+        // Its receipt is in, so the agent is told even when the answer's own entry failed.
         self.order(key, Order::Answer(answer));
+        logged?;
         self.running_again(key, &run).await
     }
 
@@ -418,6 +420,28 @@ mod tests {
         on.agent.told.try_recv().unwrap_err();
 
         on.engine.command(&key(), allow()).await.unwrap();
+        assert!(
+            matches!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_answer_whose_receipt_is_in_is_given_though_its_entry_fails() {
+        let mut on = on_turn().await;
+        assert_eq!(
+            soon(on.agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        hear(&mut on.engine, asks("run-1", 1)).await.unwrap();
+        let answer = PermissionAnswer {
+            run: run("run-1"),
+            prompt: 1,
+            allow: true,
+        };
+        let allow = command("r-2", "c-1", ChatAction::Permission { answer });
+        on.engine.open(&key()).await.unwrap().log.jam_after(1);
+
+        on.engine.command(&key(), allow).await.unwrap();
         assert!(
             matches!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
         );

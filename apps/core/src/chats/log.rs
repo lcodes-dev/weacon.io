@@ -42,6 +42,9 @@ pub(crate) struct ChatLog {
     receipts: HashMap<RequestId, bool>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    /// How many more writes succeed before the log behaves as after a failed one.
+    #[cfg(test)]
+    writes_left: Option<u32>,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
     /// The repository the chat's first prompt named, if it named one.
@@ -91,6 +94,8 @@ impl ChatLog {
                 end: 0,
                 receipts: HashMap::new(),
                 broken: false,
+                #[cfg(test)]
+                writes_left: None,
                 agent: None,
                 repo: None,
                 task: None,
@@ -221,6 +226,8 @@ impl ChatLog {
         };
         let line = entry_line(&entry)?;
         let len = line.len();
+        #[cfg(test)]
+        self.count_write();
         self.ensure_file()
             .await
             .map_err(|error| not_written().because(error))?;
@@ -294,6 +301,21 @@ impl ChatLog {
     #[cfg(test)]
     pub(crate) const fn jam(&mut self) {
         self.broken = true;
+    }
+
+    /// Lets `writes` more writes through, then behaves as [`jam`](Self::jam) does.
+    #[cfg(test)]
+    pub(crate) const fn jam_after(&mut self, writes: u32) {
+        self.writes_left = Some(writes);
+    }
+
+    #[cfg(test)]
+    fn count_write(&mut self) {
+        match self.writes_left {
+            Some(0) => self.broken = true,
+            Some(left) => self.writes_left = Some(left - 1),
+            None => {}
+        }
     }
 
     // Creates the log file on the first entry of a chat that had none.
