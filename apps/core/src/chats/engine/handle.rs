@@ -8,6 +8,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
 use super::agent::Agent;
+use super::queries::Listed;
 use super::{ChatKey, Engine, LeaveId, LeaveStep};
 use crate::chats::feed::Client;
 
@@ -20,7 +21,7 @@ pub(crate) struct Chats {
 }
 
 pub(super) enum Ask {
-    Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
+    Command(Box<ChatCommand>, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
     Leave(oneshot::Sender<Option<LeaveId>>),
     Step(LeaveId, LeaveStep, oneshot::Sender<bool>),
@@ -29,6 +30,7 @@ pub(super) enum Ask {
         Client,
         oneshot::Sender<Result<Option<ChatAnswerKind>, Fault>>,
     ),
+    List(oneshot::Sender<Vec<Listed>>),
     /// A client hung up.
     Left,
 }
@@ -92,7 +94,7 @@ impl Chats {
     /// refuses it. A hold or a release has none: it is done once this returns.
     pub(crate) async fn command(&self, command: ChatCommand, client: &Client) -> Result<(), Fault> {
         let (answer, answered) = oneshot::channel();
-        let ask = Ask::Command(command, client.clone(), answer);
+        let ask = Ask::Command(Box::new(command), client.clone(), answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
     }
@@ -114,6 +116,16 @@ impl Chats {
         answered.await.map_err(|_| stopped())?
     }
 
+    /// Every chat the engine has a record of, in no order.
+    pub(crate) async fn list(&self) -> Result<Vec<Listed>, Fault> {
+        let (answer, answered) = oneshot::channel();
+        self.asks
+            .send(Ask::List(answer))
+            .await
+            .map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())
+    }
+
     /// Tells the engine a client hung up, so a chat it held goes on at once.
     pub(crate) async fn left(&self) {
         drop(self.asks.send(Ask::Left).await);
@@ -133,7 +145,7 @@ impl<A: Agent> Engine<A> {
         match ask {
             Ask::Command(command, client, answer) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
-                let done = self.command_from(&key, command, &client).await;
+                let done = self.command_from(&key, *command, &client).await;
                 drop(answer.send(self.checked(&key, done).await));
                 Some(key)
             }
@@ -153,6 +165,10 @@ impl<A: Agent> Engine<A> {
             }
             Ask::Step(leave, step, answer) => {
                 self.answer_step(leave, step, answer).await;
+                None
+            }
+            Ask::List(answer) => {
+                drop(answer.send(self.listed()));
                 None
             }
             Ask::Left => {

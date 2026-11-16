@@ -1,10 +1,15 @@
 //! The daemon's answers to a client's chat commands and queries.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatAnswer, ChatCommand, ChatQuery, Envelope, Message};
+use weacon_protocol::{
+    ChatAnswer, ChatCommand, ChatQuery, ChatsAnswer, ChatsAnswerKind, Envelope, LocalChat, Message,
+};
 
 use super::Shared;
+use crate::app::blocking;
+use crate::chats::engine::Listed;
 use crate::chats::feed::Client;
+use crate::chats::log;
 use crate::session::Reply;
 
 // The reply to a chat command: nothing when it was taken, since its receipts are events in the
@@ -52,9 +57,91 @@ pub(super) async fn query_chat(
     }
 }
 
+// The chats this core serves, newest first, each titled from its log off the engine's loop.
+pub(super) async fn list_chats(shared: &Shared, id: u32) -> Reply {
+    let listed = match shared.chats.list().await {
+        Ok(listed) => listed,
+        Err(fault) => return refused(shared, id, &fault),
+    };
+    let titled = blocking(move || Ok(titled(listed))).await;
+    let (chats, unreadable) = titled.unwrap_or_else(|error| (Vec::new(), Some(error)));
+    if let Some(error) = unreadable {
+        let fields = [("err", Field::error(&error))];
+        shared.log.warn("chat titles unreadable", &fields);
+    }
+    Reply {
+        envelope: Some(Envelope {
+            id,
+            message: Message::ChatsAnswer(ChatsAnswer {
+                answer: ChatsAnswerKind::List { chats },
+            }),
+        }),
+        close: false,
+    }
+}
+
+/// The most chats one list holds, the newest: far below what fits one frame.
+const LIST_MAX: usize = 500;
+
+// The newest [`LIST_MAX`] chats of `listed`, newest first, each titled from its log; one whose log can't be read is
+// untitled, and the first such error comes back with them.
+fn titled(mut listed: Vec<Listed>) -> (Vec<LocalChat>, Option<std::io::Error>) {
+    let mut unreadable = None;
+    listed.sort_by_key(|listed| std::cmp::Reverse(listed.active_at));
+    let chats = listed
+        .into_iter()
+        .take(LIST_MAX)
+        .map(|listed| LocalChat {
+            title: log::title(&listed.root, &listed.key.chat).unwrap_or_else(|error| {
+                unreadable.get_or_insert(error);
+                String::new()
+            }),
+            workspace: listed.key.workspace,
+            chat: listed.key.chat,
+            agent: listed.agent,
+            updated_at: i64::try_from(listed.active_at).unwrap_or(i64::MAX),
+            run: listed.run,
+        })
+        .collect();
+    (chats, unreadable)
+}
+
 fn refused(shared: &Shared, id: u32, fault: &Fault) -> Reply {
     shared
         .log
         .warn("chat request refused", &[("err", Field::error(fault))]);
     Reply::error(id, fault.code().clone(), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use weacon_protocol::AgentKind;
+    use weacon_testing::TempDir;
+
+    use super::*;
+    use crate::runs::ChatKey;
+
+    #[test]
+    fn a_list_holds_only_the_newest_chats() {
+        let dir = TempDir::new().unwrap();
+        let listed = (0..=LIST_MAX)
+            .map(|at| Listed {
+                key: ChatKey::new(&"w-1".parse().unwrap(), &format!("c-{at}").parse().unwrap()),
+                root: dir.to_path_buf(),
+                agent: AgentKind::Claude,
+                run: None,
+                active_at: u64::try_from(at).unwrap(),
+            })
+            .collect();
+
+        let (chats, unreadable) = titled(listed);
+
+        assert!(unreadable.is_none());
+        assert_eq!(chats.len(), LIST_MAX);
+        assert_eq!(
+            chats.first().unwrap().chat.as_str(),
+            format!("c-{LIST_MAX}")
+        );
+        assert_eq!(chats.last().unwrap().chat.as_str(), "c-1");
+    }
 }

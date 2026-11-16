@@ -7,8 +7,8 @@ use std::path::Path;
 use weacon_client::Connection;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    AgentKind, AgentSession, Capability, ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind,
-    Code, Envelope, Message, RequestId, RunState, WorkspaceId, code,
+    AgentKind, AgentSession, ChatAction, ChatCommand, ChatId, ChatQuery, ChatQueryKind, Code,
+    Envelope, Message, RequestId, RunState, WorkspaceId, code,
 };
 
 use crate::app::{App, runtime};
@@ -63,8 +63,6 @@ pub(crate) fn run(app: &App, workspace: &WorkspaceId, chat: &ChatId) -> Result<(
 // The chat's agent and session, as the runs journal has them, while no agent runs it here.
 fn asleep(state_dir: &Path, key: &ChatKey) -> Result<(AgentKind, AgentSession), Fault> {
     let runs = Runs::load(state_dir)?;
-    // A newer core ran it last, and carries it on.
-    runs.refuse_newer(key)?;
     let record = runs.of(key).ok_or_else(|| {
         Fault::new(
             code!("resume.no_chat"),
@@ -105,23 +103,17 @@ impl Held {
 }
 
 // Holds the chat in the daemon, so it starts no agent on the same session; `None` with no
-// daemon, or one that can't hold a chat, since nothing could start one then.
+// daemon, since nothing could start one then.
 async fn hold(
     socket: &Path,
     me: weacon_protocol::App,
     key: &ChatKey,
 ) -> Result<Option<Held>, Fault> {
-    let (welcome, daemon) = match Connection::open(socket, me, Vec::new()).await {
+    let (_, daemon) = match Connection::open(socket, me, Vec::new()).await {
         Ok(opened) => opened,
         Err(fault) if fault.code() == &code!("daemon.not_running") => return Ok(None),
         Err(fault) => return Err(fault),
     };
-    if !welcome
-        .capabilities
-        .contains(&Capability::new(code!("chat.hold")))
-    {
-        return Ok(None);
-    }
     take(daemon, key).await.map(Some)
 }
 
@@ -284,18 +276,6 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_a_newer_core_ran_is_left_to_it() {
-        let dir = TempDir::new().unwrap();
-        let state = dir.join("state");
-        std::fs::create_dir_all(&state).unwrap();
-        let newer = r#"{"workspace":"w-1","chat":"c-1","agent":"gemini","state":"sleeping"}"#;
-        let journal = format!(r#"{{"issued":1,"chats":[{newer}]}}"#);
-        std::fs::write(state.join("runs.json"), journal).unwrap();
-
-        assert_eq!(code_of(resume(&dir)), "runs.newer_record");
-    }
-
-    #[test]
     fn a_chat_whose_agent_is_alive_isnt_carried_on_beside_it() {
         for state in [
             RunState::Starting,
@@ -317,6 +297,7 @@ mod tests {
         let (workspace, chat) = ids();
         let root = Workspaces::new(&state, None).root(&workspace);
         let first = weacon_protocol::ChatEvent::Prompt {
+            pick: None,
             request: "r-1".parse().unwrap(),
             text: "Go".to_owned(),
             repo: Some("site".parse().unwrap()),
@@ -392,7 +373,6 @@ mod tests {
     /// What the fake daemon does.
     #[derive(Default)]
     struct Fake {
-        offered: Vec<Capability>,
         refusal: Option<Code>,
         /// Run as the hold arrives, before it is answered.
         on_hold: Option<Box<dyn FnOnce() + Send>>,
@@ -400,13 +380,6 @@ mod tests {
         hangs_up: bool,
         /// Never answers the barrier, and stays connected.
         silent: bool,
-    }
-
-    fn holding() -> Fake {
-        Fake {
-            offered: vec![Capability::new(code!("chat.hold"))],
-            ..Fake::default()
-        }
     }
 
     // A daemon at `socket` that passes on each message it is sent.
@@ -447,7 +420,7 @@ mod tests {
         if matches!(message, Message::Hello(_)) {
             return Some(Message::Welcome(Welcome {
                 app: build(&VERSION),
-                capabilities: fake.offered.clone(),
+                capabilities: Vec::new(),
             }));
         }
         if let Message::ChatQuery(query) = message {
@@ -519,7 +492,7 @@ mod tests {
     async fn the_chat_is_held_while_its_agent_runs_and_released_after() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
-        let mut received = daemon(&socket, holding());
+        let mut received = daemon(&socket, Fake::default());
         let barrier = "Window { before: 1, limit: 0 }";
 
         let agent = async {
@@ -549,7 +522,7 @@ mod tests {
             &socket,
             Fake {
                 refusal,
-                ..holding()
+                ..Fake::default()
             },
         );
 
@@ -579,7 +552,7 @@ mod tests {
                 &socket,
                 Fake {
                     refusal,
-                    ..holding()
+                    ..Fake::default()
                 },
             );
 
@@ -598,7 +571,7 @@ mod tests {
         let socket = dir.join("weacon.sock");
         let silent = Fake {
             silent: true,
-            ..holding()
+            ..Fake::default()
         };
         let mut received = daemon(&socket, silent);
 
@@ -631,20 +604,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn with_no_daemon_or_one_that_cant_hold_there_is_nothing_to_hold() {
+    async fn with_no_daemon_there_is_nothing_to_hold() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         assert!(held(&socket).await.unwrap().is_none());
-
-        let mut received = daemon(&socket, Fake::default());
-        assert!(held(&socket).await.unwrap().is_none());
-
-        assert_eq!(bounded(received.recv()).await.map(|_| ()), Some(()));
-        assert!(
-            bounded(received.recv()).await.is_none(),
-            "{:?}",
-            sent(&mut received)
-        );
     }
 
     #[tokio::test]
@@ -655,7 +618,7 @@ mod tests {
             &socket,
             Fake {
                 hangs_up: true,
-                ..holding()
+                ..Fake::default()
             },
         );
         let (log, records) = recording_logger();
@@ -726,7 +689,7 @@ mod tests {
             let on_hold = move || fs::write(journal, running).unwrap();
             let fake = Fake {
                 on_hold: Some(Box::new(on_hold)),
-                ..holding()
+                ..Fake::default()
             };
             let daemon = daemon_apart(socket_path(&state), fake);
 

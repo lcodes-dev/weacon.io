@@ -638,6 +638,17 @@ mod tests {
         envelope_text(&Envelope { id, message: query }).unwrap()
     }
 
+    fn hi() -> ChatAction {
+        ChatAction::Prompt {
+            pick: None,
+            text: "hi".to_owned(),
+            repo: None,
+            machine: None,
+            agent: None,
+            task: None,
+        }
+    }
+
     fn command(id: u32, request: RequestId, action: ChatAction) -> String {
         let command = Message::ChatCommand(ChatCommand {
             request,
@@ -680,14 +691,7 @@ mod tests {
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let interrupt = command(2, request("q-1"), ChatAction::Interrupt);
-        let prompt = ChatAction::Prompt {
-            text: "hi".to_owned(),
-            repo: None,
-            machine: None,
-            agent: None,
-            task: None,
-        };
-        let prompt = command(3, request("q-2"), prompt);
+        let prompt = command(3, request("q-2"), hi());
         let log = r#"{"id":0,"type":"log","level":"info","msg":"sent"}"#;
         for text in [
             subscription(7, SEEDED),

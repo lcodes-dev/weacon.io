@@ -275,6 +275,7 @@ mod tests {
         let asleep = left(&mut on.engine, "c-4", RunState::Sleeping, 60).await;
         let waits = left(&mut on.engine, "c-5", RunState::Sleeping, IDLE * 2).await;
         let queued = Queued {
+            pick: None,
             request: prompt("r-9", "Later").request,
             text: "Later".to_owned(),
         };

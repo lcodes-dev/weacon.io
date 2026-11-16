@@ -162,7 +162,7 @@ mod tests {
         let (answer, answered) = oneshot::channel();
         let interrupt = command("r-2", "c-1", ChatAction::Interrupt);
         engine
-            .answer(Ask::Command(interrupt, someone(), answer))
+            .answer(Ask::Command(Box::new(interrupt), someone(), answer))
             .await;
         answered.await.unwrap().unwrap_err();
         assert!(engine.busy(), "an agent let go is still starting");

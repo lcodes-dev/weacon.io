@@ -1,7 +1,9 @@
 //! What clients ask about a chat's log.
 
+use std::path::PathBuf;
+
 use weacon_observability::Fault;
-use weacon_protocol::{ChatAnswerKind, ChatQueryKind};
+use weacon_protocol::{AgentKind, ChatAnswerKind, ChatQueryKind, RunState};
 
 use super::agent::Agent;
 use super::{ChatKey, Engine, unsupported, update};
@@ -9,7 +11,31 @@ use crate::chats::feed::{Client, Subscriber};
 
 const SNAPSHOT_EVENTS: u32 = 50;
 
+/// A chat the engine has a record of: its workspace's folder, its agent, its latest run's
+/// state once it has had one, and when its latest turn began or ended, in Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Listed {
+    pub(crate) key: ChatKey,
+    pub(crate) root: PathBuf,
+    pub(crate) agent: AgentKind,
+    pub(crate) run: Option<RunState>,
+    pub(crate) active_at: u64,
+}
+
 impl<A: Agent> Engine<A> {
+    pub(super) fn listed(&self) -> Vec<Listed> {
+        self.runs
+            .records()
+            .map(|record| Listed {
+                key: record.key.clone(),
+                root: self.workspaces.root(&record.key.workspace),
+                agent: record.agent,
+                run: record.run.as_ref().map(|_| record.state),
+                active_at: record.active_at,
+            })
+            .collect()
+    }
+
     pub(super) async fn query(
         &mut self,
         key: &ChatKey,

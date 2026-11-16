@@ -141,6 +141,11 @@ function LineView({ line, formatted, answering, landed }: { line: Line; formatte
       return (
         <div className={landed ? "row prompt landed" : "row prompt"} data-key={line.key}>
           {line.text}
+          {line.pick === undefined ? null : (
+            <div className="picked">
+              Picked <code>{line.pick.selector}</code> on {line.pick.title === "" ? line.pick.url : line.pick.title}
+            </div>
+          )}
         </div>
       );
     case "agent":

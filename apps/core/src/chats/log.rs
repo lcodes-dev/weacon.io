@@ -16,8 +16,10 @@ use crate::app::blocking;
 use crate::platform;
 
 mod line;
+mod title;
 
 use line::entry_line;
+pub(crate) use title::title;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -59,6 +61,13 @@ fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+// Where `chat`'s log is under its workspace's folder.
+fn path(workspace_root: &Path, chat: &ChatId) -> PathBuf {
+    workspace_root
+        .join("chats")
+        .join(super::file_stem(chat) + ".jsonl")
+}
+
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
@@ -71,8 +80,7 @@ impl ChatLog {
     /// # Errors
     /// When the log can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
-        let dir = workspace_root.join("chats");
-        let path = dir.join(super::file_stem(chat) + ".jsonl");
+        let path = path(workspace_root, chat);
         let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
             let mut log = Self {
@@ -427,6 +435,7 @@ mod tests {
             title: "Speed up the build".to_owned(),
         };
         let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
+            pick: None,
             request: request(id),
             text: "Go".to_owned(),
             repo: Some(RepoId::try_from(repo.to_owned()).unwrap()),

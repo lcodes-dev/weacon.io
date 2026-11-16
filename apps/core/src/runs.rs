@@ -95,6 +95,9 @@ pub(crate) struct Record {
 pub(crate) struct Queued {
     pub(crate) request: RequestId,
     pub(crate) text: String,
+    /// The pick the prompt carries, which the core keeps under this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pick: Option<RequestId>,
 }
 
 // The text is content, which never reaches a log line, even through `{:?}`.
@@ -455,6 +458,7 @@ mod tests {
         let mut runs = Runs::load(&dir).unwrap();
         let c1 = key("w-1", "c-1");
         let queued = Queued {
+            pick: None,
             request: RequestId::try_from("r-2".to_owned()).unwrap(),
             text: "Then the docs".to_owned(),
         };
@@ -546,6 +550,7 @@ mod tests {
     #[test]
     fn queued_text_stays_out_of_debug_output() {
         let queued = Queued {
+            pick: None,
             request: RequestId::try_from("r-1".to_owned()).unwrap(),
             text: "MARKER".to_owned(),
         };
@@ -560,6 +565,7 @@ mod tests {
         let mut runs = Runs::load(&dir).unwrap();
         let (c1, c2) = (key("w-1", "c-1"), key("w-1", "c-2"));
         let queued = |id: &str| Queued {
+            pick: None,
             request: RequestId::try_from(id.to_owned()).unwrap(),
             text: "Hi".to_owned(),
         };
@@ -603,6 +609,7 @@ mod tests {
     // What beginning and queueing for `key`'s record each fail with.
     async fn refusals(runs: &mut Runs, key: &ChatKey) -> Vec<String> {
         let queued = Queued {
+            pick: None,
             request: RequestId::try_from("r-2".to_owned()).unwrap(),
             text: "More".to_owned(),
         };

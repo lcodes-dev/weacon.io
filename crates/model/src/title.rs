@@ -1,4 +1,13 @@
 const TITLE_MAX: usize = 200;
+/// The most characters of a chat's title.
+const CHAT_TITLE_MAX: usize = 80;
+
+/// A chat's title: the first line of its first prompt, cut short.
+#[must_use]
+pub fn chat_title(prompt: &str) -> String {
+    let line = prompt.trim().lines().next().unwrap_or_default().trim_end();
+    line.chars().take(CHAT_TITLE_MAX).collect()
+}
 
 /// One line of 1 to 200 characters, with no space at either end and nothing that overrides
 /// or isolates the direction of the text. Direction marks, which right-to-left text needs,
@@ -38,6 +47,13 @@ mod tests {
 
     fn title(text: &str) -> Title {
         Title::try_from(text.to_owned()).unwrap()
+    }
+
+    #[test]
+    fn a_chat_is_titled_by_its_first_prompts_first_line_cut_short() {
+        assert_eq!(chat_title("  Fix it  \nthen test\n"), "Fix it");
+        assert_eq!(chat_title(&"é".repeat(81)), "é".repeat(80));
+        assert_eq!(chat_title(" \n "), "");
     }
 
     #[test]

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { Failure } from "./core.ts";
-import { MAX_FRAME, fit } from "./fit.ts";
+import { MAX_FRAME, fit, fitsFrame } from "./fit.ts";
 
 const BASE = { request: "p-1", url: "http://localhost/", title: "Home", selector: "p", html: "<p>Hi</p>" };
 
@@ -22,11 +22,27 @@ test("the screenshot halves until the pick fits in a frame", async () => {
 });
 
 test("a pick just under the frame is kept and one at it is shrunk", async () => {
-  const empty = JSON.stringify({ id: 2, type: "pick", ...BASE, screenshot_png: "" }).length;
+  const empty = JSON.stringify({ id: 2 ** 32 - 1, type: "pick", ...BASE, screenshot_png: "" }).length;
   const room = MAX_FRAME - empty;
 
   assert.equal((await fit(BASE, async (scale) => "A".repeat(scale === 1 ? room - 1 : 1))).screenshot_png?.length, room - 1);
   assert.equal((await fit(BASE, async (scale) => "A".repeat(scale === 1 ? room : 1))).screenshot_png?.length, 1);
+});
+
+test("a prompt fits a frame only below its size, whatever its id", () => {
+  const prompt = (text: string) => ({ id: 1, type: "chat_command" as const, request: "r-1", workspace: "w-1", chat: "c-1", action: { kind: "prompt" as const, text } });
+  const room = MAX_FRAME - JSON.stringify({ ...prompt(""), id: 2 ** 32 - 1 }).length;
+
+  assert.ok(fitsFrame(prompt("a".repeat(room - 1))));
+  assert.ok(!fitsFrame(prompt("a".repeat(room))));
+});
+
+test("a component's name and file are cut, and left out when the page named none", async () => {
+  const named = await fit({ ...BASE, component: `${"c".repeat(256)}x`, source: `${"s".repeat(256)}x` });
+
+  assert.equal(named.component, "c".repeat(256));
+  assert.equal(named.source, "s".repeat(256));
+  assert.ok(!("component" in (await fit(BASE))) && !("source" in (await fit(BASE))));
 });
 
 test("long text is cut, and no text is left with half a character", async () => {

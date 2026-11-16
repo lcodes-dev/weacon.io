@@ -1,14 +1,22 @@
-const TITLES: Record<string, string> = {
-  "extension.page_not_local": "Weacon picks elements on local pages only",
-  "extension.core_unreachable": "Weacon's core isn't running, or Chrome isn't connected to it",
-  "extension.core_no_reply": "Weacon's core didn't answer",
-  "extension.core_too_old": "Update Weacon's core to pick elements",
-  "extension.pick_too_large": "The element is too large to send",
+const SAID: Record<string, string> = {
+  "extension.page_not_web": "Weacon picks elements on web pages only.",
+  "extension.page_not_allowed": "Click Weacon's button on this page, then pick again.",
+  "extension.element_hidden": "That element isn't on the screen.",
+  "extension.pick_too_large": "The element is too large to send.",
+  "extension.message_too_large": "The message is too long to send.",
+  "extension.core_unreachable": "Weacon isn't running on this machine, or Chrome isn't connected to it.",
+  "extension.core_no_reply": "Weacon on this machine didn't answer.",
+  "extension.core_other_protocol": "Update Weacon on this machine.",
+  "extension.core_refused": "Weacon on this machine didn't let the extension in.",
+  "chat.empty_prompt": "Write something to send.",
+  "pick.missing": "The element couldn't be sent. Pick it again.",
+  "pick.not_kept": "The element couldn't be sent. Pick it again.",
+  "run.interrupted": "Stopped.",
 };
 
-/** What the toolbar button says after a pick failed with `code`. */
-export function title(code: string): string {
-  return TITLES[code] ?? "The element couldn't be sent to Weacon";
+/** What the panel says after something failed with `code`. */
+export function say(code: string): string {
+  return SAID[code] ?? `Something went wrong (${code}).`;
 }
 
 /** Whether to tell the core about `code`: codes from the core are already in its log. */

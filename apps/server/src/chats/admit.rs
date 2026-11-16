@@ -8,9 +8,6 @@ use weacon_protocol::{
 use crate::db::Chat;
 use crate::socket::sendable;
 
-/// The most characters of a chat's title, which is the first line of its first prompt.
-const TITLE_MAX: usize = 80;
-
 /// A command the server may relay, with `by` stamped and `machine` taken out.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Admitted {
@@ -58,7 +55,7 @@ pub(crate) fn admit(
         let machine = machine.ok_or_else(|| {
             Fault::new(code!("chat.machine_required"), "A new chat needs a machine")
         })?;
-        let (title, repo) = (title(text), repo.clone());
+        let (title, repo) = (weacon_model::chat_title(text), repo.clone());
         command.by = Some(by);
         return Ok(Admitted::New {
             title,
@@ -114,11 +111,6 @@ pub(super) fn detached() -> Fault {
     )
 }
 
-fn title(text: &str) -> String {
-    let line = text.trim().lines().next().unwrap_or_default().trim_end();
-    line.chars().take(TITLE_MAX).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{AccountId, ChatId, MemberId, PermissionAnswer, RequestId, WorkspaceId};
@@ -145,6 +137,7 @@ mod tests {
 
     fn prompt(text: &str, machine: Option<&str>) -> ChatAction {
         ChatAction::Prompt {
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: machine.map(id),
@@ -297,6 +290,7 @@ mod tests {
             "message.unsupported"
         );
         let newer_agent = ChatAction::Prompt {
+            pick: None,
             text: "Go".to_owned(),
             repo: None,
             machine: Some(id("mc-1")),

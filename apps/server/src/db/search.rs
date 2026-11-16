@@ -610,6 +610,7 @@ mod tests {
             .await
             .unwrap();
         let prompt = ChatEvent::Prompt {
+            pick: None,
             request: "r-2".parse().unwrap(),
             text: "Why is the deploy flaky".to_owned(),
             repo: None,

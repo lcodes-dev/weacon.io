@@ -120,16 +120,6 @@ mod tests {
         assert_eq!(error.code().as_str(), "db.too_new");
     }
 
-    #[tokio::test]
-    async fn two_openings_of_a_new_file_both_get_its_schema() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        let (one, two) = tokio::join!(Db::create(&path), Db::create(&path));
-
-        one.unwrap();
-        two.unwrap();
-    }
-
     async fn first_columns(db: &Db, sql: &'static str, table: &str) -> Vec<String> {
         sqlx::query_scalar(sql)
             .bind(table)

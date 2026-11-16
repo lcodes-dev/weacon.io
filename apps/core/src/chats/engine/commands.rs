@@ -18,6 +18,11 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         command: ChatCommand,
     ) -> Result<(), Fault> {
+        if matches!(&command.action, ChatAction::Prompt { pick: Some(_), .. })
+            && command.by.is_some()
+        {
+            return Err(super::picked::local_only());
+        }
         let request = command.request;
         let acted = self.act(key, request.clone(), command.action).await;
         let Err(fault) = acted else {
@@ -45,6 +50,7 @@ impl<A: Agent> Engine<A> {
                 text,
                 repo,
                 agent: named,
+                pick,
                 task,
                 ..
             } => {
@@ -58,6 +64,7 @@ impl<A: Agent> Engine<A> {
                 }
                 self.has_room(key)?;
                 let prompt = ChatEvent::Prompt {
+                    pick: self.pick_note(pick.as_ref()).await?,
                     request: request.clone(),
                     text: text.clone(),
                     repo,
@@ -65,7 +72,16 @@ impl<A: Agent> Engine<A> {
                     task,
                 };
                 self.commit(key, prompt).await?;
-                self.prompt(key, request, text, agent).await
+                self.prompt(
+                    key,
+                    Queued {
+                        request,
+                        text,
+                        pick,
+                    },
+                    agent,
+                )
+                .await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -117,14 +133,10 @@ impl<A: Agent> Engine<A> {
     async fn prompt(
         &mut self,
         key: &ChatKey,
-        request: RequestId,
-        text: String,
+        queued: Queued,
         agent: AgentKind,
     ) -> Result<(), Fault> {
-        let queued = Queued {
-            request: request.clone(),
-            text,
-        };
+        let request = queued.request.clone();
         self.runs.enqueue(key, agent, queued, self.now()).await?;
         if let Err(fault) = self.commit_receipt(key, &request, Outcome::Accepted).await {
             // Refused, so it never runs.
@@ -443,14 +455,12 @@ mod tests {
         let (_bench, mut engine) = parts();
         engine.open(&key()).await.unwrap().log.jam();
 
-        let refused = engine
-            .prompt(
-                &key(),
-                crate::chats::test_support::request("r-1"),
-                "Hi".to_owned(),
-                AgentKind::Claude,
-            )
-            .await;
+        let queued = Queued {
+            request: crate::chats::test_support::request("r-1"),
+            text: "Hi".to_owned(),
+            pick: None,
+        };
+        let refused = engine.prompt(&key(), queued, AgentKind::Claude).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
         let queue = engine.runs.of(&key()).map(|record| record.queue.len());
