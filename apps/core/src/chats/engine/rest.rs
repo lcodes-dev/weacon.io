@@ -1,7 +1,7 @@
 //! How the engine lets an idle agent go, and picks its chats up again after a restart.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::RunState;
+use weacon_protocol::{RunState, code};
 
 use super::agent::Agent;
 use super::{Chat, ChatKey, Engine, about, chat_about};
@@ -41,6 +41,21 @@ impl<A: Agent> Engine<A> {
             && chat.log.runs().waiting().is_empty()
             && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now
+    }
+
+    pub(super) async fn rest(&mut self, key: &ChatKey) -> Result<(), Fault> {
+        match self.runs.of(key).map(|record| record.state) {
+            Some(RunState::Starting | RunState::Running | RunState::Waiting) => Err(Fault::new(
+                code!("worktree.busy"),
+                "Stop the chat's agent before removing its worktree",
+            )),
+            Some(RunState::Idle) => {
+                self.sleep(key).await?;
+                self.close_if_unused(key);
+                Ok(())
+            }
+            Some(RunState::Sleeping | RunState::Ended | RunState::Newer) | None => Ok(()),
+        }
     }
 
     // Dropping its orders stops the agent; its run sleeps.
@@ -173,6 +188,37 @@ mod tests {
         assert_eq!(run_as, (run("run-2"), Some(session())));
         let told = soon(next.told.recv()).await;
         assert_eq!(told, Some(Told::Send("More".to_owned())));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rest_stops_an_agent_between_turns_and_the_next_prompt_starts_it_again() {
+        let mut on = between_turns().await;
+
+        on.engine.rest(&key()).await.unwrap();
+
+        assert!(!on.engine.is_live(&key()));
+        assert_eq!(state(&on.engine), RunState::Sleeping);
+        on.engine.rest(&key()).await.unwrap();
+        let next = prompt("r-2", "More");
+        on.engine.command(&key(), next).await.unwrap();
+        launched(&mut on.engine).await;
+        let next = soon(on.bench.started.recv()).await.unwrap();
+        assert_eq!(next.run_as.run, run("run-2"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rest_is_refused_on_a_turn_and_nothing_to_a_chat_without_a_run() {
+        for mut on in [on_turn().await, on_ask().await] {
+            let refused = on.engine.rest(&key()).await.unwrap_err();
+
+            assert_eq!(refused.code().as_str(), "worktree.busy");
+            assert!(on.engine.is_live(&key()));
+        }
+        let (_bench, mut engine) = parts();
+        engine.rest(&key()).await.unwrap();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        let starting = engine.rest(&key()).await.unwrap_err();
+        assert_eq!(starting.code().as_str(), "worktree.busy");
     }
 
     #[tokio::test(start_paused = true)]

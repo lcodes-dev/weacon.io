@@ -9,8 +9,8 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    DiffQuery, Envelope, ErrorBody, Message, RunState, WorktreeAction, WorktreeAnswer,
-    WorktreeCommand, WorktreeQuery, code,
+    DiffQuery, Envelope, ErrorBody, Message, WorktreeAction, WorktreeAnswer, WorktreeCommand,
+    WorktreeQuery,
 };
 
 use super::Shared;
@@ -81,33 +81,19 @@ pub(super) fn command(shared: &Shared, id: u32, command: WorktreeCommand, late: 
     })
 }
 
-/// What `command` does to its chat's worktree, from the socket or relayed; a removal is
-/// refused while the chat's agent is on a turn.
+/// What `command` does to its chat's worktree, from the socket or relayed; a removal first
+/// stops the chat's agent, and is refused while it is on a turn.
 pub(super) async fn act(
     chats: &Chats,
     worktrees: &Worktrees,
     command: WorktreeCommand,
 ) -> Result<WorktreeAnswer, Fault> {
     if command.action == WorktreeAction::Remove {
-        let key = ChatKey::new(&command.workspace, &command.chat);
-        let listed = chats.list().await?;
-        let run = listed.iter().find(|chat| chat.key == key);
-        if run.is_some_and(|chat| on_a_turn(chat.run.as_ref())) {
-            return Err(Fault::new(
-                code!("worktree.busy"),
-                "Stop the chat's agent before removing its worktree",
-            ));
-        }
+        chats
+            .rest(ChatKey::new(&command.workspace, &command.chat))
+            .await?;
     }
     worktrees.command(command).await
-}
-
-// Whether a run is writing in its worktree, or about to.
-fn on_a_turn(run: Option<&RunState>) -> bool {
-    matches!(
-        run,
-        Some(RunState::Starting | RunState::Running | RunState::Waiting)
-    )
 }
 
 fn send(
@@ -137,20 +123,4 @@ async fn refuse(log: &Logger, id: u32, fault: &Fault, late: &Late) {
         retryable: false,
     });
     let _closed = late.send(Envelope { id, message }).await;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_a_run_on_a_turn_keeps_its_worktree_from_being_removed() {
-        for state in [RunState::Starting, RunState::Running, RunState::Waiting] {
-            assert!(on_a_turn(Some(&state)), "{state:?}");
-        }
-        for state in [RunState::Idle, RunState::Sleeping, RunState::Ended] {
-            assert!(!on_a_turn(Some(&state)), "{state:?}");
-        }
-        assert!(!on_a_turn(None));
-    }
 }

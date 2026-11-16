@@ -46,11 +46,6 @@ impl Email {
     pub(crate) fn local(&self) -> &str {
         self.0.split_once('@').map_or("", |(local, _)| local)
     }
-
-    /// What follows the `@`.
-    pub(crate) fn domain(&self) -> &str {
-        self.0.split_once('@').map_or("", |(_, domain)| domain)
-    }
 }
 
 // An address never reaches a log line, even through `{:?}`.
@@ -76,7 +71,7 @@ mod tests {
         );
         assert_eq!(Email::parse(&longest).unwrap().as_str(), longest);
         let ada = Email::parse("ada.l+x@example.com").unwrap();
-        assert_eq!((ada.local(), ada.domain()), ("ada.l+x", "example.com"));
+        assert_eq!(ada.local(), "ada.l+x");
         assert_eq!(
             Email::parse("o'brien+tag@mail.example.com")
                 .unwrap()

@@ -689,7 +689,7 @@ mod tests {
         );
 
         let proposed = post(&mcp, &[("Authorization", &auth)], &task).await;
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let refused = post(&mcp, &[("Authorization", &auth)], &task).await;
 
         let error = |reply: &Reply| {
@@ -698,7 +698,7 @@ mod tests {
         };
         assert_eq!(answer_text(&proposed), propose::PROPOSED);
         assert_eq!(error(&proposed), Some(false));
-        assert_eq!(answer_text(&refused), "Not proposed: proposal.too_many.\n");
+        assert_eq!(answer_text(&refused), "Not proposed: proposal.invalid.\n");
         assert_eq!(error(&refused), Some(true));
         assert_eq!(fake.commands().len(), 2);
         assert_eq!(MAX_BODY, weacon_protocol::MAX_PROPOSAL + 65_536);

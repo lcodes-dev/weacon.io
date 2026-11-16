@@ -4,10 +4,7 @@ import type { AccountSignedIn, ChallengeId } from "../protocol.ts";
 import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 
-/**
- * Asks for an email, then the code sent to it. Every address gets the same answer, so the page
- * never says whether one has an account.
- */
+/** Asks for an email, then the code sent to it. */
 export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountSignedIn): void }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -46,7 +43,7 @@ export function SignIn({ api, signedIn }: { api: Api; signedIn(account: AccountS
             void ask(() => api.finishSignIn({ ...sent, code: code.trim() }), signedIn);
           }}
         >
-          <p>If {sent.email} can sign in here, we sent it a code.</p>
+          <p>We sent {sent.email} a code.</p>
           <label>
             Code
             <input
