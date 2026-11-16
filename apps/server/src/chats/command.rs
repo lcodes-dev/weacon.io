@@ -1,7 +1,7 @@
 //! A member's command to a chat: a message is stored here, and a command to one of its agents
 //! is checked, then relayed to that agent's machine, whose answer is its receipt.
 
-use weacon_model::chat_title;
+use weacon_model::{ChatRuns, chat_title};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentKind, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId, MemberId,
@@ -83,6 +83,8 @@ async fn acted_on(
     command: &mut ChatCommand,
 ) -> Result<Leg, Fault> {
     let workspace = &member.workspace;
+    // The run is read before the legs, so whom a leg works for is never older than its run.
+    let runs = workspace.chat_runs(&command.chat).await?;
     let all = workspace.legs(&command.chat).await?;
     let mut legs = all.iter().filter(|leg| chat.made && leg.core_seq > 0);
     if let ChatAction::Permission { answer } = &mut command.action {
@@ -96,7 +98,7 @@ async fn acted_on(
     let theirs = |leg: &&Leg| leg.member == member.id;
     // A run at work is stopped by whom it works for or its machine's owner, and no one else,
     // whatever call of theirs still holds the turn.
-    if let Some(working) = at_work(workspace, &command.chat, &legs).await? {
+    if let Some(working) = at_work(&runs, &legs) {
         let owns = shared.db.has_machine(&asker.account, &working.machine);
         let may = theirs(&working) || owns.await?;
         return may.then(|| working.clone()).ok_or_else(not_owner);
@@ -354,31 +356,25 @@ async fn away(
     id: &ChatId,
 ) -> Result<Option<MachineId>, Fault> {
     let workspace = &member.workspace;
+    let runs = workspace.chat_runs(id).await?;
     let legs = workspace.legs(id).await?;
-    let working = at_work(workspace, id, &legs).await?;
+    let working = at_work(&runs, &legs);
     let away = working.filter(|leg| !shared.links.is_open(&leg.machine));
     Ok(away.map(|leg| leg.machine.clone()))
 }
 
-// Which of `legs` works or waits for an answer in the chat `id`, if one does.
-async fn at_work<'a>(
-    workspace: &Workspace,
-    id: &ChatId,
-    legs: &'a [Leg],
-) -> Result<Option<&'a Leg>, Fault> {
-    let runs = workspace.chat_runs(id).await?;
+// Which of `legs` works or waits for an answer, as the chat's `runs` say, if one does.
+fn at_work<'a>(runs: &ChatRuns, legs: &'a [Leg]) -> Option<&'a Leg> {
     let working = |state| {
         matches!(
             state,
             RunState::Starting | RunState::Running | RunState::Waiting
         )
     };
-    let Some(run) = runs.run().filter(|run| working(run.state)) else {
-        return Ok(None);
-    };
+    let run = runs.run().filter(|run| working(run.state))?;
     let named = legs.iter().find(|leg| leg.own_run(&run.run).is_some());
     // A run from before legs named theirs is the chat's first leg's.
-    Ok(named.or_else(|| legs.first()))
+    named.or_else(|| legs.first())
 }
 
 fn agent_working() -> Fault {
