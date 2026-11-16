@@ -60,7 +60,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
   await served.admin("add-account", "--email", EMAIL);
   await page.getByLabel("Email").fill(EMAIL);
   await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByText(`If ${EMAIL} can sign in here, we sent it a code.`).waitFor();
+  await page.getByText(`We sent ${EMAIL} a code.`).waitFor();
   await page.getByLabel("Code").fill("00000000");
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByText("That code didn't work. Check it, or ask for a new one.").waitFor();
@@ -289,20 +289,15 @@ test("Settings shows the account and this build, and signs out from there", { ti
   assert.equal(await page.getByRole("button", { name: "Settings", exact: true }).count(), 0);
 });
 
-test("an address with no account gets the same answer and no code", { timeout: 600_000 }, async (t) => {
+test("an address with no account is told so and gets no code", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
   const stranger = "nobody@example.com";
   await page.getByLabel("Email").fill(stranger);
   await page.getByRole("button", { name: "Send code" }).click();
-  await page.getByText(`If ${stranger} can sign in here, we sent it a code.`).waitFor();
-  await page.getByLabel("Code").fill("12345678");
-  await page.getByRole("button", { name: "Sign in" }).click();
-  await page.getByText("That code didn't work. Check it, or ask for a new one.").waitFor();
+  await page.getByText("No account here has that address.").waitFor();
   assert.equal(served.letters(), 0);
-
-  await page.getByRole("button", { name: "Use another email" }).click();
   assert.equal(await page.getByLabel("Email").inputValue(), stranger);
 });
 

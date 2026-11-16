@@ -1,6 +1,3 @@
-use std::sync::Arc;
-use std::time::Duration;
-
 use axum::Json;
 use axum::Router;
 use axum::extract::State;
@@ -8,22 +5,18 @@ use axum::http::header::SET_COOKIE;
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use tokio::time::{Instant, sleep_until};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AccountId, AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId,
-    SignInStarted, code,
+    AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, SignInStarted, code,
 };
 
-use crate::app::{fresh, new_id};
 use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
-use crate::http::{Body, cross_site, failure, report, unauthorized};
+use crate::http::{Body, cross_site, failure, invalid, not_found, unauthorized};
 use crate::secret::{random_failed, random_token};
 use crate::shared::Shared;
-use crate::sign_up;
 use crate::workspaces;
 
 /// The subject of the mail that carries a code.
@@ -32,10 +25,6 @@ pub(crate) const SUBJECT: &str = "Your Weacon sign-in code";
 pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How long a session lasts, in seconds.
 pub(crate) const SESSION_LIFETIME: i64 = 30 * 24 * 60 * 60;
-/// How many sign-ins may be worked on at once after their answer.
-pub(crate) const AT_ONCE: usize = 64;
-/// How long finishing a sign-in takes at least: longer than any of its database work.
-pub(crate) const FINISH_TAKES: Duration = Duration::from_millis(250);
 
 pub(crate) fn routes() -> Router<Shared> {
     Router::new()
@@ -46,74 +35,59 @@ pub(crate) fn routes() -> Router<Shared> {
 }
 
 /// `POST /api/sign-in`: sends a code to an account's address, and answers with the challenge
-/// to finish with. Answers the same, and as fast, whether or not the address has an account,
-/// so it can't be used to find out.
+/// to finish with.
 pub(crate) async fn start(
     State(shared): State<Shared>,
     Body(body): Body<AccountSignInStart>,
 ) -> Response {
-    let challenge = match new_challenge() {
-        Ok(challenge) => challenge,
-        Err(fault) => return failure(fault),
+    let Ok(email) = Email::parse(body.email.expose()) else {
+        return invalid(code!("email.invalid"));
     };
-    if let Ok(place) = Arc::clone(&shared.sign_ins).try_acquire_owned() {
-        let sent = challenge.clone();
-        drop(tokio::spawn(async move {
-            if let Err(fault) = send_code(&shared, &body, &sent).await {
-                report(&shared, "sign-in failed", Arc::new(fault), &[]);
-            }
-            drop(place);
-        }));
+    match send_code(&shared, &email).await {
+        Ok(Some(challenge)) => {
+            (StatusCode::ACCEPTED, Json(SignInStarted { challenge })).into_response()
+        }
+        Ok(None) => not_found(code!("sign_in.no_account")),
+        Err(fault) => failure(fault),
     }
-    (StatusCode::ACCEPTED, Json(SignInStarted { challenge })).into_response()
 }
 
-async fn send_code(
-    shared: &Shared,
-    body: &AccountSignInStart,
-    challenge: &ChallengeId,
-) -> Result<(), Fault> {
-    let Ok(email) = Email::parse(body.email.expose()) else {
-        return Ok(());
-    };
-    if !sign_up::allows(&shared.sign_up, &email) && shared.db.account_with(&email).await?.is_none()
-    {
-        return Ok(());
+/// The challenge whose code was sent to `email`, or none when no account has that address.
+async fn send_code(shared: &Shared, email: &Email) -> Result<Option<ChallengeId>, Fault> {
+    if shared.db.account_with(email).await?.is_none() {
+        return Ok(None);
     }
-    let code = new_code()?;
+    let (challenge, code) = (new_challenge()?, new_code()?);
     let now = shared.now();
     let new = NewChallenge {
-        email: &email,
-        id: challenge,
+        email,
+        id: &challenge,
         code: &code,
         now,
         expires_at: now.saturating_add(CODE_LIFETIME),
     };
-    if shared.db.start_challenge(&new).await? {
-        let text = format!(
-            "Your code is {}. It works for {} minutes; if you didn't ask for it, ignore this mail.",
-            shown(&code),
-            CODE_LIFETIME / 60
-        );
-        shared.log.mail(email.as_str(), SUBJECT, &text);
-    }
-    Ok(())
+    shared.db.start_challenge(&new).await?;
+    let text = format!(
+        "Your code is {}. It works for {} minutes; if you didn't ask for it, ignore this mail.",
+        shown(&code),
+        CODE_LIFETIME / 60
+    );
+    shared.log.mail(email.as_str(), SUBJECT, &text);
+    Ok(Some(challenge))
 }
 
-/// `POST /api/sign-in/finish`: trades a challenge's code for a session, in the same time
-/// whether or not there was a code to try. A browser's page gets the session as a cookie its
-/// scripts can't read; any other client gets the token.
+/// `POST /api/sign-in/finish`: trades a challenge's code for a session. A browser's page gets
+/// the session as a cookie its scripts can't read; any other client gets the token.
 pub(crate) async fn finish(
     State(shared): State<Shared>,
     headers: HeaderMap,
     Body(body): Body<AccountSignInFinish>,
 ) -> Response {
-    let began = Instant::now();
     let page = sender(&headers);
     if page == Sender::OtherSite {
         return cross_site();
     }
-    let answer = match signed_in(&shared, &body).await {
+    match signed_in(&shared, &body).await {
         Ok(Some((who, token))) if page == Sender::OwnPage => {
             let cookie = set_session_cookie(&token, SESSION_LIFETIME);
             ([(SET_COOKIE, cookie)], Json(who)).into_response()
@@ -125,9 +99,7 @@ pub(crate) async fn finish(
         .into_response(),
         Ok(None) => unauthorized(code!("sign_in.failed")),
         Err(fault) => failure(fault),
-    };
-    sleep_until(began + shared.finish_takes).await;
-    answer
+    }
 }
 
 /// `GET /api/session`: who is signed in.
@@ -171,9 +143,6 @@ async fn signed_in(
     };
     let token = random_token()?;
     let now = shared.now();
-    let new_account: Option<AccountId> = sign_up::allows(&shared.sign_up, &email)
-        .then(|| fresh(&new_id))
-        .transpose()?;
     let attempt = Attempt {
         email: &email,
         challenge: &body.challenge,
@@ -182,7 +151,6 @@ async fn signed_in(
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
         personal: &workspaces::personal()?,
-        new_account: new_account.as_ref(),
     };
     let account = shared.db.finish_sign_in(&attempt).await?;
     Ok(account.map(|account| {
@@ -231,7 +199,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (started, challenge) = start_sign_in(server.address, " Ada@Example.com ").await;
-        let (to, code) = fixture.letter().await;
+        let (to, code) = fixture.letter();
         let finish = finish_body("ada@example.com", &challenge, &code);
         let (finished, body) = finish_with(server.address, &finish).await;
         let token = body["token"].as_str().unwrap();
@@ -273,7 +241,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
+        let (_, code) = fixture.letter();
         let typed = format!(" {} ", code.replace('-', "").to_lowercase());
 
         let finish = finish_body("ada@example.com", &challenge, &typed);
@@ -287,7 +255,7 @@ mod tests {
     // Signs ada in from the server's own page: the answer's head and body.
     async fn browser_sign_in(fixture: &Fixture, address: SocketAddr) -> (Vec<String>, Value) {
         let (_, challenge) = start_sign_in(address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
+        let (_, code) = fixture.letter();
         let finish = finish_body("ada@example.com", &challenge, &code);
         let (head, body) = request_with(address, "POST /api/sign-in/finish", PAGE, &finish).await;
         (head, serde_json::from_str(&body).unwrap())
@@ -335,7 +303,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
+        let (_, code) = fixture.letter();
         let finish = finish_body("ada@example.com", &challenge, &code);
         let other = "origin: https://other.example\r\n";
         let (crossed, _) =
@@ -454,27 +422,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn strangers_get_the_same_answer_and_no_code() {
+    async fn a_stranger_or_a_bad_address_is_told_so_and_gets_no_code() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let mut challenges = Vec::new();
-        for body in [
-            json!({ "email": "bo@example.com" }),
-            json!({ "email": "not an email" }),
-            json!({ "email": "ada@example.com" }),
-        ] {
-            let (head, answer) =
-                request(server.address, "POST /api/sign-in", &body.to_string()).await;
-            let answer: Value = serde_json::from_str(&answer).unwrap();
-            assert_eq!(status(&head), "http/1.1 202 accepted", "{body}");
-            assert_eq!(answer.as_object().unwrap().len(), 1, "{body}");
-            challenges.push(answer["challenge"].as_str().unwrap().len());
-        }
+        let start = |email: &str| json!({ "email": email }).to_string();
+        let (stranger, bad) = (start("bo@example.com"), start("not an email"));
+
+        let stranger = ask(server.address, "POST /api/sign-in", "", &stranger).await;
+        let bad = ask(server.address, "POST /api/sign-in", "", &bad).await;
         let (unreadable, refusal) = request(server.address, "POST /api/sign-in", "{}").await;
 
-        // Only the request for an account's address leaves a letter.
-        assert_eq!(fixture.letter().await.0, "ada@example.com");
-        assert_eq!(challenges, [64; 3]);
+        assert_eq!(
+            stranger,
+            (
+                "http/1.1 404 not found".to_owned(),
+                json!({ "code": "sign_in.no_account", "retryable": false })
+            )
+        );
+        assert_eq!(
+            bad,
+            (
+                "http/1.1 422 unprocessable entity".to_owned(),
+                json!({ "code": "email.invalid", "retryable": false })
+            )
+        );
+        assert!(fixture.letters().is_empty());
         assert_eq!(status(&unreadable), "http/1.1 400 bad request");
         assert_eq!(
             serde_json::from_str::<Value>(&refusal).unwrap(),
@@ -483,75 +455,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_address_the_operator_allows_signs_up_with_its_code() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.sign_up = Arc::new([sign_up::SignUp::Domain("example.org".to_owned())]);
-        let server = fixture.run().await;
-        let (stranger, _) = start_sign_in(server.address, "cy@example.net").await;
-        fixture.settled().await;
-        let none = fixture.letters();
-        let (status, body) = sign_in(&fixture, server.address, "bo@example.org").await;
-        let (again, after) = sign_in(&fixture, server.address, "bo@example.org").await;
-        let db = &fixture.shared.db;
-        let bo = db.account_with(&email("bo@example.org")).await.unwrap();
-
-        // Allowed or not, the start is answered the same; only an allowed address gets a code.
-        assert_eq!(stranger, "http/1.1 202 accepted");
-        assert!(none.is_empty());
-        assert_eq!(status, "http/1.1 200 ok");
-        assert_eq!(body["email"], "bo@example.org");
-        assert_eq!(bo.as_ref().map(AccountId::as_str), body["account"].as_str());
-        assert_eq!(again, "http/1.1 200 ok");
-        assert_eq!(after["account"], body["account"]);
-        let other = db.account_with(&email("cy@example.net")).await;
-        assert_eq!(other.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn past_its_live_codes_an_address_gets_the_same_answer_and_no_more_mail() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let mut answers = Vec::new();
-        for _ in 0..4 {
-            answers.push(start_sign_in(server.address, "ada@example.com").await.0);
-        }
-        fixture.settled().await;
-
-        assert_eq!(answers, ["http/1.1 202 accepted"; 4]);
-        assert_eq!(fixture.letters().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn codes_someone_else_asked_for_still_sign_the_owner_in() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        for _ in 0..3 {
-            start_sign_in(server.address, "ada@example.com").await;
-        }
-        fixture.settled().await;
-        let inbox = fixture.letters();
-        // Ada's own start is answered as usual, but no more mail is sent.
-        let (_, own) = start_sign_in(server.address, "ada@example.com").await;
-        fixture.settled().await;
-        let mailed_after = fixture.letters().len();
-        let (_, code) = inbox[1].clone();
-        let finish = finish_body("ada@example.com", &own, &code);
-        let (head, body) = request(server.address, "POST /api/sign-in/finish", &finish).await;
-
-        assert_eq!(mailed_after, 3);
-        assert_eq!(status(&head), "http/1.1 200 ok");
-        assert_eq!(
-            serde_json::from_str::<Value>(&body).unwrap()["email"],
-            "ada@example.com"
-        );
-    }
-
-    #[tokio::test]
     async fn a_wrong_or_late_code_is_refused() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (_, challenge) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
+        let (_, code) = fixture.letter();
         let finish = |email: &str, code: &str| finish_body(email, &challenge, code);
         let mut refusals = Vec::new();
         for body in [
@@ -581,9 +489,9 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let (_, theirs) = start_sign_in(server.address, "ada@example.com").await;
-        fixture.letter().await;
+        fixture.letter();
         let (_, mine) = start_sign_in(server.address, "ada@example.com").await;
-        let (_, code) = fixture.letter().await;
+        let (_, code) = fixture.letter();
         let unknown = unknown_challenge();
         for (guess, challenge) in (0..10).zip([&theirs, &unknown].into_iter().cycle()) {
             let wrong = finish_body("ada@example.com", challenge, &format!("{guess:08}"));
@@ -596,35 +504,6 @@ mod tests {
         .await;
 
         assert_eq!(finished, "http/1.1 200 ok");
-    }
-
-    #[tokio::test]
-    async fn when_too_many_are_waiting_more_are_dropped_with_the_same_answer() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let every = u32::try_from(AT_ONCE).unwrap();
-        let busy = Arc::clone(&fixture.shared.sign_ins)
-            .try_acquire_many_owned(every)
-            .unwrap();
-        let (started, _) = start_sign_in(server.address, "ada@example.com").await;
-        drop(busy);
-        fixture.settled().await;
-
-        assert_eq!(started, "http/1.1 202 accepted");
-        assert!(fixture.letters().is_empty());
-    }
-
-    #[tokio::test]
-    async fn finishing_takes_the_same_time_for_a_stranger() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.finish_takes = Duration::from_millis(200);
-        let server = fixture.run().await;
-        let stranger = finish_body("bo@example.com", &unknown_challenge(), "00000000");
-        let started = std::time::Instant::now();
-        let (head, _) = request(server.address, "POST /api/sign-in/finish", &stranger).await;
-
-        assert_eq!(status(&head), "http/1.1 401 unauthorized");
-        assert!(started.elapsed() >= fixture.shared.finish_takes);
     }
 
     #[tokio::test]

@@ -6,8 +6,6 @@ use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
 
-use crate::sign_up::SignUp;
-
 /// Weacon's server: holds every workspace.
 #[derive(Debug, Parser)]
 #[command(name = "weacon-server")]
@@ -37,13 +35,6 @@ pub(crate) struct Serve {
     /// stop working, and nobody is signed out.
     #[arg(long)]
     pub(crate) secret: PathBuf,
-    /// Who may make an account by signing in: `anyone`, or the addresses at one domain, such
-    /// as example.com; repeat it for more domains. Without it, only accounts an operator made
-    /// with `weacon-server add-account` or `weacon-server add-member` can sign in. The first
-    /// account on the server is its owner, so make your own with `weacon-server add-account`
-    /// before allowing sign-up.
-    #[arg(long)]
-    pub(crate) sign_up: Vec<SignUp>,
 }
 
 /// Commands an operator runs against the database.
@@ -136,22 +127,11 @@ mod tests {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
                 secret: PathBuf::from("secret"),
-                sign_up: Vec::new(),
             }
         );
-        let told = [
-            "--listen",
-            "0.0.0.0:9000",
-            "--sign-up",
-            "anyone",
-            "--sign-up",
-            "example.com",
-        ];
+        let told = ["--listen", "0.0.0.0:9000"];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
-        let sign_up = [SignUp::Anyone, SignUp::Domain("example.com".to_owned())];
-        assert_eq!(told.sign_up, sign_up);
-        run(&[&args[..], &["--sign-up", "everyone"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();

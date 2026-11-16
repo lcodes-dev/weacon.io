@@ -8,7 +8,7 @@ test("each failure reads as a plain sentence, and unknown ones as a general line
   assert.equal(problemText("sign_in.failed"), "That code didn't work. Check it, or ask for a new one.");
   assert.equal(problemText(UNREACHABLE), "The server can't be reached.");
   assert.equal(problemText("workspace.name_invalid"), "Give it a name of one short line.");
-  assert.equal(problemText("workspace.too_many"), "You can't make more workspaces.");
+  assert.equal(problemText("sign_in.no_account"), "No account here has that address.");
   assert.equal(problemText("machine.offline"), "This machine isn't connected. Start Weacon on it, then try again.");
   assert.equal(problemText("machine.no_answer"), "The machine didn't answer. Try again.");
   assert.equal(problemText("relay.busy"), "The server is busy. Try again in a moment.");

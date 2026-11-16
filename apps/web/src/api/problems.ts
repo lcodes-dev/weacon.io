@@ -5,8 +5,8 @@ import { UNREACHABLE } from "./api.ts";
 const PROBLEMS = new Map<Code, string>([
   [UNREACHABLE, statusText({ state: "ended", code: UNREACHABLE })],
   ["sign_in.failed", "That code didn't work. Check it, or ask for a new one."],
+  ["sign_in.no_account", "No account here has that address."],
   ["workspace.name_invalid", "Give it a name of one short line."],
-  ["workspace.too_many", "You can't make more workspaces."],
   ["email.invalid", "That isn't an email address."],
   ["member.not_allowed", "You can't do that in this workspace."],
   ["member.not_found", "That person isn't here any more."],

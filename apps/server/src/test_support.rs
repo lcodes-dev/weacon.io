@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
@@ -101,9 +101,6 @@ impl Fixture {
             links: Arc::default(),
             relay: Arc::default(),
             terminals: Arc::default(),
-            sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-            finish_takes: Duration::ZERO,
-            sign_up: Arc::new([]),
             web: WEB,
         };
         Self {
@@ -148,12 +145,6 @@ impl Fixture {
             .fetch_add(seconds.unsigned_abs(), Ordering::Relaxed);
     }
 
-    /// Waits until every sign-in has done its work after its answer.
-    pub(crate) async fn settled(&self) {
-        let every = u32::try_from(sign_in::AT_ONCE).unwrap();
-        drop(self.shared.sign_ins.acquire_many(every).await.unwrap());
-    }
-
     /// Who each printed sign-in mail that no test has taken is for, and the code in it.
     pub(crate) fn letters(&self) -> Vec<(String, String)> {
         let records = self.records.lock().unwrap();
@@ -169,9 +160,8 @@ impl Fixture {
             .collect()
     }
 
-    /// The one code the server sent once every sign-in has done its work, and who it is for.
-    pub(crate) async fn letter(&self) -> (String, String) {
-        self.settled().await;
+    /// The one code the server sent that no test has taken, and who it is for.
+    pub(crate) fn letter(&self) -> (String, String) {
         let [letter] = self.letters().try_into().unwrap();
         self.taken.fetch_add(1, Ordering::Relaxed);
         letter

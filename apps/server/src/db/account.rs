@@ -1,12 +1,9 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary, code};
+use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary};
 
 use super::workspace::{OWNER, stored_role};
 use super::{Db, failed, stored, unreadable};
-
-/// How many workspaces one account may own: enough for anyone, too few to fill the disk.
-const MAX_OWNED: i64 = 100;
 
 /// A workspace to make, and the id its first member, who owns it, gets there.
 pub(crate) struct NewWorkspace {
@@ -24,24 +21,14 @@ pub(crate) struct Account {
 }
 
 impl Account {
-    /// Makes a workspace that the account owns, as its first member: `workspace.too_many` when
-    /// it owns as many as it may, and `db.exists` when the id is taken.
+    /// Makes a workspace that the account owns, as its first member: `db.exists` when the id
+    /// is taken.
     pub(crate) async fn create_workspace(
         &self,
         new: NewWorkspace,
     ) -> Result<WorkspaceSummary, Fault> {
         let account = &self.id;
         let mut transaction = self.db.write().await?;
-        let owned: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM members WHERE account_id = ? AND role = ?")
-                .bind(account.as_str())
-                .bind(OWNER)
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(failed)?;
-        if owned >= MAX_OWNED {
-            return Err(too_many());
-        }
         insert_owned(&mut transaction, account, &new).await?;
         transaction.commit().await.map_err(failed)?;
         Ok(WorkspaceSummary {
@@ -124,13 +111,6 @@ pub(super) fn summary(
         role: stored_role(role)?,
         member: Some(member),
     })
-}
-
-fn too_many() -> Fault {
-    Fault::new(
-        code!("workspace.too_many"),
-        "The account owns as many workspaces as it may",
-    )
 }
 
 #[cfg(test)]
@@ -224,27 +204,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_account_owns_only_so_many_workspaces() {
+    async fn an_account_the_server_doesnt_have_makes_no_workspace() {
         let dir = TempDir::new().unwrap();
         let (db, _) = people(&dir).await;
-        for index in 0..MAX_OWNED {
-            let id = format!("w-{index}");
-            db.account(account("a2"))
-                .create_workspace(new(&id, "Many"))
-                .await
-                .unwrap();
-        }
 
-        let more = db
-            .account(account("a2"))
-            .create_workspace(new("w-x", "More"))
-            .await;
         let others = db
             .account(account("a9"))
             .create_workspace(new("w-y", "Other"))
             .await;
 
-        assert_eq!(more.unwrap_err().code().as_str(), "workspace.too_many");
         assert_eq!(others.unwrap_err().code().as_str(), "db.unreadable");
     }
 

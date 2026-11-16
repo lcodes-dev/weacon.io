@@ -2,9 +2,10 @@
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{MemberId, WorkspaceRole, code};
+use weacon_protocol::{AccountId, MemberId, WorkspaceRole, code};
 
 use super::changes::Versioned;
+use super::sign_in::insert_account;
 use super::workspace::stored_role;
 use super::{Workspace, failed, unreadable};
 use crate::email::Email;
@@ -23,8 +24,14 @@ pub(crate) struct InvitationRow {
 
 impl Workspace {
     /// Invites `email` at `now`, if `by` is the owner and the address is neither a member nor
-    /// invited already.
-    pub(crate) async fn invite(&self, by: &MemberId, email: &Email, now: i64) -> Result<(), Fault> {
+    /// invited already. An address with no account gets `account`, so it can sign in to accept.
+    pub(crate) async fn invite(
+        &self,
+        by: &MemberId,
+        account: &AccountId,
+        email: &Email,
+        now: i64,
+    ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         self.owner_only(&mut transaction, by).await?;
         let member = sqlx::query(
@@ -53,6 +60,7 @@ impl Workspace {
         if invited.rows_affected() == 0 {
             return Err(invitation_exists());
         }
+        insert_account(&mut transaction, account.as_str(), email).await?;
         self.record_change(&mut transaction, Versioned::Members, by)
             .await?;
         transaction.commit().await.map_err(failed)
@@ -229,7 +237,9 @@ mod tests {
     }
 
     async fn invite(workspace: &Workspace, by: &str, to: &str, now: i64) -> Result<(), Fault> {
-        workspace.invite(&member_id(by), &email(to), now).await
+        workspace
+            .invite(&member_id(by), &fresh_account(), &email(to), now)
+            .await
     }
 
     async fn changes(workspace: &Workspace) -> usize {

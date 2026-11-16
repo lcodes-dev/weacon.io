@@ -65,7 +65,10 @@ pub(crate) async fn command(
 async fn invite(shared: &Shared, member: &Member, email: &Email) -> Result<(), Fault> {
     let workspace = &member.workspace;
     let summary = workspace.summary(&member.id).await?;
-    workspace.invite(&member.id, email, shared.now()).await?;
+    let account = fresh(&new_id)?;
+    workspace
+        .invite(&member.id, &account, email, shared.now())
+        .await?;
     if let Some(summary) = summary {
         let text = format!(
             "You're invited to the workspace {} on Weacon. Sign in with this address to accept; \
@@ -131,12 +134,11 @@ mod tests {
         (server, ada, id)
     }
 
-    // `address`, with an account, signed in.
+    // `address`, given an account unless an invitation made it one, signed in.
     async fn signed_in(fixture: &Fixture, address: SocketAddr, email_address: &str) -> Client {
         let db = &fixture.shared.db;
-        db.add_account(&fresh_account(), &email(email_address))
-            .await
-            .unwrap();
+        let (account, to) = (fresh_account(), email(email_address));
+        drop(db.add_account(&account, &to).await);
         fixture.sign_in_client(address, email_address).await
     }
 
@@ -190,6 +192,35 @@ mod tests {
             panic!("{message:?}");
         };
         change
+    }
+
+    #[tokio::test]
+    async fn an_invited_address_with_no_account_signs_in_and_joins() {
+        let fixture = Fixture::new().await;
+        let (server, ada, crew) = crew(&fixture).await;
+        let start = json!({ "email": "bo@example.com" }).to_string();
+        let before = ask(server.address, "POST /api/sign-in", "", &start).await;
+
+        let invited = command(&ada, &crew, invite("bo@example.com")).await;
+        let bo = fixture
+            .sign_in_client(server.address, "bo@example.com")
+            .await;
+        let (_, offered) = read(&bo, "/api/workspaces").await;
+        let (accepted, joined) = accept(&bo, &crew).await;
+        let (_, after) = read(&bo, "/api/workspaces").await;
+
+        assert_eq!(before.0, "http/1.1 404 not found");
+        assert_eq!(invited.0, "http/1.1 204 no content");
+        assert_eq!(offered["invitations"][0]["workspace"], crew);
+        assert_eq!(accepted, "http/1.1 200 ok");
+        assert_eq!(joined["name"], "Crew");
+        let names: Vec<_> = after["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| workspace["name"].clone())
+            .collect();
+        assert_eq!(names, ["Personal", "Crew"]);
     }
 
     #[tokio::test]

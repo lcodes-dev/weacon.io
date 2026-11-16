@@ -252,7 +252,6 @@ mod tests {
                 name: "Personal".to_owned(),
                 owner: member_id("owner"),
             },
-            new_account: None,
         };
         db.finish_sign_in(&attempt).await.unwrap().unwrap();
     }
@@ -409,9 +408,14 @@ mod tests {
             .execute(&one.db.writer)
             .await
             .unwrap();
-        one.invite(&member_id("m1"), &email("cy@example.com"), 100)
-            .await
-            .unwrap();
+        one.invite(
+            &member_id("m1"),
+            &fresh_account(),
+            &email("cy@example.com"),
+            100,
+        )
+        .await
+        .unwrap();
         one.leave(&member_id("m3")).await.unwrap();
 
         let cy = email("cy@example.com");

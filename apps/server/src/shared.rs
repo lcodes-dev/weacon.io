@@ -1,7 +1,7 @@
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::broadcast;
 use weacon_observability::{Clock, Logger, Reporter};
 use weacon_protocol::{App, MachineId, WorkspaceId};
 
@@ -10,7 +10,6 @@ use crate::db::Db;
 use crate::links::Links;
 use crate::relay::Relay;
 use crate::secret::Secret;
-use crate::sign_up::SignUp;
 use crate::socket;
 use crate::terminals::Terminals;
 use crate::web::WebFile;
@@ -35,12 +34,6 @@ pub(crate) struct Shared {
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
     pub(crate) chats: chats::Hub,
-    /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
-    pub(crate) sign_ins: Arc<Semaphore>,
-    /// How long finishing a sign-in takes at least, so its timing gives nothing away.
-    pub(crate) finish_takes: Duration,
-    /// Who may make an account by signing in.
-    pub(crate) sign_up: Arc<[SignUp]>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }

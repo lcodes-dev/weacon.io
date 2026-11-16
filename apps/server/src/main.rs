@@ -21,7 +21,6 @@ mod search;
 mod secret;
 mod shared;
 mod sign_in;
-mod sign_up;
 mod socket;
 mod tasks;
 mod team;
@@ -40,7 +39,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::broadcast;
 use weacon_appkit::{App, Ending};
 use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
@@ -93,12 +92,7 @@ fn main() -> ExitCode {
 
 /// Serves until Ctrl-C or the system asks the server to stop.
 async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
-    let Serve {
-        listen,
-        db,
-        secret,
-        sign_up,
-    } = args;
+    let Serve { listen, db, secret } = args;
     let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
@@ -110,7 +104,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         db: db.clone(),
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
-        sign_up: sign_up.into(),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         chats: chats::Hub::default(),
@@ -118,8 +111,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         links: Arc::default(),
         relay: Arc::default(),
         terminals: Arc::default(),
-        sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_takes: sign_in::FINISH_TAKES,
         web: web::FILES,
     };
     tokio::spawn(chats::follow_machines(shared.clone()));
