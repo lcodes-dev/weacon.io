@@ -361,7 +361,7 @@ mod tests {
         let (mut run, done) = fake(include_str!("../replays/claude/partial.replay"));
         let command = json!({ "command": "cargo test -p parser" });
 
-        run.send("Run the parser tests").await.unwrap();
+        run.send("Run the parser tests", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_asked).await.get(..8),
             Some(
@@ -397,7 +397,7 @@ mod tests {
     async fn partial_output_the_driver_doesnt_know_is_skipped_and_the_turn_goes_on() {
         let (mut run, done) = fake(include_str!("../replays/claude/partial_unknown.replay"));
 
-        run.send("Explain the build").await.unwrap();
+        run.send("Explain the build", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [
@@ -416,7 +416,7 @@ mod tests {
     async fn a_turn_cut_off_mid_message_gave_only_its_pieces() {
         let (mut run, done) = fake(include_str!("../replays/claude/partial_cut_off.replay"));
 
-        run.send("Bump the version").await.unwrap();
+        run.send("Bump the version", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [

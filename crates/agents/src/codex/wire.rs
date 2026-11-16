@@ -393,7 +393,7 @@ mod tests {
     async fn text_comes_in_pieces_before_each_whole_message_with_a_command_between() {
         let (mut run, done) = fake(include_str!("../../replays/codex/partial.replay"), None);
 
-        run.send("Run the parser tests").await.unwrap();
+        run.send("Run the parser tests", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [
@@ -422,7 +422,7 @@ mod tests {
         let recording = include_str!("../../replays/codex/partial_unknown.replay");
         let (mut run, done) = fake(recording, None);
 
-        run.send("Explain the build").await.unwrap();
+        run.send("Explain the build", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [
@@ -442,7 +442,7 @@ mod tests {
         let recording = include_str!("../../replays/codex/partial_cut_off.replay");
         let (mut run, done) = fake(recording, None);
 
-        run.send("Bump the version").await.unwrap();
+        run.send("Bump the version", None).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,
             [
