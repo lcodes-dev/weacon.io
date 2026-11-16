@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Store, choose, chosen } from "./tabs.ts";
+import { type Store, choose, chosen, forget } from "./tabs.ts";
 
 function store(start?: string): Store & { value: () => string | null } {
   let value: string | null = start ?? null;
@@ -10,14 +10,28 @@ function store(start?: string): Store & { value: () => string | null } {
 
 test("each tab remembers its own chat, and closed tabs are forgotten", () => {
   const kept = store();
-  choose(kept, 1, { workspace: "w-1", chat: "c-1" }, [1]);
-  choose(kept, 2, { workspace: "w-1", chat: "c-2" }, [1, 2]);
-  choose(kept, 3, { workspace: "w-2", chat: "c-3" }, [2, 3]);
+  choose(kept, 1, { workspace: "w-1", chat: "c-1" });
+  choose(kept, 2, { workspace: "w-1", chat: "c-2" });
+  choose(kept, 3, { workspace: "w-2", chat: "c-3" });
+  forget(kept, [2, 3]);
 
   assert.equal(chosen(kept, 1), undefined);
   assert.deepEqual(chosen(kept, 2), { workspace: "w-1", chat: "c-2" });
   assert.deepEqual(chosen(kept, 3), { workspace: "w-2", chat: "c-3" });
   assert.equal(chosen(store(), 3), undefined);
+});
+
+test("a later choice stands, in its tab or another, whenever the closed tabs are forgotten", () => {
+  const kept = store();
+  choose(kept, 1, { workspace: "w-1", chat: "c-1" });
+  choose(kept, 1, { workspace: "w-1", chat: "c-2" });
+  choose(kept, 2, { workspace: "w-1", chat: "c-3" });
+  // The forgetting each choice began ends later, and out of order.
+  forget(kept, [1, 2]);
+  forget(kept, [1, 2]);
+
+  assert.deepEqual(chosen(kept, 1), { workspace: "w-1", chat: "c-2" });
+  assert.deepEqual(chosen(kept, 2), { workspace: "w-1", chat: "c-3" });
 });
 
 test("what another build or a damaged store left is dropped, entry by entry", () => {

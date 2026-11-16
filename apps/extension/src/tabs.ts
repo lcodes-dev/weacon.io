@@ -10,10 +10,15 @@ export function chosen(store: Store, tab: number): ChatRef | undefined {
   return read(store)[String(tab)];
 }
 
-/** Remembers `ref` as the chat for `tab`, forgetting the tabs not in `open`. */
-export function choose(store: Store, tab: number, ref: ChatRef, open: readonly number[]): void {
+/** Remembers `ref` as the chat for `tab`. */
+export function choose(store: Store, tab: number, ref: ChatRef): void {
+  store.setItem(KEY, JSON.stringify({ ...read(store), [String(tab)]: ref }));
+}
+
+/** Forgets the chats of the tabs not in `open`; whenever it runs, no open tab's choice is lost. */
+export function forget(store: Store, open: readonly number[]): void {
   const kept = Object.entries(read(store)).filter(([at]) => open.includes(Number(at)));
-  store.setItem(KEY, JSON.stringify({ ...Object.fromEntries(kept), [String(tab)]: ref }));
+  store.setItem(KEY, JSON.stringify(Object.fromEntries(kept)));
 }
 
 // What another build or a damaged store left is dropped, entry by entry.

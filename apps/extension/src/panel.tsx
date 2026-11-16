@@ -8,7 +8,7 @@ import { useLive } from "./live.ts";
 import { pickOn } from "./pick.ts";
 import type { Pick } from "./protocol.ts";
 import type { ChatRef } from "./sync.ts";
-import { choose, chosen } from "./tabs.ts";
+import { choose, chosen, forget } from "./tabs.ts";
 import { codeOf, tell } from "./tell.ts";
 import { Attached, ChatList, Transcript } from "./views.tsx";
 
@@ -22,7 +22,6 @@ function Panel() {
   const [failed, setFailed] = useState<string>();
   // Counts the changes of tab and chat, so a pick begun before one isn't attached after it.
   const moves = useRef(0);
-  const choices = useRef(0);
 
   useEffect(() => {
     moves.current += 1;
@@ -32,16 +31,14 @@ function Panel() {
 
   const open = async (next: ChatRef | undefined) => {
     moves.current += 1;
-    const chose = (choices.current += 1);
     setRef(next);
     setFailed(undefined);
     setPick(undefined);
     if (tab !== undefined && next !== undefined) {
+      // Stored at once, so no later answer can replace a newer choice.
+      choose(localStorage, tab, next);
       const tabs = await chrome.tabs.query({});
-      // An earlier choice that hears of the open tabs later doesn't replace this one.
-      if (chose === choices.current) {
-        choose(localStorage, tab, next, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
-      }
+      forget(localStorage, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
     }
   };
   // Runs `work`, showing what stopped it.
