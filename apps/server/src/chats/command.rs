@@ -94,11 +94,12 @@ async fn acted_on(
     }
     let legs: Vec<Leg> = legs.cloned().collect();
     let theirs = |leg: &&Leg| leg.member == member.id;
+    // A run at work is stopped by whom it works for or its machine's owner, and no one else,
+    // whatever call of theirs still holds the turn.
     if let Some(working) = at_work(workspace, &command.chat, &legs).await? {
         let owns = shared.db.has_machine(&asker.account, &working.machine);
-        if theirs(&working) || owns.await? {
-            return Ok(working.clone());
-        }
+        let may = theirs(&working) || owns.await?;
+        return may.then(|| working.clone()).ok_or_else(not_owner);
     }
     // Before its run reports, a call in flight says which of their legs they mean, even one
     // whose machine has sent nothing up yet.
@@ -262,7 +263,6 @@ async fn prompt(
     }
     let (id, now) = (command.chat.clone(), from.shared.now());
     let (machine_id, machine) = callable(from, &id, machine).await?;
-    one_at_a_time(from, &id, &machine_id).await?;
     let ChatAction::Prompt {
         text, repo, agent, ..
     } = &command.action
@@ -283,7 +283,12 @@ async fn prompt(
     };
     let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
-    if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
+    // Looked at once the turn is held, so a run that began to report meanwhile is seen.
+    let sent = match one_at_a_time(from, &id, &machine_id).await {
+        Ok(()) => relay_to(from, (chat, &leg), command, back).await,
+        refused => refused,
+    };
+    if let Err(fault) = sent {
         workspace.uncall_leg(&id, &leg.machine, asked).await?;
         return Err(fault);
     }
@@ -1380,6 +1385,43 @@ mod tests {
         let stopped = commands(sent(&mut two.adas));
         assert_eq!(stopped.len(), 1);
         assert_eq!(stopped[0].0, ChatAction::Interrupt);
+    }
+
+    #[tokio::test]
+    async fn a_call_that_holds_the_turn_stops_no_run_that_works_for_someone_else() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        two.ask(ada, go("r-3", ada)).await.unwrap();
+        two.up(ada, 1, status(RunState::Running)).await;
+        two.up(ada, 2, status(RunState::Idle)).await;
+        // Grace's call holds the turn, but the machine runs a prompt its owner wrote there.
+        two.ask(grace, go("r-4", ada)).await.unwrap();
+        let local = ChatEvent::Prompt {
+            request: id("r-local"),
+            text: "Local".to_owned(),
+            author: None,
+            pick: None,
+            repo: None,
+            agent: None,
+            task: None,
+        };
+        two.up(ada, 3, local).await;
+        two.up(ada, 4, status(RunState::Running)).await;
+        sent(&mut two.adas);
+
+        let stop = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
+        let mine = two.ask(grace, go("r-6", grace)).await;
+
+        assert_eq!(stop.unwrap_err().code().as_str(), "chat.not_owner");
+        assert!(sent(&mut two.adas).is_empty());
+        // Her call of her own agent meanwhile is refused and leaves nothing behind.
+        assert_eq!(mine.unwrap_err().code().as_str(), "chat.agent_working");
+        let workspace = &grace.member.workspace;
+        let (chat, request) = (id("c-1"), id("r-6"));
+        let noted = workspace.asker(&chat, &grace.machine, &request).await;
+        assert_eq!(noted.unwrap(), None);
+        assert!(sent(&mut two.graces).is_empty());
     }
 
     fn author_of(event: &ChatEvent) -> Option<&MemberId> {
