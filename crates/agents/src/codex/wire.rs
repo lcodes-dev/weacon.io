@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use weacon_protocol::{AccessLevel, AgentSession, App, RunEvent};
+use weacon_protocol::{AccessLevel, AgentSession, App, RunEvent, Wants};
 
 use crate::wire::{Asked, Effect, UNSUPPORTED};
 
@@ -267,6 +267,12 @@ pub(crate) fn answer(request: &Value, allow: bool) -> Vec<Effect> {
     )]
 }
 
+/// What a prompt shows of the request `input`: a command; a file change's doesn't say what
+/// changes.
+pub(crate) fn wants(input: &Value) -> Option<Wants> {
+    input.get("command")?.as_str().map(Wants::of)
+}
+
 fn asked(id: Value, method: &str, params: Value) -> Vec<Effect> {
     let tool = match method {
         "item/commandExecution/requestApproval" => "command",
@@ -373,9 +379,12 @@ mod tests {
         );
         assert!(matches!(
             events.get(2),
-            Some(RunEvent::PermissionAsked { prompt: 1, tool, input, .. })
+            Some(RunEvent::PermissionAsked { prompt: 1, tool, input, wants, .. })
                 if tool == "command" && input["command"] == "cargo test -p parser"
+                    && *wants == Some(Wants::of("cargo test -p parser"))
         ));
+        // A file change's request names no file, so its prompt shows nothing.
+        assert_eq!(wants(&json!({ "itemId": "item-5" })), None);
         run.answer(&answer("run-1", true)).await.unwrap();
         assert_eq!(
             until(&mut run, is_finished).await,

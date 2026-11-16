@@ -3,7 +3,7 @@
 use serde_json::Value;
 use weacon_protocol::{
     AgentKind, AgentOwner, AgentRef, ChatAction, ChatCommand, ChatEvent, ChatQuery, ChatQueryKind,
-    MachineName, Message, RunEvent, RunId, RunUpdate,
+    MachineName, Message, RunEvent, RunId, RunUpdate, Wants,
 };
 
 /// Whether a chat query or command holds a part this build doesn't know, such as a prompt to
@@ -58,6 +58,7 @@ pub(super) fn asks_bash(run: &RunId) -> ChatEvent {
                 prompt: 1,
                 tool: "Bash".to_owned(),
                 input: Value::Null,
+                wants: Some(Wants::of("cargo test -p parser")),
             },
         },
     }

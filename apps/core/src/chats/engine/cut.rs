@@ -24,12 +24,17 @@ pub(super) fn cut(event: &RunEvent) -> RunEvent {
             input: Value::Null,
         },
         RunEvent::PermissionAsked {
-            run, prompt, tool, ..
+            run,
+            prompt,
+            tool,
+            wants,
+            ..
         } => RunEvent::PermissionAsked {
             run,
             prompt,
             tool,
             input: Value::Null,
+            wants,
         },
         whole @ (RunEvent::Started { .. }
         | RunEvent::TextDelta { .. }

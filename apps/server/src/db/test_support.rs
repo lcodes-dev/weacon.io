@@ -217,6 +217,7 @@ pub(crate) fn asks(prompt: u32) -> ChatEvent {
         prompt,
         tool: "Write".to_owned(),
         input: serde_json::Value::Null,
+        wants: None,
     };
     ChatEvent::Run {
         update: RunUpdate { run, event },

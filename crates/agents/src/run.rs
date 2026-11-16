@@ -238,6 +238,7 @@ impl<W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin> Run<W, R> {
             prompt: id,
             tool: asked.tool.clone(),
             input: asked.input.clone(),
+            wants: self.wire.wants(&asked),
         });
         self.prompts.push(Prompt { id, asked });
     }
@@ -299,7 +300,7 @@ fn io_failed(error: std::io::Error) -> Fault {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use weacon_protocol::AccessLevel;
+    use weacon_protocol::{AccessLevel, Wants};
 
     use super::*;
     use crate::claude;
@@ -337,6 +338,7 @@ mod tests {
                     prompt: 1,
                     tool: "Bash".to_owned(),
                     input: command,
+                    wants: Some(Wants::of("cargo test -p parser")),
                 },
             ]
         );
@@ -482,6 +484,7 @@ mod tests {
                     prompt: 1,
                     tool: "Bash".to_owned(),
                     input: command,
+                    wants: Some(Wants::of("cargo test")),
                 },
             ]
         );

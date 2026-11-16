@@ -25,6 +25,7 @@ test("a chat shows its prompts and labelled turns, and a waiting prompt is answe
   await page.getByText("Shared Codex · team VPS").waitFor();
   await page.getByText("Claude Code · laptop").first().waitFor();
   await page.getByText("Asks to use Bash").waitFor();
+  await page.getByText("cargo test -p parser", { exact: true }).waitFor();
 
   await page.getByRole("button", { name: "Allow" }).click();
   await page.getByText("The tests pass.").waitFor();

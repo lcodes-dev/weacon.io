@@ -53,8 +53,7 @@ export function hear(sync: Sync, heard: Heard, ref: ChatRef, id: () => number): 
       if (state.kind !== "asking" || heard.id !== state.snapshot) {
         return { sync, send: [] };
       }
-      // The tools heard live are kept, as no snapshot holds them.
-      const fresh = fromSnapshot(heard.snapshot, chat?.tools);
+      const fresh = fromSnapshot(heard.snapshot);
       const subscribe = ask(ref, id(), { kind: "subscribe", after: fresh.seq });
       return fetchWaiting(fresh, subscribe.id, ref, id, [subscribe]);
     }

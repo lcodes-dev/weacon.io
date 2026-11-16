@@ -42,7 +42,7 @@ async fn live_heard(client: &mut Socket) -> ChatLive {
 }
 
 #[tokio::test]
-async fn a_runs_text_and_its_prompts_tool_reach_the_chats_followers_live_and_are_never_kept() {
+async fn a_runs_text_reaches_the_chats_followers_live_and_is_never_kept() {
     let fixture = Fixture::new().await;
     let server = fixture.run().await;
     others(&fixture).await;
@@ -58,6 +58,7 @@ async fn a_runs_text_and_its_prompts_tool_reach_the_chats_followers_live_and_are
         prompt: 1,
         tool: "Bash".to_owned(),
         input: serde_json::json!({ "command": "MARKER-INPUT" }),
+        wants: Some(weacon_protocol::Wants::of("MARKER-WANTS")),
     };
     let up = |live| Envelope {
         id: 0,
@@ -76,17 +77,11 @@ async fn a_runs_text_and_its_prompts_tool_reach_the_chats_followers_live_and_are
         ..live("c-1", writing.clone())
     };
     socket::send(&mut core, up(stale)).await;
-    socket::send(&mut core, up(live("c-1", writing.clone()))).await;
+    // A prompt comes with the chat's stored events only.
     socket::send(&mut core, up(live("c-1", asked))).await;
+    socket::send(&mut core, up(live("c-1", writing.clone()))).await;
 
     assert_eq!(live_heard(&mut ada).await, live("c-1", writing));
-    let named = RunEvent::PermissionAsked {
-        run: id("run-1"),
-        prompt: 1,
-        tool: "Bash".to_owned(),
-        input: serde_json::Value::Null,
-    };
-    assert_eq!(live_heard(&mut ada).await, live("c-1", named));
     // Bo follows no chat, so hears none of it.
     assert!(quiet(&mut bo).await);
     let read = ask(&mut ada, 4, chat_query("w1", ChatQueryKind::Snapshot)).await;

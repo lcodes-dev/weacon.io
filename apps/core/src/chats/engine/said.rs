@@ -232,6 +232,7 @@ mod tests {
             prompt: 1,
             tool: "Write".to_owned(),
             input: json!({ "content": "a".repeat(1 << 20) }),
+            wants: None,
         };
 
         hear(&mut on.engine, asks).await.unwrap();
