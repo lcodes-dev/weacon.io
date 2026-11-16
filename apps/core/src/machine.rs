@@ -1,5 +1,5 @@
 //! This machine's pairing with a server, kept in the state folder: the server, the machine's
-//! id, owner and token, and its X25519 key, the static key of its sealed channels.
+//! id, owner and token.
 
 use std::fmt;
 use std::fs;
@@ -7,10 +7,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use weacon_observability::Fault;
-use weacon_protocol::{AccountId, MachineId, MachineKey, code};
-use x25519_dalek::{PublicKey, StaticSecret};
+use weacon_protocol::{AccountId, MachineId, code};
 
 use crate::platform;
 
@@ -25,60 +23,6 @@ pub(crate) struct Paired {
     pub(crate) machine: MachineId,
     pub(crate) owner: AccountId,
     pub(crate) token: String,
-    pub(crate) key: Key,
-}
-
-/// The machine's X25519 private key, kept as 64 hex digits.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub(crate) struct Key([u8; 32]);
-
-impl Key {
-    /// A key made from 32 random bytes.
-    pub(crate) const fn from_random(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// The public half, which the server and browsers know the machine by.
-    pub(crate) fn public(&self) -> MachineKey {
-        MachineKey::from_bytes(self.public_bytes())
-    }
-
-    /// How a person checks the public key: the first half of its SHA-256, in lowercase hex,
-    /// in groups of four.
-    pub(crate) fn fingerprint(&self) -> String {
-        let digest = Sha256::digest(self.public_bytes());
-        let digits = hex(digest.get(..16).unwrap_or_default());
-        let groups: Vec<_> = digits
-            .as_bytes()
-            .chunks(4)
-            .map(String::from_utf8_lossy)
-            .collect();
-        groups.join(" ")
-    }
-
-    /// The private half, the static key of the machine's sealed channels.
-    pub(crate) fn secret(&self) -> StaticSecret {
-        StaticSecret::from(self.0)
-    }
-
-    fn public_bytes(&self) -> [u8; 32] {
-        PublicKey::from(&self.secret()).to_bytes()
-    }
-}
-
-impl TryFrom<String> for Key {
-    type Error = &'static str;
-
-    fn try_from(hex: String) -> Result<Self, Self::Error> {
-        bytes(&hex).map(Self).ok_or("not a machine key")
-    }
-}
-
-impl From<Key> for String {
-    fn from(key: Key) -> Self {
-        hex(&key.0)
-    }
 }
 
 fn file(state_dir: &Path) -> PathBuf {
@@ -157,45 +101,12 @@ fn not_saved() -> Fault {
     )
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .flat_map(|byte| [byte >> 4, byte & 0xf])
-        .filter_map(|nibble| char::from_digit(u32::from(nibble), 16))
-        .collect()
-}
-
-fn bytes(hex: &str) -> Option<[u8; 32]> {
-    let digits: Vec<u8> = hex
-        .chars()
-        .map(|digit| {
-            digit
-                .to_digit(16)
-                .and_then(|value| u8::try_from(value).ok())
-        })
-        .collect::<Option<_>>()?;
-    let bytes: Vec<u8> = digits
-        .chunks(2)
-        .map(|pair| match pair {
-            [high, low] => Some(high * 16 + low),
-            _ => None,
-        })
-        .collect::<Option<_>>()?;
-    bytes.try_into().ok()
-}
-
-// The token and the key never reach a log line, even through `{:?}`.
+// The token never reaches a log line, even through `{:?}`.
 impl fmt::Debug for Paired {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Paired")
             .field("machine", &self.machine)
             .finish_non_exhaustive()
-    }
-}
-
-impl fmt::Debug for Key {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Key(..)")
     }
 }
 
@@ -205,14 +116,6 @@ mod tests {
 
     use super::*;
 
-    // A published X25519 test vector: this private key has this public key.
-    const SECRET: &str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
-    const PUBLIC: &str = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
-
-    fn key() -> Key {
-        Key::from_random(bytes(SECRET).unwrap())
-    }
-
     fn paired() -> Paired {
         Paired {
             server: "https://weacon.example.com".to_owned(),
@@ -220,7 +123,6 @@ mod tests {
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: AccountId::try_from("a-1".to_owned()).unwrap(),
             token: "t0ken-marker".to_owned(),
-            key: key(),
         }
     }
 
@@ -235,30 +137,6 @@ mod tests {
 
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!((mode(&dir), mode(&file(&dir))), (0o700, 0o600));
-    }
-
-    #[test]
-    fn a_key_gives_its_x25519_public_half_and_a_fingerprint_of_it() {
-        let fingerprint = key().fingerprint();
-        let expected = hex(Sha256::digest(bytes(PUBLIC).unwrap()).get(..16).unwrap());
-
-        assert_eq!(String::from(key()), SECRET);
-        assert_eq!(key().public().as_str(), PUBLIC);
-        assert_eq!(fingerprint.replace(' ', ""), expected);
-        // The web app checks the same vector.
-        assert_eq!(fingerprint, "300c 9c96 03b9 2a4b 39ed 3958 bf92 4011");
-        assert_eq!(fingerprint.len(), 39);
-        assert!(fingerprint.split(' ').all(|group| group.len() == 4));
-        assert_eq!(Key::try_from("zz".repeat(32)), Err("not a machine key"));
-        assert_eq!(Key::try_from("ab".repeat(31)), Err("not a machine key"));
-    }
-
-    #[test]
-    fn hex_reads_back_only_32_bytes_of_hex() {
-        assert_eq!(bytes(&hex(&[7; 32])), Some([7; 32]));
-        assert_eq!(bytes(&"a".repeat(63)), None);
-        assert_eq!(bytes(&"a".repeat(66)), None);
-        assert_eq!(bytes(&format!("g{}", "a".repeat(63))), None);
     }
 
     #[test]
@@ -307,10 +185,9 @@ mod tests {
     }
 
     #[test]
-    fn the_token_and_key_stay_out_of_debug() {
+    fn the_token_stays_out_of_debug() {
         let shown = format!("{:?}", paired());
 
         assert_eq!(shown, r#"Paired { machine: MachineId("mc-1"), .. }"#);
-        assert_eq!(format!("{:?}", key()), "Key(..)");
     }
 }

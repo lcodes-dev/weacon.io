@@ -137,7 +137,7 @@ async fn pair(
     let paired = sqlx::query(
         "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
              token_hash, paired_at)
-         SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+         SELECT ?, account_id, 'Made-up machine', 'linux', '', randomblob(16), 0
          FROM members WHERE workspace_id = ? AND member_id = ?",
     )
     .bind(machine.as_str())
@@ -291,8 +291,7 @@ impl Workspace {
         sqlx::query(
             "INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash,
                  paired_at)
-             SELECT ?, account_id, 'Made-up machine', 'linux', lower(hex(randomblob(32))),
-                 randomblob(16), 0
+             SELECT ?, account_id, 'Made-up machine', 'linux', '', randomblob(16), 0
              FROM members WHERE workspace_id = ? AND member_id = ?",
         )
         .bind(machine)

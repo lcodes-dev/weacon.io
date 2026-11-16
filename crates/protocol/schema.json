@@ -784,7 +784,7 @@
       ]
     },
     "Bytes": {
-      "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
+      "description": "Bytes that travel as lowercase hex, at most [`BYTES_MAX`] of them. Its `Debug` shows only\nhow many, since they are terminal content.",
       "type": "string",
       "maxLength": 131070,
       "pattern": "^([0-9a-f]{2})*$"
@@ -2173,11 +2173,6 @@
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
-    "MachineKey": {
-      "description": "A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex\ndigits. A browser pins it when the person confirms the pairing.",
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
-    },
     "MachineList": {
       "description": "The machines paired with the signed-in account.",
       "type": "object",
@@ -2513,9 +2508,6 @@
         "id": {
           "$ref": "#/$defs/MachineId"
         },
-        "key": {
-          "$ref": "#/$defs/MachineKey"
-        },
         "missing": {
           "description": "What the server offers cores that this one didn't offer back when it last connected:\nit is older than the server supports, and those features don't reach it.",
           "type": "array",
@@ -2538,7 +2530,6 @@
         "id",
         "name",
         "os",
-        "key",
         "paired_at"
       ]
     },
@@ -2993,12 +2984,9 @@
       ]
     },
     "PairPending": {
-      "description": "A machine waiting to be paired, for the person to check against what its terminal shows.",
+      "description": "A machine waiting to be paired, for the person to confirm.",
       "type": "object",
       "properties": {
-        "key": {
-          "$ref": "#/$defs/MachineKey"
-        },
         "name": {
           "$ref": "#/$defs/MachineName"
         },
@@ -3012,17 +3000,13 @@
       "required": [
         "pairing",
         "name",
-        "os",
-        "key"
+        "os"
       ]
     },
     "PairStart": {
       "description": "From a core to the server, unauthenticated: starts pairing the machine. The answer is a\n[`PairStarted`]; the server refuses an `os` it doesn't know.",
       "type": "object",
       "properties": {
-        "key": {
-          "$ref": "#/$defs/MachineKey"
-        },
         "name": {
           "$ref": "#/$defs/MachineName"
         },
@@ -3032,8 +3016,7 @@
       },
       "required": [
         "name",
-        "os",
-        "key"
+        "os"
       ]
     },
     "PairStarted": {
@@ -4944,41 +4927,49 @@
     "TerminalAction": {
       "oneOf": [
         {
-          "description": "Runs `agent`'s login, with the first handshake message, whose payload is a\n[`TerminalInput::Resize`].",
+          "description": "Runs `agent`'s login in a terminal of this size, in characters.",
           "type": "object",
           "properties": {
             "agent": {
               "$ref": "#/$defs/AgentKind"
             },
-            "handshake": {
-              "$ref": "#/$defs/Bytes"
+            "cols": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
             },
             "kind": {
               "type": "string",
               "const": "open"
+            },
+            "rows": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
             }
           },
           "required": [
             "kind",
             "agent",
-            "handshake"
+            "cols",
+            "rows"
           ]
         },
         {
-          "description": "A sealed [`TerminalInput`].",
+          "description": "What the person typed or pasted.",
           "type": "object",
           "properties": {
+            "data": {
+              "$ref": "#/$defs/Bytes"
+            },
             "kind": {
               "type": "string",
-              "const": "frame"
-            },
-            "sealed": {
-              "$ref": "#/$defs/Bytes"
+              "const": "input"
             }
           },
           "required": [
             "kind",
-            "sealed"
+            "data"
           ]
         },
         {
@@ -4997,7 +4988,7 @@
       ]
     },
     "TerminalCommand": {
-      "description": "A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which\noffers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and\nonly from the machine's owner, and the core acts only when `by` is its owner and refuses a\nterminal id it has already seen.",
+      "description": "A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers\n`terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only\nfrom the machine's owner, and the core acts only when `by` is its owner.",
       "type": "object",
       "properties": {
         "action": {
@@ -5027,113 +5018,18 @@
     "TerminalEvent": {
       "oneOf": [
         {
-          "description": "The second handshake message, with an empty payload.",
-          "type": "object",
-          "properties": {
-            "handshake": {
-              "$ref": "#/$defs/Bytes"
-            },
-            "kind": {
-              "type": "string",
-              "const": "accepted"
-            }
-          },
-          "required": [
-            "kind",
-            "handshake"
-          ]
-        },
-        {
-          "description": "A sealed [`TerminalOutput`].",
+          "description": "The login runs.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
-              "const": "frame"
-            },
-            "sealed": {
-              "$ref": "#/$defs/Bytes"
-            }
-          },
-          "required": [
-            "kind",
-            "sealed"
-          ]
-        },
-        {
-          "description": "The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.",
-          "type": "object",
-          "properties": {
-            "code": {
-              "$ref": "#/$defs/Code"
-            },
-            "kind": {
-              "type": "string",
-              "const": "closed"
+              "const": "opened"
             }
           },
           "required": [
             "kind"
           ]
-        }
-      ]
-    },
-    "TerminalId": {
-      "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
-      "type": "string",
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
-    },
-    "TerminalInput": {
-      "description": "From the browser to the core, only inside the seal.",
-      "oneOf": [
-        {
-          "description": "What the person typed or pasted.",
-          "type": "object",
-          "properties": {
-            "data": {
-              "$ref": "#/$defs/Bytes"
-            },
-            "kind": {
-              "type": "string",
-              "const": "input"
-            }
-          },
-          "required": [
-            "kind",
-            "data"
-          ]
         },
-        {
-          "description": "The terminal's size in characters.",
-          "type": "object",
-          "properties": {
-            "cols": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            },
-            "kind": {
-              "type": "string",
-              "const": "resize"
-            },
-            "rows": {
-              "type": "integer",
-              "format": "uint32",
-              "minimum": 0
-            }
-          },
-          "required": [
-            "kind",
-            "cols",
-            "rows"
-          ]
-        }
-      ]
-    },
-    "TerminalOutput": {
-      "description": "From the core to the browser, only inside the seal.",
-      "oneOf": [
         {
           "description": "What the login printed.",
           "type": "object",
@@ -5167,11 +5063,33 @@
             "kind",
             "sign_in"
           ]
+        },
+        {
+          "description": "The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.",
+          "type": "object",
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/Code"
+            },
+            "kind": {
+              "type": "string",
+              "const": "closed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
+    "TerminalId": {
+      "description": "One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,\n`-` or `_`.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+    },
     "TerminalUpdate": {
-      "description": "A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the\nserver, to the browser that opened `terminal`.",
+      "description": "A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the\nserver, to the browser that opened `terminal`.",
       "type": "object",
       "properties": {
         "event": {

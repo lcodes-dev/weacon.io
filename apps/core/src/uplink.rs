@@ -2,10 +2,11 @@
 //! with its token, and dials again with backoff whenever the connection drops.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
@@ -80,6 +81,8 @@ pub(crate) struct Uplink {
     pub(crate) capabilities: fn(&Path) -> Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
+    /// Told each time a connection ends.
+    pub(crate) down: Arc<Notify>,
     pub(crate) chats: Chats,
     pub(crate) timing: Timing,
     /// Random numbers, for the backoff's jitter.
@@ -166,10 +169,11 @@ impl Uplink {
             proposals: offers(PROPOSALS),
             shared: None,
         };
-        if self
+        let unpaired = self
             .serve(&mut socket, paired, from_daemon, &mut link)
-            .await
-        {
+            .await;
+        self.down.notify_one();
+        if unpaired {
             return Ok(Ended::Unpaired);
         }
         let steady = up.elapsed() >= self.timing.steady_after;
@@ -406,12 +410,12 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// The daemon's uplink, which takes the server's chat messages to `chats` and hands the
-/// rest of what it asks to `to_daemon`.
+/// The daemon's uplink, which takes the server's chat messages to `chats`, hands the rest of
+/// what it asks to `to_daemon` and tells `down` each time its connection ends.
 pub(crate) fn new(
     app: &crate::app::App,
     state_dir: &Path,
-    to_daemon: ToDaemon,
+    (to_daemon, down): (ToDaemon, Arc<Notify>),
     chats: Chats,
 ) -> Uplink {
     Uplink {
@@ -420,6 +424,7 @@ pub(crate) fn new(
         capabilities: |dir| crate::session::offered(dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
+        down,
         chats,
         timing: TIMING,
         random: weacon_appkit::random_id,
@@ -441,7 +446,6 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{brief, soon};
-    use crate::machine::Key;
     use crate::test_support::tls::{Tls, answer, nowhere, read_request};
     use crate::test_support::{VERSION, messages, recording_logger};
 
@@ -458,7 +462,6 @@ mod tests {
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: owner(),
             token: "t0ken".to_owned(),
-            key: Key::from_random([7; 32]),
         }
     }
 
@@ -473,6 +476,7 @@ mod tests {
             capabilities: |_| vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
+            down: Arc::default(),
             // A way to an engine that has stopped.
             chats: crate::chats::test_support::parts().0.chats,
             timing: Timing {
@@ -1086,16 +1090,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_that_breaks_is_lost() {
+    async fn a_connection_that_breaks_is_lost_and_says_it_is_down() {
+        use futures_util::FutureExt;
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
         let pairing = paired(&tls);
+        let told = || link.down.notified().now_or_never().is_some();
+        let before = told();
 
         let (ended, ()) = tokio::join!(once(&link, &pairing), async {
             drop(welcoming(&tls, &[CONNECT]).await);
         });
 
         assert_eq!(ended.unwrap(), Ended::Lost);
+        assert_eq!((before, told()), (false, true));
     }
 
     #[tokio::test]

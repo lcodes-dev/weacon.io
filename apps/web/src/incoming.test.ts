@@ -253,8 +253,8 @@ test("a machine's settings answer passes with the fields the page reads, and a n
 
 test("a terminal update passes with the fields the terminal reads, and a newer kind is dropped", () => {
   const update = (event: unknown) => frame({ id: 0, type: "terminal", terminal: "t-1", workspace: "w-1", event });
-  const good = [{ kind: "accepted", handshake: "ab" }, { kind: "frame", sealed: "cd" }, { kind: "closed" }, { kind: "closed", code: "terminal.busy" }];
-  const bad = [null, { kind: "accepted" }, { kind: "frame", sealed: 7 }, { kind: "closed", code: 7 }, { kind: "later", sealed: "cd" }];
+  const good = [{ kind: "opened" }, { kind: "output", data: "cd" }, { kind: "ended", sign_in: "signed_in" }, { kind: "closed" }, { kind: "closed", code: "terminal.busy" }];
+  const bad = [null, { kind: "output" }, { kind: "output", data: 7 }, { kind: "ended" }, { kind: "closed", code: 7 }, { kind: "later", data: "cd" }];
 
   for (const event of good) {
     assert.equal(parse(update(event))?.type, "terminal", JSON.stringify(event));

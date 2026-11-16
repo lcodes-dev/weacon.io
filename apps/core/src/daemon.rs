@@ -421,7 +421,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_paired_daemon_dials_its_server_and_still_stops() {
-        use crate::machine::{self, Key, Paired};
+        use crate::machine::{self, Paired};
         let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
         let paired = Paired {
             server: tls.url(),
@@ -429,7 +429,6 @@ mod tests {
             machine: "mc-1".parse().unwrap(),
             owner: "a-owner".parse().unwrap(),
             token: "t0ken".to_owned(),
-            key: Key::from_random([7; 32]),
         };
         machine::write(&dir, &paired).unwrap();
         let app = test_support::app(Some(&dir), None);
