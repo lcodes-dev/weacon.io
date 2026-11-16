@@ -102,6 +102,12 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates `dir` and makes it this user's alone, whatever it was.
+pub(crate) fn own_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new().recursive(true).create(dir)?;
+    make_private(dir)
+}
+
 /// Windows runs any file whose name ends in `.exe`.
 #[expect(
     clippy::unnecessary_wraps,

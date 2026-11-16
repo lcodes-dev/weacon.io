@@ -128,7 +128,8 @@ impl Daemon {
         let failed = |error: io::Error| {
             Fault::new(code!("daemon.start_failed"), "The daemon couldn't start").because(error)
         };
-        platform::private_dir(state_dir).map_err(failed)?;
+        // The socket, the pairing and the plugin its agents run are in it.
+        platform::own_dir(state_dir).map_err(failed)?;
         let lock = weacon_appkit::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
@@ -551,6 +552,20 @@ mod tests {
         // Its uplink, which holds a way to the engine, must not hold the engine up.
         let stopped = timeout(Duration::from_secs(10), running.stop()).await;
         assert!(stopped.is_ok(), "the daemon never stopped");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_state_folder_others_can_enter_is_made_its_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let running = start(&dir).unwrap();
+
+        let mode = fs::metadata(&*dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        running.stop().await;
     }
 
     #[tokio::test]

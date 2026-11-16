@@ -124,7 +124,7 @@ pub(crate) async fn current(state_dir: &Path) -> Result<Paired, Fault> {
 /// When it can't be written.
 pub(crate) fn write(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
     let json = serde_json::to_vec_pretty(paired).map_err(|error| not_saved().because(error))?;
-    platform::private_dir(state_dir).map_err(|error| not_saved().because(error))?;
+    platform::own_dir(state_dir).map_err(|error| not_saved().because(error))?;
     weacon_appkit::write_private(&file(state_dir), &json)
         .map_err(|error| not_saved().because(error))
 }
@@ -226,15 +226,15 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_pairing_is_written_for_its_user_alone_in_a_folder_others_can_enter() {
+    fn a_pairing_is_written_for_its_user_alone_and_its_folder_made_so() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
         write(&dir, &paired()).unwrap();
 
-        let mode = fs::metadata(file(&dir)).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&dir), mode(&file(&dir))), (0o700, 0o600));
     }
 
     #[test]
