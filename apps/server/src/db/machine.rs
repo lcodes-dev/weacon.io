@@ -6,7 +6,6 @@ use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{
     AccountId, MachineId, MachineName, MachineOs, MachineSummary, PairPending, PairingId, Secret,
-    code,
 };
 
 use super::{Db, failed, stored, unreadable};
@@ -90,7 +89,7 @@ impl Db {
         .bind(pairing.secret)
         .bind(pairing.token)
         .bind(pairing.name.as_str())
-        .bind(os_text(pairing.os)?)
+        .bind(os_text(pairing.os))
         .bind(pairing.expires_at)
         .execute(&mut *transaction)
         .await
@@ -315,12 +314,11 @@ pub(super) fn paired(
     })
 }
 
-fn os_text(os: MachineOs) -> Result<&'static str, Fault> {
+const fn os_text(os: MachineOs) -> &'static str {
     match os {
-        MachineOs::Macos => Ok("macos"),
-        MachineOs::Linux => Ok("linux"),
-        MachineOs::Windows => Ok("windows"),
-        MachineOs::Newer => Err(unknown_value()),
+        MachineOs::Macos => "macos",
+        MachineOs::Linux => "linux",
+        MachineOs::Windows => "windows",
     }
 }
 
@@ -331,13 +329,6 @@ fn stored_os(text: &str) -> Result<MachineOs, Fault> {
         "windows" => Ok(MachineOs::Windows),
         _ => Err(unreadable()),
     }
-}
-
-fn unknown_value() -> Fault {
-    Fault::new(
-        code!("machine.unknown_value"),
-        "The machine has a value this version doesn't know",
-    )
 }
 
 #[cfg(test)]
@@ -518,11 +509,9 @@ mod tests {
     #[test]
     fn every_known_system_is_stored_and_read_back() {
         for os in [MachineOs::Macos, MachineOs::Linux, MachineOs::Windows] {
-            assert_eq!(stored_os(os_text(os).unwrap()).unwrap(), os);
+            assert_eq!(stored_os(os_text(os)).unwrap(), os);
         }
-        let (newer, damaged) = (os_text(MachineOs::Newer), stored_os("plan9"));
-        assert_eq!(code(&newer.unwrap_err()), "machine.unknown_value");
-        assert_eq!(code(&damaged.unwrap_err()), "db.unreadable");
+        assert_eq!(code(&stored_os("plan9").unwrap_err()), "db.unreadable");
     }
 
     #[tokio::test]

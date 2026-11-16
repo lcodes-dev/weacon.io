@@ -89,13 +89,6 @@ test("a refusal because the machine is offline or the chat detached says so, and
   assert.equal(await silent, "unsure");
 });
 
-test("a state this build doesn't know is unsure, whatever its name", async () => {
-  const { receipts: all } = setup();
-  const odd = all.wait("r-1", 2);
-  all.take({ id: 2, type: "receipt", request: "r-1", state: "constructor" } as unknown as Incoming);
-  assert.equal(await odd, "unsure");
-});
-
 test("how a command ended is said once for every subject", () => {
   const subject = { subject: "the answer", refused: "wasn't taken", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes no answers" };
   const said = (["accepted", "refused", "offline", "detached", "working", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));

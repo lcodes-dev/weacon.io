@@ -840,11 +840,9 @@ export type MachineName = string;
  * The operating system a machine runs.
  */
 export type MachineOs = (
-  | (
-    | "macos"
-    | "linux"
-    | "windows"
-  )
+  | "macos"
+  | "linux"
+  | "windows"
 );
 
 /**
@@ -1190,7 +1188,7 @@ export type PairPending = {
 
 /**
  * From a core to the server, unauthenticated: starts pairing the machine. The answer is a
- * [`PairStarted`]; the server refuses an `os` it doesn't know.
+ * [`PairStarted`].
  */
 export type PairStart = {
   name: MachineName;

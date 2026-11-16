@@ -750,7 +750,6 @@ mod tests {
         let opened = one(&host, sessions(Some("a-1"), open)).await;
         let stranger = one(&host, sessions(Some("a-2"), SessionsQueryKind::List)).await;
         let nobody = one(&host, sessions(None, SessionsQueryKind::List)).await;
-        let newer = one(&host, sessions(Some("a-1"), SessionsQueryKind::Newer)).await;
 
         assert_eq!(listed.id, 9);
         let Message::SessionsAnswer(answer) = listed.message else {
@@ -777,10 +776,6 @@ mod tests {
                 Some("sessions.not_owner")
             );
         }
-        assert_eq!(
-            test_support::error_code(&newer.message),
-            Some("message.unsupported")
-        );
         let logged = serde_json::to_string(&*records.lock().unwrap()).unwrap();
         assert!(!logged.contains("MARKER"), "{logged}");
     }

@@ -69,20 +69,7 @@ fn pair(
         pairing: started.pairing,
         secret: started.secret,
     };
-    let PairClaimed::Paired {
-        machine,
-        owner,
-        token,
-    } = claimed(&server, &claim, every)?
-    else {
-        return Err(refused());
-    };
-    let paired = Paired {
-        server: asked.url.to_owned(),
-        machine,
-        owner,
-        token: token.into_inner(),
-    };
+    let paired = claimed(&server, asked.url, &claim, every)?;
     machine::write(state_dir, &paired)?;
     writeln!(
         out,
@@ -91,13 +78,30 @@ fn pair(
     .map_err(|error| not_printed().because(error))
 }
 
-/// Claims the pairing every `every` until the person confirms it, or it ends.
-fn claimed(server: &Server, claim: &PairClaim, every: Duration) -> Result<PairClaimed, Fault> {
+/// Claims the pairing with the server at `url` every `every` until the person confirms it, or
+/// it ends.
+fn claimed(
+    server: &Server,
+    url: &str,
+    claim: &PairClaim,
+    every: Duration,
+) -> Result<Paired, Fault> {
     let mut failed_in_a_row = 0;
     for _ in 0..CLAIMS {
         match server.post("/api/machines/pair/claim", claim) {
             Ok(PairClaimed::Waiting) => failed_in_a_row = 0,
-            Ok(claimed) => return Ok(claimed),
+            Ok(PairClaimed::Paired {
+                machine,
+                owner,
+                token,
+            }) => {
+                return Ok(Paired {
+                    server: url.to_owned(),
+                    machine,
+                    owner,
+                    token: token.into_inner(),
+                });
+            }
             Err(Failure::Unreachable(fault)) => {
                 failed_in_a_row += 1;
                 if failed_in_a_row >= FAILED_CLAIMS {
@@ -151,7 +155,7 @@ fn not_printed() -> Fault {
 mod tests {
     use serde::Serialize;
     use tokio::sync::Notify;
-    use weacon_protocol::{AccountId, ErrorBody, MachineId, MachineOs, PairingId};
+    use weacon_protocol::{AccountId, ErrorBody, MachineId, PairingId};
 
     use weacon_testing::TempDir;
 
@@ -337,8 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn this_system_is_one_the_server_knows() {
-        assert_ne!(platform::MACHINE_OS, MachineOs::Newer);
+    fn this_systems_name_is_one_the_server_takes() {
         MachineName::try_from(platform::MACHINE_NAME.to_owned()).unwrap();
     }
 }

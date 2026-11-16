@@ -17,6 +17,7 @@ import type {
   InvitationOffer,
   MachineId,
   MachineList,
+  MachineOs,
   SharedMachineList,
   MachineSummary,
   Mark,
@@ -43,6 +44,7 @@ import type {
   WorkspaceCreate,
   WorkspaceId,
   WorkspaceList,
+  WorkspaceRole,
   WorkspaceSummary,
 } from "../protocol.ts";
 
@@ -278,8 +280,11 @@ function fields(value: unknown, keys: string[]): boolean {
 const isAccount = (value: unknown): value is AccountSignedIn => fields(value, ["account", "email"]);
 const isStarted = (value: unknown): value is SignInStarted => fields(value, ["challenge"]);
 const isError = (value: unknown): value is { code: Code } => fields(value, ["code"]);
+const ROLES: readonly string[] = ["owner", "member"] satisfies WorkspaceRole[];
+// A past member has no role.
+const isRole = (role: unknown): boolean => role === undefined || ROLES.includes(role as string);
 const isWorkspace = (value: unknown): value is WorkspaceSummary =>
-  fields(value, ["id", "name", "role"]) && isId((value as WorkspaceSummary).id);
+  fields(value, ["id", "name"]) && isId((value as WorkspaceSummary).id) && ROLES.includes((value as WorkspaceSummary).role);
 /** A guard for an object whose `key` holds a list of items that `item` accepts. */
 function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unknown) => value is T {
   return (value): value is T => {
@@ -328,11 +333,13 @@ const isHit = (value: unknown): boolean => {
 };
 const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
+const SYSTEMS: readonly string[] = ["macos", "linux", "windows"] satisfies MachineOs[];
 const isPending = (value: unknown): value is PairPending =>
-  fields(value, ["pairing", "name", "os"]) && isId((value as PairPending).pairing);
+  fields(value, ["pairing", "name"]) && isId((value as PairPending).pairing) && SYSTEMS.includes((value as PairPending).os);
 const isMachine = (value: unknown): value is MachineSummary =>
-  fields(value, ["id", "name", "os"]) &&
+  fields(value, ["id", "name"]) &&
   isId((value as MachineSummary).id) &&
+  SYSTEMS.includes((value as MachineSummary).os) &&
   typeof (value as MachineSummary).paired_at === "number" &&
   isOffers((value as { missing?: unknown }).missing) &&
   ["undefined", "boolean"].includes(typeof (value as { connected?: unknown }).connected);
@@ -346,7 +353,7 @@ const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
 const isInvitation = (value: unknown): boolean => fields(value, ["email"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);
 const isMembers = (value: unknown): value is MemberList =>
-  listOf("members", (member) => fields(member, ["id", "name"]))(value) &&
+  listOf("members", (member) => fields(member, ["id", "name"]) && isRole((member as { role?: unknown }).role))(value) &&
   (!isObject(value) || value["invitations"] === undefined || listOf("invitations", isInvitation)(value));
 const isTask = (value: unknown): value is TaskRecord => versioned(value, ["title", "status", "order"]);
 const isTasks = listOf<TaskList>("tasks", isTask);

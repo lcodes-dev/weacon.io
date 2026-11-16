@@ -29,7 +29,6 @@ test("only the messages this app acts on pass, each with the fields it reads", (
     { id: 5, type: "diff_answer", request: "r-1", workspace: "w-1", chat: "c-1", answer: { kind: "unchanged" } },
     { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: "chat_changed", chat: "c-1" } },
     { id: 0, type: "workspace", workspace: "w-1", seq: 4, change: { kind: "member_joined", member: "m-1" } },
-    { id: 0, type: "workspace", workspace: "w-1", seq: 5, change: { kind: "newer" } },
   ];
   const bad = [
     { id: 0, type: "constructor" },
@@ -39,6 +38,9 @@ test("only the messages this app acts on pass, each with the fields it reads", (
     { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: "chat_changed" } },
     { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: null },
     { id: 0, type: "workspace", workspace: "w-1", seq: 3, change: { kind: 1 } },
+    { id: 0, type: "workspace", workspace: "w-1", seq: 5, change: { kind: "renamed" } },
+    { id: 4, type: "receipt", request: "r-1", state: "queued" },
+    { id: 4, type: "receipt", request: "r-1", state: "failed" },
     { id: 0, type: "newer" },
     { type: "receipt", request: "r-1", state: "accepted" },
     { id: 1, type: "welcome", app: { name: "x" } },
@@ -146,6 +148,9 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
   ];
   const bad = [
     undefined,
+    { kind: "receipt", receipt: { request: "q-1", state: "queued" } },
+    { kind: "receipt", receipt: { state: "accepted" } },
+    { kind: "run", update: { run: "r-1", event: { event: "finished", outcome: { state: "queued" } } } },
     { kind: 3 },
     { kind: "prompt", text: "Hi" },
     { kind: "outside_prompt" },
@@ -267,7 +272,7 @@ test("a terminal update passes with the fields the terminal reads, and no other 
   assert.equal(parse(frame({ id: 0, type: "terminal", terminal: "t-1", event: { kind: "closed" } })), undefined);
 });
 
-test("a sessions answer passes with the fields the list and the transcript read, and a newer kind passes to be ignored", () => {
+test("a sessions answer passes with the fields the list and the transcript read, and no other kind does", () => {
   const sessions = (answer: unknown) => frame({ id: 6, type: "sessions_answer", request: "r-1", machine: "mc-1", answer });
   const session = { agent: "codex", session: "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d", modified_at: 5 };
   const entry = { seq: 1, event: { kind: "outside_prompt", text: "Hi" } };
@@ -275,11 +280,11 @@ test("a sessions answer passes with the fields the list and the transcript read,
     { kind: "list", sessions: [session, { ...session, folder: "/work" }] },
     { kind: "opened", events: [entry], more: false },
     { kind: "missing" },
-    { kind: "later" },
   ];
   const bad = [
     null,
     {},
+    { kind: "later" },
     { kind: "list", sessions: "none" },
     { kind: "list", sessions: [{ ...session, folder: 3 }] },
     { kind: "list", sessions: [{ ...session, modified_at: 1.5 }] },

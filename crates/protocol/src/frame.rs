@@ -120,7 +120,7 @@ mod tests {
     use crate::test_support::{chat, request, run, workspace};
     use crate::{
         AgentKind, App, ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatUpdate, ErrorBody,
-        Hello, Message, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceChange, WorkspaceUpdate,
+        Hello, Message, RunEvent, RunUpdate,
     };
 
     fn envelope(id: u32) -> Envelope {
@@ -226,24 +226,9 @@ mod tests {
     fn messages_only_received_are_never_sent() {
         let messages = [
             Message::Unknown,
-            Message::Receipt(Receipt {
-                request: request(),
-                outcome: Outcome::Newer,
-            }),
             Message::Run(RunUpdate {
                 run: run(),
                 event: RunEvent::Newer,
-            }),
-            Message::Run(RunUpdate {
-                run: run(),
-                event: RunEvent::Finished {
-                    outcome: Outcome::Newer,
-                },
-            }),
-            Message::Workspace(WorkspaceUpdate {
-                workspace: workspace(),
-                seq: 1,
-                change: WorkspaceChange::Newer,
             }),
         ];
 

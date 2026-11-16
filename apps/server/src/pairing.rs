@@ -10,8 +10,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    MachineId, MachineList, MachineOs, MachineSummary, PairClaim, PairClaimed, PairConfirm,
-    PairLookup, PairStart, PairStarted, code,
+    MachineId, MachineList, MachineSummary, PairClaim, PairClaimed, PairConfirm, PairLookup,
+    PairStart, PairStarted, code,
 };
 
 use crate::app::{fresh, new_id};
@@ -41,9 +41,6 @@ pub(crate) fn routes() -> Router<Shared> {
 /// `POST /api/machines/pair`: records a machine waiting to be paired, and answers with the
 /// code for its person and the secret its core claims it with.
 pub(crate) async fn start(State(shared): State<Shared>, Body(body): Body<PairStart>) -> Response {
-    if body.os == MachineOs::Newer {
-        return error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false);
-    }
     // Answered like a name the protocol refuses, since only a new name can be held to this.
     if body.name.as_str().trim() != body.name.as_str() {
         return error(StatusCode::BAD_REQUEST, code!("request.invalid"), false);
@@ -193,6 +190,8 @@ mod tests {
     use std::net::SocketAddr;
 
     use serde_json::{Value, json};
+
+    use weacon_protocol::MachineOs;
 
     use super::*;
     use crate::test_support::{
@@ -382,7 +381,7 @@ mod tests {
         let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
 
         assert_eq!(status, "http/1.1 400 bad request");
-        assert_eq!(refusal["code"], "pairing.invalid");
+        assert_eq!(refusal["code"], "request.invalid");
     }
 
     #[tokio::test]

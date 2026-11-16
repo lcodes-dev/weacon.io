@@ -1314,7 +1314,12 @@ mod tests {
         let Message::SessionsQuery(mut newer) = sessions_query(&machine) else {
             panic!();
         };
-        newer.query = SessionsQueryKind::Newer;
+        newer.query = SessionsQueryKind::Open {
+            agent: AgentKind::Newer,
+            session: AgentSession::try_from("0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d".to_owned())
+                .unwrap(),
+            after: 0,
+        };
         let sent = envelope(2, Message::SessionsQuery(newer));
         let unsendable = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 

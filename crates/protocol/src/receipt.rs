@@ -21,14 +21,8 @@ pub enum Outcome {
     Accepted,
     Completed,
     Interrupted,
-    Failed {
-        code: Code,
-    },
+    Failed { code: Code },
     Unknown,
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The core's or server's word on a command, sent when it accepts it and again when it ends.
@@ -78,18 +72,5 @@ mod tests {
             assert_eq!(serde_json::to_value(&envelope).unwrap(), wire);
             assert_eq!(serde_json::from_value::<Envelope>(wire).unwrap(), envelope);
         }
-    }
-
-    #[test]
-    fn a_newer_peers_state_still_parses() {
-        let wire = json!({ "id": 3, "type": "receipt", "request": "r-1", "state": "queued" });
-
-        assert_eq!(
-            serde_json::from_value::<Envelope>(wire).unwrap().message,
-            Message::Receipt(Receipt {
-                request: request(),
-                outcome: Outcome::Newer,
-            })
-        );
     }
 }
