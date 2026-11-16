@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { answered, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { vendorName } from "../chat/label.ts";
+import type { MentionItem } from "../composer/draft.ts";
+import { agentItem } from "../composer/mentionables.ts";
 import { later } from "../connection.ts";
 import { agents, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, MachineId, RepoId } from "../protocol.ts";
@@ -42,6 +44,11 @@ export function useMyAgent(socket: WorkspaceSocket, machines: Callable[], away: 
     machine === undefined || chosenRepo === undefined || chosenAgent === undefined ? undefined : { machine: machine.id, repo: chosenRepo, agent: chosenAgent };
   const missing = machine === undefined ? undefined : agentMissing({ repos: shownRepos, agent: chosenAgent !== undefined });
   return { machines, machine, settings, listed, shownRepos, chosenRepo, offered, chosenAgent, choice, missing, setPicked, setRepo, setAgent };
+}
+
+/** The agent `pick` is of, once it is whole, for a message to mention. */
+export function picked({ choice, machine }: ReturnType<typeof useMyAgent>): MentionItem[] {
+  return choice === undefined ? [] : [agentItem(choice.machine, choice.agent, machine?.shared === true ? machine.name : undefined)];
 }
 
 /** The fields of `useMyAgent`'s pick, and what it still lacks. */

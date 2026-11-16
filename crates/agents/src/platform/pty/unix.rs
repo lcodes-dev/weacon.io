@@ -68,10 +68,6 @@ impl Pty {
         }
         Ok(())
     }
-
-    pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
-        set_size(self.master.get_ref(), size)
-    }
 }
 
 impl Drop for Pty {
@@ -80,25 +76,28 @@ impl Drop for Pty {
     }
 }
 
-// Sends the output, then how the program ended. The end comes when the program ends, even if
+// Sends the output, then that the program ended. The end comes when the program ends, even if
 // something it started still holds its side open.
 async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender<Event>) {
     let mut buffer = vec![0; CHUNK];
-    let success = loop {
+    loop {
         let read = tokio::select! {
-            status = child.wait() => break status.is_ok_and(|status| status.success()),
+            _ = child.wait() => break,
             read = read(&master, &mut buffer) => read,
         };
         match read {
             Reading::Later => {}
-            Reading::End => break child.wait().await.is_ok_and(|status| status.success()),
+            Reading::End => {
+                drop(child.wait().await);
+                break;
+            }
             Reading::Data(read) => {
                 if !send(&events, &buffer, read).await {
                     return;
                 }
             }
         }
-    };
+    }
     // What the program wrote just before it ended is still to be read, but no more than
     // that: something it left running may never stop printing.
     for _ in 0..LAST_READS {
@@ -107,7 +106,7 @@ async fn pump(master: Arc<AsyncFd<File>>, mut child: Child, events: mpsc::Sender
             Ok(read) => drop(events.send(output(&buffer, read)).await),
         }
     }
-    drop(events.send(Event::Exited { success }).await);
+    drop(events.send(Event::Exited).await);
 }
 
 const LAST_READS: usize = 4;

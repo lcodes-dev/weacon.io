@@ -97,6 +97,9 @@ pub enum WorkspaceChange {
     /// Someone was invited, joined, left or was removed, or an invitation ended; clients read
     /// the members again.
     MembersChanged,
+    /// A machine began or stopped being shared with the workspace; clients read its shared
+    /// machines again.
+    MachinesChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
     TaskChanged { task: TaskId, version: u64 },
@@ -182,6 +185,10 @@ mod tests {
             (
                 WorkspaceChange::MembersChanged,
                 json!({ "kind": "members_changed" }),
+            ),
+            (
+                WorkspaceChange::MachinesChanged,
+                json!({ "kind": "machines_changed" }),
             ),
             (
                 WorkspaceChange::TaskChanged {

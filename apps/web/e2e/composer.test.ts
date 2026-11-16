@@ -138,6 +138,7 @@ test("@ offers the writer's own agent, a pick stays one mention, and a message t
   assert.deepEqual(prompts(harness.received()).at(-1)?.action, {
     kind: "prompt",
     text: "hi @Clau亜de Code and @Claude Code @clx ok",
+    machine: "mc-1",
   });
   // After a call, the box opens on the agent's mention again.
   await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");

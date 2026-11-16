@@ -1,5 +1,5 @@
-/** An agent a message can mention, which calls it. */
-export type MentionItem = { id: string; label: string };
+/** An agent a message can mention, which calls it: `id` is its machine's, and `note` says whose it is. */
+export type MentionItem = { id: string; label: string; note: string };
 
 /** A picked item, kept as the text `@label` at `[start, end)` of the draft. */
 export type Mention = { start: number; end: number; item: MentionItem };
@@ -64,16 +64,17 @@ export function pickMention(draft: Draft, at: Query, item: MentionItem): Placed 
 }
 
 /**
- * The draft a box opens with: the mention of the writer's `agent` and a space while their
- * messages go to it (`calling`), which they delete to write to the chat's people; else nothing.
+ * The draft a box opens with: the mention of `agent` and a space while the writer's messages go
+ * to it (`calling`), which they delete to write to the chat's people; else nothing.
  */
 export function opening(agent: MentionItem | undefined, calling: boolean): Placed {
   return agent !== undefined && calling ? pickMention(EMPTY_DRAFT, { start: 0, text: "" }, agent) : { draft: EMPTY_DRAFT, caret: 0 };
 }
 
-/** Whether `draft` calls `agent`, the writer's own now: one of its mentions is of it. */
-export function callsAgent(draft: Draft, agent: MentionItem | undefined): boolean {
-  return agent !== undefined && draft.mentions.some(({ item }) => item.id === agent.id);
+/** The agent `draft` calls: the first it mentions of `agents`, those the writer may call now. */
+export function called(draft: Draft, agents: readonly MentionItem[]): MentionItem | undefined {
+  const mentioned = draft.mentions.find(({ item }) => agents.some(({ id }) => id === item.id));
+  return mentioned?.item;
 }
 
 /** Whether `draft` says nothing yet: it is blank, or holds only mentions. */

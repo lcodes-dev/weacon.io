@@ -1,19 +1,19 @@
 import { type Command, deliver } from "../chat/commands.ts";
 import type { ChatRef } from "../chat-ref.ts";
-import type { Envelope, RequestId } from "../protocol.ts";
+import type { Envelope, MachineId, RequestId } from "../protocol.ts";
 import { type Receipts, type Settled, type Subject, settledText } from "../receipts.ts";
 
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
 
-/** Sends `text` under `request`: to the writer's own agent when it `calls` it, else to the chat's people. */
-export type Send = (text: string, request: RequestId, calls: boolean) => Promise<Sent>;
+/** Sends `text` under `request`: to the agent on the machine it `calls`, else to the chat's people. */
+export type Send = (text: string, request: RequestId, calls: MachineId | undefined) => Promise<Sent>;
 
 /** `send`, telling `plain` once a message that calls no agent is taken. */
 export function notingPlain(send: Send, plain: () => void): Send {
   return async (text, request, calls) => {
     const sent = await send(text, request, calls);
-    if (sent === "accepted" && !calls) {
+    if (sent === "accepted" && calls === undefined) {
       plain();
     }
     return sent;

@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_program_gets_a_terminal_of_its_size_that_follows_a_resize() {
+    async fn a_program_gets_a_terminal_of_its_size() {
         let dir = TempDir::new().unwrap();
         let (terminal, mut events) =
             Terminal::open(program(&dir), Size::new(100, 30).unwrap()).unwrap();
@@ -93,11 +93,9 @@ mod tests {
         output_until(&mut events, &mut seen, "30 100").await;
         terminal.input(b"MARKER-7f3a\r").await.unwrap();
         output_until(&mut events, &mut seen, "got MARKER-7f3a").await;
-        terminal.resize(Size::new(120, 40).unwrap()).unwrap();
         terminal.input(b"\r").await.unwrap();
-        output_until(&mut events, &mut seen, "40 120").await;
         let end = after_output(&mut events, &mut seen).await;
-        assert_eq!(end, Some(Event::Exited { success: false }));
+        assert_eq!(end, Some(Event::Exited));
         assert_eq!(next_event(&mut events).await, None);
     }
 
@@ -118,7 +116,7 @@ mod tests {
             Terminal::open(Command::new(path), Size::new(80, 24).unwrap()).unwrap();
         let mut seen = String::new();
         let end = after_output(&mut events, &mut seen).await;
-        assert_eq!(end, Some(Event::Exited { success: true }));
+        assert_eq!(end, Some(Event::Exited));
         assert!(seen.contains("left"), "{seen:?}");
     }
 

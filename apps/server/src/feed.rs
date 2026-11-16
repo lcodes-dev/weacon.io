@@ -331,6 +331,7 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
                 WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
                 WorkspaceChange::MemberJoined { .. }
                 | WorkspaceChange::MembersChanged
+                | WorkspaceChange::MachinesChanged
                 | WorkspaceChange::Newer => true,
             };
             if !wanted {

@@ -11,8 +11,8 @@ use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, MachineShares,
-    Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
+    AccountId, App, Capability, ChatAction, ChatCommand, Code, Envelope, ErrorBody, Hello,
+    MachineShares, Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
 };
 
 use self::asking::{Asking, asking, for_members};
@@ -305,7 +305,7 @@ impl Uplink {
             return reply(failure(envelope.id, code!("machine.not_owner")));
         }
         if ChatLink::is_for(&envelope.message) {
-            return link.chats.take(envelope);
+            return link.chats.take(owners_stop(envelope, owner));
         }
         let id = envelope.id;
         let taken = if let Message::TerminalCommand(command) = &envelope.message {
@@ -321,6 +321,18 @@ impl Uplink {
             reply(for_now(id, code!("uplink.busy")))
         }
     }
+}
+
+// A stop from the machine's owner goes on as one made on the machine itself, with no member:
+// the chats let that end any turn, and a member's only a turn they called.
+fn owners_stop(mut envelope: Envelope, owner: &AccountId) -> Envelope {
+    if let Message::ChatCommand(command) = &mut envelope.message
+        && matches!(command.action, ChatAction::Interrupt)
+        && command.by.as_ref().is_some_and(|by| by.account == *owner)
+    {
+        command.by = None;
+    }
+    envelope
 }
 
 impl Uplink {
@@ -628,6 +640,28 @@ mod tests {
         Some((request.as_str(), code.as_str()))
     }
 
+    #[test]
+    fn the_owners_stop_goes_on_as_the_machines_own_and_a_members_under_their_name() {
+        let owner = AccountId::try_from("a-1".to_owned()).unwrap();
+        let other = AccountId::try_from("a-other".to_owned()).unwrap();
+        let by = |envelope: Envelope| {
+            let Message::ChatCommand(command) = envelope.message else {
+                panic!("not a chat command");
+            };
+            command.by.map(|by| by.account)
+        };
+
+        assert_eq!(by(owners_stop(command("r-1", Some(&owner)), &owner)), None);
+        let members = owners_stop(command("r-2", Some(&other)), &owner);
+        assert_eq!(by(members), Some(other));
+        // Anything else of the owner's keeps their name, as a prompt must.
+        let mut held = command("r-3", Some(&owner));
+        if let Message::ChatCommand(command) = &mut held.message {
+            command.action = ChatAction::Hold;
+        }
+        assert_eq!(by(owners_stop(held, &owner)), Some(owner));
+    }
+
     #[tokio::test]
     async fn only_the_owners_commands_are_taken_and_an_unpairing_ends_it() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
@@ -848,6 +882,7 @@ mod tests {
         let chat = ChatId::try_from("c-1".to_owned()).unwrap();
         [
             Message::DiffQuery(weacon_protocol::DiffQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -855,6 +890,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeQuery(WorktreeQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -862,6 +898,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeCommand(WorktreeCommand {
+                machine: None,
                 request,
                 workspace,
                 chat,
@@ -1021,10 +1058,11 @@ mod tests {
             // An answer that changes nothing tells the server nothing more.
             outgoing.send(changed.clone()).await.unwrap();
             let again = heard(&mut peer).await;
+            // The look after that answer may still be reading, and so see this change first.
             share(&dir, "w-2", false);
             outgoing.send(changed.clone()).await.unwrap();
-            heard(&mut peer).await;
-            (first, answer, second, again, heard(&mut peer).await)
+            let last = [heard(&mut peer).await, heard(&mut peer).await];
+            (first, answer, second, again, last)
         };
 
         let (ended, heard) = tokio::join!(
@@ -1033,12 +1071,12 @@ mod tests {
         );
 
         assert_eq!(ended.unwrap(), Ended::Lost);
-        let (first, answer, second, again, third) = heard;
+        let (first, answer, second, again, last) = heard;
         assert_eq!(first, shares(&["w-2"]));
         assert_eq!(answer, changed.message);
         assert_eq!(second, shares(&["w-1", "w-2"]));
         assert_eq!(again, changed.message);
-        assert_eq!(third, shares(&["w-1"]));
+        assert!(last.contains(&changed.message) && last.contains(&shares(&["w-1"])));
     }
 
     #[tokio::test]

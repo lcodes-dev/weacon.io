@@ -45,15 +45,15 @@ pub struct Events(mpsc::Receiver<Event>);
 pub enum Event {
     /// What it printed; nothing in Weacon reads it.
     Output(Vec<u8>),
-    /// It ended, successfully or not; nothing comes after.
-    Exited { success: bool },
+    /// It ended; nothing comes after.
+    Exited,
 }
 
 impl fmt::Debug for Event {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Output(data) => write!(f, "Output({} bytes)", data.len()),
-            Self::Exited { success } => f.debug_struct("Exited").field("success", success).finish(),
+            Self::Exited => f.write_str("Exited"),
         }
     }
 }
@@ -72,12 +72,6 @@ impl Terminal {
     /// When the sign-in can't take it, such as after it ended.
     pub async fn input(&self, data: &[u8]) -> io::Result<()> {
         self.pty.write(data).await
-    }
-
-    /// # Errors
-    /// When the terminal is gone.
-    pub fn resize(&self, size: Size) -> io::Result<()> {
-        self.pty.resize(size)
     }
 }
 
@@ -108,10 +102,6 @@ mod tests {
     fn what_was_printed_never_shows_in_debug() {
         let shown = format!("{:?}", Event::Output(b"MARKER-CODE-4821".to_vec()));
         assert_eq!(shown, "Output(16 bytes)");
-        assert_eq!(
-            format!("{:?}", Event::Exited { success: true }),
-            "Exited { success: true }"
-        );
     }
 
     // A script stands in for each vendor and prints how it was started.
@@ -144,11 +134,11 @@ mod tests {
             }
         }
 
-        async fn printed(launch: &Launch) -> (String, bool) {
+        async fn printed(launch: &Launch) -> String {
             let (_terminal, mut events) = launch.open_login(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
             match after_output(&mut events, &mut seen).await {
-                Some(Event::Exited { success }) => (seen, success),
+                Some(Event::Exited) => seen,
                 other => panic!("{other:?} after {seen:?}"),
             }
         }
@@ -157,15 +147,14 @@ mod tests {
         async fn each_vendors_own_login_runs_with_fixed_arguments_and_the_workspace_folder() {
             let dir = TempDir::new().unwrap();
             let config = dir.join("config").display().to_string();
-            let (claude, success) = printed(&launch(AgentKind::Claude, &dir)).await;
-            assert!(success);
+            let claude = printed(&launch(AgentKind::Claude, &dir)).await;
             assert!(
                 claude.contains(&format!(
                     "args [auth login] claude [{config}] codex [] term [xterm-256color]"
                 )),
                 "{claude}"
             );
-            let (codex, _) = printed(&launch(AgentKind::Codex, &dir)).await;
+            let codex = printed(&launch(AgentKind::Codex, &dir)).await;
             assert!(
                 codex.contains(&format!(
                     "args [login] claude [] codex [{config}] term [xterm-256color]"
@@ -217,12 +206,11 @@ mod tests {
             let (terminal, mut events) = launch.open_login(Size::new(80, 24).unwrap()).unwrap();
             let mut seen = String::new();
             output_until(&mut events, &mut seen, "ready").await;
-            terminal.resize(Size::new(90, 20).unwrap()).unwrap();
             terminal.input(b"MARKER-51c2\r").await.unwrap();
             output_until(&mut events, &mut seen, "got MARKER-51c2").await;
-            output_until(&mut events, &mut seen, "20 90").await;
+            output_until(&mut events, &mut seen, "24 80").await;
             let end = after_output(&mut events, &mut seen).await;
-            assert_eq!(end, Some(Event::Exited { success: true }));
+            assert_eq!(end, Some(Event::Exited));
             assert_eq!(next_event(&mut events).await, None);
         }
     }

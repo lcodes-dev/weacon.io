@@ -19,7 +19,7 @@ import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { useTasks } from "../tasks/use-tasks.ts";
 import { ChatTaskLink } from "./chat-task-link.tsx";
-import { legOf } from "./chat-list.ts";
+import { reached } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
 import { Departures } from "./departures.ts";
@@ -274,6 +274,7 @@ function WorkspaceChats({
     void machines.load();
     void shared.load();
   };
+  useReloadOn(socket, ({ kind }) => kind === "machines_changed", () => void shared.load());
   // Back from Settings, where a machine may have been paired or shared, they are read again.
   const wasAway = useRef(away);
   useEffect(() => {
@@ -300,8 +301,9 @@ function WorkspaceChats({
   const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
   const mine = own?.kind === "ready" ? own.machines : [];
   const missing = <StartMissing ready={ready} problem={machines.problem ?? shared.problem} check={loadMachines} openSettings={openSettings} />;
-  const leg = legOf(workspace.member, open);
-  const guest = others.some(({ id, owner }) => id === leg?.machine_id && owner !== workspace.member);
+  // On their own machines, connected or not, and on those shared with the workspace.
+  const agents = reached((machines.value?.machines ?? []).map(({ id }) => id), others.map(({ id }) => id), open);
+  const leg = agents[0]?.leg;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className={starting || place.chat !== undefined ? "workspace detail" : "workspace"}>
@@ -365,9 +367,8 @@ function WorkspaceChats({
                 live={live}
                 chatRef={{ workspace: workspace.id, chat: open.id }}
                 me={workspace.member}
-                leg={leg}
+                agents={agents}
                 machines={mine}
-                guest={guest}
                 missing={missing}
                 openSettings={openSettings}
                 away={away}

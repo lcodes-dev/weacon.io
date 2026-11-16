@@ -87,8 +87,6 @@ function noteOf(state: TerminalState): string | undefined {
       return "Connecting to the machine.";
     case "open":
       return undefined;
-    case "ended":
-      return state.signIn === "signed_in" ? "Signed in." : "The sign-in ended without signing in.";
     case "closed":
       switch (state.problem) {
         case undefined:

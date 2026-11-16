@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::hex::{from_hex, to_hex};
 use crate::token::token_id;
-use crate::{AgentKind, Asker, Code, MachineId, SignInState, WorkspaceId};
+use crate::{AgentKind, Asker, Code, MachineId, WorkspaceId};
 
 token_id!(
     /// One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
@@ -16,9 +16,6 @@ token_id!(
     TerminalId,
     "not a terminal id"
 );
-
-// The most `Bytes` carries.
-const BYTES_MAX: usize = 65535;
 
 /// A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
 /// `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only
@@ -70,8 +67,6 @@ pub enum TerminalEvent {
     Opened,
     /// What the login printed.
     Output { data: Bytes },
-    /// The login ended, and then the vendor's status command said this.
-    Ended { sign_in: SignInState },
     /// The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.
     Closed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,22 +79,18 @@ pub enum TerminalEvent {
     Newer,
 }
 
-/// Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
-/// how many, since they are terminal content.
+/// Bytes that travel as lowercase hex. Its `Debug` shows only how many, since they are
+/// terminal content.
 #[derive(Clone, PartialEq, Eq, JsonSchema)]
-pub struct Bytes(
-    #[schemars(with = "String", regex(pattern = BYTES_PATTERN), length(max = HEX_MAX))] Vec<u8>,
-);
+pub struct Bytes(#[schemars(with = "String", regex(pattern = BYTES_PATTERN))] Vec<u8>);
 
 // The schema's form of the check in `deserialize`; a test keeps the two in step.
 const BYTES_PATTERN: &str = r"^([0-9a-f]{2})*$";
-const HEX_MAX: usize = 2 * BYTES_MAX;
 
 impl Bytes {
-    /// `None` when there are more than that.
     #[must_use]
-    pub fn new(bytes: Vec<u8>) -> Option<Self> {
-        (bytes.len() <= BYTES_MAX).then_some(Self(bytes))
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
     }
 
     #[must_use]
@@ -122,9 +113,9 @@ impl Serialize for Bytes {
 
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bytes = from_hex(&String::deserialize(deserializer)?)
-            .ok_or_else(|| de::Error::custom("not lowercase hex bytes"))?;
-        Self::new(bytes).ok_or_else(|| de::Error::custom("too many bytes"))
+        from_hex(&String::deserialize(deserializer)?)
+            .map(Self)
+            .ok_or_else(|| de::Error::custom("not lowercase hex bytes"))
     }
 }
 
@@ -138,7 +129,7 @@ mod tests {
     use crate::{Envelope, Message};
 
     fn bytes(raw: &[u8]) -> Bytes {
-        Bytes::new(raw.to_vec()).unwrap()
+        Bytes::new(raw.to_vec())
     }
 
     fn command(action: TerminalAction) -> TerminalCommand {
@@ -211,12 +202,6 @@ mod tests {
                 json!({ "kind": "output", "data": "6f6b" }),
             ),
             (
-                TerminalEvent::Ended {
-                    sign_in: SignInState::SignedIn,
-                },
-                json!({ "kind": "ended", "sign_in": "signed_in" }),
-            ),
-            (
                 TerminalEvent::Closed { code: None },
                 json!({ "kind": "closed" }),
             ),
@@ -251,11 +236,10 @@ mod tests {
     }
 
     #[test]
-    fn bytes_are_lowercase_hex_within_their_limit_and_match_the_schema() {
+    fn bytes_are_lowercase_hex_and_match_the_schema() {
         let pattern = Regex::new(BYTES_PATTERN).unwrap();
         let parse = |hex: &str| serde_json::from_value::<Bytes>(json!(hex));
-        let full = "ff".repeat(BYTES_MAX);
-        for hex in ["", "00", "0123456789abcdef", full.as_str()] {
+        for hex in ["", "00", "0123456789abcdef"] {
             let parsed = parse(hex).unwrap();
             assert!(pattern.is_match(hex), "{hex}");
             assert_eq!(serde_json::to_value(&parsed).unwrap(), json!(hex));
@@ -265,9 +249,6 @@ mod tests {
             parse(hex).unwrap_err();
             assert!(!pattern.is_match(hex), "{hex}");
         }
-        parse(&format!("{full}00")).unwrap_err();
-        assert!(Bytes::new(vec![0; BYTES_MAX]).is_some());
-        assert!(Bytes::new(vec![0; BYTES_MAX + 1]).is_none());
         serde_json::from_value::<Bytes>(json!(7)).unwrap_err();
     }
 

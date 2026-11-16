@@ -308,6 +308,7 @@ mod tests {
         let query = Envelope {
             id: 7,
             message: Message::DiffQuery(DiffQuery {
+                machine: None,
                 request: RequestId::try_from("q-1".to_owned()).unwrap(),
                 workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
                 chat: ChatId::try_from("c-1".to_owned()).unwrap(),

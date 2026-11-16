@@ -1,9 +1,9 @@
 import { hex, unhex } from "../hex.ts";
 import { newId } from "../ids.ts";
-import type { AgentKind, Code, MachineSummary, SignInState, TerminalAction, TerminalCommand, TerminalId, TerminalUpdate, WorkspaceId } from "../protocol.ts";
+import type { AgentKind, Code, MachineSummary, TerminalAction, TerminalCommand, TerminalId, TerminalUpdate, WorkspaceId } from "../protocol.ts";
 
 /** Where a sign-in terminal stands, for the view to say. */
-export type TerminalState = { kind: "connecting" } | { kind: "open" } | { kind: "ended"; signIn: SignInState } | { kind: "closed"; problem?: Problem };
+export type TerminalState = { kind: "connecting" } | { kind: "open" } | { kind: "closed"; problem?: Problem };
 
 /** Why a terminal closed before its sign-in ended. */
 export type Problem = "offline" | "broken" | Code;
@@ -15,9 +15,6 @@ export interface Screen {
 }
 
 export type Size = { cols: number; rows: number };
-
-// As hex, in its JSON, this stays well within what one message's bytes may hold.
-const INPUT_PIECE = 16_384;
 
 export type Options = {
   machine: MachineSummary;
@@ -66,18 +63,14 @@ export class SignInTerminal {
         const data = bytesOf(event.data);
         return data === undefined ? this.#stop("broken") : screen.write(data);
       }
-      case "ended":
-        return screen.state({ kind: "ended", signIn: event.sign_in });
       case "closed":
         return this.#close(event.code);
     }
   }
 
-  /** Sends what was typed; a long paste goes in pieces. */
+  /** Sends what was typed or pasted. */
   input(data: Uint8Array): void {
-    for (let at = 0; at < data.length && !this.#done; at += INPUT_PIECE) {
-      this.#act({ kind: "input", data: hex(data.subarray(at, at + INPUT_PIECE)) });
-    }
+    this.#act({ kind: "input", data: hex(data) });
   }
 
   /** Ends the sign-in, if it still runs. */

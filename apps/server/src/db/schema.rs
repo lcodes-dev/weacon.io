@@ -33,6 +33,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::REQUESTS_GONE,
     steps::CHAT_LEGS,
     steps::SHARED_MACHINES,
+    steps::LEGS_BY_MACHINE,
     steps::PLAIN_TOKENS,
 ];
 
@@ -237,8 +238,9 @@ mod tests {
                 "sign_in_challenges",
                 "chat_tasks",
                 "invitations",
-                "chat_legs",
                 "shared_machines",
+                "chat_legs",
+                "chat_calls",
                 "sessions",
                 "machines",
                 "pairings"

@@ -784,9 +784,8 @@
       ]
     },
     "Bytes": {
-      "description": "Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only\nhow many, since they are terminal content.",
+      "description": "Bytes that travel as lowercase hex. Its `Debug` shows only how many, since they are\nterminal content.",
       "type": "string",
-      "maxLength": 131070,
       "pattern": "^([0-9a-f]{2})*$"
     },
     "Capability": {
@@ -822,7 +821,7 @@
           ]
         },
         {
-          "description": "Starts or queues a turn of the sender's own agent. Only the sender's first prompt in a\nchat has `repo` and `machine`, one of the sender's; the server drops `machine` before\nrelaying. `agent` fixes their agent there on that prompt, Claude when missing; a later\nprompt naming another agent is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince the sender's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
+          "description": "Starts or queues a turn of the chat's agent on one machine. To the server every prompt\nnames that `machine`, the sender's own or one shared with the workspace, which the\nserver drops before relaying; the first prompt to a machine in a chat makes its agent\nthere, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a\nlater prompt naming another is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince that agent's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1085,7 +1084,7 @@
           ]
         },
         {
-          "description": "A person's prompt to their own agent, accepted under `request`, with the repository, the\nagent and the task it named, and a note of the element it carried, if any. `author` is\nwho wrote it, which the server stamps from its own record of the machine that sent it;\nleft out when not known.",
+          "description": "A person's prompt to their own agent, accepted under `request`, with the repository, the\nagent and the task it named, and a note of the element it carried, if any. `author` is\nwho wrote it, left out when not known: the server stamps it, and for a prompt it took\nfrom a member `text` too, from its own record, never from the core that sent it.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1195,14 +1194,14 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatLeg": {
-      "description": "A member's own agent in a chat, fixed by their first prompt there: its machine's id and\nname, and the repository it works in, if any.",
+      "description": "The agent a chat has on one machine, made by the first prompt to it there: the `member` it\nlast worked for, its machine's id and name, and the repository it works in, if any.",
       "type": "object",
       "properties": {
         "agent": {
           "$ref": "#/$defs/AgentKind"
         },
         "detached": {
-          "description": "Its machine was unpaired, or no longer has its log: it can never be prompted again.",
+          "description": "Its machine was unpaired, or its machine's owner left the workspace: it can never be\nprompted again.",
           "type": "boolean"
         },
         "machine": {
@@ -1706,6 +1705,10 @@
         },
         "chat": {
           "$ref": "#/$defs/ChatId"
+        },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
+          "$ref": "#/$defs/MachineId"
         },
         "query": {
           "$ref": "#/$defs/DiffQueryKind"
@@ -5040,23 +5043,6 @@
           ]
         },
         {
-          "description": "The login ended, and then the vendor's status command said this.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "ended"
-            },
-            "sign_in": {
-              "$ref": "#/$defs/SignInState"
-            }
-          },
-          "required": [
-            "kind",
-            "sign_in"
-          ]
-        },
-        {
           "description": "The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.",
           "type": "object",
           "properties": {
@@ -5160,6 +5146,19 @@
             "kind": {
               "type": "string",
               "const": "members_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "A machine began or stopped being shared with the workspace; clients read its shared\nmachines again.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "machines_changed"
             }
           },
           "required": [
@@ -5514,6 +5513,10 @@
         "chat": {
           "$ref": "#/$defs/ChatId"
         },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
+          "$ref": "#/$defs/MachineId"
+        },
         "request": {
           "$ref": "#/$defs/RequestId"
         },
@@ -5538,6 +5541,10 @@
         },
         "chat": {
           "$ref": "#/$defs/ChatId"
+        },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
+          "$ref": "#/$defs/MachineId"
         },
         "query": {
           "$ref": "#/$defs/WorktreeQueryKind"

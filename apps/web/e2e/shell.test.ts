@@ -444,6 +444,11 @@ async function openChats(served: Served, chats: Array<{ id: string; title: strin
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { id, member } = await firstWorkspace(page);
   agentOwner = owner(member);
+  if (agentOwner === member) {
+    // Their agent's machine is one of their own.
+    const laptop = { id: "mc-1", name: "laptop", os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true };
+    await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [laptop] }) }));
+  }
   await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), legs: [{ member: owner(member), machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open" as const, updated_at: 1 })) }));
   await page.getByRole("button", { name: "Personal" }).click();
   return id;
@@ -469,7 +474,7 @@ test("a chat where a person has their agent shows its transcript and prompts, an
   // A message that mentions their agent calls it.
   await box.focus();
   await page.keyboard.type("@cl");
-  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
+  await page.getByRole("listbox", { name: "Agents" }).getByRole("option", { name: "Claude Code" }).waitFor();
   await page.keyboard.press("Enter");
   await page.keyboard.type("go on");
   await page.keyboard.press("Enter");
@@ -480,7 +485,7 @@ test("a chat where a person has their agent shows its transcript and prompts, an
   const [said, prompt, stop] = commands(sent);
   assert.deepEqual(
     [said?.action, prompt?.action, stop?.action],
-    [{ kind: "say", text: "Use the top shelf too." }, { kind: "prompt", text: "@Claude Code go on" }, { kind: "interrupt" }],
+    [{ kind: "say", text: "Use the top shelf too." }, { kind: "prompt", text: "@Claude Code go on", machine: "mc-1" }, { kind: "interrupt" }],
   );
   assert.equal(await page.getByRole("button", { name: "Add your agent" }).count(), 0);
   for (const command of [said, prompt, stop]) {
@@ -579,6 +584,57 @@ test("open changes cut short by a lost connection are asked for again once it is
   await page.getByText("src/shelves.rs").waitFor();
   assert.equal(sent.filter((envelope) => envelope.type === "diff_query").length, 2);
   await page.getByText("src/pantry.rs").waitFor();
+});
+
+test("with agents on two of a person's machines, Changes shows each one's, asked of its own machine", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  // Each machine's agent changed one file of its own, two lines long.
+  const changed = (asked: Envelope): Envelope[] => {
+    if (asked.type !== "diff_query") {
+      return [];
+    }
+    const lines = ["jars", "tins"].map((text) => ({ op: "added" as const, text }));
+    const content = { kind: "text" as const, hunks: [{ old_start: 1, new_start: 1, lines }] };
+    const file = { path: asked.machine === "mc-2" ? "src/desk.rs" : "src/laptop.rs", change: { kind: "added" as const }, content };
+    return [{ id: asked.id, type: "diff_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "file", file, files: 1 } }];
+  };
+  const { sent } = await serveFeed(page, { also: ["diff.view", "workspace.chat_commands"], answer: (asked) => [...snapshot(asked), ...changed(asked)] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const { member } = await firstWorkspace(page);
+  agentOwner = member;
+  const machine = (id: string, name: string) => ({ id, name, os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true });
+  const machines = { machines: [machine("mc-1", "laptop"), machine("mc-2", "desk")] };
+  await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(machines) }));
+  const legs = machines.machines.map(({ id, name }) => ({ member, machine: name, machine_id: id, agent: "claude" as const, detached: false }));
+  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner: member, legs, state: "open", updated_at: 1 }] }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.getByText("src/laptop.rs").waitFor();
+  const of = page.getByLabel("Changes of");
+  assert.deepEqual(await of.getByRole("option").allInnerTexts(), ["Claude Code · laptop", "Claude Code · desk"]);
+  // A comment on the first agent's change is that agent's alone: it isn't there to send to the other.
+  const pane = page.locator(".chat-changes");
+  const row = await pane.locator(".line").first().boundingBox();
+  assert.ok(row !== null);
+  await page.mouse.click(row.x + 8, row.y + row.height / 2);
+  await pane.getByRole("textbox").fill("Why jars first?");
+  await pane.getByRole("button", { name: "Comment", exact: true }).click();
+  await pane.getByRole("button", { name: "Send review" }).waitFor();
+  await of.selectOption("mc-2");
+
+  // The other agent's changes replace the first one's, which are not shown as its own.
+  await page.getByText("src/desk.rs").waitFor();
+  assert.equal(await page.getByText("src/laptop.rs").count(), 0);
+  assert.equal(await pane.getByRole("button", { name: "Send review" }).count(), 0);
+  assert.equal(await pane.locator(".comment").count(), 0);
+  assert.equal(commands(sent).length, 0);
+  const asked = sent.flatMap((envelope) => (envelope.type === "diff_query" ? [envelope.machine] : []));
+  assert.deepEqual(asked, ["mc-1", "mc-2"]);
 });
 
 // A worktree as a core answers it: c-1's has uncommitted work, any other chat has none yet.
