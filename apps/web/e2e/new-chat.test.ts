@@ -21,9 +21,10 @@ const AGENT = { kind: "claude" as const, owner: { kind: "member" as const, membe
 
 /**
  * A stand-in for the server and the machine's core: what a person's first words made, with
- * whether they called the agent, and the refusals still to come.
+ * whether they called the agent, and the refusals still to come. While `legless`, the list has
+ * no chat's agents, as a server's before a core's first event.
  */
-type Chats = { made: Map<string, string>; called: Set<string>; offline: number; settings?: MachineSettings };
+type Chats = { made: Map<string, string>; called: Set<string>; offline: number; settings?: MachineSettings; legless?: boolean };
 
 // Answers the machine's settings and repositories, takes a first message, or a first prompt on
 // the person's own machine unless it is offline, and plays the made chat: its first words, then,
@@ -93,7 +94,7 @@ async function standIn(page: Page, machines: MachineList, chats: Chats): Promise
         id,
         title: text,
         owner: member,
-        legs: chats.called.has(id) ? [{ member, machine: STUDIO.name, machine_id: "mc-1", agent: "claude", detached: false }] : [],
+        legs: chats.called.has(id) && chats.legless !== true ? [{ member, machine: STUDIO.name, machine_id: "mc-1", agent: "claude", detached: false }] : [],
         state: "open",
         updated_at: 1,
       })),
@@ -160,6 +161,59 @@ test("from an empty workspace, a person starts a chat that calls their agent on 
   assert.deepEqual(prompt?.action, { kind: "prompt", text: "@Claude Code Sort the pantry.", machine: STUDIO.id, repo: "garden", agent: "claude" });
   assert.equal(new URL(page.url()).searchParams.get("chat"), prompt?.chat);
   assert.equal(firstPrompts(sent).length, 1);
+});
+
+test("a chat started with a call has the starter's agent before the chat list does, and keeps what they type as the list arrives", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const chats: Chats = { made: new Map(), called: new Set(), offline: 0, legless: true };
+  await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
+  let push: (envelope: Envelope) => void = () => {};
+  const answers = newChatServer(chats);
+  const { sent } = await serveFeed(page, {
+    also: ["workspace.chat_commands", "machine.settings"],
+    answer: (asked, opened, reply) => {
+      push = reply;
+      return answers(asked, opened, reply);
+    },
+  });
+  await openPersonal(served);
+  await nav(page).getByText("No chats yet.").waitFor();
+  await nav(page).getByRole("button", { name: "New chat" }).click();
+  const form = page.getByRole("region", { name: "New chat" });
+  await form.getByLabel("Repository").selectOption("garden");
+  await form.getByLabel("Agent").selectOption("claude");
+  await call(page, "Sort the pantry.");
+  // The chat list is held back, so the chat shows from what New chat knows alone.
+  let release = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/workspaces/*/chats", async (route) => {
+    await held;
+    return route.fallback();
+  });
+  await form.getByRole("button", { name: "Send" }).click();
+
+  await page.getByText("Sorting the shelves now.").waitFor();
+  const box = page.getByRole("combobox", { name: "Message" });
+  const add = page.getByRole("button", { name: "Add your agent" });
+  assert.equal(await add.count(), 0);
+  await box.fill("half a thought");
+  // The list has the chat first without its agent, then with it.
+  release();
+  await page.getByRole("heading", { name: "@Claude Code Sort the pantry." }).waitFor();
+  assert.equal(await add.count(), 0);
+  chats.legless = false;
+  const [started] = sent.flatMap((envelope) => (envelope.type === "chat_command" ? [envelope] : []));
+  assert.ok(started !== undefined);
+  // Its new title shows once the second list is on screen.
+  chats.made.set(started.chat, "Sort the shed.");
+  push({ id: 0, type: "workspace", workspace: started.workspace, seq: 2, change: { kind: "chat_changed", chat: started.chat } });
+  await page.getByRole("heading", { name: "Sort the shed." }).waitFor();
+  assert.equal(await add.count(), 0);
+  assert.equal(await box.inputValue(), "half a thought");
 });
 
 test("with no machine paired, New chat says what calling an agent lacks, and still starts a chat with a plain message", { timeout: 600_000 }, async (t) => {

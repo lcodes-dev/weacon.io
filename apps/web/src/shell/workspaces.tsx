@@ -11,14 +11,14 @@ import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
 import { useMembers, useNames } from "../members/use-names.ts";
-import type { ChatId, MachineId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
+import type { ChatId, ChatLeg, MachineId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
 import { onceSharedKnown, readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { useTasks } from "../tasks/use-tasks.ts";
 import { ChatTaskLink } from "./chat-task-link.tsx";
-import { reached } from "./chat-list.ts";
+import { firstLeg, reached, withFirst } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
 import { Departures } from "./departures.ts";
@@ -289,17 +289,18 @@ function WorkspaceChats({
   // New chat for a task opens with it; going to a chat, however, leaves the new one.
   const [starting, setStarting] = useState(place.task !== undefined);
   useEffect(() => setStarting(place.chat === undefined && place.task !== undefined), [place.chat, place.task]);
-  // The chat just started here, shown before the list has it.
-  const [started, setStarted] = useState<ChatId>();
+  // The chat just started here, shown before the list has it, with the agent its first message called.
+  const [started, setStarted] = useState<{ id: ChatId; legs: ChatLeg[] }>();
   const live = status.state === "live";
   const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
-  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, legs: [] } : undefined);
+  const startedHere = place.chat !== undefined && place.chat === started?.id ? started : undefined;
+  const open = listedChat ?? (startedHere && { ...startedHere, title: undefined });
   // The view stays while the feed reconnects; it sends only once the feed is back.
   const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
   const mine = own?.kind === "ready" ? own.machines : [];
   const missing = <StartMissing ready={ready} problem={machines.problem ?? shared.problem} check={loadMachines} openSettings={openSettings} />;
   // On their own machines, connected or not, and on those shared with the workspace.
-  const agents = reached((machines.value?.machines ?? []).map(({ id }) => id), others.map(({ id }) => id), open);
+  const agents = reached((machines.value?.machines ?? []).map(({ id }) => id), others.map(({ id }) => id), open && { legs: withFirst(open.legs, startedHere?.legs ?? []) });
   const leg = agents[0]?.leg;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
@@ -347,8 +348,8 @@ function WorkspaceChats({
             machines={mine}
             missing={missing}
             openSettings={openSettings}
-            started={(chat) => {
-              setStarted(chat);
+            started={(chat, called) => {
+              setStarted({ id: chat, legs: firstLeg(called, mine, workspace.member) });
               setStarting(false);
               go({ view: "chats", chat });
               void chats.load();

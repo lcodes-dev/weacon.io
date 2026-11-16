@@ -8,7 +8,7 @@ import { newId } from "../ids.ts";
 import type { ChatId, MachineId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { MyAgentFields, picked, useMyAgent } from "./my-agent.tsx";
-import { type Callable, type Readiness, missingText, startProblem } from "./start.ts";
+import { type Callable, type Choice, type Readiness, missingText, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
 
 /**
@@ -16,7 +16,7 @@ import { TaskField } from "./task-field.tsx";
  * picked to begin with. With one of `machines`, their own or one shared with the workspace, they also pick
  * their agent in the chat, which a message that mentions it calls; `missing` says what calling
  * one lacks when there is none. Once the server takes the message, `started` hears the chat's
- * id; until then the box keeps the text.
+ * id and the agent it `called`, if any; until then the box keeps the text.
  */
 export function NewChat({
   socket,
@@ -35,7 +35,7 @@ export function NewChat({
   away: boolean;
   machines: Callable[];
   missing: ReactNode;
-  started(chat: ChatId): void;
+  started(chat: ChatId, called: Choice | undefined): void;
   /** Opens Settings, where the person signs an agent in on a machine, with `machine`'s own open. */
   openSettings(machine?: MachineId): void;
   /** The workspace's tasks, while the server serves them. */
@@ -53,10 +53,11 @@ export function NewChat({
     const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
     const forIt = named && { task: { id: taskId, title: forTask?.title ?? "" } };
     const chat = newId();
-    const action = calls !== undefined && choice !== undefined ? { kind: "prompt" as const, text, ...choice, ...forIt } : { kind: "say" as const, text, ...forIt };
+    const called = calls === undefined ? undefined : choice;
+    const action = called !== undefined ? { kind: "prompt" as const, text, ...called, ...forIt } : { kind: "say" as const, text, ...forIt };
     const sent = await commands.start({ workspace: socket.workspace, chat }, action, request);
     if (sent === "accepted") {
-      started(chat);
+      started(chat, called);
     }
     return sent;
   };
