@@ -101,14 +101,16 @@ async fn acted_on(
         let may = theirs(&working) || owns.await?;
         return may.then(|| working.clone()).ok_or_else(not_owner);
     }
-    // Before its run reports, a call in flight says which of their legs they mean, even one
-    // whose machine has sent nothing up yet.
-    let now = shared.now();
-    let called = workspace.calling(&command.chat, &member.id, now).await?;
-    let held = all
-        .iter()
-        .find(|leg| !leg.detached && Some(&leg.machine) == called.as_ref());
-    let leg = held.or_else(|| legs.iter().find(theirs));
+    // Before its run reports, a call in flight says which leg is meant, even one whose machine
+    // has sent nothing up yet: the asker's own call, and never a leg someone else just called.
+    let called = workspace.calling(&command.chat, shared.now()).await?;
+    let (on, by) = called.unzip();
+    let held = |leg: &&Leg| !leg.detached && Some(&leg.machine) == on.as_ref();
+    let leg = if by.as_ref() == Some(&member.id) {
+        all.iter().find(held)
+    } else {
+        legs.iter().find(|leg| theirs(leg) && !held(leg))
+    };
     leg.cloned().ok_or_else(not_owner)
 }
 
@@ -234,6 +236,7 @@ async fn first_call(
         member,
         request,
         text,
+        away: None,
     };
     let called = workspace.call(id, (machine, member), at).await;
     let noted = match called {
@@ -276,19 +279,16 @@ async fn prompt(
         agent: agent.unwrap_or(AgentKind::Claude),
         repo: repo.as_ref(),
     };
+    let away = away(from, &id).await?;
     let asked = Asked {
         member: &member.id,
         request: &request,
         text: &words,
+        away: away.as_ref(),
     };
     let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
-    // Looked at once the turn is held, so a run that began to report meanwhile is seen.
-    let sent = match one_at_a_time(from, &id, &machine_id).await {
-        Ok(()) => relay_to(from, (chat, &leg), command, back).await,
-        refused => refused,
-    };
-    if let Err(fault) = sent {
+    if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
         workspace.uncall_leg(&id, &leg.machine, asked).await?;
         return Err(fault);
     }
@@ -346,30 +346,18 @@ async fn callable(
     Err(crate::db::detached())
 }
 
-// A chat runs one agent at a time: while one works or waits for an answer, on a connected
-// machine that still holds the chat, only the member it works for prompts it, and no other
-// agent is called.
-async fn one_at_a_time(
+// The machine whose agent is at work in the chat `id` while it is away, as a closed laptop
+// is: it holds no one back. A chat otherwise runs one agent at a time, which the call itself
+// checks as it takes the turn.
+async fn away(
     Sender { shared, member, .. }: Sender<'_>,
     id: &ChatId,
-    machine: &MachineId,
-) -> Result<(), Fault> {
+) -> Result<Option<MachineId>, Fault> {
     let workspace = &member.workspace;
     let legs = workspace.legs(id).await?;
-    let Some(working) = at_work(workspace, id, &legs).await? else {
-        return Ok(());
-    };
-    if working.machine == *machine && working.member == member.id {
-        return Ok(());
-    }
-    if working.detached {
-        return Ok(());
-    }
-    // A machine that is away, as a closed laptop is, holds no one back.
-    match workspace.leg_on(id, &working.machine).await? {
-        Some(_) if shared.links.is_open(&working.machine) => Err(agent_working()),
-        _ => Ok(()),
-    }
+    let working = at_work(workspace, id, &legs).await?;
+    let away = working.filter(|leg| !shared.links.is_open(&leg.machine));
+    Ok(away.map(|leg| leg.machine.clone()))
 }
 
 // Which of `legs` works or waits for an answer in the chat `id`, if one does.
@@ -1407,6 +1395,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_stop_never_reaches_an_agent_someone_else_just_called() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        // The shared agent last worked for Grace, and rests.
+        two.ask(grace, go("r-3", ada)).await.unwrap();
+        two.up(ada, 1, status(RunState::Running)).await;
+        two.up(ada, 2, status(RunState::Idle)).await;
+        // Ada calls it; her prompt hasn't come back up yet.
+        two.ask(ada, go("r-4", ada)).await.unwrap();
+        sent(&mut two.adas);
+
+        let stop = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
+
+        assert_eq!(stop.unwrap_err().code().as_str(), "chat.not_owner");
+        assert!(sent(&mut two.adas).is_empty());
+    }
+
+    #[tokio::test]
     async fn a_call_that_holds_the_turn_stops_no_run_that_works_for_someone_else() {
         let mut two = Two::new().await;
         share(&two, &["w1"]).await;
@@ -1430,17 +1437,9 @@ mod tests {
         sent(&mut two.adas);
 
         let stop = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
-        let mine = two.ask(grace, go("r-6", grace)).await;
 
         assert_eq!(stop.unwrap_err().code().as_str(), "chat.not_owner");
         assert!(sent(&mut two.adas).is_empty());
-        // Her call of her own agent meanwhile is refused and leaves nothing behind.
-        assert_eq!(mine.unwrap_err().code().as_str(), "chat.agent_working");
-        let workspace = &grace.member.workspace;
-        let (chat, request) = (id("c-1"), id("r-6"));
-        let noted = workspace.asker(&chat, &grace.machine, &request).await;
-        assert_eq!(noted.unwrap(), None);
-        assert!(sent(&mut two.graces).is_empty());
     }
 
     fn author_of(event: &ChatEvent) -> Option<&MemberId> {

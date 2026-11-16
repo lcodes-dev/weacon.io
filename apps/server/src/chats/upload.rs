@@ -646,8 +646,7 @@ mod tests {
                 .await
                 .unwrap();
             // His run reporting leaves her call holding the turn.
-            let holds = workspace.calling(&chat, &ada.member.id, NOW + 60);
-            let holds = holds.await.unwrap();
+            let holds = workspace.calling(&chat, NOW + 60).await.unwrap();
             assert_eq!(holds.is_some(), seq < 4, "{seq}");
         }
 

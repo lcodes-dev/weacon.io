@@ -155,6 +155,7 @@ pub(crate) fn ask<'a>(member: &'a weacon_protocol::MemberId, request: &'a Reques
         member,
         request,
         text: WORDS,
+        away: None,
     }
 }
 

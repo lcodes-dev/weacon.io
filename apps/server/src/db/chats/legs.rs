@@ -4,7 +4,7 @@
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId, RequestId, RunId,
+    AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId, RequestId, RunId, RunState,
 };
 
 use super::super::changes::Versioned;
@@ -32,6 +32,8 @@ pub(crate) struct Asked<'a> {
     pub(crate) member: &'a MemberId,
     pub(crate) request: &'a RequestId,
     pub(crate) text: &'a str,
+    /// A machine that is away, as a closed laptop is, whose agent at work holds no one back.
+    pub(crate) away: Option<&'a MachineId>,
 }
 
 /// A machine's agent in a chat.
@@ -146,13 +148,51 @@ impl Workspace {
             return Err(detached());
         }
         let called = (new.machine_id, member);
-        if !self.call_in(&mut transaction, chat, called, now).await? {
+        if self
+            .busy_in(&mut transaction, chat, called, asked.away)
+            .await?
+            || !self.call_in(&mut transaction, chat, called, now).await?
+        {
             return Ok(None);
         }
         self.asked_in(&mut transaction, chat, new.machine_id, asked)
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(Some(leg))
+    }
+
+    // Whether another agent of `chat` is at work, so `member`'s call of the leg on `machine`
+    // must wait: one working or waiting for an answer, for someone else or on another machine,
+    // which still serves the chat and isn't `away`.
+    async fn busy_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        (machine, member): (&MachineId, &MemberId),
+        away: Option<&MachineId>,
+    ) -> Result<bool, Fault> {
+        let runs = self.read_runs(&mut *connection, chat).await?;
+        let working = |state| {
+            matches!(
+                state,
+                RunState::Starting | RunState::Running | RunState::Waiting
+            )
+        };
+        let Some(run) = runs.run().filter(|run| working(run.state)) else {
+            return Ok(false);
+        };
+        let legs = self.legs_in(&mut *connection, chat).await?;
+        let named = legs.iter().find(|leg| leg.own_run(&run.run).is_some());
+        // A run from before legs named theirs is the chat's first leg's.
+        let Some(at_work) = named.or_else(|| legs.first()) else {
+            return Ok(false);
+        };
+        let theirs = at_work.machine == *machine && at_work.member == *member;
+        if theirs || at_work.detached || Some(&at_work.machine) == away {
+            return Ok(false);
+        }
+        let served = self.leg_on_in(connection, chat, &at_work.machine).await?;
+        Ok(served.is_some())
     }
 
     /// Writes the leg of `chat` that `leg` describes, to work for `member`, whom its machine
@@ -187,7 +227,8 @@ impl Workspace {
         Ok(())
     }
 
-    // Whether `machine` serves `member`: it is their own, or shared with the workspace.
+    // Whether `machine` serves `member`, still of the workspace: it is their own, or shared
+    // with the workspace.
     async fn serves_in(
         &self,
         connection: &mut SqliteConnection,
@@ -197,7 +238,7 @@ impl Workspace {
         sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM members AS m
                  JOIN machines AS d ON d.machine_id = ?3
-                 WHERE m.workspace_id = ?1 AND m.member_id = ?2
+                 WHERE m.workspace_id = ?1 AND m.member_id = ?2 AND m.account_id IS NOT NULL
                      AND (d.account_id = m.account_id OR EXISTS (
                          SELECT 1 FROM shared_machines AS s
                          JOIN members AS o ON o.workspace_id = s.workspace_id
@@ -246,6 +287,15 @@ impl Workspace {
 
     /// Every leg of `chat`, in the order they were made.
     pub(crate) async fn legs(&self, chat: &ChatId) -> Result<Vec<Leg>, Fault> {
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        self.legs_in(&mut reader, chat).await
+    }
+
+    async fn legs_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+    ) -> Result<Vec<Leg>, Fault> {
         let select = format!(
             "SELECT {} FROM chat_legs AS l WHERE l.workspace_id = ? AND l.chat_id = ?
              ORDER BY l.rowid",
@@ -254,7 +304,7 @@ impl Workspace {
         sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
             .bind(chat.as_str())
-            .fetch_all(&self.db.readers)
+            .fetch_all(connection)
             .await
             .map_err(failed)?
             .into_iter()
@@ -514,28 +564,29 @@ impl Workspace {
         Ok(())
     }
 
-    /// The machine of the leg `member`'s call holds `chat`'s turn for at `now`, if one does.
+    /// The machine of the leg a call holds `chat`'s turn for at `now`, and the member whose
+    /// call it is, if one does.
     pub(crate) async fn calling(
         &self,
         chat: &ChatId,
-        member: &MemberId,
         now: i64,
-    ) -> Result<Option<MachineId>, Fault> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT called_on FROM chats
-             WHERE workspace_id = ? AND chat_id = ? AND called_by = ? AND called_on IS NOT NULL
+    ) -> Result<Option<(MachineId, MemberId)>, Fault> {
+        let held = sqlx::query_as::<_, (String, String)>(
+            "SELECT called_on, called_by FROM chats
+             WHERE workspace_id = ? AND chat_id = ? AND called_on IS NOT NULL
                  AND called_at > ? - ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(member.as_str())
         .bind(now)
         .bind(CALL_SECS)
         .fetch_optional(&self.db.readers)
         .await
-        .map_err(failed)?
-        .map(stored)
-        .transpose()
+        .map_err(failed)?;
+        let Some((machine, member)) = held else {
+            return Ok(None);
+        };
+        Ok(Some((stored(machine)?, stored(member)?)))
     }
 
     /// [`Self::uncall_in`], on a connection of its own.
@@ -839,6 +890,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_call_is_refused_while_another_agent_is_at_work_though_the_turn_is_free() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m1", "mc-1").await;
+        one.db.set_shares(&id("mc-1"), &[id("w1")]).await.unwrap();
+        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
+        let (hers, name) = (id::<MachineId>("mc-1"), id("Ada's laptop"));
+        let on_hers = NewLeg {
+            machine_id: &hers,
+            machine: &name,
+            agent: AgentKind::Claude,
+            repo: None,
+        };
+        // Her run's first word gave back the turn her call held, as it does.
+        let running = status(RunState::Running);
+        let reported = [Incoming {
+            core_seq: Some(1),
+            event: &running,
+            at: NOW,
+        }];
+        one.append_from((&hers, &ada), &chat, &reported)
+            .await
+            .unwrap();
+        assert_eq!(called(&one).await, None);
+
+        let his = one.call_leg(&chat, ask(&bo, &R1), &on_hers, NOW + 1).await;
+
+        assert_eq!(his.unwrap(), None);
+        assert_eq!(called(&one).await, None);
+        assert_eq!(one.asker(&chat, &hers, &R1).await.unwrap(), None);
+        // Her own next prompt goes, and so does his once her machine is away.
+        let more = one.call_leg(&chat, ask(&ada, &R2), &on_hers, NOW + 1).await;
+        assert!(more.unwrap().is_some());
+        one.uncall_leg(&chat, &hers, ask(&ada, &R2)).await.unwrap();
+        let past = Asked {
+            away: Some(&hers),
+            ..ask(&bo, &R1)
+        };
+        let later = one.call_leg(&chat, past, &on_hers, NOW + 1).await;
+        assert!(later.unwrap().is_some());
+        // Once he has left the workspace, the shared machine is his to call no more.
+        one.uncall_leg(&chat, &hers, past).await.unwrap();
+        one.leave(&bo).await.unwrap();
+        let left = one.call_leg(&chat, past, &on_hers, NOW + 1).await;
+        assert_eq!(code(&left.unwrap_err()), "machine.not_found");
+    }
+
+    #[tokio::test]
     async fn a_request_stands_for_one_prompt_until_it_is_stored_or_taken_back() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
@@ -1063,9 +1163,9 @@ mod tests {
         let last = NOW + 3 + CALL_SECS;
         assert!(one.call(&chat, adas, last).await.unwrap());
         // It says which leg she means only while it holds the turn.
-        let meant = one.calling(&chat, &ada, last + CALL_SECS - 1).await;
-        assert_eq!(meant.unwrap(), Some(hers.clone()));
-        let stale = one.calling(&chat, &ada, last + CALL_SECS).await;
+        let meant = one.calling(&chat, last + CALL_SECS - 1).await;
+        assert_eq!(meant.unwrap(), Some((hers.clone(), ada.clone())));
+        let stale = one.calling(&chat, last + CALL_SECS).await;
         assert_eq!(stale.unwrap(), None);
         // Her run at work ends the hold; an earlier run of hers going idle doesn't.
         let reports = [
