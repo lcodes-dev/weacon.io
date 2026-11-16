@@ -675,12 +675,10 @@ mod tests {
             .unwrap();
         // Past what the feed sends meanwhile, the pong says it took the long one.
         pong_past_the_rest(&mut client).await;
-        client
-            .send(Wire::text("x".repeat(MAX_MESSAGE + 1)))
-            .await
-            .unwrap();
+        // The server may hang up while the oversized one is still being sent.
+        let sent = client.send(Wire::text("x".repeat(MAX_MESSAGE + 1))).await;
 
-        assert!(ends(&mut client).await);
+        assert!(sent.is_err() || ends(&mut client).await);
     }
 
     #[tokio::test]
