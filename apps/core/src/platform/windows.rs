@@ -58,7 +58,7 @@ impl Listener {
     /// The next client; a new pipe instance waits for the one after.
     pub(crate) async fn accept(&mut self) -> io::Result<Stream> {
         self.next.connect().await?;
-        let after = create_pipe(&self.name, false)?;
+        let after = create_pipe(&self.name)?;
         Ok(Stream(mem::replace(&mut self.next, after)))
     }
 }
@@ -93,7 +93,7 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
 /// name to `path` for clients to find.
 pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     let name = pipe_name(weacon_appkit::random_id());
-    let next = create_pipe(&name, true)?;
+    let next = create_pipe(&name)?;
     weacon_appkit::write_whole(path, name.as_bytes())?;
     Ok(Listener { name, next })
 }

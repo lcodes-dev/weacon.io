@@ -241,30 +241,6 @@ impl Workspaces {
     }
 }
 
-// `path` with its deepest existing folder resolved, so a missing path compares like an existing
-// one; `None` when something on the way exists but can't be resolved, such as a dangling symlink.
-pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
-    let mut missing = Vec::new();
-    let mut base = path;
-    loop {
-        match base.canonicalize() {
-            Ok(found) => {
-                return Some(
-                    missing
-                        .iter()
-                        .rev()
-                        .fold(found, |path, name| path.join(name)),
-                );
-            }
-            Err(error) if error.kind() != io::ErrorKind::NotFound => return None,
-            Err(_) if base.symlink_metadata().is_ok() => return None,
-            Err(_) => {}
-        }
-        missing.push(base.file_name()?);
-        base = base.parent()?;
-    }
-}
-
 /// Each place's sign-in, all checked at once: a place with no launch is an agent that isn't
 /// installed, and a check that fails is logged here, once, and is unknown.
 pub(crate) async fn sign_ins(log: &Logger, places: Vec<Option<Launch>>) -> Vec<SignInState> {

@@ -134,6 +134,9 @@ fn change(
 ) -> Result<(), Fault> {
     match action {
         MachineSettingsAction::SetReports { send } => {
+            // Settings the answer couldn't then show stop the change before it is made.
+            let workspaces = Workspaces::new(&host.state_dir, None);
+            Settings::read(&workspaces.settings_file(workspace))?;
             reports::store(&host.state_dir, *send, &host.reporter, &host.log)
         }
         MachineSettingsAction::SetAccess { level, team } if *level != AccessLevel::Newer => {
@@ -570,7 +573,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn settings_that_cant_be_read_are_an_error() {
+    async fn settings_that_cant_be_read_are_an_error_and_stop_a_change_first() {
         let dir = TempDir::new().unwrap();
         let host = host(&dir, None);
         fs::create_dir_all(dir.join("settings")).unwrap();
@@ -584,8 +587,8 @@ mod tests {
             let code = result.unwrap_err().code().as_str().to_owned();
             assert_eq!(code, "workspace.settings_unreadable");
         }
-        // The change itself was made; only its answer couldn't be given.
-        assert_eq!(reports::current(&dir), Some(true));
+        assert_eq!(reports::current(&dir), None);
+        assert!(!host.reporter.agreed());
     }
 
     #[tokio::test]
