@@ -12,7 +12,6 @@ const machine = (id: string, name: string, how: { offline?: boolean; older?: boo
   id,
   name,
   os: "linux",
-  key: "ab".repeat(32),
   paired_at: 1,
   ...(how.silent === true ? {} : { core: CORE }),
   ...(how.older === true ? { missing: ["symbols.search"] } : {}),

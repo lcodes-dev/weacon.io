@@ -265,8 +265,8 @@ export type Batched = {
 };
 
 /**
- * Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
- * how many, since they are sealed or terminal content.
+ * Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
+ * how many, since they are terminal content.
  */
 export type Bytes = string;
 
@@ -851,12 +851,6 @@ export type LogEvent = string;
 export type MachineId = string;
 
 /**
- * A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
- * digits. A browser pins it when the person confirms the pairing.
- */
-export type MachineKey = string;
-
-/**
  * The machines paired with the signed-in account.
  */
 export type MachineList = {
@@ -1013,7 +1007,6 @@ export type MachineSummary = {
    */
   core?: App;
   id: MachineId;
-  key: MachineKey;
   /**
    * What the server offers cores that this one didn't offer back when it last connected:
    * it is older than the server supports, and those features don't reach it.
@@ -1227,10 +1220,9 @@ export type PairLookup = {
 };
 
 /**
- * A machine waiting to be paired, for the person to check against what its terminal shows.
+ * A machine waiting to be paired, for the person to confirm.
  */
 export type PairPending = {
-  key: MachineKey;
   name: MachineName;
   os: MachineOs;
   pairing: PairingId;
@@ -1241,7 +1233,6 @@ export type PairPending = {
  * [`PairStarted`]; the server refuses an `os` it doesn't know.
  */
 export type PairStart = {
-  key: MachineKey;
   name: MachineName;
   os: MachineOs;
 };
@@ -2028,12 +2019,13 @@ export type TaskStatus = (
 export type TerminalAction = (
   | {
     agent: AgentKind;
-    handshake: Bytes;
+    cols: number;
     kind: "open";
+    rows: number;
   }
   | {
-    kind: "frame";
-    sealed: Bytes;
+    data: Bytes;
+    kind: "input";
   }
   | {
     kind: "close";
@@ -2041,10 +2033,9 @@ export type TerminalAction = (
 );
 
 /**
- * A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
- * offers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and
- * only from the machine's owner, and the core acts only when `by` is its owner and refuses a
- * terminal id it has already seen.
+ * A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
+ * `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only
+ * from the machine's owner, and the core acts only when `by` is its owner.
  */
 export type TerminalCommand = {
   action: TerminalAction;
@@ -2059,12 +2050,15 @@ export type TerminalCommand = {
 
 export type TerminalEvent = (
   | {
-    handshake: Bytes;
-    kind: "accepted";
+    kind: "opened";
   }
   | {
-    kind: "frame";
-    sealed: Bytes;
+    data: Bytes;
+    kind: "output";
+  }
+  | {
+    kind: "ended";
+    sign_in: SignInState;
   }
   | {
     code?: Code;
@@ -2079,36 +2073,7 @@ export type TerminalEvent = (
 export type TerminalId = string;
 
 /**
- * From the browser to the core, only inside the seal.
- */
-export type TerminalInput = (
-  | {
-    data: Bytes;
-    kind: "input";
-  }
-  | {
-    cols: number;
-    kind: "resize";
-    rows: number;
-  }
-);
-
-/**
- * From the core to the browser, only inside the seal.
- */
-export type TerminalOutput = (
-  | {
-    data: Bytes;
-    kind: "output";
-  }
-  | {
-    kind: "ended";
-    sign_in: SignInState;
-  }
-);
-
-/**
- * A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the
+ * A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the
  * server, to the browser that opened `terminal`.
  */
 export type TerminalUpdate = {

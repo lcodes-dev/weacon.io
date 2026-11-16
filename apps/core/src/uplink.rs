@@ -1,6 +1,7 @@
 //! The daemon's connection to the server it is paired with: it dials out, proves the machine
 //! with its token, and dials again with backoff whenever the connection drops.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, MachineShares,
-    Message, Outcome, PROTOCOL, Receipt, Welcome, WorkspaceId, code,
+    Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
 };
 
 use self::asking::{Asking, asking, for_members};
@@ -21,6 +22,7 @@ use crate::chats::Chats;
 use crate::machine::{self, Paired};
 use crate::proposals;
 use crate::server::{Failure, Server, Socket};
+use crate::terminal::Told;
 use crate::workspaces::sharing;
 
 /// What the core must be offered by the server to keep its connection.
@@ -80,24 +82,37 @@ pub(crate) struct Uplink {
     pub(crate) capabilities: fn(&Path) -> Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
+    /// Where the owner's terminal commands go, and word of each connection's end after them.
+    pub(crate) terminals: mpsc::Sender<Told>,
     pub(crate) chats: Chats,
     pub(crate) timing: Timing,
 }
 
 impl Uplink {
     pub(crate) async fn run(self, mut from_daemon: FromDaemon) -> ! {
-        let mut retry = Retry::default();
+        let (mut retry, mut last) = (Retry::default(), None);
         loop {
-            let wait = self.step(&mut retry, &mut from_daemon).await;
+            let wait = self.step(&mut retry, &mut from_daemon, &mut last).await;
             sleep(wait).await;
         }
     }
 
     /// Connects once if the machine is paired, and says how long to wait before the next try.
-    async fn step(&self, retry: &mut Retry, from_daemon: &mut FromDaemon) -> Duration {
+    /// `last` is the pairing it connected with before: what the daemon queued for that one
+    /// goes to no other.
+    async fn step(
+        &self,
+        retry: &mut Retry,
+        from_daemon: &mut FromDaemon,
+        last: &mut Option<Paired>,
+    ) -> Duration {
         let Some(paired) = self.paired().await else {
             return LOOK_EVERY;
         };
+        if last.as_ref().is_some_and(|last| *last != paired) {
+            while from_daemon.try_recv().is_ok() {}
+        }
+        *last = Some(paired.clone());
         let log = self
             .log
             .child(&[("machine_id", paired.machine.as_str().into())]);
@@ -154,20 +169,18 @@ impl Uplink {
         log.info("uplink connected", &[]);
         let up = Instant::now();
         let offers = |code| welcome.capabilities.contains(&Capability::new(code));
-        let mut link = Link {
-            chats: ChatLink::new(
-                self.chats.clone(),
-                offers(UPLOAD),
-                offers(LIVE),
-                log.clone(),
-            ),
-            proposals: offers(PROPOSALS),
-            shared: None,
-        };
-        if self
+        let chats = ChatLink::new(
+            self.chats.clone(),
+            offers(UPLOAD),
+            offers(LIVE),
+            log.clone(),
+        );
+        let mut link = Link::new(chats, offers(PROPOSALS));
+        let unpaired = self
             .serve(&mut socket, paired, from_daemon, &mut link)
-            .await
-        {
+            .await;
+        drop(self.terminals.send(Told::Down).await);
+        if unpaired {
             return Ok(Ended::Unpaired);
         }
         let steady = up.elapsed() >= self.timing.steady_after;
@@ -211,8 +224,12 @@ impl Uplink {
                 }
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
+                    // Nothing more is taken for a pairing that has been replaced.
+                    if self.paired().await.as_ref() != Some(paired) {
+                        return false;
+                    }
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, &paired.owner, &mut link.chats).await {
+                    match self.answer(frame, &paired.owner, link).await {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
@@ -263,7 +280,7 @@ impl Uplink {
     /// whatever the server allows, but for what a member of a workspace the machine is shared
     /// with may ask; a kind whose asker it can't find is refused. The rest goes to the chats
     /// or the daemon.
-    async fn answer(&self, frame: Wire, owner: &AccountId, chats: &mut ChatLink) -> Step {
+    async fn answer(&self, frame: Wire, owner: &AccountId, link: &mut Link) -> Step {
         let Wire::Text(text) = frame else {
             return Step::Nothing;
         };
@@ -288,12 +305,20 @@ impl Uplink {
             return reply(failure(envelope.id, code!("machine.not_owner")));
         }
         if ChatLink::is_for(&envelope.message) {
-            return chats.take(envelope);
+            return link.chats.take(envelope);
         }
         let id = envelope.id;
-        match self.to_daemon.try_send(envelope) {
-            Ok(()) => Step::Nothing,
-            Err(_) => reply(for_now(id, code!("uplink.busy"))),
+        let taken = if let Message::TerminalCommand(command) = &envelope.message {
+            link.terminals.insert(command.terminal.clone());
+            let told = Told::Command(command.clone());
+            self.terminals.try_send(told).is_ok()
+        } else {
+            self.to_daemon.try_send(envelope).is_ok()
+        };
+        if taken {
+            Step::Nothing
+        } else {
+            reply(for_now(id, code!("uplink.busy")))
         }
     }
 }
@@ -352,12 +377,29 @@ struct Link {
     proposals: bool,
     /// The workspaces it was last told the machine is shared with.
     shared: Option<Vec<WorkspaceId>>,
+    /// The terminals the server's commands on this connection named.
+    terminals: HashSet<TerminalId>,
 }
 
 impl Link {
+    fn new(chats: ChatLink, proposals: bool) -> Self {
+        Self {
+            chats,
+            proposals,
+            shared: None,
+            terminals: HashSet::new(),
+        }
+    }
+
     /// `envelope` from the daemon, unless the server doesn't take it: a proposal to a server
-    /// that doesn't offer them is refused to the daemon at once.
+    /// that doesn't offer them is refused to the daemon at once, and word of a terminal no
+    /// command on this connection named, such as one an earlier connection opened, is dropped.
     fn offered(&self, envelope: Envelope, to_daemon: &ToDaemon) -> Option<Envelope> {
+        if let Message::Terminal(update) = &envelope.message
+            && !self.terminals.contains(&update.terminal)
+        {
+            return None;
+        }
         let refusal = proposals::unoffered(&envelope.message).filter(|_| !self.proposals);
         let Some(message) = refusal else {
             return Some(envelope);
@@ -404,12 +446,12 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// The daemon's uplink, which takes the server's chat messages to `chats` and hands the
-/// rest of what it asks to `to_daemon`.
+/// The daemon's uplink, which takes the server's chat messages to `chats`, its owner's
+/// terminal commands to `terminals` and hands the rest of what it asks to `to_daemon`.
 pub(crate) fn new(
     app: &crate::app::App,
     state_dir: &Path,
-    to_daemon: ToDaemon,
+    (to_daemon, terminals): (ToDaemon, mpsc::Sender<Told>),
     chats: Chats,
 ) -> Uplink {
     Uplink {
@@ -418,6 +460,7 @@ pub(crate) fn new(
         capabilities: |dir| crate::session::offered(dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
+        terminals,
         chats,
         timing: TIMING,
     }
@@ -438,7 +481,6 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{brief, soon};
-    use crate::machine::Key;
     use crate::test_support::tls::{Tls, answer, nowhere, read_request};
     use crate::test_support::{VERSION, messages, recording_logger};
 
@@ -455,12 +497,17 @@ mod tests {
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: owner(),
             token: "t0ken".to_owned(),
-            key: Key::from_random([7; 32]),
         }
     }
 
     fn uplink(dir: &TempDir) -> Uplink {
         with_commands(dir, mpsc::channel(1).0)
+    }
+
+    // A way to terminals that take nothing, open for as long as the test runs.
+    fn terminals() -> (mpsc::Sender<Told>, &'static mut mpsc::Receiver<Told>) {
+        let (sender, receiver) = mpsc::channel(8);
+        (sender, Box::leak(Box::new(receiver)))
     }
 
     fn with_commands(dir: &TempDir, to_daemon: ToDaemon) -> Uplink {
@@ -470,6 +517,7 @@ mod tests {
             capabilities: |_| vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
+            terminals: terminals().0,
             // A way to an engine that has stopped.
             chats: crate::chats::test_support::parts().0.chats,
             timing: Timing {
@@ -482,6 +530,7 @@ mod tests {
 
     // One connection, with a daemon that sends nothing.
     async fn once(link: &Uplink, pairing: &Paired) -> Result<Ended, Fault> {
+        machine::write(&link.state_dir, pairing).unwrap();
         link.connection(pairing, &link.log, &mut mpsc::channel(1).1)
             .await
     }
@@ -631,6 +680,20 @@ mod tests {
             .iter()
             .filter(|heard| matches!(heard, Message::Error(_)));
         assert_eq!(errors.count(), 1, "{heard_back:?}");
+    }
+
+    // The owner's close of `terminal`.
+    fn terminal_command(terminal: &str) -> Envelope {
+        Envelope {
+            id: 9,
+            message: Message::TerminalCommand(TerminalCommand {
+                terminal: TerminalId::try_from(terminal.to_owned()).unwrap(),
+                machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                action: TerminalAction::Close,
+                by: Some(the_owner()),
+            }),
+        }
     }
 
     fn the_owner() -> Asker {
@@ -811,8 +874,11 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     async fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let reply = match link.answer(frame, &owner(), &mut chats).await {
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let reply = match link
+            .answer(frame, &owner(), &mut Link::new(chats, false))
+            .await
+        {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
             Step::Reply(reply) => *reply,
@@ -1011,7 +1077,9 @@ mod tests {
         let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
             .map(|envelope| envelope.message)
             .collect();
+        // The terminals take their commands themselves.
         let mut expected = every_ask(Some(&owner()));
+        expected.retain(|message| !matches!(message, Message::TerminalCommand(_)));
         expected.push(other_error);
         assert_eq!(passed, expected);
     }
@@ -1035,6 +1103,7 @@ mod tests {
             }),
         };
         outgoing.send(answer.clone()).await.unwrap();
+        machine::write(&dir, &pairing).unwrap();
         let serve = async {
             let mut peer = welcoming(&tls, &[CONNECT]).await;
             peer.send(text(&query)).await.unwrap();
@@ -1063,8 +1132,9 @@ mod tests {
             id: 9,
             message: ask(),
         });
-        let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats).await else {
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let mut carried = Link::new(chats, false);
+        let Step::Reply(reply) = link.answer(frame, &owner(), &mut carried).await else {
             panic!("not refused");
         };
 
@@ -1082,16 +1152,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_that_breaks_is_lost() {
+    async fn a_connection_that_breaks_is_lost_and_tells_the_terminals_after_their_commands() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = uplink(&dir);
+        let (terminals, told) = terminals();
+        let link = Uplink {
+            terminals,
+            ..uplink(&dir)
+        };
         let pairing = paired(&tls);
+        let close = terminal_command("t-1");
 
         let (ended, ()) = tokio::join!(once(&link, &pairing), async {
-            drop(welcoming(&tls, &[CONNECT]).await);
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            peer.send(text(&close)).await.unwrap();
+            // Its answer shows the command was taken before the connection goes.
+            peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
+            while !matches!(peer.next().await, Some(Ok(Wire::Pong(_)))) {}
         });
 
         assert_eq!(ended.unwrap(), Ended::Lost);
+        assert!(
+            matches!(told.try_recv(), Ok(Told::Command(command)) if command.terminal.as_str() == "t-1")
+        );
+        assert!(matches!(told.try_recv(), Ok(Told::Down)));
+        told.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn only_word_of_a_terminal_this_connection_named_goes_to_the_server() {
+        let dir = TempDir::new().unwrap();
+        let link = uplink(&dir);
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let mut carried = Link::new(chats, false);
+        let update = |terminal: &str| Envelope {
+            id: 0,
+            message: Message::Terminal(weacon_protocol::TerminalUpdate {
+                terminal: TerminalId::try_from(terminal.to_owned()).unwrap(),
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                event: weacon_protocol::TerminalEvent::Opened,
+            }),
+        };
+        let sent = |carried: &Link, terminal: &str| {
+            carried.offered(update(terminal), &link.to_daemon).is_some()
+        };
+
+        // As one an earlier connection opened, whose word was still queued.
+        let before = sent(&carried, "t-1");
+        let (command, owner) = (text(&terminal_command("t-1")), owner());
+        let taken = link.answer(command, &owner, &mut carried).await;
+        assert!(matches!(taken, Step::Nothing));
+
+        assert!(!before);
+        assert!(sent(&carried, "t-1"));
+        assert!(!sent(&carried, "t-2"));
     }
 
     #[tokio::test]
@@ -1210,6 +1323,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ask_that_comes_after_the_pairing_was_replaced_is_not_taken() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (to_daemon, mut taken) = mpsc::channel(4);
+        let link = with_commands(&dir, to_daemon);
+        let pairing = paired(&tls);
+        machine::write(&dir, &pairing).unwrap();
+        let mut replaced = pairing.clone();
+        replaced.owner = AccountId::try_from("a-other".to_owned()).unwrap();
+        let ask = every_ask(Some(&owner())).swap_remove(0);
+
+        let (_daemon, mut from_daemon) = mpsc::channel(1);
+        let connection = link.connection(&pairing, &link.log, &mut from_daemon);
+        let asking = async {
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            machine::write(&dir, &replaced).unwrap();
+            let envelope = Envelope {
+                id: 9,
+                message: ask,
+            };
+            peer.send(text(&envelope)).await.unwrap();
+            drain(peer).await;
+        };
+        let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), asking);
+
+        assert_eq!(ended.unwrap().unwrap(), Ended::Lost);
+        taken.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
     async fn a_ping_before_the_welcome_is_skipped() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
@@ -1239,19 +1381,45 @@ mod tests {
     async fn after_an_unpairing_or_without_a_pairing_the_core_waits_to_look_again() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
-        let mut retry = Retry::default();
+        let (mut retry, mut last) = (Retry::default(), None);
         let mut from_daemon = mpsc::channel(1).1;
         machine::write(&dir, &paired(&tls)).unwrap();
 
         let (unpaired, ()) = tokio::join!(
-            link.step(&mut retry, &mut from_daemon),
+            link.step(&mut retry, &mut from_daemon, &mut last),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
-        let alone = link.step(&mut retry, &mut from_daemon).await;
+        let alone = link.step(&mut retry, &mut from_daemon, &mut last).await;
 
         assert_eq!(unpaired, LOOK_EVERY);
         assert_eq!(alone, LOOK_EVERY);
         assert_eq!(machine::read(&dir).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn what_was_queued_for_one_pairing_goes_to_no_other() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let link = uplink(&dir);
+        let pairing = paired(&tls);
+        machine::write(&dir, &pairing).unwrap();
+        let mut earlier = pairing.clone();
+        earlier.token = "0lder".to_owned();
+        let (daemon, mut from_daemon) = mpsc::channel(2);
+        // The server refuses each try, so nothing queued is sent.
+        let mut tried = async |last: Paired| {
+            daemon.try_send(command("r-1", None)).unwrap();
+            let refused = refusing(&tls, "403 Forbidden", code!("request.forbidden"));
+            let (mut retry, mut last) = (Retry::default(), Some(last));
+            let step = Box::pin(link.step(&mut retry, &mut from_daemon, &mut last));
+            tokio::join!(step, refused);
+            from_daemon.try_recv().is_ok()
+        };
+
+        let same = tried(pairing).await;
+        let other = tried(earlier).await;
+
+        assert!(same, "the same pairing's queue was dropped");
+        assert!(!other, "another pairing's queue was kept");
     }
 
     #[tokio::test]
@@ -1318,6 +1486,7 @@ mod tests {
             let handed = timeout(Duration::from_secs(10), asks.recv()).await.unwrap();
             (first, handed.map(|envelope| envelope.message))
         };
+        machine::write(&link.state_dir, &pairing).unwrap();
         let (_, (first, handed)) =
             tokio::join!(link.connection(&pairing, &link.log, &mut sent), serve);
         (first, handed, answer)

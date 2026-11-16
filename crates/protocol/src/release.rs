@@ -45,7 +45,6 @@ mod tests {
     use regex::Regex;
 
     use super::*;
-    use crate::MachineKey;
 
     const SHA: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
@@ -83,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hex_patterns_match_their_parsers() {
+    fn the_hex_pattern_matches_its_parser() {
         let samples = [
             "0123456789abcdef0123456789abcdef01234567",
             SHA,
@@ -93,9 +92,7 @@ mod tests {
             "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
         ];
         let sha = |text: &str| Sha256::try_from(text.to_owned()).is_ok();
-        let key = |text: &str| MachineKey::try_from(text.to_owned()).is_ok();
         matches_its_parser(Sha256::PATTERN, sha, &samples);
-        matches_its_parser(MachineKey::PATTERN, key, &samples);
     }
 
     #[test]

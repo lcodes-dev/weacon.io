@@ -7,7 +7,7 @@ import type { ChatEntry, ChatList, ChatSummary, Envelope, MachineSettings } from
 import { serveFeed } from "./feed.ts";
 import { type Served, serve, signIn } from "./server.ts";
 
-const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, key: "ab".repeat(32), paired_at: 1, connected: true };
+const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, paired_at: 1, connected: true };
 const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [{ agent: "claude", state: "signed_in" }] };
 
 // The workspace's chats are `chats`, its owner's, on Studio, the person's one machine.

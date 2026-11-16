@@ -1,62 +1,63 @@
-//! Sign-in terminals: the vendor's login on this machine, shown sealed in its owner's browser.
-//! The uplink passes on only the owner's commands, and nothing that passes through a terminal
-//! is read, kept or logged.
+//! Sign-in terminals: the vendor's login on this machine, shown in its owner's browser. The
+//! uplink passes on only the owner's commands, and nothing that passes through a terminal is
+//! parsed, kept or logged.
 
-mod seal;
 mod session;
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, Bytes, Code, Envelope, TerminalAction, TerminalCommand, TerminalEvent, TerminalId,
-    TerminalInput, TerminalUpdate, WorkspaceId, code,
+    AgentKind, Bytes, Code, Envelope, Message, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalUpdate, WorkspaceId, code,
 };
 
-use crate::machine;
 use crate::workspaces::Workspaces;
 use session::Session;
 
-// Frames waiting for a terminal that hasn't taken them yet.
+// Inputs waiting for a terminal that hasn't taken them yet.
 const WAITING: usize = 64;
+
+/// What the uplink tells the terminals, in the order it happened.
+#[derive(Debug)]
+pub(crate) enum Told {
+    /// The owner's command, from the server.
+    Command(TerminalCommand),
+    /// The connection the commands before this came on has ended.
+    Down,
+}
 
 /// This machine's sign-in terminals, which it answers its owner's terminal commands with.
 pub(crate) struct Terminals {
-    // Where the pairing, and so the machine's key, is read at each open.
-    state_dir: PathBuf,
     workspaces: Workspaces,
     log: Logger,
     updates: mpsc::Sender<Envelope>,
-    // A terminal id is never taken twice, so a handshake can't be played again.
-    seen: HashSet<TerminalId>,
     open: HashMap<TerminalId, Open>,
 }
 
-// A terminal until its session has ended: closing it drops `frames` but keeps its slot.
+// A terminal until its session has ended: closing it drops `inputs` but keeps its slot.
 struct Open {
     workspace: WorkspaceId,
     agent: AgentKind,
-    frames: Option<mpsc::Sender<Bytes>>,
+    inputs: Option<mpsc::Sender<Bytes>>,
     alive: Weak<()>,
+    session: AbortHandle,
 }
 
 impl Terminals {
     /// What they send goes to `updates`.
     pub(crate) fn new(
-        state_dir: PathBuf,
         workspaces: Workspaces,
         log: Logger,
         updates: mpsc::Sender<Envelope>,
     ) -> Self {
         Self {
-            state_dir,
             workspaces,
             log,
             updates,
-            seen: HashSet::new(),
             open: HashMap::new(),
         }
     }
@@ -67,68 +68,64 @@ impl Terminals {
         let open = self.open.get_mut(&command.terminal);
         let ours = open.filter(|open| open.workspace == command.workspace);
         match (&command.action, ours) {
-            (TerminalAction::Open { agent, handshake }, None) => {
-                let (agent, handshake) = (*agent, handshake.clone());
-                self.start(command, agent, &handshake).await;
+            (&TerminalAction::Open { agent, cols, rows }, None) => {
+                self.start(command, agent, (cols, rows)).await;
             }
-            // A frame that finds the terminal's queue full closes it, as one lost can't be told.
-            (TerminalAction::Frame { sealed }, Some(open)) => {
+            // An input that finds the terminal's queue full closes it, as one lost can't be told.
+            (TerminalAction::Input { data }, Some(open)) => {
                 let queued = open
-                    .frames
+                    .inputs
                     .as_ref()
-                    .map(|frames| frames.try_send(sealed.clone()));
+                    .map(|inputs| inputs.try_send(data.clone()));
                 if matches!(queued, Some(Err(_))) {
-                    open.frames = None;
+                    open.inputs = None;
                 }
             }
-            (TerminalAction::Close, Some(open)) => open.frames = None,
+            (TerminalAction::Close, Some(open)) => open.inputs = None,
             // Answering would tell the browser its terminal closed while it still runs.
             (TerminalAction::Open { .. }, Some(_)) => {}
-            _ => self.refuse(command, code!("terminal.unknown")).await,
+            _ => self.refuse(command, code!("terminal.unknown")),
         }
     }
 
-    async fn start(&mut self, command: TerminalCommand, agent: AgentKind, handshake: &Bytes) {
-        if !self.seen.insert(command.terminal.clone()) {
-            return self.refuse(command, code!("terminal.refused")).await;
-        }
+    /// Stops every terminal's login at once, whatever it waits on, when the connection their
+    /// browsers reach them through is gone; nobody is left to hear that they closed.
+    pub(crate) fn close_all(&mut self) {
+        self.open.values().for_each(|open| open.session.abort());
+        self.open.clear();
+    }
+
+    async fn start(&mut self, command: TerminalCommand, agent: AgentKind, size: (u32, u32)) {
         let busy = self
             .open
             .values()
             .any(|open| open.workspace == command.workspace && open.agent == agent);
         if busy {
-            return self.refuse(command, code!("terminal.busy")).await;
+            return self.refuse(command, code!("terminal.busy"));
         }
-        let Some(prologue) = command.prologue() else {
-            return self.refuse(command, code!("terminal.unknown")).await;
-        };
         let log = self.log.child(&ids(&command.terminal, &command.workspace));
-        let session = match self.session(&command, agent, handshake, &prologue).await {
+        let session = match self.session(&command, agent, size).await {
             Ok(session) => session,
             Err(fault) => {
                 log.warn("terminal refused", &[("err", Field::error(&fault))]);
-                return self.refuse(command, fault.code().clone()).await;
+                return self.refuse(command, fault.code().clone());
             }
         };
-        let (frames, received) = mpsc::channel(WAITING);
+        let (inputs, received) = mpsc::channel(WAITING);
         let alive = Arc::new(());
         log.info(
             "terminal opened",
             &[("agent", agent.name().unwrap_or("").into())],
         );
+        let alive_for = Arc::downgrade(&alive);
+        let running = session::run(session, received, alive, self.updates.clone(), log);
         let open = Open {
             workspace: command.workspace,
             agent,
-            frames: Some(frames),
-            alive: Arc::downgrade(&alive),
+            inputs: Some(inputs),
+            alive: alive_for,
+            session: tokio::spawn(running).abort_handle(),
         };
-        tokio::spawn(session::run(
-            session,
-            received,
-            alive,
-            self.updates.clone(),
-            log,
-        ));
         self.open.insert(command.terminal, open);
     }
 
@@ -136,15 +133,8 @@ impl Terminals {
         &self,
         command: &TerminalCommand,
         agent: AgentKind,
-        handshake: &Bytes,
-        prologue: &[u8],
+        (cols, rows): (u32, u32),
     ) -> Result<Session, Fault> {
-        let key = machine::current(&self.state_dir).await?.key.secret();
-        let accepted = seal::accept(key.as_bytes(), prologue, handshake.as_slice())?;
-        let Ok(TerminalInput::Resize { cols, rows }) = TerminalInput::from_json(&accepted.first)
-        else {
-            return Err(session::size_refused());
-        };
         let size = session::size(cols, rows)?;
         let (workspaces, workspace) = (self.workspaces.clone(), command.workspace.clone());
         let launch = session::off_runtime(move || workspaces.sign_in(&workspace, agent)).await?;
@@ -152,19 +142,20 @@ impl Terminals {
             terminal: command.terminal.clone(),
             workspace: command.workspace.clone(),
             launch,
-            channel: accepted.channel,
             size,
-            reply: Bytes::new(accepted.reply).ok_or_else(seal::seal_failed)?,
         })
     }
 
-    async fn refuse(&self, command: TerminalCommand, code: Code) {
+    // Never waits for room: the uplink waits on these terminals when its connection ends, and
+    // nothing takes what they send until the next one.
+    fn refuse(&self, command: TerminalCommand, code: Code) {
         let closed = TerminalUpdate {
             terminal: command.terminal,
             workspace: command.workspace,
             event: TerminalEvent::Closed { code: Some(code) },
         };
-        drop(session::send(&self.updates, closed).await);
+        let message = Message::Terminal(closed);
+        drop(self.updates.try_send(Envelope { id: 0, message }));
     }
 }
 
@@ -183,14 +174,10 @@ mod tests {
     use std::time::Duration;
 
     use tokio::time::timeout;
-    use weacon_protocol::{Asker, MemberId, SignInState, TerminalOutput};
+    use weacon_protocol::{Asker, MemberId, SignInState};
     use weacon_testing::TempDir;
-    use x25519_dalek::{PublicKey, StaticSecret};
 
     use super::*;
-    use snow::{HandshakeState, TransportState};
-
-    use crate::terminal::seal::{finish, initiator, opened, sealed, write};
     use crate::test_support;
 
     const PRINTED: &str = "MARKER-PRINTED-9d1e";
@@ -199,6 +186,8 @@ mod tests {
     // A `claude` that asks for a code and says what it got.
     const ASKS: &str =
         "echo 'Paste the code MARKER-PRINTED-9d1e'\nIFS= read -r code\necho \"Got $code\"";
+    // A `claude` that takes no input and never ends.
+    const STUCK: &str = "stty raw -echo\necho ready\nexec sleep 600";
 
     // A `claude` whose login runs `login`, and that is signed in once asked.
     fn plant_claude(bin: &Path, ran: &Path, login: &str) {
@@ -216,7 +205,6 @@ mod tests {
         dir: TempDir,
         terminals: Terminals,
         updates: mpsc::Receiver<Envelope>,
-        public: Vec<u8>,
         records: weacon_testing::Records,
     }
 
@@ -229,27 +217,15 @@ mod tests {
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         plant_claude(&bin, &dir.join("ran"), login);
-        let state = dir.join("state");
-        let paired = machine::Paired {
-            server: "https://weacon.example.com".to_owned(),
-            pinned: None,
-            machine: id("m-1"),
-            owner: id("a-owner"),
-            token: "t0ken".to_owned(),
-            key: machine::Key::from_random([7; 32]),
-        };
-        machine::write(&state, &paired).unwrap();
-        let public = PublicKey::from(&paired.key.secret()).as_bytes().to_vec();
-        let workspaces = Workspaces::new(&state, Some(bin.into_os_string()));
+        let workspaces = Workspaces::new(&dir.join("state"), Some(bin.into_os_string()));
         let (log, records) = test_support::recording_logger();
         // Room for every refusal a test makes before it reads any.
         let (sender, updates) = mpsc::channel(4 * WAITING);
-        let terminals = Terminals::new(state, workspaces, log, sender);
+        let terminals = Terminals::new(workspaces, log, sender);
         Machine {
             dir,
             terminals,
             updates,
-            public,
             records,
         }
     }
@@ -258,11 +234,11 @@ mod tests {
         T::try_from(text.to_owned()).unwrap()
     }
 
-    fn command(terminal: &str, action: TerminalAction) -> TerminalCommand {
+    fn command_in(terminal: &str, workspace: &str, action: TerminalAction) -> TerminalCommand {
         TerminalCommand {
             terminal: id(terminal),
             machine: id("m-1"),
-            workspace: id("w-1"),
+            workspace: id(workspace),
             action,
             by: Some(Asker {
                 account: id("a-owner"),
@@ -271,114 +247,76 @@ mod tests {
         }
     }
 
-    fn bytes(raw: Vec<u8>) -> Bytes {
-        Bytes::new(raw).unwrap()
+    fn command(terminal: &str, action: TerminalAction) -> TerminalCommand {
+        command_in(terminal, "w-1", action)
     }
 
-    // The browser's handshake for `terminal`, sealed to `remote` with `payload`, and the
-    // command that carries it.
-    fn sealed_to(
-        remote: &[u8],
-        (terminal, workspace): (&str, &str),
-        payload: &TerminalInput,
-    ) -> (HandshakeState, TerminalCommand) {
-        let open = |handshake| TerminalCommand {
-            workspace: id(workspace),
-            ..command(
-                terminal,
-                TerminalAction::Open {
-                    agent: AgentKind::Claude,
-                    handshake: bytes(handshake),
-                },
-            )
-        };
-        let prologue = open(Vec::new()).prologue().unwrap();
-        let mut browser = initiator(&prologue, remote, None);
-        let first = write(&mut browser, &payload.to_json().unwrap());
-        (browser, open(first))
-    }
+    const OPEN: TerminalAction = TerminalAction::Open {
+        agent: AgentKind::Claude,
+        cols: 80,
+        rows: 24,
+    };
 
-    fn opening(machine: &Machine, terminal: &str) -> (HandshakeState, TerminalCommand) {
-        opening_in(machine, terminal, "w-1")
-    }
-
-    fn opening_in(
-        machine: &Machine,
-        terminal: &str,
-        workspace: &str,
-    ) -> (HandshakeState, TerminalCommand) {
-        sealed_to(
-            &machine.public,
-            (terminal, workspace),
-            &TerminalInput::Resize { cols: 80, rows: 24 },
-        )
-    }
-
-    async fn next_update(machine: &mut Machine) -> TerminalUpdate {
-        let envelope = timeout(Duration::from_secs(10), machine.updates.recv());
-        update_of(envelope.await.unwrap().unwrap())
-    }
-
-    fn update_of(envelope: Envelope) -> TerminalUpdate {
-        assert_eq!(envelope.id, 0);
-        let weacon_protocol::Message::Terminal(update) = envelope.message else {
-            panic!("{:?}", envelope.message);
-        };
-        update
-    }
-
-    async fn next(machine: &mut Machine) -> TerminalEvent {
-        next_update(machine).await.event
-    }
-
-    fn frame(browser: &mut TransportState, input: &TerminalInput) -> TerminalAction {
-        TerminalAction::Frame {
-            sealed: bytes(sealed(browser, &input.to_json().unwrap())),
+    fn typed(text: &[u8]) -> TerminalAction {
+        TerminalAction::Input {
+            data: Bytes::new(text.to_vec()).unwrap(),
         }
     }
 
-    // What the terminal showed until its login ended, and the sign-in it ended with.
-    async fn shown_until_ended(
-        machine: &mut Machine,
-        browser: &mut TransportState,
-        relayed: &mut String,
-    ) -> (String, SignInState) {
-        let mut shown = String::new();
+    async fn event(machine: &mut Machine) -> TerminalEvent {
+        let envelope = timeout(Duration::from_secs(10), machine.updates.recv());
+        event_of(envelope.await.unwrap().unwrap())
+    }
+
+    // The next event that isn't output, which comes whenever a login prints.
+    async fn next(machine: &mut Machine) -> TerminalEvent {
         loop {
-            let update = next_update(machine).await;
-            relayed.push_str(&serde_json::to_string(&update).unwrap());
-            let TerminalEvent::Frame { sealed } = update.event else {
-                panic!("{:?} after {shown:?}", update.event);
-            };
-            match TerminalOutput::from_json(&opened(browser, sealed.as_slice())).unwrap() {
-                TerminalOutput::Output { data } => {
-                    shown.push_str(&String::from_utf8_lossy(data.as_slice()));
-                }
-                TerminalOutput::Ended { sign_in } => return (shown, sign_in),
-                TerminalOutput::Newer => {}
+            let event = event(machine).await;
+            if !matches!(event, TerminalEvent::Output { .. }) {
+                return event;
             }
         }
     }
 
+    fn event_of(envelope: Envelope) -> TerminalEvent {
+        assert_eq!(envelope.id, 0);
+        let Message::Terminal(update) = envelope.message else {
+            panic!("{:?}", envelope.message);
+        };
+        update.event
+    }
+
+    // What the terminal showed until its login ended, and the sign-in it ended with.
+    async fn shown_until_ended(machine: &mut Machine) -> (String, SignInState) {
+        let mut shown = String::new();
+        loop {
+            match event(machine).await {
+                TerminalEvent::Output { data } => {
+                    shown.push_str(&String::from_utf8_lossy(data.as_slice()));
+                }
+                TerminalEvent::Ended { sign_in } => return (shown, sign_in),
+                event @ (TerminalEvent::Opened
+                | TerminalEvent::Closed { .. }
+                | TerminalEvent::Newer) => panic!("{event:?} after {shown:?}"),
+            }
+        }
+    }
+
+    fn closed(code: &'static str) -> TerminalEvent {
+        TerminalEvent::Closed {
+            code: Some(Code::new(code)),
+        }
+    }
+
     #[tokio::test]
-    async fn the_login_runs_sealed_and_neither_the_relay_nor_the_logs_see_what_passes() {
+    async fn the_login_runs_and_the_logs_see_nothing_that_passes() {
         let mut machine = machine();
-        let mut relayed = String::new();
-        let (handshaking, open) = opening(&machine, "t-1");
-        relayed.push_str(&serde_json::to_string(&open).unwrap());
-        machine.terminals.handle(open).await;
-        let TerminalEvent::Accepted { handshake } = next(&mut machine).await else {
-            panic!("not accepted");
-        };
-        let mut browser = finish(handshaking, handshake.as_slice());
-        let typed = TerminalInput::Input {
-            data: bytes(format!("{TYPED}\r").into_bytes()),
-        };
-        let input = command("t-1", frame(&mut browser, &typed));
-        relayed.push_str(&serde_json::to_string(&input).unwrap());
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
+        let input = command("t-1", typed(format!("{TYPED}\r").as_bytes()));
         machine.terminals.handle(input).await;
 
-        let (shown, sign_in) = shown_until_ended(&mut machine, &mut browser, &mut relayed).await;
+        let (shown, sign_in) = shown_until_ended(&mut machine).await;
         assert_eq!(sign_in, SignInState::SignedIn);
         assert_eq!(
             next(&mut machine).await,
@@ -391,13 +329,6 @@ mod tests {
 
         let logged = format!("{:?}", machine.records.lock().unwrap());
         for marker in [PRINTED, TYPED] {
-            assert!(!relayed.contains(marker), "the relay saw {marker}");
-            // Bytes travel as hex, so unsealed ones would show there as hex.
-            let hex = serde_json::to_string(&bytes(marker.as_bytes().to_vec())).unwrap();
-            assert!(
-                !relayed.contains(hex.trim_matches('"')),
-                "the relay saw {marker} as hex"
-            );
             assert!(!logged.contains(marker), "a log saw {marker}");
         }
         assert!(
@@ -406,73 +337,58 @@ mod tests {
         );
     }
 
-    fn closed(code: &'static str) -> TerminalEvent {
-        TerminalEvent::Closed {
-            code: Some(Code::new(code)),
-        }
+    #[tokio::test]
+    async fn a_refusal_never_waits_for_room() {
+        let mut machine = machine();
+        let (full, _never_read) = mpsc::channel(1);
+        full.try_send(Envelope {
+            id: 0,
+            message: Message::Unknown,
+        })
+        .unwrap();
+        machine.terminals.updates = full;
+
+        let refusing = machine
+            .terminals
+            .handle(command("t-9", TerminalAction::Close));
+
+        timeout(Duration::from_secs(10), refusing).await.unwrap();
     }
 
     #[tokio::test]
-    async fn a_terminal_it_doesnt_have_or_an_open_while_unpaired_is_refused() {
+    async fn a_terminal_it_doesnt_have_or_of_no_size_is_refused() {
         let mut machine = machine();
-        let (_browser, open) = opening(&machine, "t-1");
+        let sizeless = TerminalAction::Open {
+            agent: AgentKind::Claude,
+            cols: 0,
+            rows: 24,
+        };
 
         machine
             .terminals
             .handle(command("t-9", TerminalAction::Close))
             .await;
         let unknown = next(&mut machine).await;
-        std::fs::remove_file(machine.dir.join("state").join("machine.json")).unwrap();
-        machine.terminals.handle(open).await;
-        let unpaired = next(&mut machine).await;
+        machine.terminals.handle(command("t-1", sizeless)).await;
+        let unsized_ = next(&mut machine).await;
 
         assert_eq!(unknown, closed("terminal.unknown"));
-        assert_eq!(unpaired, closed("machine.unpaired"));
+        assert_eq!(unsized_, closed("terminal.size_refused"));
         assert!(!machine.dir.join("ran").exists());
-    }
-
-    #[tokio::test]
-    async fn a_handshake_starts_nothing_until_its_browser_seals_a_frame() {
-        let mut machine = machine();
-        let (_browser, open) = opening(&machine, "t-1");
-        machine.terminals.handle(open.clone()).await;
-        assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Accepted { .. }
-        ));
-        machine
-            .terminals
-            .handle(command("t-1", TerminalAction::Close))
-            .await;
-        assert_eq!(
-            next(&mut machine).await,
-            TerminalEvent::Closed { code: None }
-        );
-        assert!(!machine.dir.join("ran").exists());
-
-        // The same handshake again, or any terminal id seen before, is refused.
-        machine.terminals.handle(open).await;
-        assert_eq!(next(&mut machine).await, closed("terminal.refused"));
     }
 
     #[tokio::test]
     async fn one_sign_in_runs_per_workspace_and_vendor_at_a_time() {
-        let mut machine = machine();
-        let (_first, open_one) = opening(&machine, "t-1");
-        machine.terminals.handle(open_one).await;
-        assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Accepted { .. }
-        ));
-        let (_second, open_two) = opening(&machine, "t-2");
-        machine.terminals.handle(open_two).await;
+        let mut machine = machine_running(STUCK);
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
+        machine.terminals.handle(command("t-2", OPEN)).await;
         assert_eq!(next(&mut machine).await, closed("terminal.busy"));
-        let (_elsewhere, elsewhere) = opening_in(&machine, "t-4", "w-2");
-        machine.terminals.handle(elsewhere).await;
-        assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Accepted { .. }
-        ));
+        machine
+            .terminals
+            .handle(command_in("t-4", "w-2", OPEN))
+            .await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
 
         machine
             .terminals
@@ -482,74 +398,16 @@ mod tests {
             next(&mut machine).await,
             TerminalEvent::Closed { code: None }
         );
-        let (_third, open_three) = opening(&machine, "t-3");
-        machine.terminals.handle(open_three).await;
-        assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Accepted { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_handshake_for_another_key_or_size_is_refused() {
-        let mut machine = machine();
-        let other = PublicKey::from(&StaticSecret::from([9; 32]))
-            .as_bytes()
-            .to_vec();
-        let resize = TerminalInput::Resize { cols: 80, rows: 24 };
-        let (_elsewhere, elsewhere) = sealed_to(&other, ("t-1", "w-1"), &resize);
-        machine.terminals.handle(elsewhere).await;
-        assert_eq!(
-            next(&mut machine).await,
-            closed("terminal.handshake_failed")
-        );
-
-        for (terminal, payload) in [
-            ("t-2", TerminalInput::Resize { cols: 0, rows: 24 }),
-            (
-                "t-3",
-                TerminalInput::Input {
-                    data: bytes(b"y".to_vec()),
-                },
-            ),
-        ] {
-            let (_browser, open) = sealed_to(&machine.public, (terminal, "w-1"), &payload);
-            machine.terminals.handle(open).await;
-            assert_eq!(next(&mut machine).await, closed("terminal.size_refused"));
-        }
-    }
-
-    #[tokio::test]
-    async fn a_tampered_frame_closes_the_terminal_before_its_login_starts() {
-        let mut machine = machine();
-        let (handshaking, open) = opening(&machine, "t-1");
-        machine.terminals.handle(open).await;
-        let TerminalEvent::Accepted { handshake } = next(&mut machine).await else {
-            panic!("not accepted");
-        };
-        let mut browser = finish(handshaking, handshake.as_slice());
-        let mut tampered = sealed(&mut browser, b"{}");
-        if let Some(byte) = tampered.first_mut() {
-            *byte ^= 1;
-        }
-        let action = TerminalAction::Frame {
-            sealed: bytes(tampered),
-        };
-        machine.terminals.handle(command("t-1", action)).await;
-        assert_eq!(next(&mut machine).await, closed("terminal.seal_failed"));
-        assert!(!machine.dir.join("ran").exists());
+        machine.terminals.handle(command("t-3", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
     }
 
     #[tokio::test]
     async fn opening_a_live_terminal_again_changes_nothing() {
-        let mut machine = machine();
-        let (_browser, open) = opening(&machine, "t-1");
-        machine.terminals.handle(open.clone()).await;
-        assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Accepted { .. }
-        ));
-        machine.terminals.handle(open).await;
+        let mut machine = machine_running(STUCK);
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
+        machine.terminals.handle(command("t-1", OPEN)).await;
         machine
             .terminals
             .handle(command("t-1", TerminalAction::Close))
@@ -558,6 +416,7 @@ mod tests {
             .terminals
             .handle(command("t-1", TerminalAction::Close))
             .await;
+
         assert_eq!(
             next(&mut machine).await,
             TerminalEvent::Closed { code: None }
@@ -565,112 +424,74 @@ mod tests {
         machine.updates.try_recv().unwrap_err();
     }
 
-    // Time is paused, so the deadline passes as soon as nothing else can happen.
-    #[tokio::test(start_paused = true)]
-    async fn a_browser_that_never_seals_a_frame_loses_its_terminal() {
-        let mut machine = machine();
-        let (_browser, open) = opening(&machine, "t-1");
-        machine.terminals.handle(open).await;
-        let accepted = next(&mut machine).await;
-        assert!(matches!(accepted, TerminalEvent::Accepted { .. }));
-        let started = tokio::time::Instant::now();
-        // On the paused clock, past the minute the terminal has.
-        let ended = timeout(Duration::from_mins(2), machine.updates.recv()).await;
-        let ended = update_of(ended.unwrap().unwrap()).event;
-        assert_eq!(ended, closed("terminal.timed_out"));
-        assert_eq!(started.elapsed(), Duration::from_mins(1));
-        assert!(!machine.dir.join("ran").exists());
-    }
-
-    // An opened terminal whose browser end is ready to seal frames.
-    async fn opened_terminal(machine: &mut Machine) -> TransportState {
-        let (handshaking, open) = opening(machine, "t-1");
-        machine.terminals.handle(open).await;
-        let TerminalEvent::Accepted { handshake } = next(machine).await else {
-            panic!("not accepted");
-        };
-        finish(handshaking, handshake.as_slice())
-    }
-
-    // The code the terminal closed with, whatever it showed first, within `patience`.
-    async fn closed_within(machine: &mut Machine, patience: Duration) -> Option<Code> {
-        timeout(patience, closed_on(&mut machine.updates))
-            .await
-            .unwrap()
-    }
-
-    async fn closed_on(updates: &mut mpsc::Receiver<Envelope>) -> Option<Code> {
-        loop {
-            if let TerminalEvent::Closed { code } = update_of(updates.recv().await.unwrap()).event {
-                return code;
+    // Waits, a moment at a time, until `done`.
+    async fn until(done: impl Fn() -> bool) {
+        let waiting = async {
+            while !done() {
+                tokio::task::yield_now().await;
             }
-        }
-    }
-
-    async fn closed_after_output(machine: &mut Machine) -> Option<Code> {
-        closed_within(machine, Duration::from_secs(10)).await
+        };
+        timeout(Duration::from_secs(10), waiting).await.unwrap();
     }
 
     #[tokio::test]
-    async fn a_frame_that_finds_the_queue_full_closes_the_terminal() {
-        let mut machine = machine();
-        let mut browser = opened_terminal(&mut machine).await;
-        let typed = TerminalInput::Input {
-            data: bytes(b"x".to_vec()),
-        };
+    async fn every_login_stops_once_the_connection_is_gone_even_one_nobody_hears() {
+        let mut machine = machine_running(STUCK);
+        // Room for one update that nobody takes, so what the login prints waits for good.
+        let (unread, mut updates) = mpsc::channel(1);
+        machine.terminals.updates = unread.clone();
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        until(|| unread.capacity() == 0).await;
+        let open = machine.terminals.open.values().next().unwrap();
+        let login = Weak::clone(&open.alive);
+
+        machine.terminals.close_all();
+
+        until(|| login.strong_count() == 0).await;
+        // Its slot is free at once.
+        assert_eq!(updates.try_recv().map(event_of), Ok(TerminalEvent::Opened));
+        machine.terminals.handle(command("t-2", OPEN)).await;
+        let next = timeout(Duration::from_secs(10), updates.recv()).await;
+        assert_eq!(next.unwrap().map(event_of), Some(TerminalEvent::Opened));
+    }
+
+    #[tokio::test]
+    async fn an_input_that_finds_the_queue_full_closes_the_terminal() {
+        let mut machine = machine_running(STUCK);
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
 
         // Nothing here waits, so the terminal takes none of them meanwhile.
         for _ in 0..=WAITING {
-            let input = command("t-1", frame(&mut browser, &typed));
-            machine.terminals.handle(input).await;
+            machine.terminals.handle(command("t-1", typed(b"x"))).await;
         }
 
-        assert_eq!(closed_after_output(&mut machine).await, None);
+        assert_eq!(
+            next(&mut machine).await,
+            TerminalEvent::Closed { code: None }
+        );
     }
 
     #[tokio::test]
     async fn a_terminal_closes_while_its_sign_in_takes_no_input() {
-        let mut machine = machine_running("stty raw -echo\necho ready\nexec sleep 600");
-        let mut browser = opened_terminal(&mut machine).await;
-        let resize = TerminalInput::Resize { cols: 80, rows: 24 };
-        let first = command("t-1", frame(&mut browser, &resize));
-        machine.terminals.handle(first).await;
+        let mut machine = machine_running(STUCK);
+        machine.terminals.handle(command("t-1", OPEN)).await;
+        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
         assert!(matches!(
-            next(&mut machine).await,
-            TerminalEvent::Frame { .. }
+            event(&mut machine).await,
+            TerminalEvent::Output { .. }
         ));
-        let typed = TerminalInput::Input {
-            data: bytes(vec![b'a'; 16_384]),
-        };
 
         for _ in 0..40 {
-            let input = command("t-1", frame(&mut browser, &typed));
+            let input = command("t-1", typed(&[b'a'; 16_384]));
             machine.terminals.handle(input).await;
         }
         let close = command("t-1", TerminalAction::Close);
         machine.terminals.handle(close).await;
 
-        assert_eq!(closed_after_output(&mut machine).await, None);
-    }
-
-    // Time is paused, so each wait ends as soon as nothing else can happen.
-    #[tokio::test(start_paused = true)]
-    async fn a_terminal_closes_a_minute_after_its_browser_last_sealed_a_frame() {
-        let mut machine = machine();
-        let mut browser = opened_terminal(&mut machine).await;
-        let started = tokio::time::Instant::now();
-        let typed = TerminalInput::Input {
-            data: bytes(b"x".to_vec()),
-        };
-
-        let first = command("t-1", frame(&mut browser, &typed));
-        machine.terminals.handle(first).await;
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        let later = command("t-1", frame(&mut browser, &typed));
-        machine.terminals.handle(later).await;
-        let closed = closed_within(&mut machine, Duration::from_mins(5)).await;
-
-        assert_eq!(closed, Some(Code::new("terminal.timed_out")));
-        assert_eq!(started.elapsed(), Duration::from_secs(90));
+        assert_eq!(
+            next(&mut machine).await,
+            TerminalEvent::Closed { code: None }
+        );
     }
 }

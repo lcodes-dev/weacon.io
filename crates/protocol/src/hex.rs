@@ -1,4 +1,4 @@
-//! Lowercase hex, the form keys, digests and sealed bytes travel in.
+//! Lowercase hex, the form digests and terminal bytes travel in.
 
 /// `bytes` as lowercase hex.
 #[must_use]

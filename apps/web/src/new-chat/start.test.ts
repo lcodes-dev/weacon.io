@@ -8,7 +8,6 @@ const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary
   id,
   name: `Box ${id}`,
   os: "macos",
-  key: "ab".repeat(32),
   paired_at: 1,
   ...more,
 });
