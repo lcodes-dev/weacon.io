@@ -10,16 +10,14 @@ use serde::de::DeserializeOwned;
 use weacon_observability::Fault;
 use weacon_protocol::{RepoId, WorkspaceId, code};
 
-use super::Git;
 use super::chats::ChatRepos;
-use super::removal::Journal;
 use super::repos::{Repo, Repos};
 use crate::db::LocalRepo;
 use crate::hold::{Hold, hold as take};
 use crate::workspaces::Workspaces;
 use crate::workspaces::resolved;
 
-/// A workspace's git state: its repositories, its chats' worktrees, and those in the Trash.
+/// A workspace's git state: its repositories and its chats' worktrees.
 pub(crate) struct Stores {
     workspace: WorkspaceId,
     folder: PathBuf,
@@ -50,14 +48,6 @@ impl Stores {
 
     pub(crate) fn chats(&self) -> ChatRepos {
         ChatRepos::new(self.workspace.clone(), self.folder.join("chats.json"))
-    }
-
-    pub(crate) fn removed(&self, git: Git) -> Journal {
-        Journal::new(
-            self.workspace.clone(),
-            self.folder.join("removed.json"),
-            git,
-        )
     }
 }
 

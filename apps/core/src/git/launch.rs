@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use weacon_observability::Fault;
-use weacon_protocol::{RepoId, code};
+use weacon_protocol::RepoId;
 
 use super::state::{Stores, hold_worktrees};
 use super::{Git, Start, branch, run, text};
@@ -13,7 +13,7 @@ use crate::runs::ChatKey;
 use crate::workspaces::Workspaces;
 
 /// The folder `key`'s agent works in: its worktree of `repo` under `work_root`, made the first
-/// time and recorded with where its branch began. One in the Trash is refused until it's back.
+/// time and recorded with where its branch began. One removed since is checked out again.
 pub(crate) fn chat_tree(
     workspaces: &Workspaces,
     work_root: &Path,
@@ -29,14 +29,7 @@ pub(crate) fn chat_tree(
     }
     let found = stores.repo(repo)?;
     let git = Git::open(workspaces.state_dir(), workspaces.path())?;
-    // Held before the Trash is checked, so a removal can't land in between.
     let _held = hold_worktrees(workspaces.state_dir(), &git.common_dir(&found.path)?)?;
-    if stores.removed(git.clone()).removed(&key.chat)?.is_some() {
-        return Err(Fault::new(
-            code!("worktree.in_trash"),
-            "The chat's worktree is in the Trash; restore it to go on",
-        ));
-    }
     let tree = git.chat_worktree(&found.path, &key.chat, &folder)?;
     if recorded.is_none() {
         let start = match tree.start {
@@ -68,7 +61,6 @@ mod tests {
 
     use super::*;
     use crate::git::tests::{block_hold, chat, fixture, git, repo};
-    use crate::platform::trash::Trashed;
 
     struct Bench {
         dir: TempDir,
@@ -232,28 +224,20 @@ mod tests {
     }
 
     #[test]
-    fn a_worktree_in_the_trash_is_restored_before_it_runs_again() {
+    fn a_worktree_removed_since_is_checked_out_again_on_its_branch() {
         let bench = bench();
         let first = bench.tree(&bench.site).unwrap();
-        let told = git(&bench.dir)
-            .in_tree(&bench.dir.join("repo"), &first)
+        fs::write(first.join("agent.txt"), "mine\n").unwrap();
+        fixture(&bench.dir, &first, &["add", "agent.txt"]);
+        fixture(&bench.dir, &first, &["commit", "--quiet", "-m", "Agent"]);
+        git(&bench.dir)
+            .remove_worktree(&bench.dir.join("repo"), &first)
             .unwrap();
-        let bin = bench.dir.join("bin");
-        let to_trash = |path: &Path| {
-            fs::create_dir_all(&bin)?;
-            let item = bin.join("c-1");
-            fs::rename(path, &item)?;
-            Ok(Trashed { item, info: None })
-        };
-        bench
-            .stores()
-            .removed(told)
-            .remove(&bench.key.chat, &first, to_trash, std::time::UNIX_EPOCH)
-            .unwrap();
-
-        let error = bench.tree(&bench.site).unwrap_err();
-
-        assert_eq!(error.code().as_str(), "worktree.in_trash");
         assert!(!first.exists());
+
+        let again = bench.tree(&bench.site).unwrap();
+
+        assert_eq!(again, first);
+        assert!(again.join("agent.txt").exists());
     }
 }

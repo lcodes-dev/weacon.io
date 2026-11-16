@@ -2203,9 +2203,6 @@ export type WorktreeAction = (
     kind: "remove";
   }
   | {
-    kind: "restore";
-  }
-  | {
     body: string;
     kind: "open_pull_request";
     title: string;
@@ -2229,9 +2226,6 @@ export type WorktreeAnswer = {
 export type WorktreeAnswerKind = (
   | {
     kind: "state";
-    /**
-     * In the Trash.
-     */
     removed: boolean;
     uncommitted: boolean;
     unpushed: boolean;
@@ -2253,8 +2247,7 @@ export type WorktreeAnswerKind = (
  * From a client to a core that offers `worktree.manage`: what a person asks of a chat's
  * worktree. The core acts only for someone who may act on the chat, and a client asks the
  * person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
- * echoes `request`: the worktree's state after `remove` or `restore`, which a repeated one
- * answers too.
+ * echoes `request`: the worktree's state after `remove`, which a repeated one answers too.
  */
 export type WorktreeCommand = {
   action: WorktreeAction;

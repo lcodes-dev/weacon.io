@@ -9,7 +9,6 @@ mod procs;
 mod programs;
 mod spawn_policy;
 mod terminal_app;
-pub(crate) mod trash;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]
