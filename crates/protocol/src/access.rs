@@ -12,10 +12,6 @@ pub enum AccessLevel {
     AskFirst,
     /// Agents change things without asking; destructive operations still ask.
     Full,
-    /// A level this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -39,12 +35,5 @@ mod tests {
                 level
             );
         }
-    }
-
-    #[test]
-    fn a_newer_level_parses_as_newer() {
-        let newer: AccessLevel = serde_json::from_value(json!("sandboxed")).unwrap();
-
-        assert_eq!(newer, AccessLevel::Newer);
     }
 }

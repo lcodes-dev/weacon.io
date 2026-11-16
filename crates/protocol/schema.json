@@ -2343,7 +2343,7 @@
           ]
         },
         {
-          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`; an older core answers `request.unknown`.",
+          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`.",
           "type": "object",
           "properties": {
             "kind": {

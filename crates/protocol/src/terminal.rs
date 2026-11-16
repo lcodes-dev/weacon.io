@@ -45,10 +45,6 @@ pub enum TerminalAction {
     Input { data: Bytes },
     /// Ends the login, if it still runs.
     Close,
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the
@@ -73,10 +69,6 @@ pub enum TerminalEvent {
         #[schemars(with = "Code")]
         code: Option<Code>,
     },
-    /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// Bytes that travel as lowercase hex. Its `Debug` shows only how many, since they are
@@ -125,7 +117,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, never_sent, travels, workspace};
+    use crate::test_support::{envelope, travels, workspace};
     use crate::{Envelope, Message};
 
     fn bytes(raw: &[u8]) -> Bytes {
@@ -216,22 +208,6 @@ mod tests {
             let mut wire = ids.clone();
             wire["event"] = body;
             travels(&update(event), wire);
-        }
-    }
-
-    #[test]
-    fn what_a_newer_peer_sends_is_received_but_never_sent() {
-        let received = [
-            json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
-                "workspace": "w-1", "action": { "kind": "rewind" } }),
-            json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
-                "workspace": "w-1", "action": { "kind": "open", "agent": "amp",
-                "cols": 80, "rows": 24 } }),
-            json!({ "id": 4, "type": "terminal", "terminal": "t-1", "workspace": "w-1",
-                "event": { "kind": "paused" } }),
-        ];
-        for wire in received {
-            never_sent(wire);
         }
     }
 

@@ -193,7 +193,7 @@ impl Workspaces {
             ));
         }
         let access = Settings::read(&self.settings_file(workspace))?.access;
-        if matches!(access, AccessLevel::Off | AccessLevel::Newer) {
+        if access == AccessLevel::Off {
             return Err(Fault::new(
                 code!("access.off"),
                 "This workspace's agents are turned off on this machine",
@@ -290,7 +290,7 @@ const fn state_name(state: SignInState) -> &'static str {
         SignInState::SignedIn => "signed in",
         SignInState::SignedOut => "signed out",
         SignInState::NotInstalled => "not installed",
-        SignInState::Unknown | SignInState::Newer => "unknown",
+        SignInState::Unknown => "unknown",
     }
 }
 
@@ -458,7 +458,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let workspaces = workspaces(&dir);
         choose(&dir, "off", r#"{"access":"off"}"#);
-        choose(&dir, "newer", r#"{"access":"sandboxed"}"#);
         choose(&dir, "reading", r#"{"access":"read_only"}"#);
         choose(&dir, "asking", r#"{"access":"ask_first"}"#);
         choose(&dir, "full", r#"{"access":"full"}"#);
@@ -473,7 +472,6 @@ mod tests {
         let refused = |code: &str| Err(code.to_owned());
 
         assert_eq!(launch("off"), refused("access.off"));
-        assert_eq!(launch("newer"), refused("access.off"));
         assert_eq!(launch("broken"), refused("workspace.settings_unreadable"));
         assert_eq!(launch("reading"), Ok(AccessLevel::ReadOnly));
         assert_eq!(launch("asking"), Ok(AccessLevel::AskFirst));
@@ -621,7 +619,6 @@ mod tests {
             states.collect::<Vec<_>>(),
             ["signed in", "not installed", "unknown", "signed out"]
         );
-        assert_eq!(state_name(SignInState::Newer), "unknown");
         assert_eq!(
             crate::test_support::messages(&records),
             ["sign-in check failed"]

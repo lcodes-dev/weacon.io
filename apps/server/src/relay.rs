@@ -1105,20 +1105,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_answer_this_server_cant_send_on_is_refused_to_the_asker() {
-        let one = MachineId::try_from("mc-1".to_owned()).unwrap();
-        let (relay, mut answers) = waiting_on(&one);
-        let newer = changed(&one, |answer| {
-            answer.answer = MachineSettingsAnswerKind::Newer;
-        });
-
-        assert!(relay.answered(&one, envelope(7, newer)));
-
-        let refused = heard(&mut answers).await;
-        assert_eq!(error_of(&refused), (41, "relay.unsendable", false));
-    }
-
-    #[tokio::test]
     async fn an_error_from_the_asked_machine_comes_back() {
         let one = MachineId::try_from("mc-1".to_owned()).unwrap();
         let (relay, mut answers) = waiting_on(&one);
@@ -1325,11 +1311,11 @@ mod tests {
 
         let sent = envelope(1, settings_answer(&machine));
         let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
-        let Message::MachineSettingsQuery(mut newer) = query(&machine, "w1") else {
+        let Message::SessionsQuery(mut newer) = sessions_query(&machine) else {
             panic!();
         };
-        newer.query = MachineSettingsQueryKind::Newer;
-        let sent = envelope(2, Message::MachineSettingsQuery(newer));
+        newer.query = SessionsQueryKind::Newer;
+        let sent = envelope(2, Message::SessionsQuery(newer));
         let unsendable = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 
         assert_eq!(code_of(unsendable), Some("relay.unknown".to_owned()));

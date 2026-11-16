@@ -42,7 +42,7 @@ impl Rules {
         match self.level {
             AccessLevel::AskFirst => Decision::Ask,
             AccessLevel::Full => file.map_or(Decision::Ask, Decision::Check),
-            AccessLevel::Off | AccessLevel::ReadOnly | AccessLevel::Newer => Decision::Refuse,
+            AccessLevel::Off | AccessLevel::ReadOnly => Decision::Refuse,
         }
     }
 
@@ -144,7 +144,7 @@ mod tests {
         let rules = |level| rules(level, Path::new("/work"));
         let file = || Some(PathBuf::from("/work/README.md"));
 
-        for refused in [AccessLevel::Off, AccessLevel::ReadOnly, AccessLevel::Newer] {
+        for refused in [AccessLevel::Off, AccessLevel::ReadOnly] {
             assert_eq!(rules(refused).decide(file()), Decision::Refuse);
             assert_eq!(rules(refused).decide(None), Decision::Refuse);
         }
