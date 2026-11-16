@@ -1,7 +1,77 @@
+.app.railed {
+  flex-direction: row;
+}
+
+.app.railed > .rail {
+  width: 270px;
+  flex-shrink: 0;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 10px;
+  background: var(--side);
+  border-bottom: none;
+  border-right: 1px solid var(--line);
+}
+
+.rail .brand {
+  padding: 2px 4px;
+}
+
+.slot {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The person's card, at the foot of the sidebar. */
 .who {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+
+.who .muted {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.who .actions {
+  display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 6px;
+}
+
+.who .actions button:not(.icon) {
+  min-height: 26px;
+  padding: 2px 10px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+
+.who .actions .icon {
+  margin-left: auto;
+}
+
+.who [role="alert"] {
+  margin: 0;
+}
+
+.side {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .sign-in form,
@@ -46,50 +116,79 @@
   height: 100%;
 }
 
-.side {
-  width: 240px;
-  flex-shrink: 0;
-  box-sizing: border-box;
-  border-right: 1px solid var(--line);
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-}
-
 .workspace-menu {
   margin-top: auto;
-  padding: 12px 16px;
-  border-top: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .workspace-menu .current {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 7px 10px;
   text-align: left;
+  font-size: 13px;
+  font-weight: 600;
+  border-color: var(--line);
+  border-radius: 9px;
+}
+
+.workspace-menu .current[aria-expanded="true"] {
+  border-color: var(--violet);
+}
+
+.workspace-menu .menu {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px;
+  background: var(--surface);
+  border: 1px solid var(--field);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
 }
 
 .workspace-menu .menu ul {
   list-style: none;
   padding: 0;
-  margin: 0 0 8px;
+  margin: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
+}
+
+.workspace-menu .menu li button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+}
+
+.workspace-menu .menu li button:hover {
+  background: var(--hover);
+}
+
+.workspace-menu .menu li button[aria-current] {
+  background: var(--violet-soft);
 }
 
 .workspace-menu .menu h2 {
-  font-size: inherit;
-  margin: 8px 0 4px;
+  margin: 6px 8px 2px;
 }
 
 .workspace-menu .badge {
-  border: 1px solid var(--line);
+  min-width: 16px;
+  padding: 0 4px;
   border-radius: 8px;
-  padding: 0 6px;
+  background: var(--accent-strong);
+  color: #fff;
+  font: 600 10px/16px var(--mono);
+  text-align: center;
 }
 
 .workspace-menu p {
@@ -97,37 +196,64 @@
   overflow-wrap: anywhere;
 }
 
+/* Section labels in the sidebar, in small monospace capitals. */
+.chats h2,
+.workspace-menu .menu h2 {
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 .chats {
-  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chats h2 {
+  margin: 6px 8px 0;
+}
+
+.chats > button {
+  width: 100%;
+}
+
+.chats > p {
+  margin: 0 8px;
 }
 
 .sections {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 16px 16px 0;
+  gap: 1px;
 }
 
-.sections button {
+.sections button,
+.chats li button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
   text-align: left;
+  font-size: 13px;
+  font-weight: 400;
   background: transparent;
   border-color: transparent;
+  border-radius: 7px;
 }
 
-.sections button[aria-current] {
+.sections button[aria-current],
+.chats li button[aria-current] {
   background: var(--surface);
   border-color: var(--line);
+  font-weight: 600;
 }
 
 .sections button:not([aria-current]):hover,
 .chats li button:not([aria-current]):hover {
   background: var(--hover);
   border-color: transparent;
-}
-
-.chats h2 {
-  margin-top: 0;
-  font-size: 1em;
 }
 
 .workspace > section {
@@ -138,11 +264,26 @@
 }
 
 .heading {
-  padding: 16px 16px 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 12px;
+  min-height: 52px;
+  box-sizing: border-box;
+  padding: 8px 18px;
+  border-bottom: 1px solid var(--line);
 }
 
 .heading h1 {
   margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.heading .status {
+  margin: 0;
+  font-size: 12px;
 }
 
 .chat-task {
@@ -156,22 +297,13 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
 }
 
 .chats li button {
-  display: flex;
   flex-direction: column;
   align-items: flex-start;
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border-color: transparent;
-}
-
-.chats li button[aria-current] {
-  background: var(--surface);
-  border-color: var(--line);
+  gap: 1px;
 }
 
 .chats .title {
@@ -179,7 +311,9 @@
 }
 
 .chats li .muted {
-  font-size: 13px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--ink-3);
 }
 
 .heading .back {
@@ -187,19 +321,78 @@
 }
 
 @media (max-width: 720px) {
+  /* One column: the mark and the person's card on top, then the workspace's list, or what was opened from it. */
+  .app.railed {
+    flex-direction: column;
+  }
+
+  .app.railed > .rail {
+    width: auto;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
+    border-right: none;
+  }
+
+  .rail .brand {
+    padding: 4px 12px;
+  }
+
+  .slot {
+    grid-area: 2 / 1 / 3 / 3;
+    border-top: 1px solid var(--line);
+  }
+
   .who {
+    grid-area: 1 / 2;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
     min-width: 0;
     gap: 8px;
+    padding: 4px 12px 4px 0;
+    background: none;
+    border: none;
+    border-radius: 0;
   }
 
   .who .muted {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    font-size: 13px;
+  }
+
+  .who .actions {
+    flex-shrink: 0;
+    gap: 6px;
+  }
+
+  .who .actions button:not(.icon) {
+    min-height: 44px;
+    padding: 4px 10px;
+    font-size: 14px;
   }
 
   .who button {
     flex-shrink: 0;
+  }
+
+  .side {
+    padding: 12px;
+  }
+
+  .side.detail {
+    display: none;
+  }
+
+  .app:has(.side:not(.detail)) > .rail {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .app:has(.side:not(.detail)) > main {
+    display: none;
   }
 
   .sign-in form,
@@ -208,21 +401,8 @@
     max-width: none;
   }
 
-  /* One screen at a time: the list, or what was opened from it. */
   .workspace {
     flex-direction: column;
-  }
-
-  .side {
-    flex: 1;
-    width: auto;
-    border-right: none;
-  }
-
-  .workspace.detail > .side,
-  .workspace.detail > .palette-open,
-  .workspace:not(.detail) > section {
-    display: none;
   }
 
   /* So a long page scrolls inside itself, under the heading. */
@@ -233,23 +413,24 @@
   .sections {
     flex-direction: row;
     flex-wrap: wrap;
-    padding: 12px 12px 0;
+    gap: 4px;
   }
 
-  .chats {
-    padding: 12px;
+  .sections button {
+    width: auto;
   }
 
-  .workspace-menu {
-    padding: 12px;
+  .sections button,
+  .chats li button {
+    min-height: 44px;
+  }
+
+  .workspace-menu .current {
+    min-height: 44px;
   }
 
   .heading {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0 12px;
-    padding: 8px 12px 0;
+    padding: 4px 12px;
   }
 
   .heading .back {
@@ -265,7 +446,6 @@
 
   .heading .status {
     flex-basis: 100%;
-    margin: 0;
     font-size: 13px;
   }
 

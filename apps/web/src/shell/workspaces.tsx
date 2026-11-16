@@ -1,4 +1,5 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import type { Api } from "../api/api.ts";
 import { answered, useLoaded } from "../api/loaded.ts";
@@ -22,7 +23,7 @@ import { firstLeg, reached, withFirst } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
 import { Departures } from "./departures.ts";
-import { Frame } from "./frame.tsx";
+import { Frame, SideSlot } from "./frame.tsx";
 import { Landing } from "./landing.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { type Place, placeOf, searchOf } from "./place.ts";
@@ -34,21 +35,18 @@ export type OpenWorkspace = { workspace: WorkspaceSummary; socket: WorkspaceSock
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
- * here, open on its feed with a selector at the foot of its sidebar; `who` is the header's account
- * part. A `page`, such as Settings, shows in their place while they stay open beneath it. When the
+ * here, open on its feed with a selector at the foot of its sidebar; `who` is the person's card. A `page`, such as Settings, shows in their place while they stay open beneath it. When the
  * server stops letting the person into `left`'s workspace, it closes, and the landing says why.
  */
 export function Workspaces({
   api,
   who,
-  email,
   left,
   page,
   openSettings,
 }: {
   api: Api;
   who: ReactNode;
-  email: string;
   left: { workspace: WorkspaceId } | undefined;
   page?: ((open: OpenWorkspace | undefined) => ReactNode) | undefined;
   /** Opens Settings, where the person pairs machines and signs agents in. */
@@ -88,14 +86,14 @@ export function Workspaces({
     setNotice(undefined);
     choose(id);
   };
-  const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={pick} />;
+  const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} choose={pick} />;
   const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
           departures.leave(workspace.id);
           leave(text);
         },
       } : undefined;
   return (
-    <Frame right={who}>
+    <Frame card={who}>
       <div className={page === undefined ? "pane" : "pane away"}>
         {workspace !== undefined && socket !== undefined ? (
           <Workspace key={workspace.id} api={api} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} menu={menu} />
@@ -180,11 +178,11 @@ function Workspace(open: Open) {
   }
   return (
     <div className="workspace detail">
-      {palette()}
-      <div className="side">
+      <Side detail>
+        {palette()}
         <Sections {...open} />
         {open.menu}
-      </div>
+      </Side>
       <section>
         <Heading title={TITLES[place.view]} status={status} back={() => open.go({ view: "chats" })} />
         {!served[place.view] ? (
@@ -199,6 +197,15 @@ function Workspace(open: Open) {
       </section>
     </div>
   );
+}
+
+/**
+ * The workspace's part of the sidebar, which a narrow screen shows alone unless `detail`, when what
+ * opened from it shows instead.
+ */
+function Side({ detail, children }: { detail: boolean; children: ReactNode }) {
+  const slot = useContext(SideSlot);
+  return slot === null ? null : createPortal(<div className={detail ? "side detail" : "side"}>{children}</div>, slot);
 }
 
 // Which of the sections besides chats the server offers on `socket`.
@@ -303,11 +310,10 @@ function WorkspaceChats({
   const agents = reached((machines.value?.machines ?? []).map(({ id }) => id), others.map(({ id }) => id), open && { legs: withFirst(open.legs, startedHere?.legs ?? []) });
   const leg = agents[0]?.leg;
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
+  const detail = starting || place.chat !== undefined;
   return (
-    <div className={starting || place.chat !== undefined ? "workspace detail" : "workspace"}>
-      {palette(leg?.machine_id)}
-      <div className="side">
-        <Sections socket={socket} place={place} go={go} />
+    <div className={detail ? "workspace detail" : "workspace"}>
+      <Side detail={detail || away}>
         <ChatsNav
           loaded={listed}
           names={names}
@@ -324,9 +330,12 @@ function WorkspaceChats({
                 }
               : undefined
           }
-        />
+        >
+          {palette(leg?.machine_id)}
+          <Sections socket={socket} place={place} go={go} />
+        </ChatsNav>
         {menu}
-      </div>
+      </Side>
       <section>
         <Heading
           title={starting ? "New chat" : (open?.title ?? workspace.name)}

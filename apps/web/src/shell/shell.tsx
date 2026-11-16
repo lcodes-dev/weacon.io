@@ -11,6 +11,7 @@ import { MembersSection, isTeam } from "../members/members-section.tsx";
 import { useMembers } from "../members/use-names.ts";
 import type { AccountSignedIn, Code, MachineId, WorkspaceId } from "../protocol.ts";
 import { Settings } from "../settings/settings.tsx";
+import { ThemeSwitch } from "../theme-switch.tsx";
 import { Frame } from "./frame.tsx";
 import { STORE, remember } from "./last-workspace.ts";
 import "./shell.css";
@@ -81,27 +82,28 @@ function SignedIn({
   const signingOut = useAsk();
   const signOut = () => void signingOut.ask(() => api.signOut(), signedOut);
   const who = (
-    <span className="who">
+    <div className="who">
       {signingOut.problem !== undefined && <span role="alert">{signingOut.problem}</span>}
-      {!settings && (
-        <>
-          <span className="muted">{account.email}</span>
+      {!settings && <span className="muted">{account.email}</span>}
+      <span className="actions">
+        {!settings && (
           <button type="button" disabled={signingOut.busy} onClick={signOut}>
             Sign out
           </button>
-        </>
-      )}
-      <button
-        type="button"
-        onClick={() => {
-          signingOut.clear();
-          setOpened(undefined);
-          setSettings(!settings);
-        }}
-      >
-        {settings ? "Back" : "Settings"}
-      </button>
-    </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            signingOut.clear();
+            setOpened(undefined);
+            setSettings(!settings);
+          }}
+        >
+          {settings ? "Back" : "Settings"}
+        </button>
+        <ThemeSwitch />
+      </span>
+    </div>
   );
   const page = settings
     ? (open: OpenWorkspace | undefined) => (
@@ -116,7 +118,7 @@ function SignedIn({
     setOpened(machine);
     setSettings(true);
   };
-  return <Workspaces api={api} who={who} email={account.email} left={left} page={page} openSettings={openSettings} />;
+  return <Workspaces api={api} who={who} left={left} page={page} openSettings={openSettings} />;
 }
 
 // The open workspace's members, and what each of the person's machines keeps for it, which is

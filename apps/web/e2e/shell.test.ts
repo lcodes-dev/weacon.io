@@ -67,7 +67,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
   await page.getByLabel("Code").fill(await served.code(EMAIL));
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("heading", { name: "Workspaces" }).waitFor();
-  assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+  assert.equal(await page.locator(".who .muted").innerText(), EMAIL);
 
   // The session is in a cookie the page's scripts can't read.
   assert.equal(await page.evaluate(() => document.cookie), "");
@@ -77,7 +77,7 @@ test("a person signs in with the code sent to them, stays signed in, and signs o
   await page.route("**/api/sign-out", (route) => route.abort());
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("alert").getByText("The server can't be reached.").waitFor();
-  assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+  assert.equal(await page.locator(".who .muted").innerText(), EMAIL);
   await page.unroute("**/api/sign-out");
   await page.getByRole("button", { name: "Sign out" }).click();
   await page.getByRole("heading", { name: "Sign in" }).waitFor();
@@ -268,12 +268,12 @@ test("Settings shows the account and this build, and signs out from there", { ti
   await page.getByRole("heading", { name: "Account" }).waitFor();
   assert.equal(await email.innerText(), EMAIL);
   await page.getByRole("heading", { name: "About" }).waitFor();
-  assert.deepEqual(await page.locator("header .who button").allInnerTexts(), ["Back"]);
-  assert.equal(await page.locator("header .who .muted").count(), 0);
+  assert.deepEqual(await page.locator(".who button:not(.icon)").allInnerTexts(), ["Back"]);
+  assert.equal(await page.locator(".who .muted").count(), 0);
   assert.equal(await page.getByRole("heading", { name: "Workspaces" }).isVisible(), false);
   await page.getByRole("button", { name: "Back" }).click();
   assert.equal(await page.getByLabel("Name").inputValue(), "Half typed");
-  assert.equal(await page.locator("header .who .muted").innerText(), EMAIL);
+  assert.equal(await page.locator(".who .muted").innerText(), EMAIL);
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await page.route("**/api/sign-out", (route) => route.abort());
@@ -335,7 +335,7 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await chats.getByRole("button", { name: /Merge the shopping lists/ }).click();
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
   assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+&chat=c-1$/);
-  assert.equal((await chats.locator("[aria-current]").innerText()).trim(), "Merge the shopping lists");
+  assert.equal((await chats.locator("li [aria-current]").innerText()).trim(), "Merge the shopping lists");
   await page.goBack();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
 });
@@ -807,7 +807,7 @@ test("⌘K searches the open workspace, and choosing a hit goes to its place", {
   await results.nth(1).waitFor();
   await page.keyboard.press("Enter");
   await page.waitForURL(/&view=tasks&task=t-1$/);
-  await page.keyboard.press("ControlOrMeta+k");
+  await page.getByRole("button", { name: "Search" }).click();
   await search.getByRole("combobox", { name: "Search" }).fill("milk");
   await results.nth(1).waitFor();
   await search.getByRole("combobox", { name: "Search" }).fill("bread");
