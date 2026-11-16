@@ -179,13 +179,18 @@ async fn append(
         let Some(leg) = place.leg_on(chat, machine).await? else {
             return Ok(Stored::Refused);
         };
-        // A prompt is its asker's, whoever its agent works for by the time it is sent up.
+        // A prompt is its asker's, whoever its agent works for by the time it is sent up; one
+        // the server never took was written on the machine itself, by its owner.
         let asker = if let ChatEvent::Prompt { request, .. } = &entry.event {
             place.asker(chat, request).await?
         } else {
             None
         };
-        let by = asker.as_ref().unwrap_or(&leg.member);
+        let owner = leg.shared_by.as_ref().unwrap_or(&leg.member);
+        let prompted = matches!(entry.event, ChatEvent::Prompt { .. });
+        let by = asker
+            .as_ref()
+            .unwrap_or(if prompted { owner } else { &leg.member });
         let Some(event) = kept(entry.event.clone(), &leg, by) else {
             return Ok(Stored::Dropped);
         };
@@ -504,6 +509,44 @@ mod tests {
             panic!("no prompt stored");
         };
         assert_eq!(author, Some(bo));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_the_server_never_took_is_its_machines_owners() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let workspace = &ada.member.workspace;
+        let (chat, bo) = (id::<ChatId>("c-1"), grace(&fixture).await.member.id);
+        let (db, name) = (&shared.db, id("Ada's laptop"));
+        db.set_shares(&ada.machine, &[id("w1")]).await.unwrap();
+        let on_hers = crate::db::NewLeg {
+            machine_id: &ada.machine,
+            machine: &name,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: None,
+        };
+        let called = workspace.call_leg(&chat, (&bo, &*R1), &on_hers, NOW).await;
+        assert!(called.unwrap().is_some());
+        // Written in a terminal on the machine while its agent works for him.
+        let local = ChatEvent::Prompt {
+            request: id("r-local"),
+            text: "Go".to_owned(),
+            author: None,
+            pick: None,
+            repo: None,
+            agent: None,
+            task: None,
+        };
+
+        let sent = update("w1", "c-1", 1, local);
+        store(shared, &ada.machine, sent).await.unwrap();
+
+        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
+        let Some(ChatEvent::Prompt { author, .. }) = events.unwrap().pop().map(|one| one.event)
+        else {
+            panic!("no prompt stored");
+        };
+        assert_eq!(author, Some(member_id("m1")));
     }
 
     #[test]

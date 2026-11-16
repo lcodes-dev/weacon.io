@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { agentItem, offered } from "./mentionables.ts";
+import { agentItem, offered, told } from "./mentionables.ts";
 
 const claude = agentItem("mc-1", "claude");
 const shared = agentItem("mc-2", "codex", "Team VPS");
@@ -30,4 +30,12 @@ test("the picker offers nothing without a query or an agent, once dismissed, or 
   assert.deepEqual(offered(at, 3, false, [claude]), []);
   assert.deepEqual(offered(at, 0, false, [claude]), [claude]);
   assert.deepEqual(offered(at, undefined, true, [claude]), []);
+});
+
+test("agents that would read alike are told apart by their machines' names", () => {
+  const desk = agentItem("mc-3", "claude");
+  const machines = new Map([["mc-1", "laptop"], ["mc-3", "desk"]]);
+
+  assert.deepEqual(told([claude, shared, desk], machines).map(({ label }) => label), ["Claude Code · laptop", "Shared Codex · Team VPS", "Claude Code · desk"]);
+  assert.deepEqual(told([claude, shared], machines), [claude, shared]);
 });

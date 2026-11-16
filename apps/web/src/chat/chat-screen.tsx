@@ -2,7 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { Composer } from "../composer/composer.tsx";
-import { agentItem } from "../composer/mentionables.ts";
+import { agentItem, told } from "../composer/mentionables.ts";
 import { type Send, blocked, notingPlain } from "../composer/prompt.ts";
 import { MyAgentFields, picked, useMyAgent } from "../new-chat/my-agent.tsx";
 import type { Callable, Choice } from "../new-chat/start.ts";
@@ -210,6 +210,7 @@ function Calls({
   const pick = useMyAgent(link, adding ? free : [], away);
   const fields = free.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
   const theirs = agents.map(({ leg, shared }) => agentItem(leg.machine_id, leg.agent, shared ? leg.machine : undefined));
+  const names = new Map([...machines.map(({ id, name }) => [id, name] as const), ...agents.map(({ leg }) => [leg.machine_id, leg.machine] as const)]);
   return (
     <>
       {!hidden &&
@@ -228,7 +229,7 @@ function Calls({
         send={notingPlain(send(pick.choice), () => setPlain(true))}
         blocked={why}
         hidden={hidden}
-        agents={[...picked(pick), ...theirs]}
+        agents={told([...picked(pick), ...theirs], names)}
         calling={adding ? !plain : calling}
       />
     </>

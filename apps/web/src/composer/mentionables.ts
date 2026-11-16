@@ -12,6 +12,12 @@ export function agentItem(machine: MachineId, kind: AgentKind, shared?: MachineN
   return shared === undefined ? { id: machine, label: vendor, note: "Your agent" } : { id: machine, label: `Shared ${vendor} · ${shared}`, note: "Shared agent" };
 }
 
+/** `agents`, each on the machine `machines` names for it, with that name on those that would otherwise read alike. */
+export function told(agents: readonly MentionItem[], machines: ReadonlyMap<MachineId, MachineName>): MentionItem[] {
+  const alike = (one: MentionItem) => agents.filter(({ label }) => label === one.label).length > 1;
+  return agents.map((one) => (alike(one) ? { ...one, label: `${one.label} · ${machines.get(one.id) ?? one.id}` } : one));
+}
+
 /**
  * What the picker offers for the query `at`: those of `agents`, the ones the writer may call in
  * the chat, with a word of their name that starts with the query, ignoring case. Nothing once it
