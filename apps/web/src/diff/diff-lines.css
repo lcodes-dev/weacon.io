@@ -1,10 +1,10 @@
 .diff-lines {
   display: flex;
   flex-direction: column;
-  font: 13px/1.5 ui-monospace, monospace;
+  font: 13px/1.5 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   padding: 8px 0;
 }
@@ -15,11 +15,11 @@
 }
 
 .diff-lines ins {
-  background: rgb(46 160 67 / 15%);
+  background: var(--added);
 }
 
 .diff-lines del {
-  background: rgb(248 81 73 / 15%);
+  background: var(--removed);
 }
 
 .diff-lines ins::before {

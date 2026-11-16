@@ -9,20 +9,17 @@
   gap: 8px;
   align-items: flex-end;
   padding: 8px 16px 12px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
 }
 
 .composer textarea {
   min-height: 2.5em;
   max-height: 40vh;
   resize: vertical;
-  font: inherit;
-  color: inherit;
-  background: none;
   position: relative;
-  border: 1px solid var(--border);
-  border-radius: 6px;
   padding: 6px 10px;
+  /* The field behind shows through, with the backdrop's mentions. */
+  background: transparent;
 }
 
 .composer .hint {
@@ -35,6 +32,8 @@
 .composer .field {
   flex: 1;
   display: grid;
+  background: var(--surface);
+  border-radius: 8px;
 }
 
 .composer .field > * {
@@ -59,7 +58,7 @@
 
 .composer mark {
   color: transparent;
-  background: color-mix(in srgb, #3b82f6 22%, transparent);
+  background: var(--violet-soft);
   border-radius: 3px;
 }
 
@@ -69,7 +68,7 @@
   margin: 0;
   padding: 4px 0;
   list-style: none;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
 }
 
@@ -81,7 +80,7 @@
 }
 
 .composer .mentions [aria-selected="true"] {
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
 }
 
 @media (max-width: 720px) {

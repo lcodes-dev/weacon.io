@@ -1,22 +1,22 @@
 .row.prompt {
-  border-left: 3px solid var(--border);
+  border-left: 3px solid var(--line);
   padding-left: 10px;
 }
 
 .row.prompt .author {
   display: block;
-  color: var(--muted);
+  color: var(--ink-2);
   font-size: 13px;
   font-weight: 600;
 }
 
 .row.landed {
-  background: var(--border);
+  background: var(--line);
   border-radius: 6px;
 }
 
 .row.agent {
-  color: var(--muted);
+  color: var(--ink-2);
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 4px;
@@ -27,13 +27,13 @@
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  color: var(--muted);
+  color: var(--ink-2);
   font-size: 13px;
 }
 
 .row.ask.open {
   color: inherit;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   padding: 8px 10px;
 }
@@ -43,14 +43,14 @@
   margin: 0;
   max-height: 12em;
   overflow: auto;
-  font: 13px/1.5 ui-monospace, monospace;
+  font: 13px/1.5 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 .row.ask .cut {
   flex-basis: 100%;
-  color: var(--muted);
+  color: var(--ink-2);
 }
 
 .row.ask .choices {
@@ -60,7 +60,7 @@
 
 .row.ask .problem {
   flex-basis: 100%;
-  color: #c4372b;
+  color: var(--accent);
 }
 
 .transcript .older {
@@ -69,11 +69,11 @@
 }
 
 .row.problem {
-  color: #c4372b;
+  color: var(--accent);
 }
 
 .toolbar .problem {
-  color: #c4372b;
+  color: var(--accent);
 }
 
 .pane > .chat-screen {
@@ -99,7 +99,7 @@
   justify-content: flex-end;
   align-items: center;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 
 .row.prompt .picked {

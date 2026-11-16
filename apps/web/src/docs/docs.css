@@ -8,6 +8,7 @@
 }
 
 .docs ul button {
+  background: transparent;
   border-color: transparent;
   text-align: left;
 }
@@ -39,7 +40,7 @@
 }
 
 .doc-editor textarea {
-  font: 13px/1.5 ui-monospace, monospace;
+  font: 13px/1.5 var(--mono);
   resize: vertical;
 }
 

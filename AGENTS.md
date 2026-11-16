@@ -122,7 +122,7 @@ Every program says which build it is, and the Rust programs log and report error
 | `cargo run -p weacon-core -- hook session-start` | What the core's Claude Code plugin adds at session start, within 4,000 bytes: from the running core when the hook's run holds a token for it, the flows pinned by the docs that best match the title of the run's chat's task, in at most 1,200 bytes, then the current folder's stored map in the rest; else the map indexed by the hook itself; or nothing and exit 0 if it can't answer within 5 seconds |
 | `UPDATE_SCHEMA=1 cargo test -p weacon-protocol` | Regenerates `crates/protocol/schema.json` after a message changes |
 | `npm --prefix apps/extension run update-types`, `npm --prefix apps/web run update-types` | Regenerates each app's `src/protocol.ts` from `schema.json` |
-| `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`), with this commit in Settings › About |
+| `npm --prefix apps/web run build` | Builds the web app into `apps/web/dist/` (`index.html`, `app.js`, `app.css`, `icon.svg`), with this commit in Settings › About |
 | `mkdir -p .dev/fake && cargo run --locked -p weacon-testing --bin fake-server -- .dev/fake`, then open `apps/web/dist/index.html?server=<the address it prints>` | Streams a made-up 100,000-token session to the web app |
 | `npm --prefix apps/extension run build` | Builds the extension into `apps/extension/dist/`, with this commit in its manifest's `version_name`; load that folder unpacked in Chrome, then run `weacon connect-chrome` |
 | `scripts/release.sh <target>` | Builds a static release `weacon` for one target into `dist/`, checks it reports this commit, and prints its size |

@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 
 /// The web app's files the server serves, each with its route and type;
 /// `npm --prefix apps/web run build` makes them.
-const WEB_FILES: [(&str, &str, &str); 3] = [
+const WEB_FILES: [(&str, &str, &str); 4] = [
     ("index.html", "/", "text/html; charset=utf-8"),
     ("app.js", "/app.js", "text/javascript; charset=utf-8"),
     ("app.css", "/app.css", "text/css; charset=utf-8"),
+    ("icon.svg", "/icon.svg", "image/svg+xml"),
 ];
 
 fn main() -> io::Result<()> {
