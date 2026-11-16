@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AgentKind, Bytes, Code, Envelope, Message, TerminalAction, TerminalCommand, TerminalEvent,
@@ -43,6 +44,7 @@ struct Open {
     agent: AgentKind,
     inputs: Option<mpsc::Sender<Bytes>>,
     alive: Weak<()>,
+    session: AbortHandle,
 }
 
 impl Terminals {
@@ -86,9 +88,10 @@ impl Terminals {
         }
     }
 
-    /// Closes every terminal and frees its slot at once, when the connection their browsers
-    /// reach them through is gone.
+    /// Stops every terminal's login at once, whatever it waits on, when the connection their
+    /// browsers reach them through is gone; nobody is left to hear that they closed.
     pub(crate) fn close_all(&mut self) {
+        self.open.values().for_each(|open| open.session.abort());
         self.open.clear();
     }
 
@@ -114,19 +117,15 @@ impl Terminals {
             "terminal opened",
             &[("agent", agent.name().unwrap_or("").into())],
         );
+        let alive_for = Arc::downgrade(&alive);
+        let running = session::run(session, received, alive, self.updates.clone(), log);
         let open = Open {
             workspace: command.workspace,
             agent,
             inputs: Some(inputs),
-            alive: Arc::downgrade(&alive),
+            alive: alive_for,
+            session: tokio::spawn(running).abort_handle(),
         };
-        tokio::spawn(session::run(
-            session,
-            received,
-            alive,
-            self.updates.clone(),
-            log,
-        ));
         self.open.insert(command.terminal, open);
     }
 
@@ -425,20 +424,35 @@ mod tests {
         machine.updates.try_recv().unwrap_err();
     }
 
+    // Waits, a moment at a time, until `done`.
+    async fn until(done: impl Fn() -> bool) {
+        let waiting = async {
+            while !done() {
+                tokio::task::yield_now().await;
+            }
+        };
+        timeout(Duration::from_secs(10), waiting).await.unwrap();
+    }
+
     #[tokio::test]
-    async fn every_terminal_closes_once_the_connection_is_gone() {
+    async fn every_login_stops_once_the_connection_is_gone_even_one_nobody_hears() {
         let mut machine = machine_running(STUCK);
+        // Room for one update that nobody takes, so what the login prints waits for good.
+        let (unread, mut updates) = mpsc::channel(1);
+        machine.terminals.updates = unread.clone();
         machine.terminals.handle(command("t-1", OPEN)).await;
-        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
+        until(|| unread.capacity() == 0).await;
+        let open = machine.terminals.open.values().next().unwrap();
+        let login = Weak::clone(&open.alive);
 
         machine.terminals.close_all();
 
-        assert_eq!(
-            next(&mut machine).await,
-            TerminalEvent::Closed { code: None }
-        );
+        until(|| login.strong_count() == 0).await;
+        // Its slot is free at once.
+        assert_eq!(updates.try_recv().map(event_of), Ok(TerminalEvent::Opened));
         machine.terminals.handle(command("t-2", OPEN)).await;
-        assert_eq!(next(&mut machine).await, TerminalEvent::Opened);
+        let next = timeout(Duration::from_secs(10), updates.recv()).await;
+        assert_eq!(next.unwrap().map(event_of), Some(TerminalEvent::Opened));
     }
 
     #[tokio::test]

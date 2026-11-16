@@ -919,20 +919,13 @@ mod tests {
         for told in [open("t-1"), Told::Down, open("t-2")] {
             to_terminals.send(told).await.unwrap();
         }
-        let mut heard = Vec::new();
-        for _ in 0..3 {
-            heard.push(terminal_update(&mut from_daemon).await);
+        // The first is stopped, with nobody left to tell, and the second takes its slot.
+        let opened = |id: &str| (id.to_owned(), TerminalEvent::Opened);
+        let mut heard = terminal_update(&mut from_daemon).await;
+        if heard == opened("t-1") {
+            heard = terminal_update(&mut from_daemon).await;
         }
-
-        // The second takes the slot the first held, and stays open; which is heard of first
-        // isn't fixed.
-        let of = |terminal: &str| -> Vec<_> {
-            let about = heard.iter().filter(|(id, _)| id == terminal);
-            about.map(|(_, event)| event.clone()).collect()
-        };
-        let closed = TerminalEvent::Closed { code: None };
-        assert_eq!(of("t-1"), [TerminalEvent::Opened, closed]);
-        assert_eq!(of("t-2"), [TerminalEvent::Opened]);
+        assert_eq!(heard, opened("t-2"));
         from_daemon.try_recv().unwrap_err();
     }
 
