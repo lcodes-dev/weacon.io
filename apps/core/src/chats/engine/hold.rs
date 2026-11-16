@@ -26,8 +26,7 @@ impl<A: Agent> Engine<A> {
             ChatAction::Say { .. }
             | ChatAction::Prompt { .. }
             | ChatAction::Permission { .. }
-            | ChatAction::Interrupt
-            | ChatAction::Newer => self.command(key, command).await,
+            | ChatAction::Interrupt => self.command(key, command).await,
         }
     }
 

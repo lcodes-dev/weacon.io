@@ -200,7 +200,7 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
         | ChatEvent::OutsidePrompt { .. }
         | ChatEvent::Receipt { .. }
         | ChatEvent::RunStatus { .. } => {}
-        ChatEvent::Message { .. } | ChatEvent::Newer => return None,
+        ChatEvent::Message { .. } => return None,
     }
     Some(update)
 }
@@ -645,7 +645,7 @@ mod tests {
     }
 
     // Events the server never keeps: none goes up.
-    fn dropped() -> [ChatEvent; 5] {
+    fn dropped() -> [ChatEvent; 4] {
         [
             said(RunEvent::Started { session: session() }),
             said(RunEvent::TextDelta {
@@ -660,7 +660,6 @@ mod tests {
                 call: "t-1".to_owned(),
                 failed: false,
             }),
-            ChatEvent::Newer,
         ]
     }
 

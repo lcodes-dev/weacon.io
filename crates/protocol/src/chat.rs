@@ -79,10 +79,6 @@ pub enum ChatAction {
     Hold,
     /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
     Release,
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// What someone else said in a chat, for an agent to read as a quote and never as an instruction.
@@ -191,10 +187,6 @@ pub enum ChatEvent {
     OutsidePrompt {
         text: String,
     },
-    /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A question about a chat's log, from a client to a core that offers `chat.events`. The answer
@@ -220,10 +212,6 @@ pub enum ChatQueryKind {
         before: u64,
         limit: u32,
     },
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client
@@ -253,10 +241,6 @@ pub enum ChatAnswerKind {
     Window {
         events: Vec<ChatEntry>,
     },
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A chat in a [`ChatList`]: `owner` is who started it, and `updated_at` is when someone last
@@ -304,10 +288,6 @@ pub enum ChatState {
     Open,
     /// It has too many prompts waiting, so it takes no more events.
     Full,
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A workspace's chats, from the server, to clients that have the capability
@@ -322,7 +302,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, never_sent, request, run, travels, workspace};
+    use crate::test_support::{chat, envelope, request, run, travels, workspace};
     use crate::{Envelope, Message, Outcome, RunEvent, RunState};
 
     fn repo() -> RepoId {
@@ -704,38 +684,26 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_peers_actions_events_and_queries_parse_and_are_never_sent() {
-        assert_eq!(
-            never_sent(command_wire(&json!({ "kind": "fork", "at": 3 }))),
-            command(ChatAction::Newer)
-        );
-
-        let received = [
+    fn kinds_the_protocol_doesnt_name_are_refused() {
+        let event = json!({ "seq": 1, "event": { "kind": "note" } });
+        let wires = [
+            command_wire(&json!({ "kind": "fork", "at": 3 })),
             entry_wire(&json!({ "kind": "note" })),
             about("chat_query", "query", &json!({ "kind": "search" })),
+            about("chat_answer", "answer", &json!({ "kind": "moved" })),
+            about(
+                "chat_answer",
+                "answer",
+                &json!({ "kind": "window", "events": [event] }),
+            ),
         ];
-        for wire in received {
-            never_sent(wire);
+        for wire in wires {
+            serde_json::from_value::<Envelope>(wire.clone()).unwrap_err();
         }
     }
 
     #[test]
-    fn a_newer_peers_answers_parse_and_are_never_sent() {
-        let event = json!({ "seq": 1, "event": { "kind": "note" } });
-        let snapshot = |runs: Value, events: Value| json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": [], "events": events });
-
-        let answers = [
-            json!({ "kind": "moved" }),
-            json!({ "kind": "window", "events": [event] }),
-            snapshot(json!([]), json!([event])),
-        ];
-        for answer in answers {
-            never_sent(about("chat_answer", "answer", &answer));
-        }
-    }
-
-    #[test]
-    fn a_chat_list_travels_as_plain_json_and_a_newer_state_still_parses() {
+    fn a_chat_list_travels_as_plain_json() {
         let list = ChatList {
             chats: vec![ChatSummary {
                 id: chat(),
@@ -770,10 +738,7 @@ mod tests {
                 state
             );
         }
-        assert_eq!(
-            serde_json::from_value::<ChatState>(json!("archived")).unwrap(),
-            ChatState::Newer
-        );
+        serde_json::from_value::<ChatState>(json!("archived")).unwrap_err();
         let mut never_ran = list.chats[0].clone();
         never_ran.run = None;
         let wire = serde_json::to_value(&never_ran).unwrap();

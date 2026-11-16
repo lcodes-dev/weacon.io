@@ -128,13 +128,6 @@ pub(crate) async fn hear(
     Ok((hello, PendingWelcome { id, answer }))
 }
 
-/// `message`, unless it holds what this server can't send on, as a newer client's may: sent,
-/// it would drop the peer's connection.
-pub(crate) fn sendable(message: Message) -> Option<Message> {
-    let probe = Envelope { id: 0, message };
-    probe.to_json().is_ok().then_some(probe.message)
-}
-
 pub(crate) fn refusal(code: Code) -> Message {
     Message::Error(ErrorBody {
         code,

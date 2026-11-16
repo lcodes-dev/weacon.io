@@ -37,7 +37,7 @@ pub(crate) async fn answer(
                     .await?,
             })
         }
-        ChatQueryKind::Subscribe { .. } | ChatQueryKind::Newer => Err(super::unsupported()),
+        ChatQueryKind::Subscribe { .. } => Err(super::unsupported()),
     }
 }
 

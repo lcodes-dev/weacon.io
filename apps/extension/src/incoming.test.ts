@@ -8,6 +8,7 @@ const ABOUT = { workspace: "w-1", chat: "c-1" } as const;
 const ENTRIES: ChatEntry[] = [
   { seq: 1, event: { kind: "prompt", request: "r-1", text: "Hi", pick: { url: "http://localhost/", title: "Home", selector: "p" } } },
   { seq: 2, event: { kind: "outside_prompt", text: "Hi" } },
+  { seq: 2, event: { kind: "message", author: "m-1", text: "Hi" } },
   { seq: 3, event: { kind: "receipt", receipt: { request: "r-1", state: "accepted" } } },
   { seq: 4, event: { kind: "run_status", status: { run: "run-1", state: "running", agent: { kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "laptop" } } } },
   { seq: 5, event: { kind: "run", update: { run: "run-1", event: { event: "text", text: "Done." } } } },
@@ -41,11 +42,11 @@ test("each message the panel acts on is parsed as it arrives", () => {
   }
 });
 
-test("a newer kind of chat event passes, to keep its place, and newer run events and answers don't", () => {
+test("kinds of event and answer the protocol doesn't name are dropped", () => {
   const newer = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "note" } } };
   const thinking = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: "thinking" } } } } };
 
-  assert.deepEqual(parse(newer), newer);
+  assert.equal(parse(newer), undefined);
   assert.equal(parse(thinking), undefined);
   assert.equal(parse({ id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "moved" } }), undefined);
   assert.equal(parse({ id: 3, type: "chats_answer", answer: { kind: "page" } }), undefined);
@@ -68,6 +69,7 @@ test("anything malformed, or that the panel doesn't act on, is dropped", () => {
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 0, event: { kind: "outside_prompt", text: "x" } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "prompt", request: "r", text: "x", pick: { url: "u" } } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "prompt", text: "x" } } },
+    { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "message", text: "x" } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "receipt", receipt: {} } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run_status", status: { run: "r" } } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run_status", status: { run: "r", state: "running", agent: { kind: "gemini", owner: { kind: "member", member: "m-1" } } } } } },

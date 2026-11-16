@@ -375,7 +375,6 @@ fn event(event: &ChatEvent) -> String {
         }
         ChatEvent::OutsidePrompt { text } => format!("outside prompt {text}"),
         ChatEvent::Message { text, .. } => format!("message {text}"),
-        ChatEvent::Newer => "newer".to_owned(),
     }
 }
 

@@ -39,8 +39,7 @@ impl Live {
             ChatEvent::Message { .. }
             | ChatEvent::Prompt { .. }
             | ChatEvent::OutsidePrompt { .. }
-            | ChatEvent::Receipt { .. }
-            | ChatEvent::Newer => return,
+            | ChatEvent::Receipt { .. } => return,
         };
         self.remember(run, &ChatKey::new(&update.workspace, &update.chat));
     }

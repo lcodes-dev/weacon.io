@@ -7,6 +7,7 @@ import type {
   AccountSignInStart,
   ChatLeg,
   ChatList,
+  ChatState,
   ChatSummary,
   Code,
   DocContent,
@@ -303,8 +304,10 @@ const isLeg = (value: unknown): value is ChatLeg =>
   AGENT_KINDS.includes((value as ChatLeg).agent) &&
   isIdText((value as ChatLeg).machine_id) &&
   typeof (value as ChatLeg).detached === "boolean";
+const CHAT_STATES: readonly string[] = ["open", "full"] satisfies ChatState[];
 const isChat = (value: unknown): value is ChatSummary =>
-  fields(value, ["id", "owner", "state", "title"]) &&
+  fields(value, ["id", "owner", "title"]) &&
+  CHAT_STATES.includes((value as ChatSummary).state) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at) &&
   ((value as ChatSummary).run === undefined || RUN_STATES.includes((value as ChatSummary).run as string)) &&
@@ -370,8 +373,8 @@ const isProposal = (value: unknown): boolean =>
   fields(value, ["id", "state"]) && isObject(value) && isObject(value["about"]) && isObject(value["author"]) && Number.isSafeInteger(value["at"]);
 const isProposals = listOf<ProposalList>("proposals", isProposal);
 const isHunk = (value: unknown): boolean =>
-  isObject(value) && (value["kind"] === "agreed" ? fields(value, ["text"]) : value["kind"] === "conflict" ? fields(value, ["base", "current", "proposed"]) : fields(value, ["kind"]));
-// Each outcome this app reads has its fields; one of a newer kind passes, to be shown as such.
+  isObject(value) && (value["kind"] === "agreed" ? fields(value, ["text"]) : value["kind"] === "conflict" && fields(value, ["base", "current", "proposed"]));
+// Each outcome the protocol names, with the fields this app reads.
 const isOutcome = (value: unknown): value is ProposalOutcome => {
   if (!fields(value, ["outcome"]) || !isObject(value)) {
     return false;
@@ -383,7 +386,9 @@ const isOutcome = (value: unknown): value is ProposalOutcome => {
       return typeof value["title"] === "boolean" && typeof value["anchors"] === "boolean" && Array.isArray(value["hunks"]) && value["hunks"].every(isHunk);
     case "task_conflict":
       return Array.isArray(value["edits"]) && value["edits"].every((edit) => fields(edit, ["kind"]));
-    default:
+    case "rejected":
       return true;
+    default:
+      return false;
   }
 };

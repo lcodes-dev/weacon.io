@@ -267,10 +267,7 @@ fn message_text(event: &ChatEvent) -> Option<&str> {
                     ..
                 },
         } => Some(text),
-        ChatEvent::Run { .. }
-        | ChatEvent::Receipt { .. }
-        | ChatEvent::RunStatus { .. }
-        | ChatEvent::Newer => None,
+        ChatEvent::Run { .. } | ChatEvent::Receipt { .. } | ChatEvent::RunStatus { .. } => None,
     }
 }
 

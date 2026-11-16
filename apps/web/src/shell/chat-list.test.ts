@@ -19,7 +19,6 @@ test("chats are listed newest first, and by id when they tie", () => {
 test("a chat that takes no prompts says why", () => {
   assert.equal(stateNote("open"), undefined);
   assert.equal(stateNote("full"), "Full");
-  assert.equal(stateNote("newer" as ChatSummary["state"]), undefined);
 });
 
 test("a person's agents in a chat are those on machines they may call, whoever called each last, their own first", () => {

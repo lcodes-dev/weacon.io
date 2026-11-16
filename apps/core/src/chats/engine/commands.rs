@@ -90,9 +90,7 @@ impl<A: Agent> Engine<A> {
             ChatAction::Interrupt => self.interrupt(key, request, author.as_ref()).await,
             // A hold is taken before the log, by `command_from`, and only the server takes a
             // message to a chat's people.
-            ChatAction::Say { .. } | ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {
-                Err(unsupported())
-            }
+            ChatAction::Say { .. } | ChatAction::Hold | ChatAction::Release => Err(unsupported()),
         }
     }
 

@@ -207,7 +207,7 @@ function isChatAnswer(value: unknown): boolean {
   }
 }
 
-// An entry whose event this app reads has every field it reads; one of a newer kind keeps its place.
+// An entry whose event is of a kind the protocol names, with every field this app reads.
 function isEntry(value: unknown): value is ChatEntry {
   const entry = record(value);
   const event = record(entry?.["event"]);
@@ -234,7 +234,7 @@ function isEntry(value: unknown): value is ChatEntry {
     case "run_status":
       return isStatus(event["status"]);
     default:
-      return true;
+      return false;
   }
 }
 

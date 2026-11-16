@@ -930,25 +930,8 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn what_this_build_doesnt_know_is_refused_and_a_stopped_engine_says_so() {
-        let bench = bench();
+    async fn a_stopped_engine_says_so() {
         let (anyone, _pushes) = client(2);
-        let mut pushes = watch(&bench).await;
-
-        let action = bench
-            .chats
-            .command(command("r-1", "c-1", ChatAction::Newer), &anyone);
-        let refused = action.await.unwrap_err();
-        assert_eq!(refused.code().as_str(), "message.unsupported");
-        assert_eq!(pushed(&mut pushes, 1).await, ["nothing"]);
-        let asked = bench
-            .chats
-            .query(query("c-1", ChatQueryKind::Newer), &anyone);
-        assert_eq!(
-            asked.await.unwrap_err().code().as_str(),
-            "message.unsupported"
-        );
-
         let (stopped, engine) = parts();
         drop(engine);
         let command = stopped.command(prompt("r-1", "Hi")).await;

@@ -109,7 +109,7 @@ function isChatAnswer(value: unknown): boolean {
   }
 }
 
-// An entry whose event the panel reads has every field it reads; one of a newer kind keeps its place.
+// An entry whose event is of a kind the protocol names, with every field the panel reads.
 function isEntry(value: unknown): boolean {
   const entry = record(value);
   const event = record(entry?.["event"]);
@@ -129,8 +129,10 @@ function isEntry(value: unknown): boolean {
     }
     case "run_status":
       return isStatus(event["status"]);
+    case "message":
+      return text(event, "author") && text(event, "text");
     default:
-      return true;
+      return false;
   }
 }
 

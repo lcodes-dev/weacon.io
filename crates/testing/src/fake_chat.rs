@@ -16,7 +16,7 @@ mod events;
 
 use crate::fake_server::refusal;
 
-use events::{agent, asks_bash, run, said, unknown};
+use events::{agent, asks_bash, run, said};
 
 /// The prompt text that makes the fake drop its client's subscription.
 const LOSE: &str = "/lose";
@@ -89,9 +89,6 @@ impl FakeChat {
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Vec<Envelope> {
         let id = envelope.id;
         let refused = |code| vec![refusal(id, code)];
-        if unknown(&envelope.message) {
-            return refused(code!("message.unsupported"));
-        }
         if let Message::ChatQuery(ChatQuery {
             workspace,
             chat,
@@ -200,7 +197,6 @@ impl FakeChat {
                 self.told_since(*after)
             }
             ChatQueryKind::Subscribe { .. } => vec![self.envelope(id, ChatAnswerKind::EventsLost)],
-            ChatQueryKind::Newer => Vec::new(),
         }
     }
 
@@ -237,7 +233,7 @@ impl FakeChat {
                 }
             }
             // A hold comes only from a local client, never through the server.
-            ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {}
+            ChatAction::Hold | ChatAction::Release => {}
         }
     }
 
@@ -517,7 +513,6 @@ mod tests {
                 let seqs: Vec<_> = events.iter().map(|entry| entry.seq).collect();
                 format!("window {seqs:?}")
             }
-            ChatAnswerKind::Newer => "newer".to_owned(),
         }
     }
 
@@ -537,7 +532,6 @@ mod tests {
                 format!("{} {:?}", status.run.as_str(), status.state)
             }
             ChatEvent::Receipt { receipt } => format!("receipt {}", receipt.request.as_str()),
-            ChatEvent::Newer => "other".to_owned(),
         }
     }
 
@@ -1057,15 +1051,6 @@ mod tests {
         assert_eq!(
             fake.answer(&commanded),
             [refusal(commanded.id, code!("chat.not_found"))]
-        );
-        assert_eq!(
-            fake.answer(&query(3, "c-1", ChatQueryKind::Newer)),
-            [refusal(3, code!("message.unsupported"))]
-        );
-        let newer = command(ChatAction::Newer);
-        assert_eq!(
-            fake.answer(&newer),
-            [refusal(newer.id, code!("message.unsupported"))]
         );
         assert_eq!(fake.seq(), seq);
         assert!(

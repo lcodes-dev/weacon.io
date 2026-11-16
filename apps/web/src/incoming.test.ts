@@ -138,7 +138,7 @@ test("each message goes to the handlers it may be for; an error to both a prompt
     "worktree error", "chat chat", "chat chat_answer", "worktree worktree_answer"]);
 });
 
-test("a chat's events pass with the fields this app reads, and a newer kind keeps its place", () => {
+test("a chat's events pass with the fields this app reads, and no other kind does", () => {
   const good = [
     said.event,
     { kind: "outside_prompt", text: "Hi" },
@@ -146,10 +146,10 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
     { kind: "receipt", receipt: { request: "q-1", state: "accepted" } },
     { kind: "run", update: { run: "r-1", event: { event: "text", text: "Hello." } } },
     { kind: "run_status", status: { run: "r-1", state: "idle" } },
-    { kind: "newer", anything: 1 },
   ];
   const bad = [
     undefined,
+    { kind: "note", anything: 1 },
     { kind: "receipt", receipt: { request: "q-1", state: "queued" } },
     { kind: "receipt", receipt: { state: "accepted" } },
     { kind: "run", update: { run: "r-1", event: { event: "finished", outcome: { state: "queued" } } } },
