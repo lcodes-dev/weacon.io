@@ -13,9 +13,9 @@ export type Turn = { key: string; run: RunId; transcript: Transcript; asks: read
 
 /**
  * What the screen shows, in order: what people wrote, to the chat or to their own agent, by
- * `author` when the log says who, and agents' turns.
+ * `author` when the log says who, with whether it `calls` their agent, and agents' turns.
  */
-export type Item = { kind: "prompt"; seq: number; text: string; author: MemberId | undefined; pick?: PickNote } | { kind: "turn"; turn: Turn };
+export type Item = { kind: "prompt"; seq: number; text: string; author: MemberId | undefined; calls: boolean; pick?: PickNote } | { kind: "turn"; turn: Turn };
 
 /** A run as its chat's log records it. */
 export type Run = { state: RunState; agent: AgentRef | undefined };
@@ -139,6 +139,12 @@ export function answered(chat: Chat, run: RunId, prompt: number): Chat {
   return { ...chat, items };
 }
 
+/** Whether `me`'s messages in the chat go to their agent unless they say otherwise: their last one there called it. */
+export function calling(chat: Chat | undefined, me: MemberId | undefined): boolean {
+  const last = chat?.items.findLast((item) => item.kind === "prompt" && item.author === me);
+  return me !== undefined && last?.kind === "prompt" && last.calls;
+}
+
 /**
  * Whether a run of `me`'s own agent is on a turn in the chat, so that they can stop it; a run whose
  * owner the log doesn't name counts as theirs.
@@ -181,7 +187,7 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "outside_prompt") {
     const pick = event.kind === "prompt" ? event.pick : undefined;
     const author = event.kind === "outside_prompt" ? undefined : event.author;
-    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author, ...(pick === undefined ? {} : { pick }) });
+    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author, calls: event.kind === "prompt", ...(pick === undefined ? {} : { pick }) });
     return;
   }
   closeBy(items, entry);

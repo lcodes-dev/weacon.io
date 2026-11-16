@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { AgentRef, ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import { type Chat, type Item, type Run, answered, calling, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -194,6 +194,21 @@ test("a status keeps the agent the run had when it names none", () => {
 
   assert.deepEqual(next.runs.get("r-1"), { state: "running", agent });
   assert.deepEqual(next.runs.get("r-3"), { state: "starting", agent: undefined });
+});
+
+test("a person's messages go to their agent while their last one in the chat called it", () => {
+  const of = (events: Parameters<typeof fromSnapshot>[0]["events"]) => fromSnapshot({ seq: events.length, runs: new Map(), waiting: [], events });
+  const call = (seq: number, author: string) => ({ seq, event: { kind: "prompt" as const, request: `q-${seq}`, text: "@Claude Code go", author } });
+  const plain = (seq: number, author: string) => ({ seq, event: { kind: "message" as const, author, text: "Hi" } });
+
+  assert.equal(calling(of([call(1, "m-1")]), "m-1"), true);
+  // What someone else writes changes nothing; a plain message of one's own switches it off.
+  assert.equal(calling(of([call(1, "m-1"), plain(2, "m-2"), call(3, "m-2")]), "m-1"), true);
+  assert.equal(calling(of([call(1, "m-1"), plain(2, "m-1")]), "m-1"), false);
+  assert.equal(calling(of([plain(1, "m-1"), call(2, "m-2")]), "m-1"), false);
+  assert.equal(calling(of([]), "m-1"), false);
+  assert.equal(calling(undefined, "m-1"), false);
+  assert.equal(calling(of([{ seq: 1, event: { kind: "outside_prompt", text: "Hi" } }]), undefined), false);
 });
 
 test("only a run of the reader's own agent, or one no one is named for, is theirs to stop", () => {

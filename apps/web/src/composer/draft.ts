@@ -63,6 +63,20 @@ export function pickMention(draft: Draft, at: Query, item: MentionItem): Placed 
   return { draft: { ...placed.draft, mentions }, caret: placed.caret };
 }
 
+/**
+ * The draft a box opens with: the mention of the writer's `agent` and a space while their
+ * messages go to it (`calling`), which they delete to write to the chat's people; else nothing.
+ */
+export function opening(agent: MentionItem | undefined, calling: boolean): Placed {
+  return agent !== undefined && calling ? pickMention(EMPTY_DRAFT, { start: 0, text: "" }, agent) : { draft: EMPTY_DRAFT, caret: 0 };
+}
+
+/** Whether `draft` says nothing yet: it is blank, or holds only mentions. */
+export function unwritten(draft: Draft): boolean {
+  const said = draft.mentions.reduceRight((text, { start, end }) => text.slice(0, start) + text.slice(end), draft.text);
+  return said.trim() === "";
+}
+
 function commonPrefix(a: string, b: string): number {
   let at = 0;
   while (at < a.length && at < b.length && a[at] === b[at]) at += 1;

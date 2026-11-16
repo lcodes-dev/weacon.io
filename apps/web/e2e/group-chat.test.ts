@@ -29,10 +29,9 @@ async function firstCall(page: Page, text: string): Promise<void> {
   const fields = page.getByRole("group", { name: "Your agent in this chat" });
   await fields.getByLabel("Repository").selectOption("demo");
   await fields.getByLabel("Agent").selectOption("claude");
-  await box(page).focus();
-  await page.keyboard.type("@cl");
-  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
-  await page.keyboard.press("Enter");
+  // The box opens on the agent's mention once it is picked.
+  await page.waitForFunction(() => document.querySelector("textarea")?.value.startsWith("@Claude Code ") === true);
+  await box(page).press("End");
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
 }

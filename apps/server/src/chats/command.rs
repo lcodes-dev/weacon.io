@@ -200,7 +200,7 @@ async fn prompt(
     }
     let (id, now) = (command.chat.clone(), from.shared.now());
     let leg = leg_for(from, chat, machine, &command).await?;
-    one_at_a_time(workspace, chat, &id, member).await?;
+    one_at_a_time(from.shared, workspace, chat, &id, member).await?;
     if !workspace.call(&id, &member.id, now).await? {
         return Err(agent_working());
     }
@@ -272,8 +272,9 @@ async fn own_machine(
 }
 
 // A chat runs one agent at a time: while another member's works or waits for an answer, on
-// a machine that still holds the chat for them, no one else's is called.
+// a connected machine that still holds the chat for them, no one else's is called.
 async fn one_at_a_time(
+    shared: &Shared,
     workspace: &Workspace,
     chat: &Chat,
     id: &ChatId,
@@ -300,9 +301,10 @@ async fn one_at_a_time(
     let Some(leg) = workspace.leg(id, owner).await?.filter(|leg| !leg.detached) else {
         return Ok(());
     };
+    // A machine that is away, as a closed laptop is, holds no one back.
     match workspace.leg_on(id, &leg.machine).await? {
-        Some(_) => Err(agent_working()),
-        None => Ok(()),
+        Some(_) if shared.links.is_open(&leg.machine) => Err(agent_working()),
+        _ => Ok(()),
     }
 }
 
@@ -914,6 +916,22 @@ mod tests {
             .db
             .unpair(&ada.asker.account, &ada.machine);
         assert!(unpaired.await.unwrap());
+
+        two.ask(grace, mine()).await.unwrap();
+        assert_eq!(sent(&mut two.graces).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_working_agent_whose_machine_went_away_holds_no_one_back() {
+        let mut two = Two::new().await;
+        two.ada_calls().await;
+        let grace = &two.grace;
+        let mine = || prompt("r-5", "c-1", "And mine", Some(&grace.machine));
+        let busy = two.ask(grace, mine()).await;
+        assert_eq!(busy.unwrap_err().code().as_str(), "chat.agent_working");
+
+        // As a closed laptop: still paired, its run still working as far as the chat knows.
+        two.fixture.shared.links.close(&two.ada.machine);
 
         two.ask(grace, mine()).await.unwrap();
         assert_eq!(sent(&mut two.graces).len(), 2);

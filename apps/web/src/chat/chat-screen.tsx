@@ -13,7 +13,7 @@ import { ReviewBar } from "../worktree/review-bar.tsx";
 import { useWorktree } from "../worktree/use-worktree.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
-import { working } from "./chat.ts";
+import { calling, working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
 import { landing } from "./landing.ts";
 import type { Names } from "../members/names.ts";
@@ -131,7 +131,13 @@ export function ChatScreen({
         />
       </div>
       {mine || shown !== "run" ? (
-        <Composer send={commands.send()} blocked={why} hidden={shown !== "run"} agent={leg?.detached === false ? agentItem(leg.agent) : undefined} />
+        <Composer
+          send={commands.send()}
+          blocked={why}
+          hidden={shown !== "run"}
+          agent={leg?.detached === false ? agentItem(leg.agent) : undefined}
+          calling={calling(chat, me)}
+        />
       ) : adding ? (
         <FirstCall link={link} machines={machines} missing={missing} openSettings={openSettings} away={away} send={commands.send} blocked={why} />
       ) : (
@@ -139,7 +145,7 @@ export function ChatScreen({
           <button type="button" className="add-agent" onClick={() => setAdding(true)}>
             Add your agent
           </button>
-          <Composer send={commands.send()} blocked={why} hidden={false} agent={undefined} />
+          <Composer send={commands.send()} blocked={why} hidden={false} agent={undefined} calling={false} />
         </>
       )}
     </div>
@@ -169,7 +175,7 @@ function FirstCall({
   return (
     <>
       {machines.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing}
-      <Composer send={send(pick.choice)} blocked={why} hidden={false} agent={pick.choice && agentItem(pick.choice.agent)} />
+      <Composer send={send(pick.choice)} blocked={why} hidden={false} agent={pick.choice && agentItem(pick.choice.agent)} calling />
     </>
   );
 }

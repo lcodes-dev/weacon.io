@@ -71,6 +71,7 @@ export function NewChat({
         hidden={false}
         explain={startProblem}
         agent={choice && agentItem(choice.agent)}
+        calling
       />
     </section>
   );

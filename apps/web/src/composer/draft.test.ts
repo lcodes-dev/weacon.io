@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Draft, EMPTY_DRAFT, type MentionItem, editDraft, pickMention, query } from "./draft.ts";
+import { editDraft, EMPTY_DRAFT, opening, pickMention, query, unwritten, type Draft, type MentionItem } from "./draft.ts";
 
 const jun: MentionItem = { id: "m-1", label: "Jun Sato" };
 const codex: MentionItem = { id: "a-1", label: "Codex" };
@@ -92,4 +92,18 @@ test("a pick replaces the query with the mention and a space", () => {
     },
     caret: 13,
   });
+});
+
+test("a box opens on the mention of the writer's agent while their messages go to it, and a draft of mentions alone says nothing", () => {
+  const calling = opening(codex, true);
+
+  assert.deepEqual(calling, { draft: { text: "@Codex ", mentions: [{ start: 0, end: 6, item: codex }] }, caret: 7 });
+  assert.deepEqual(opening(codex, false), { draft: EMPTY_DRAFT, caret: 0 });
+  assert.deepEqual(opening(undefined, true), { draft: EMPTY_DRAFT, caret: 0 });
+  assert.equal(unwritten(EMPTY_DRAFT), true);
+  assert.equal(unwritten(calling.draft), true);
+  assert.equal(unwritten(editDraft(calling.draft, "@Codex fix it", 13).draft), false);
+  // With the mention deleted, what is left goes to the chat's people.
+  const plain = editDraft(calling.draft, "Codex hi", 8).draft;
+  assert.deepEqual([plain.mentions.length, unwritten(plain)], [0, false]);
 });

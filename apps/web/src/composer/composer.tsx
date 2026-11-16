@@ -1,7 +1,7 @@
-import { type KeyboardEvent, type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./composer.css";
-import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
+import { type Draft, type MentionItem, type Placed, editDraft, opening, pickMention, query, unwritten } from "./draft.ts";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
 import type { Send, Sent } from "./prompt.ts";
@@ -10,7 +10,8 @@ import { useSend } from "./send.ts";
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
  * text until its machine accepts it, and says so when it doesn't, as `explain` words it. Typing `@`
- * offers `agent`, the writer's own in this chat, and a message that mentions it calls it.
+ * offers `agent`, the writer's own in this chat, and a message that mentions it calls it. While
+ * `calling`, the box opens on that mention, so a dialogue with the agent needs none typed.
  */
 export function Composer({
   send,
@@ -18,20 +19,27 @@ export function Composer({
   hidden,
   explain,
   agent,
+  calling,
 }: {
   send: Send;
   blocked: string | undefined;
   hidden: boolean;
   explain?: (sent: Sent) => string | undefined;
   agent: MentionItem | undefined;
+  /** Whether the writer's messages here go to their agent unless they say otherwise. */
+  calling: boolean;
 }) {
-  const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
+  const [placed, setPlaced] = useState<Placed>(() => opening(agent, calling));
+  const opens = useRef(() => opening(agent, calling));
+  opens.current = () => opening(agent, calling);
+  // A box nothing was written in follows where the writer's messages now go.
+  useEffect(() => setPlaced((now) => (unwritten(now.draft) ? opens.current() : now)), [agent?.id, calling]);
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   // A draft edited after it was sent stays in the box.
   const { sending, problem, submit: deliver, clear } = useSend<string>(
     send,
-    (sent) => setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
+    (sent) => setPlaced((now) => (now.draft.text === sent ? opens.current() : now)),
     explain,
   );
   const box = useRef<HTMLTextAreaElement>(null);
@@ -40,7 +48,7 @@ export function Composer({
   const at = query(draft, caret);
   const options = offered(at, dismissed, sending, agent);
   const hint = problem ?? blocked;
-  const ready = !sending && blocked === undefined && draft.text.trim() !== "";
+  const ready = !sending && blocked === undefined && !unwritten(draft);
 
   useLayoutEffect(() => {
     const element = box.current;
