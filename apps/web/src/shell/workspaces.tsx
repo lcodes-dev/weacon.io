@@ -182,14 +182,14 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
     return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} tasksServed={served.tasks} />;
   }
   return (
-    <div className="workspace">
+    <div className="workspace detail">
       {palette()}
       <div className="side">
         <Sections {...open} />
         {open.menu}
       </div>
       <section>
-        <Heading title={TITLES[place.view]} status={status} />
+        <Heading title={TITLES[place.view]} status={status} back={() => open.go({ view: "chats" })} />
         {!served[place.view] ? (
           <p className="page muted">{status.state === "connecting" ? "Loading" : `This server doesn't offer ${TITLES[place.view].toLowerCase()}.`}</p>
         ) : place.view === "tasks" ? (
@@ -233,9 +233,13 @@ function Sections({ socket, place, go }: Pick<Open, "socket" | "place" | "go">) 
   );
 }
 
-function Heading({ title, status }: { title: string; status: Status }) {
+// `back` leaves for the chat list, which a narrow screen shows alone.
+function Heading({ title, status, back }: { title: string; status: Status; back(): void }) {
   return (
     <div className="heading">
+      <button type="button" className="back" aria-label="Back to chats" onClick={back}>
+        Chats
+      </button>
       <h1>{title}</h1>
       <p className="status">{statusText(status)}</p>
     </div>
@@ -299,7 +303,7 @@ function WorkspaceChats({
   const guest = others.some(({ id, owner }) => id === leg?.machine_id && owner !== workspace.member);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
-    <div className="workspace">
+    <div className={starting || place.chat !== undefined ? "workspace detail" : "workspace"}>
       {palette(leg?.machine_id)}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
@@ -323,7 +327,14 @@ function WorkspaceChats({
         {menu}
       </div>
       <section>
-        <Heading title={starting ? "New chat" : (open?.title ?? workspace.name)} status={status} />
+        <Heading
+          title={starting ? "New chat" : (open?.title ?? workspace.name)}
+          status={status}
+          back={() => {
+            setStarting(false);
+            go({ view: "chats" });
+          }}
+        />
         {starting && tasks === undefined && loadedTasks.problem !== undefined && <Problem text={loadedTasks.problem} retry={() => void loadedTasks.load()} />}
         {starting ? (
           <NewChat

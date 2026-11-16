@@ -40,3 +40,14 @@
   flex-direction: column;
   gap: 4px;
 }
+
+@media (max-width: 720px) {
+  .review-bar {
+    padding: 8px 12px;
+  }
+
+  .review-bar .standing {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

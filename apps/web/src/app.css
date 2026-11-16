@@ -136,3 +136,62 @@ pre code {
   padding: 8px 12px;
   overflow-x: auto;
 }
+
+/* Clear of a phone's notch and home bar; nothing on other screens. */
+.app {
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+@media (max-width: 720px) {
+  /* At 16px a phone doesn't zoom into a focused box. */
+  :root {
+    font-size: 16px;
+  }
+
+  /* The dynamic height, so the foot stays above the browser's bars, and the keyboard where it resizes the page. */
+  .app {
+    height: 100dvh;
+  }
+
+  header {
+    gap: 8px;
+    padding: 4px 12px;
+  }
+
+  .page {
+    padding: 12px;
+  }
+
+  button,
+  select,
+  input:not([type="checkbox"], [type="radio"], [type="file"]) {
+    min-height: 44px;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* A terminal keeps its columns and scrolls sideways in its own box. */
+  .sign-in-terminal {
+    overflow-x: auto;
+  }
+
+  .page ul,
+  .page ol {
+    padding-left: 20px;
+  }
+
+  /* Settings sets its controls in a line of text; fingers need room between them. */
+  section.page button + button,
+  section.page input + button {
+    margin-left: 8px;
+  }
+
+  section.page li button {
+    margin-block: 4px;
+  }
+}

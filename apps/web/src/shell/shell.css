@@ -183,3 +183,125 @@
 .chats li .muted {
   font-size: 13px;
 }
+
+.heading .back {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .who {
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .who .muted {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .who button {
+    flex-shrink: 0;
+  }
+
+  .sign-in form,
+  .workspaces form,
+  .members form {
+    max-width: none;
+  }
+
+  /* One screen at a time: the list, or what was opened from it. */
+  .workspace {
+    flex-direction: column;
+  }
+
+  .side {
+    flex: 1;
+    width: auto;
+    border-right: none;
+  }
+
+  .workspace.detail > .side,
+  .workspace.detail > .palette-open,
+  .workspace:not(.detail) > section {
+    display: none;
+  }
+
+  /* So a long page scrolls inside itself, under the heading. */
+  .workspace > section {
+    min-height: 0;
+  }
+
+  .sections {
+    flex-direction: row;
+    flex-wrap: wrap;
+    padding: 12px 12px 0;
+  }
+
+  .chats {
+    padding: 12px;
+  }
+
+  .workspace-menu {
+    padding: 12px;
+  }
+
+  .heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 12px;
+    padding: 8px 12px 0;
+  }
+
+  .heading .back {
+    display: block;
+  }
+
+  .heading h1 {
+    flex: 1;
+    min-width: 0;
+    font-size: 1.15em;
+    overflow-wrap: anywhere;
+  }
+
+  .heading .status {
+    flex-basis: 100%;
+    margin: 0;
+    font-size: 13px;
+  }
+
+  .chat-task {
+    padding: 4px 12px 0;
+  }
+
+  .new-chat {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .my-agent label,
+  .new-chat .task-field label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .my-agent,
+  .new-chat > p,
+  .new-chat > .task-field {
+    min-width: 0;
+    margin: 8px 12px;
+  }
+
+  .chat-screen > .add-agent {
+    align-self: flex-start;
+    margin: 8px 12px 0;
+  }
+
+  .chat-screen > p {
+    margin: 8px 12px 0;
+  }
+}
