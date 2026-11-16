@@ -4,7 +4,7 @@ import type { Place } from "../shell/place.ts";
 /** A hit as the palette lists it: what it is, its title and snippet, and the place it opens. A message opens its chat at it. */
 export type Listed = { key: string; kind: "Task" | "Doc" | "Chat"; title: string; snippet: Snippet; place: Place };
 
-/** The hits the palette knows how to list, in the server's order; a newer kind is left out. */
+/** The hits as the palette lists them, in the server's order. */
 export function listed(hits: SearchHit[]): Listed[] {
   return hits.flatMap((hit): Listed[] => {
     switch (hit.kind) {
@@ -22,8 +22,6 @@ export function listed(hits: SearchHit[]): Listed[] {
             place: { view: "chats", chat: hit.chat, ...(hit.seq !== undefined && { at: hit.seq }) },
           },
         ];
-      default:
-        return [];
     }
   });
 }

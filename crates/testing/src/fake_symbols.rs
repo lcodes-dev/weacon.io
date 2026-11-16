@@ -19,9 +19,7 @@ pub(crate) fn answer(envelope: &Envelope) -> Option<Envelope> {
     let Message::SymbolsQuery(query) = &envelope.message else {
         return None;
     };
-    let SymbolsQueryKind::Search { words } = &query.query else {
-        return None;
-    };
+    let SymbolsQueryKind::Search { words } = &query.query;
     let words = words.to_lowercase();
     let repo: RepoId = "garden".parse().ok()?;
     let symbols = ITEMS
@@ -96,11 +94,6 @@ mod tests {
         );
         assert_eq!(names(answer(&search("bed water"))), ["garden::Bed::water"]);
         assert!(names(answer(&search("rose"))).is_empty());
-        let mut newer = search("bed");
-        if let Message::SymbolsQuery(query) = &mut newer.message {
-            query.query = SymbolsQueryKind::Newer;
-        }
-        assert_eq!(answer(&newer), None);
         let other = Envelope {
             id: 5,
             message: Message::Unknown,

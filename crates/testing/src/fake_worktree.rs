@@ -20,7 +20,7 @@ pub(crate) struct FakeWorktree {
 
 impl FakeWorktree {
     /// The answer to a worktree query or command in `envelope`, under its id; none for any other
-    /// message, or a query or action this build doesn't know.
+    /// message.
     pub(crate) fn answer(&mut self, envelope: &Envelope) -> Option<Envelope> {
         let (asked, answer) = if let Message::WorktreeQuery(query) = &envelope.message {
             let asked = (&query.request, &query.workspace, &query.chat);
@@ -43,7 +43,6 @@ impl FakeWorktree {
     fn act(&mut self, chat: &ChatId, action: &WorktreeAction) -> Option<Answer> {
         match action {
             WorktreeAction::OpenTerminal => return Some(Err(code!("request.unknown"))),
-            WorktreeAction::Newer => return None,
             WorktreeAction::Remove | WorktreeAction::OpenPullRequest { .. } => {}
         }
         if chat.as_str() != CHAT {
@@ -200,7 +199,6 @@ mod tests {
             let terminal = fake.answer(&command(chat, WorktreeAction::OpenTerminal));
             assert_eq!(terminal.unwrap().message, refused(code!("request.unknown")));
         }
-        assert_eq!(fake.answer(&command("c-1", WorktreeAction::Newer)), None);
         // Neither moved the worktree.
         assert_eq!(
             told(&mut fake, &query("c-1", WorktreeQueryKind::State)),
@@ -226,7 +224,6 @@ mod tests {
                 refused(code!("worktree.none"))
             );
         }
-        assert_eq!(fake.answer(&query("c-1", WorktreeQueryKind::Newer)), None);
         let unknown = Envelope {
             id: 1,
             message: Message::Unknown,

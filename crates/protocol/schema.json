@@ -2120,15 +2120,11 @@
       ]
     },
     "LineOp": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "context",
-            "added",
-            "removed"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "context",
+        "added",
+        "removed"
       ]
     },
     "LocalChat": {
@@ -4658,22 +4654,18 @@
       ]
     },
     "SymbolKind": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "const",
-            "enum",
-            "fn",
-            "macro",
-            "mod",
-            "static",
-            "struct",
-            "trait",
-            "type",
-            "union"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "const",
+        "enum",
+        "fn",
+        "macro",
+        "mod",
+        "static",
+        "struct",
+        "trait",
+        "type",
+        "union"
       ]
     },
     "SymbolsAnswer": {

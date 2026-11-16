@@ -1,6 +1,6 @@
 import type { Later, WebCapability } from "../connection.ts";
-import type { MachineId, MachineSummary, Symbol as CodeSymbol, SymbolKind } from "../protocol.ts";
-import { type Answer, MALFORMED } from "../api/api.ts";
+import type { MachineId, MachineSummary, Symbol as CodeSymbol } from "../protocol.ts";
+import type { Answer } from "../api/api.ts";
 import { type MachineSocket, askMachine } from "../machines/ask-machine.ts";
 import { lacks } from "../machines/core.ts";
 
@@ -29,15 +29,10 @@ export function symbols(socket: MachineSocket, machine: MachineId, words: string
       if (message.type !== "symbols_answer" || message.request !== request) {
         return undefined;
       }
-      return message.answer.kind === "found" ? { ok: true, value: message.answer.symbols.filter(known) } : { ok: false, code: MALFORMED };
+      return { ok: true, value: message.answer.symbols };
     },
   );
 }
-
-const KINDS: readonly SymbolKind[] = ["const", "enum", "fn", "macro", "mod", "static", "struct", "trait", "type", "union"];
-
-// A symbol of a kind this build doesn't know is left out.
-const known = (symbol: CodeSymbol) => KINDS.includes(symbol.kind);
 
 /** Where `symbol` is, as the palette copies it. */
 export const place = (symbol: CodeSymbol) => `${symbol.path}:${symbol.line}`;

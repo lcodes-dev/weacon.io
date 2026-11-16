@@ -121,7 +121,6 @@ mod tests {
                 SearchHit::Task { title, .. }
                 | SearchHit::Doc { title, .. }
                 | SearchHit::Chat { title, .. } => title.as_str(),
-                SearchHit::Newer => "",
             })
             .collect()
     }

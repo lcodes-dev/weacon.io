@@ -71,8 +71,6 @@ export function answered(worktree: Worktree, ref: ChatRef, message: Extract<Inco
       return { ...rest, outcome: { kind: "link", text: "The branch is pushed. Open the pull request from its page.", url: answer.url } };
     case "terminal_opened":
       return { ...rest, outcome: { kind: "note", text: "A terminal opened on the chat's machine." } };
-    default:
-      return rest;
   }
 }
 

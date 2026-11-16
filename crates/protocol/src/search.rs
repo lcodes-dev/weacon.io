@@ -47,10 +47,6 @@ pub enum SearchHit {
         seq: Option<u64>,
         snippet: Snippet,
     },
-    /// A hit this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// Plain text from around a match, and the parts of it that matched.
@@ -75,7 +71,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hits_are_tagged_by_kind_and_a_newer_one_still_parses() {
+    fn hits_are_tagged_by_kind() {
         let hit = SearchHit::Doc {
             doc: DocId::try_from("d1".to_owned()).unwrap(),
             title: "Plan".to_owned(),
@@ -110,11 +106,6 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<SearchHit>(chat_wire).unwrap(),
             chat
-        );
-        let newer = json!({ "kind": "symbol", "name": "a::b" });
-        assert_eq!(
-            serde_json::from_value::<SearchHit>(newer).unwrap(),
-            SearchHit::Newer
         );
     }
 

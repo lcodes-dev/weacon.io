@@ -287,12 +287,11 @@ test("a machine already unpaired elsewhere counts as unpaired, and other failure
   assert.deepEqual(await api.unpair("mc-1"), { ok: false, code: UNREACHABLE });
 });
 
-test("a search posts its text and takes hits it knows, and newer kinds, but nothing malformed", async () => {
+test("a search posts its text and takes hits it knows, but nothing malformed", async () => {
   const snippet = { text: "the plan", marks: [{ start: 4, end: 8 }] };
   const hits = [
     { kind: "task", task: "t-1", title: "Plan", snippet },
     { kind: "chat", chat: "c-1", title: "Fix the build", seq: 3, snippet },
-    { kind: "symbol", name: "a::b" },
   ];
   const { api, sent } = serve(
     { status: 200, body: { hits } },
@@ -301,11 +300,12 @@ test("a search posts its text and takes hits it knows, and newer kinds, but noth
     { status: 200, body: { hits: [{ kind: "task", task: { toString: null }, title: "Plan", snippet }] } },
     { status: 200, body: { hits: [{ kind: "chat", chat: "c-1", title: "Plan", seq: { toString: null }, snippet }] } },
     { status: 200, body: { hits: [{ kind: "chat", chat: "c-1", title: "Plan", seq: -1, snippet }] } },
+    { status: 200, body: { hits: [{ kind: "symbol", name: "a::b" }] } },
   );
 
   assert.deepEqual(await api.search("w-1", { text: "plan" }), { ok: true, value: { hits } });
   assert.deepEqual(await api.search("w-1", { text: "bad" }), { ok: false, code: MALFORMED });
-  for (const text of ["worse", "task", "seq", "negative"]) {
+  for (const text of ["worse", "task", "seq", "negative", "kind"]) {
     assert.deepEqual(await api.search("w-1", { text }), { ok: false, code: MALFORMED });
   }
   assert.deepEqual(sent[0], { path: "/api/workspaces/w-1/search", method: "POST", headers: { "content-type": "application/json" }, body: '{"text":"plan"}' });

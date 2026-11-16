@@ -54,13 +54,11 @@ test("files arrive one answer each, and only the latest request's for its chat c
   assert.equal(receive(NO_CHANGES, unasked), NO_CHANGES);
 });
 
-test("unchanged counts only before any file, and a file with a newer line op is kept as it came", () => {
+test("unchanged counts only before any file", () => {
   const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
-  const moved = { ...file("b.rs"), content: { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [{ op: "moved", text: "x" }] }] } };
 
   assert.equal(receive(one, answer("q-1", { kind: "unchanged" })), one);
-  assert.deepEqual(receive(one, answer("q-1", { kind: "file", files: 2, file: moved })).files[1], moved);
 });
 
 test("an error under the query's id cuts the changes short, so opening them asks again", () => {
@@ -107,16 +105,12 @@ test("a connection that ends cuts short only changes still coming", () => {
   assert.equal(cut(NO_CHANGES), NO_CHANGES);
 });
 
-test("an unchanged chat has no files, and a newer peer's kinds of file still arrive", () => {
+test("an unchanged chat has no files, and a renamed file arrives", () => {
   const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
 
   assert.deepEqual(receive(changes, answer("q-1", { kind: "unchanged" })), { ...changes, total: 0 });
-  // A newer peer's kinds still arrive, for the view to show as it can.
   const renamed = { ...file("b.rs"), change: { kind: "renamed", from: "a.rs" } } as DiffFile;
-  const newer = { ...file("c.rs"), change: { kind: "copied" }, content: { kind: "symlink" } } as unknown as DiffFile;
-  for (const each of [renamed, newer]) {
-    assert.deepEqual(receive(changes, answer("q-1", { kind: "file", files: 1, file: each })).files, [each]);
-  }
+  assert.deepEqual(receive(changes, answer("q-1", { kind: "file", files: 1, file: renamed })).files, [renamed]);
 });
 
 test("each line is numbered on the sides it is on, after a row for its hunk", () => {

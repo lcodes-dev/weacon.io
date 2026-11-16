@@ -4,8 +4,7 @@
 
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    RepoId, Symbol, SymbolKind, SymbolsAnswer, SymbolsAnswerKind, SymbolsQuery, SymbolsQueryKind,
-    code,
+    RepoId, Symbol, SymbolsAnswer, SymbolsAnswerKind, SymbolsQuery, SymbolsQueryKind, code,
 };
 
 use crate::codemap::SEARCHED;
@@ -25,12 +24,7 @@ pub(crate) async fn query(
     query: SymbolsQuery,
     log: &Logger,
 ) -> Result<SymbolsAnswer, Fault> {
-    let SymbolsQueryKind::Search { words } = query.query else {
-        return Err(Fault::new(
-            code!("symbols.unknown"),
-            "This core doesn't know that request",
-        ));
-    };
+    let SymbolsQueryKind::Search { words } = query.query;
     if words.len() > LONGEST_WORDS {
         return Err(Fault::new(
             code!("symbols.too_long"),
@@ -78,10 +72,9 @@ fn symbol(repo: &RepoId, hit: Hit) -> Option<Symbol> {
     if hit.name.len() > LONGEST || hit.path.len() > LONGEST {
         return None;
     }
-    let kind: SymbolKind = serde_json::from_value(hit.kind.into()).ok()?;
-    (kind != SymbolKind::Newer).then(|| Symbol {
+    Some(Symbol {
         repo: repo.clone(),
-        kind,
+        kind: serde_json::from_value(hit.kind.into()).ok()?,
         name: hit.name,
         path: hit.path,
         line: hit.line,
@@ -92,7 +85,7 @@ fn symbol(repo: &RepoId, hit: Hit) -> Option<Symbol> {
 mod tests {
     use std::fs;
 
-    use weacon_protocol::{AccountId, Asker, MachineId, RequestId};
+    use weacon_protocol::{AccountId, Asker, MachineId, RequestId, SymbolKind};
     use weacon_testing::{TempDir, recording_logger};
 
     use super::*;
@@ -173,10 +166,7 @@ mod tests {
         let maps = Maps::off();
         let too_long = "x".repeat(LONGEST_WORDS + 1);
         let longest = "x".repeat(LONGEST_WORDS);
-        let mut newer = query("mc-1", Some("a-1"), "run");
-        newer.query = SymbolsQueryKind::Newer;
         for (asked, refused) in [
-            (newer, "symbols.unknown"),
             (query("mc-1", Some("a-1"), &too_long), "symbols.too_long"),
             (query("mc-1", Some("a-1"), &longest), "mcp.map_failed"),
         ] {

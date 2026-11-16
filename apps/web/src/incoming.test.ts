@@ -299,13 +299,15 @@ test("a sessions answer passes with the fields the list and the transcript read,
   assert.equal(parse(frame({ id: 6, type: "sessions_answer", request: "r-1", answer: { kind: "missing" } })), undefined);
 });
 
-test("a symbols answer passes with each symbol's fields, and a newer kind passes to be ignored", () => {
+test("a symbols answer passes only with each symbol's fields", () => {
   const symbols = (answer: unknown) => frame({ id: 6, type: "symbols_answer", request: "r-1", machine: "mc-1", workspace: "w-1", answer });
   const symbol = { repo: "site", kind: "fn", name: "a::run", path: "src/lib.rs", line: 2 };
-  const good = [{ kind: "found", symbols: [symbol], more: true }, { kind: "found", symbols: [], more: false }, { kind: "later" }];
+  const good = [{ kind: "found", symbols: [symbol], more: true }, { kind: "found", symbols: [], more: false }];
   const bad = [
     null,
     {},
+    { kind: "later" },
+    { kind: "found", symbols: [{ ...symbol, kind: "class" }], more: false },
     { kind: "found", symbols: "none", more: false },
     { kind: "found", symbols: [symbol] },
     ...["repo", "kind", "name", "path"].map((key) => ({ kind: "found", symbols: [{ ...symbol, [key]: 1 }], more: false })),
@@ -345,6 +347,9 @@ test("a diff answer passes only with every field the diff view reads", () => {
     { kind: "file", files: 0, file: file("a.rs") },
     { kind: "file", files: 1, file: { ...file("a.rs"), path: 7 } },
     { kind: "file", files: 1, file: { ...file("a.rs"), change: { kind: "renamed" } } },
+    { kind: "file", files: 1, file: { ...file("a.rs"), change: { kind: "copied" } } },
+    { kind: "file", files: 1, file: { ...file("a.rs"), content: { kind: "symlink" } } },
+    text([{ old_start: 1, new_start: 1, lines: [{ op: "moved", text: "x" }] }]),
     { kind: "file", files: 1, file: { ...file("a.rs"), change: "added" } },
     { kind: "file", files: 1, file: { ...file("a.rs"), content: { hunks: [] } } },
     text("none"),
@@ -360,7 +365,6 @@ test("a diff answer passes only with every field the diff view reads", () => {
     { kind: "unchanged" },
     { kind: "file", files: 2, file: file("a.rs") },
     { kind: "file", files: 1, file: { ...file("b.rs"), change: { kind: "renamed", from: "a.rs" } } },
-    { kind: "file", files: 1, file: { ...file("c.rs"), change: { kind: "copied" }, content: { kind: "symlink" } } },
   ];
 
   for (const body of good) {
@@ -371,11 +375,11 @@ test("a diff answer passes only with every field the diff view reads", () => {
   }
 });
 
-test("a worktree answer passes with the fields the review bar reads, and a newer kind passes to be ignored", () => {
+test("a worktree answer passes only with the fields the review bar reads", () => {
   const worktree = (answer: unknown) => frame({ id: 6, type: "worktree_answer", request: "r-1", workspace: "w-1", chat: "c-1", answer });
   const state = { kind: "state", removed: false, uncommitted: true, unpushed: false };
-  const good = [state, { kind: "pull_request_opened", url: "https://example.com/pr/1" }, { kind: "pull_request_page", url: "https://example.com/compare" }, { kind: "terminal_opened" }, { kind: "later" }];
-  const bad = [null, { removed: false }, { ...state, removed: "no" }, { ...state, unpushed: undefined }, { kind: "pull_request_page" }, { kind: "pull_request_opened", url: 3 }, { kind: "pull_request_page", url: "javascript:alert(1)" }, { kind: "pull_request_opened", url: "http://example.com/pr/1" }, { kind: "pull_request_page", url: "not a url" }];
+  const good = [state, { kind: "pull_request_opened", url: "https://example.com/pr/1" }, { kind: "pull_request_page", url: "https://example.com/compare" }, { kind: "terminal_opened" }];
+  const bad = [null, { kind: "later" }, { removed: false }, { ...state, removed: "no" }, { ...state, unpushed: undefined }, { kind: "pull_request_page" }, { kind: "pull_request_opened", url: 3 }, { kind: "pull_request_page", url: "javascript:alert(1)" }, { kind: "pull_request_opened", url: "http://example.com/pr/1" }, { kind: "pull_request_page", url: "not a url" }];
 
   for (const answer of good) {
     assert.equal(parse(worktree(answer))?.type, "worktree_answer", JSON.stringify(answer));
