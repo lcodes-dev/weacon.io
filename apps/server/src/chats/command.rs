@@ -14,6 +14,14 @@ use crate::db::{Chat, Incoming, Leg, NewChat, NewLeg, Workspace};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
+/// Who sends a command: a member of the chat's workspace, and their account.
+#[derive(Clone, Copy)]
+struct From<'a> {
+    shared: &'a Shared,
+    member: &'a Member,
+    asker: &'a Asker,
+}
+
 /// Takes `command` from `asker`, one of the chat's workspace's members. A message is stored,
 /// and its receipt is the answer. A command to the asker's own agent is refused when their
 /// machine or another member's working agent doesn't allow it, and else relayed once; the
@@ -26,6 +34,11 @@ pub(crate) async fn take(
     back: Back<'_>,
 ) -> Result<Option<Message>, Fault> {
     let (id, request) = (command.chat.clone(), command.request.clone());
+    let from = From {
+        shared,
+        member,
+        asker,
+    };
     let chat = member.workspace.chat(&command.chat).await?;
     match admit(chat, asker.clone(), command)? {
         Admitted::Said {
@@ -33,7 +46,7 @@ pub(crate) async fn take(
             text,
             mut task,
         } => {
-            say(shared, member, chat.as_ref(), &id, text, &mut task).await?;
+            say(from, chat.as_ref(), &id, text, &mut task).await?;
             let outcome = Outcome::Accepted;
             return Ok(Some(Message::Receipt(Receipt { request, outcome })));
         }
@@ -41,18 +54,18 @@ pub(crate) async fn take(
             chat: None,
             machine,
             command,
-        } => start(shared, member, asker, machine, command, back).await?,
+        } => start(from, machine, command, back).await?,
         Admitted::Prompt {
             chat: Some(chat),
             machine,
             command,
-        } => prompt(shared, (member, asker), &chat, machine, command, back).await?,
+        } => prompt(from, &chat, machine, command, back).await?,
         Admitted::Act { chat, command } => {
             let made = Some(chat.made).filter(|made| *made);
             let leg = member.workspace.leg(&id, &member.id).await?;
             let leg = made.and(leg).filter(|leg| leg.core_seq > 0);
             let leg = leg.ok_or_else(not_owner)?;
-            serve(shared, member, &leg, command, back).await?;
+            serve(from, &leg, command, back).await?;
         }
     }
     Ok(None)
@@ -60,8 +73,7 @@ pub(crate) async fn take(
 
 // Stores a person's message, in a chat it makes when there is none.
 async fn say(
-    shared: &Shared,
-    member: &Member,
+    From { shared, member, .. }: From<'_>,
     chat: Option<&Chat>,
     id: &ChatId,
     text: String,
@@ -113,13 +125,12 @@ async fn say(
 // A chat's first prompt: the chat is made before it is sent, so two at once can't both reach
 // the machine, and taken back when it can't be sent.
 async fn start(
-    shared: &Shared,
-    member: &Member,
-    asker: &Asker,
+    from: From<'_>,
     machine: Option<MachineId>,
     mut command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
+    let From { shared, member, .. } = from;
     let workspace = &member.workspace;
     let ChatAction::Prompt {
         text,
@@ -133,7 +144,7 @@ async fn start(
     };
     stamp(workspace, task).await?;
     let (title, repo, task) = (title(text), repo.clone(), task.clone());
-    let (machine_id, machine) = own_machine(shared, asker, machine).await?;
+    let (machine_id, machine) = own_machine(from, machine).await?;
     let id = command.chat.clone();
     let chat = NewChat {
         id: &id,
@@ -162,13 +173,13 @@ async fn start(
 // A prompt to a chat that is there: to the asker's own agent in it, which their first one
 // there fixes, with what the others said since their last.
 async fn prompt(
-    shared: &Shared,
-    (member, asker): (&Member, &Asker),
+    from: From<'_>,
     chat: &Chat,
     machine: Option<MachineId>,
     mut command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
+    let member = from.member;
     let workspace = &member.workspace;
     if !chat.made {
         // Its first prompt is still on its way, and may yet be taken back.
@@ -185,7 +196,7 @@ async fn prompt(
             let ChatAction::Prompt { repo, agent, .. } = &command.action else {
                 return Err(super::unsupported());
             };
-            let (machine_id, machine) = own_machine(shared, asker, machine).await?;
+            let (machine_id, machine) = own_machine(from, machine).await?;
             let leg = NewLeg {
                 machine_id: &machine_id,
                 machine: &machine,
@@ -201,13 +212,12 @@ async fn prompt(
     if let ChatAction::Prompt { quotes, .. } = &mut command.action {
         *quotes = quotes::since(workspace, &id, &member.id).await?;
     }
-    serve(shared, member, &leg, command, back).await
+    serve(from, &leg, command, back).await
 }
 
 // The asker's machine `named`, which a first prompt must name, and what it is called.
 async fn own_machine(
-    shared: &Shared,
-    asker: &Asker,
+    From { shared, asker, .. }: From<'_>,
     named: Option<MachineId>,
 ) -> Result<(MachineId, weacon_protocol::MachineName), Fault> {
     let named = named.ok_or_else(|| {
@@ -247,8 +257,7 @@ async fn one_at_a_time(workspace: &Workspace, chat: &ChatId, member: &Member) ->
 
 // Relays `command` to the machine of `leg`, the asker's own, while they still own it.
 async fn serve(
-    shared: &Shared,
-    member: &Member,
+    From { shared, member, .. }: From<'_>,
     leg: &Leg,
     command: ChatCommand,
     back: Back<'_>,
@@ -669,76 +678,143 @@ mod tests {
         }
     }
 
+    // Ada and Grace in chat c-1, each with her machine connected, after a message from each.
+    struct Two {
+        fixture: Fixture,
+        ada: Ada,
+        grace: Ada,
+        adas: crate::links::Attached,
+        graces: crate::links::Attached,
+    }
+
+    impl Two {
+        async fn new() -> Self {
+            let fixture = Fixture::new().await;
+            let (ada, grace) = (ada(&fixture).await, grace(&fixture).await);
+            let offers = ["chat.serve", "chat.answers"];
+            let adas = attach(&fixture.shared, &ada, &offers);
+            let graces = attach(&fixture.shared, &grace, &offers);
+            let two = Self {
+                fixture,
+                ada,
+                grace,
+                adas,
+                graces,
+            };
+            two.ask(&two.ada, say("r-1", "c-1", "Morning"))
+                .await
+                .unwrap();
+            let reply = say("r-2", "c-1", "Try the cache");
+            two.ask(&two.grace, reply).await.unwrap();
+            two
+        }
+
+        async fn ask(&self, person: &Ada, command: ChatCommand) -> Result<Option<Message>, Fault> {
+            asked(person, &self.fixture.shared, command).await.0
+        }
+
+        // What `person`'s machine sends up as its log's entry `seq`.
+        async fn up(&self, person: &Ada, seq: u64, event: ChatEvent) {
+            up(&self.fixture.shared, person, seq, event).await;
+        }
+
+        // Ada's first prompt, taken by her machine, which works on it.
+        async fn ada_calls(&mut self) -> Vec<Message> {
+            let first = prompt("r-4", "c-1", "Fix it", Some(&self.ada.machine));
+            self.ask(&self.ada, first).await.unwrap();
+            self.up(&self.ada, 1, prompted("r-4", "Fix it")).await;
+            self.up(&self.ada, 2, status(RunState::Running)).await;
+            sent(&mut self.adas)
+        }
+    }
+
+    fn person(name: &str, text: &str) -> (String, Option<AgentKind>, String) {
+        (name.to_owned(), None, text.to_owned())
+    }
+
     #[tokio::test]
-    async fn each_member_calls_their_own_agent_on_their_own_machine_with_what_the_others_said() {
-        let fixture = Fixture::new().await;
-        let shared = &fixture.shared;
-        let (ada, grace) = (ada(&fixture).await, grace(&fixture).await);
-        let offers = ["chat.serve", "chat.answers"];
-        let mut adas = attach(shared, &ada, &offers);
-        let mut graces = attach(shared, &grace, &offers);
-        let ask = |person, command| async move { asked(person, shared, command).await.0 };
-        ask(&ada, say("r-1", "c-1", "Morning")).await.unwrap();
-        ask(&grace, say("r-2", "c-1", "Try the cache"))
-            .await
-            .unwrap();
+    async fn a_member_has_no_agent_in_a_chat_until_a_prompt_of_theirs_names_a_machine_of_their_own()
+    {
+        let mut two = Two::new().await;
+        let (ada, grace) = (&two.ada, &two.grace);
 
-        // Grace has no agent in the chat until a prompt of hers names her machine.
-        let unnamed = ask(&grace, prompt("r-3", "c-1", "Go", None)).await;
-        let stolen = ask(&grace, prompt("r-3", "c-1", "Go", Some(&ada.machine))).await;
-        ask(&ada, prompt("r-4", "c-1", "Fix it", Some(&ada.machine)))
-            .await
-            .unwrap();
+        let unnamed = two.ask(grace, prompt("r-3", "c-1", "Go", None)).await;
+        let theirs = prompt("r-3", "c-1", "Go", Some(&ada.machine));
+        let stolen = two.ask(grace, theirs).await;
 
-        assert_eq!(
-            unnamed.unwrap_err().code().as_str(),
-            "chat.machine_required"
-        );
-        assert_eq!(stolen.unwrap_err().code().as_str(), "machine.not_found");
-        assert!(sent(&mut graces).is_empty());
-        let relayed = sent(&mut adas);
-        let person = |name: &str, text: &str| (name.to_owned(), None, text.to_owned());
-        // Her own message is quoted too: her agent hasn't seen it.
-        let both = [person("ada", "Morning"), person("grace", "Try the cache")];
-        assert_eq!(quotes_of(&relayed[0]), both);
-        up(shared, &ada, 1, prompted("r-4", "Fix it")).await;
-        up(shared, &ada, 2, status(RunState::Running)).await;
-        // While Ada's agent works, Grace's isn't called, and Grace can't stop or answer Ada's.
-        let grace_first = || prompt("r-5", "c-1", "And mine", Some(&grace.machine));
-        let busy = ask(&grace, grace_first()).await;
-        assert_eq!(busy.unwrap_err().code().as_str(), "chat.agent_working");
+        let code = |refused: Result<Option<Message>, Fault>| refused.unwrap_err().code().clone();
+        assert_eq!(code(unnamed), code!("chat.machine_required"));
+        assert_eq!(code(stolen), code!("machine.not_found"));
+        assert!(sent(&mut two.graces).is_empty());
+        assert!(sent(&mut two.adas).is_empty());
+        let mine = prompt("r-5", "c-1", "And mine", Some(&grace.machine));
+        two.ask(grace, mine).await.unwrap();
+        assert_eq!(sent(&mut two.graces).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn while_one_members_agent_works_no_one_elses_is_called_and_only_its_owner_stops_it() {
+        let mut two = Two::new().await;
+        two.ada_calls().await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let mine = || prompt("r-5", "c-1", "And mine", Some(&grace.machine));
         let mut stop = prompt("r-6", "c-1", "x", None);
         stop.action = ChatAction::Interrupt;
-        let stopped = ask(&grace, stop.clone()).await;
+
+        let busy = two.ask(grace, mine()).await;
+        let stopped = two.ask(grace, stop.clone()).await;
+
+        assert_eq!(busy.unwrap_err().code().as_str(), "chat.agent_working");
         assert_eq!(stopped.unwrap_err().code().as_str(), "chat.not_owner");
-        ask(&grace, say("r-7", "c-1", "Still here")).await.unwrap();
-        ask(&ada, stop).await.unwrap();
-        assert_eq!(sent(&mut adas).len(), 2);
-        up(shared, &ada, 3, said("Fixed.")).await;
-        up(shared, &ada, 4, status(RunState::Idle)).await;
-
-        ask(&grace, grace_first()).await.unwrap();
-
-        let relayed = sent(&mut graces);
-        let quoted = [
-            person("ada", "Morning"),
-            person("grace", "Try the cache"),
-            person("ada", "Fix it"),
-            person("grace", "Still here"),
-            (
-                "ada".to_owned(),
-                Some(AgentKind::Claude),
-                "Fixed.".to_owned(),
-            ),
-        ];
-        assert_eq!(quotes_of(&relayed[0]), quoted);
-        assert_eq!(relayed[1], follow(0));
-        up(shared, &grace, 1, prompted("r-5", "And mine")).await;
-        // Since her last prompt, Ada's agent has only Grace's own words to read.
-        ask(&ada, prompt("r-8", "c-1", "Thanks", None))
+        // What people say always goes, and the agent's owner still asks it.
+        let hello = say("r-7", "c-1", "Still here");
+        two.ask(grace, hello).await.unwrap();
+        two.ask(ada, stop).await.unwrap();
+        two.ask(ada, prompt("r-8", "c-1", "And this", None))
             .await
             .unwrap();
-        let again = sent(&mut adas);
+        assert!(sent(&mut two.graces).is_empty());
+        assert_eq!(sent(&mut two.adas).len(), 4);
+        two.up(ada, 3, status(RunState::Idle)).await;
+        two.ask(grace, mine()).await.unwrap();
+        assert_eq!(sent(&mut two.graces).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_agent_is_given_what_the_others_said_since_its_owners_last_prompt_as_quotes() {
+        let mut two = Two::new().await;
+        let first = two.ada_calls().await;
+        // Her own message is quoted too: her agent hasn't seen it.
+        let both = [person("ada", "Morning"), person("grace", "Try the cache")];
+        assert_eq!(quotes_of(&first[0]), both);
+        let (ada, grace) = (&two.ada, &two.grace);
+        two.ask(grace, say("r-7", "c-1", "Still here"))
+            .await
+            .unwrap();
+        two.up(ada, 3, said("Fixed.")).await;
+        two.up(ada, 4, status(RunState::Idle)).await;
+
+        let mine = prompt("r-5", "c-1", "And mine", Some(&grace.machine));
+        two.ask(grace, mine).await.unwrap();
+        two.up(grace, 1, prompted("r-5", "And mine")).await;
+        let thanks = prompt("r-8", "c-1", "Thanks", None);
+        two.ask(ada, thanks).await.unwrap();
+
+        let (hers, again) = (sent(&mut two.graces), sent(&mut two.adas));
+        let by_agent = (
+            "ada".to_owned(),
+            Some(AgentKind::Claude),
+            "Fixed.".to_owned(),
+        );
+        let mut quoted = both.to_vec();
+        quoted.extend([
+            person("ada", "Fix it"),
+            person("grace", "Still here"),
+            by_agent,
+        ]);
+        assert_eq!(quotes_of(&hers[0]), quoted);
+        assert_eq!(hers[1], follow(0));
+        // Since her last prompt, Ada's agent has only Grace's own words to read.
         let since = [person("grace", "Still here"), person("grace", "And mine")];
         assert_eq!(quotes_of(&again[0]), since);
         assert_eq!(again[1], follow(4));

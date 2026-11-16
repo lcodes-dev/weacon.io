@@ -33,7 +33,7 @@ const FOLLOWS_MAX: usize = 512;
 #[derive(Debug, PartialEq)]
 enum Ask {
     /// A command, under the envelope id it came in.
-    Command(u32, ChatCommand),
+    Command(u32, Box<ChatCommand>),
     /// Follow the chat after the seq given.
     Follow(ChatKey, u64),
 }
@@ -91,7 +91,7 @@ impl ChatLink {
             if self.waiting.len() >= QUEUE {
                 return reply(for_now(id, code!("chat.unavailable")));
             }
-            self.queue(Ask::Command(id, command));
+            self.queue(Ask::Command(id, Box::new(command)));
             return Step::Nothing;
         }
         if let Message::ChatQuery(ChatQuery {
@@ -236,7 +236,7 @@ async fn take_up(
             Ask::Command(id, command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let request = command.request.clone();
-                let taken = chats.command(command, &client).await;
+                let taken = chats.command(*command, &client).await;
                 drop(answer.send(answered(id, request.clone(), &taken)).await);
                 (key, Some(request), taken)
             }
@@ -505,7 +505,7 @@ mod tests {
         assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 7));
         assert_eq!(
             asked.try_recv().unwrap(),
-            Ask::Command(9, prompt("r-1", "Hi"))
+            Ask::Command(9, Box::new(prompt("r-1", "Hi")))
         );
         assert_eq!(link.came.get(&key()), Some(&7));
     }
@@ -530,9 +530,9 @@ mod tests {
         }
 
         let expected = [
-            Ask::Command(9, prompt("r-1", "Hi")),
+            Ask::Command(9, Box::new(prompt("r-1", "Hi"))),
             Ask::Follow(key(), 3),
-            Ask::Command(9, prompt("r-2", "Hi")),
+            Ask::Command(9, Box::new(prompt("r-2", "Hi"))),
         ];
         assert_eq!(asks, expected);
         assert!(link.waiting.is_empty());

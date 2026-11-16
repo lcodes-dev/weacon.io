@@ -366,17 +366,19 @@ mod tests {
             owner: weacon_protocol::AgentOwner::Member { member: ada },
             machine: None,
         };
-        let agents: Vec<_> = events
-            .iter()
-            .filter_map(|event| match event {
-                ChatEvent::RunStatus { status } => Some(status.agent.as_ref()),
-                _ => None,
-            })
-            .collect();
-        assert!(!agents.is_empty());
-        assert!(agents.iter().all(|agent| *agent == Some(&named)));
+        let statuses: Vec<_> = events.iter().filter_map(status_of).collect();
+        assert!(!statuses.is_empty());
+        let named = Some(named);
+        assert!(statuses.iter().all(|status| status.agent == named));
         let logged = serde_json::to_string(&*bench.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    fn status_of(event: &ChatEvent) -> Option<&weacon_protocol::RunStatus> {
+        let ChatEvent::RunStatus { status } = event else {
+            return None;
+        };
+        Some(status)
     }
 
     fn quote(name: &str, text: &str) -> weacon_protocol::Quote {

@@ -340,6 +340,17 @@ mod tests {
         ]
     }
 
+    fn leg() -> ChatLeg {
+        ChatLeg {
+            member: "m-1".parse().unwrap(),
+            machine_id: "mc-1".parse().unwrap(),
+            machine: "Ada's laptop".parse().unwrap(),
+            agent: AgentKind::Codex,
+            repo: Some(repo()),
+            detached: false,
+        }
+    }
+
     fn command(action: ChatAction) -> Envelope {
         envelope(Message::ChatCommand(ChatCommand {
             request: request(),
@@ -413,21 +424,6 @@ mod tests {
         };
         let cases = [
             (
-                ChatAction::Say {
-                    text: "Morning".to_owned(),
-                    task: None,
-                },
-                json!({ "kind": "say", "text": "Morning" }),
-            ),
-            (
-                ChatAction::Say {
-                    text: "Morning".to_owned(),
-                    task: Some(task()),
-                },
-                json!({ "kind": "say", "text": "Morning",
-                        "task": { "id": "t-1", "title": "Speed up the build" } }),
-            ),
-            (
                 ChatAction::Prompt {
                     text: "Run the tests".to_owned(),
                     quotes: Vec::new(),
@@ -472,6 +468,26 @@ mod tests {
     }
 
     #[test]
+    fn a_message_to_a_chats_people_has_a_tagged_shape_as_a_command_and_as_an_event() {
+        let say = |task| ChatAction::Say {
+            text: "Morning".to_owned(),
+            task,
+        };
+        let for_task = json!({ "kind": "say", "text": "Morning",
+                               "task": { "id": "t-1", "title": "Speed up the build" } });
+        let said = ChatEvent::Message {
+            author: "m-2".parse().unwrap(),
+            text: "Morning".to_owned(),
+        };
+
+        let plain = json!({ "kind": "say", "text": "Morning" });
+        travels(&command(say(None)), command_wire(&plain));
+        travels(&command(say(Some(task()))), command_wire(&for_task));
+        let wire = json!({ "kind": "message", "author": "m-2", "text": "Morning" });
+        travels(&update(said), entry_wire(&wire));
+    }
+
+    #[test]
     fn a_relayed_command_names_who_asked() {
         let relayed = envelope(Message::ChatCommand(ChatCommand {
             request: request(),
@@ -505,13 +521,6 @@ mod tests {
     #[test]
     fn events_have_a_tagged_shape_and_a_place_in_the_log() {
         let cases = [
-            (
-                ChatEvent::Message {
-                    author: "m-2".parse().unwrap(),
-                    text: "Morning".to_owned(),
-                },
-                json!({ "kind": "message", "author": "m-2", "text": "Morning" }),
-            ),
             (
                 ChatEvent::Prompt {
                     request: request(),
@@ -691,14 +700,7 @@ mod tests {
                 id: chat(),
                 title: "Fix the build".to_owned(),
                 owner: "m-1".parse().unwrap(),
-                legs: vec![ChatLeg {
-                    member: "m-1".parse().unwrap(),
-                    machine_id: "mc-1".parse().unwrap(),
-                    machine: "Ada's laptop".parse().unwrap(),
-                    agent: AgentKind::Codex,
-                    repo: Some(repo()),
-                    detached: false,
-                }],
+                legs: vec![leg()],
                 state: ChatState::Full,
                 updated_at: 1_700_000_000,
                 run: Some(RunState::Waiting),

@@ -20,7 +20,7 @@ pub(crate) struct Chats {
 }
 
 pub(super) enum Ask {
-    Command(ChatCommand, Client, oneshot::Sender<Result<(), Fault>>),
+    Command(Box<ChatCommand>, Client, oneshot::Sender<Result<(), Fault>>),
     Busy(oneshot::Sender<bool>),
     Leave(oneshot::Sender<Option<LeaveId>>),
     Step(LeaveId, LeaveStep, oneshot::Sender<bool>),
@@ -92,7 +92,7 @@ impl Chats {
     /// refuses it. A hold or a release has none: it is done once this returns.
     pub(crate) async fn command(&self, command: ChatCommand, client: &Client) -> Result<(), Fault> {
         let (answer, answered) = oneshot::channel();
-        let ask = Ask::Command(command, client.clone(), answer);
+        let ask = Ask::Command(Box::new(command), client.clone(), answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
     }
@@ -133,7 +133,7 @@ impl<A: Agent> Engine<A> {
         match ask {
             Ask::Command(command, client, answer) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
-                let done = self.command_from(&key, command, &client).await;
+                let done = self.command_from(&key, *command, &client).await;
                 drop(answer.send(self.checked(&key, done).await));
                 Some(key)
             }

@@ -281,19 +281,6 @@ mod tests {
             task: None,
         };
         assert_eq!(listed.first(), Some(&summary));
-        append(&one, "c-2", &[(Some(1), status(RunState::Idle))])
-            .await
-            .unwrap();
-        let leg = weacon_protocol::ChatLeg {
-            member: member_id("m3"),
-            machine_id: id("mc-1"),
-            machine: id("Ada's laptop"),
-            agent: weacon_protocol::AgentKind::Claude,
-            repo: Some(id("site")),
-            detached: false,
-        };
-        assert_eq!(one.chats().await.unwrap()[0].legs, [leg]);
-        assert!(two.chats().await.unwrap()[0].legs.is_empty());
         assert_eq!(ids(&listed), ["c-2", "c-1"]);
         assert_eq!(ids(&two.chats().await.unwrap()), ["c-1"]);
         let again = make(&one, "c-1", "m1", NOW).await.unwrap_err();
@@ -320,6 +307,29 @@ mod tests {
         );
         let newer = one.set_chat_state(&id("c-1"), ChatState::Newer).await;
         assert_eq!(code(&newer.unwrap_err()), "chat.unstorable");
+    }
+
+    #[tokio::test]
+    async fn a_chat_lists_a_leg_once_its_machine_took_a_prompt_in_its_workspace_only() {
+        let dir = TempDir::new().unwrap();
+        let (one, two) = two_teams(&dir).await;
+        make(&one, "c-1", "m3", NOW).await.unwrap();
+        make(&two, "c-1", "m2", NOW).await.unwrap();
+
+        append(&one, "c-1", &[(Some(1), status(RunState::Idle))])
+            .await
+            .unwrap();
+
+        let leg = weacon_protocol::ChatLeg {
+            member: member_id("m3"),
+            machine_id: id("mc-1"),
+            machine: id("Ada's laptop"),
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: Some(id("site")),
+            detached: false,
+        };
+        assert_eq!(one.chats().await.unwrap()[0].legs, [leg]);
+        assert!(two.chats().await.unwrap()[0].legs.is_empty());
     }
 
     #[test]

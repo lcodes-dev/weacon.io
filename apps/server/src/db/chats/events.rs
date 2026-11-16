@@ -72,7 +72,7 @@ impl Workspace {
                 chat_quota_full()
             });
         }
-        self.store(&mut transaction, chat, from, &rows, &runs)
+        self.store(&mut transaction, (chat, from), &rows, &runs)
             .await?;
         self.advance(&mut transaction, chat, seq, from.zip(Some(core_seq)))
             .await?;
@@ -124,8 +124,7 @@ impl Workspace {
     async fn store(
         &self,
         transaction: &mut SqliteConnection,
-        chat: &ChatId,
-        from: Option<&MemberId>,
+        (chat, from): (&ChatId, Option<&MemberId>),
         rows: &[Row<'_>],
         runs: &ChatRuns,
     ) -> Result<(), Fault> {

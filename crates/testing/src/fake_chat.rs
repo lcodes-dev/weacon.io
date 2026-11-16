@@ -1,7 +1,7 @@
 //! A made-up chat log that the fake server keeps for its client: a person's prompt and a shared
 //! Codex run's long answer, then another prompt and a member's Claude run. It commits the
 //! recording's events as that run's, which asks to use Bash once the recording ends, and answers
-//! the client's chat queries and commands. A prompt of exactly [`LOSE`] makes it tell the client
+//! the client's chat queries and commands. A message or prompt of exactly [`LOSE`] makes it tell the client
 //! it lost events; a query or command about any other chat, or one it doesn't know, is refused.
 
 use weacon_model::ChatRuns;
@@ -118,7 +118,7 @@ impl FakeChat {
         let seq = self.seq();
         self.command(request, action);
         let mut told = self.told_since(seq);
-        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+        if matches!(action, ChatAction::Prompt { text, .. } | ChatAction::Say { text, .. } if text == LOSE)
             && let Some(id) = self.subscription.take()
         {
             told.push(self.envelope(id, ChatAnswerKind::EventsLost));
@@ -884,6 +884,18 @@ mod tests {
         );
         assert!(after.is_empty());
         assert!(fake.answer(&prompt(LOSE)).is_empty());
+        // A plain message of it loses a new subscription the same way.
+        let after = ChatQueryKind::Subscribe { after: fake.seq() };
+        fake.answer(&query(5, "c-1", after));
+        let mut said = prompt(LOSE);
+        if let Message::ChatCommand(command) = &mut said.message {
+            command.action = ChatAction::Say {
+                text: LOSE.to_owned(),
+                task: None,
+            };
+        }
+        let lost = fake.answer(&said);
+        assert_eq!(shape(&lost).last(), Some(&(5, "lost".to_owned())));
     }
 
     #[test]

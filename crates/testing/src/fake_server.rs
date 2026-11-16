@@ -680,12 +680,8 @@ mod tests {
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let interrupt = command(2, request("q-1"), ChatAction::Interrupt);
-        let prompt = ChatAction::Prompt {
-            quotes: Vec::new(),
+        let prompt = ChatAction::Say {
             text: "hi".to_owned(),
-            repo: None,
-            machine: None,
-            agent: None,
             task: None,
         };
         let prompt = command(3, request("q-2"), prompt);
