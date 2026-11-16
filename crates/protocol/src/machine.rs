@@ -161,8 +161,8 @@ pub struct MachineList {
     pub machines: Vec<MachineSummary>,
 }
 
-/// The workspaces a machine's owner shares it with, all of them each time, from a core to a
-/// server that offers `machine.share`: when it connects, and when the set changes.
+/// The workspaces a machine's owner shares it with, all of them each time, from a core to its
+/// server: when it connects, and when the set changes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineShares {
     pub workspaces: Vec<WorkspaceId>,

@@ -22,7 +22,7 @@ use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
 use crate::relay::{DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::shared::Shared;
-use crate::sharing::{self, SHARE};
+use crate::sharing;
 use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
 
@@ -114,7 +114,6 @@ pub(crate) fn offers() -> Vec<Capability> {
         PROPOSALS,
         chats::SERVE,
         chats::LIVE,
-        SHARE,
     ]
     .map(Capability::new)
     .into()
@@ -270,7 +269,6 @@ mod tests {
                     PROPOSALS,
                     code!("chat.serve"),
                     code!("chat.live"),
-                    SHARE,
                     code!("chat.upload"),
                 ].map(Capability::new)),
             "{welcome:?}"
@@ -327,7 +325,6 @@ mod tests {
             "workspace.proposals",
             "chat.serve",
             "chat.live",
-            "machine.share",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }

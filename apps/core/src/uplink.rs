@@ -27,8 +27,6 @@ use crate::workspaces::sharing;
 const CONNECT: Code = code!("machine.connect");
 /// What the server offers that takes the core's proposals.
 pub(crate) const PROPOSALS: Code = code!("workspace.proposals");
-/// What the server offers that keeps the workspaces a machine is shared with.
-const SHARE: Code = code!("machine.share");
 const PATH: &str = "/api/machines/connect";
 /// How often a core that isn't paired looks for a pairing.
 const LOOK_EVERY: Duration = Duration::from_secs(30);
@@ -166,7 +164,6 @@ impl Uplink {
                 log.clone(),
             ),
             proposals: offers(PROPOSALS),
-            shares: offers(SHARE),
             shared: None,
         };
         if self
@@ -355,8 +352,6 @@ struct Link {
     chats: ChatLink,
     /// Whether the server offered [`PROPOSALS`].
     proposals: bool,
-    /// Whether the server offered [`SHARE`].
-    shares: bool,
     /// The workspaces it was last told the machine is shared with.
     shared: Option<Vec<WorkspaceId>>,
 }
@@ -373,12 +368,8 @@ impl Link {
         None
     }
 
-    /// The workspaces the machine is shared with, for a server that keeps them, unless it was
-    /// last told the same.
+    /// The workspaces the machine is shared with, unless the server was last told the same.
     async fn shares(&mut self, state_dir: &Path) -> Option<Envelope> {
-        if !self.shares {
-            return None;
-        }
         let workspaces = sharing::shared(state_dir).await;
         if self.shared.as_ref() == Some(&workspaces) {
             return None;
@@ -519,8 +510,22 @@ mod tests {
         }
     }
 
-    // A server that takes the socket, checks the hello and welcomes it with `offers`.
+    // A server that takes the socket, checks the hello and welcomes it with `offers`, past the
+    // core's word on what its machine is shared with.
     async fn welcoming(tls: &Tls, offers: &[Code]) -> Peer {
+        welcomed(tls, offers).await.0
+    }
+
+    // [`welcoming`], with what the core then says its machine is shared with.
+    async fn welcomed(tls: &Tls, offers: &[Code]) -> (Peer, Message) {
+        let mut peer = greeting(tls, offers).await;
+        let shares = heard(&mut peer).await;
+        assert!(matches!(shares, Message::MachineShares(_)), "{shares:?}");
+        (peer, shares)
+    }
+
+    // A server that takes the socket, checks the hello and welcomes it with `offers`.
+    async fn greeting(tls: &Tls, offers: &[Code]) -> Peer {
         let stream = tls.accept().await.unwrap();
         let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
         let Message::Hello(hello) = heard(&mut peer).await else {
@@ -946,8 +951,7 @@ mod tests {
             }),
         };
         let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT, SHARE]).await;
-            let first = heard(&mut peer).await;
+            let (mut peer, first) = welcomed(&tls, &[CONNECT]).await;
             share(&dir, "w-1", true);
             outgoing.send(changed.clone()).await.unwrap();
             let answer = heard(&mut peer).await;
@@ -973,34 +977,6 @@ mod tests {
         assert_eq!(second, shares(&["w-1", "w-2"]));
         assert_eq!(again, changed.message);
         assert_eq!(third, shares(&["w-1"]));
-    }
-
-    #[tokio::test]
-    async fn a_server_that_keeps_no_shares_is_told_none() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        share(&dir, "w-1", true);
-        let link = uplink(&dir);
-        let pairing = paired(&tls);
-        let (outgoing, mut from_daemon) = mpsc::channel(4);
-        let receipt = Envelope {
-            id: 5,
-            message: Message::Receipt(Receipt {
-                request: RequestId::try_from("r-1".to_owned()).unwrap(),
-                outcome: Outcome::Accepted,
-            }),
-        };
-        outgoing.send(receipt.clone()).await.unwrap();
-        let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
-            heard(&mut peer).await
-        };
-
-        let (_, first) = tokio::join!(
-            link.connection(&pairing, &link.log, &mut from_daemon),
-            serve
-        );
-
-        assert_eq!(first, receipt.message);
     }
 
     #[tokio::test]
@@ -1133,7 +1109,7 @@ mod tests {
         let pairing = paired(&tls);
 
         // The server goes once it has welcomed the core, which then mustn't stay.
-        let leaves = async { drop(welcoming(&tls, &[]).await) };
+        let leaves = async { drop(greeting(&tls, &[]).await) };
         let (unoffered, ()) = tokio::join!(once(&link, &pairing), leaves);
         let (unauthorized, ()) = tokio::join!(
             once(&link, &pairing),

@@ -2567,7 +2567,7 @@
       ]
     },
     "MachineShares": {
-      "description": "The workspaces a machine's owner shares it with, all of them each time, from a core to a\nserver that offers `machine.share`: when it connects, and when the set changes.",
+      "description": "The workspaces a machine's owner shares it with, all of them each time, from a core to its\nserver: when it connects, and when the set changes.",
       "type": "object",
       "properties": {
         "workspaces": {

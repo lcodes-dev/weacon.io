@@ -5,16 +5,12 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use weacon_observability::Field;
-use weacon_protocol::{Code, MachineShares, SharedMachineList, code};
+use weacon_protocol::{MachineShares, SharedMachineList};
 
 use crate::auth::{Machine, Member};
 use crate::http::failure;
 use crate::shared::Shared;
 use crate::socket::Closed;
-
-/// What a core offers, and the server offers, to have the workspaces a machine is shared with
-/// kept.
-pub(crate) const SHARE: Code = code!("machine.share");
 
 /// Keeps what `machine`'s core says it is shared with, in place of what it said before. When
 /// the database fails, the link closes, so the core, connecting again, says it once more.
