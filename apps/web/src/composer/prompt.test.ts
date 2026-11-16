@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Envelope } from "../protocol.ts";
 import { Receipts } from "../receipts.ts";
 import { chatCommand } from "../chat/commands.ts";
-import { blocked, deliverPrompt, sentProblem } from "./prompt.ts";
+import { type Sent, blocked, deliverPrompt, notingPlain, sentProblem } from "./prompt.ts";
 
 test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
   const chatRef = { workspace: "w-1", chat: "c-1" };
@@ -39,4 +39,15 @@ test("a send says why it wasn't taken, or may not have been, and nothing once it
   assert.equal(sentProblem("offline"), "The machine is offline, so the message wasn't sent. Try again once it's back.");
   assert.equal(sentProblem("detached"), "Your machine no longer has this chat, so your agent can't be called here.");
   assert.equal(sentProblem("too_long"), "It's too long to send. Shorten it and try again.");
+});
+
+test("only a taken message that calls no agent is noted as plain", async () => {
+  const noted: string[] = [];
+  const ends = new Map<string, Sent>([["taken", "accepted"], ["kept", "refused"]]);
+  const send = notingPlain(async (text) => ends.get(text) ?? "unsure", () => noted.push("plain"));
+  assert.equal(await send("taken", "r1" as never, true), "accepted");
+  assert.equal(await send("kept", "r2" as never, false), "refused");
+  assert.deepEqual(noted, []);
+  assert.equal(await send("taken", "r3" as never, false), "accepted");
+  assert.deepEqual(noted, ["plain"]);
 });

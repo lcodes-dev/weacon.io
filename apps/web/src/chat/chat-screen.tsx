@@ -3,7 +3,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import type { ChatRef } from "../chat-ref.ts";
 import { Composer } from "../composer/composer.tsx";
 import { agentItem } from "../composer/mentionables.ts";
-import { type Send, blocked } from "../composer/prompt.ts";
+import { type Send, blocked, notingPlain } from "../composer/prompt.ts";
 import { MyAgentFields, useMyAgent } from "../new-chat/my-agent.tsx";
 import type { Choice } from "../new-chat/start.ts";
 import type { ChatLeg, MachineId, MachineSummary, MemberId } from "../protocol.ts";
@@ -164,6 +164,8 @@ function FirstCall({
   blocked: string | undefined;
 }) {
   const [adding, setAdding] = useState(false);
+  // After a plain message the box stays plain: the next call is one the person writes.
+  const [plain, setPlain] = useState(false);
   // Nothing is asked of a machine until the person asks for their agent.
   const pick = useMyAgent(link, adding ? machines : [], away);
   const fields = machines.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
@@ -176,7 +178,13 @@ function FirstCall({
           Add your agent
         </button>
       )}
-      <Composer send={send(pick.choice)} blocked={why} hidden={false} agent={pick.choice && agentItem(pick.choice.agent)} calling={adding} />
+      <Composer
+        send={notingPlain(send(pick.choice), () => setPlain(true))}
+        blocked={why}
+        hidden={false}
+        agent={pick.choice && agentItem(pick.choice.agent)}
+        calling={adding && !plain}
+      />
     </>
   );
 }
