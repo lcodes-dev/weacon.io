@@ -17,9 +17,7 @@ pub(crate) mod branch;
 pub(crate) mod chats;
 pub(crate) mod diff;
 pub(crate) mod launch;
-mod lock;
 mod reads;
-pub(crate) mod removal;
 pub(crate) mod repos;
 pub(crate) mod service;
 pub(crate) mod state;
@@ -115,7 +113,8 @@ impl Git {
     }
 
     /// The worktree at `path` on the chat's [`branch()`], made from `repo`'s head if it's missing. A
-    /// branch or folder of that name that isn't this chat's worktree is never taken over.
+    /// folder of that name that isn't this chat's worktree is never taken over; its branch,
+    /// left by a worktree removed since, is checked out again.
     pub(crate) fn chat_worktree(
         &self,
         repo: &Path,
@@ -147,16 +146,21 @@ impl Git {
                 false
             }
             Some(_) => return Err(taken()),
-            None if path.symlink_metadata().is_ok() || self.has_branch(repo, &full)? => {
+            None if path.symlink_metadata().is_ok()
+                || listed.iter().any(|(tree, _)| ours(tree)) =>
+            {
                 return Err(taken());
             }
-            None => true,
+            None => !self.has_branch(repo, &full)?,
         };
         make_parent(path)?;
         let start = if fresh {
             Some(self.new_branch(repo, path, &branch, &full)?)
         } else {
-            self.add(repo, path, &["--force"], &branch)?;
+            // Forced only past the missing folder git still lists, never past a checkout made
+            // elsewhere meanwhile.
+            let force: &[&str] = if here.is_some() { &["--force"] } else { &[] };
+            self.add(repo, path, force, &branch)?;
             None
         };
         Ok(Worktree {
@@ -227,17 +231,7 @@ impl Git {
             "--porcelain",
             "-z",
         ]))?)?;
-        Ok(records(&listed)
-            // A locked worktree's folder can be gone without git calling it prunable.
-            .map(|Listed { tree, prunable, .. }| {
-                let gone = matches!(
-                    tree.path.symlink_metadata(),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound
-                );
-                let missing = prunable || gone;
-                (tree, missing)
-            })
-            .collect())
+        Ok(listed.split("\0\0").filter_map(parse_worktree).collect())
     }
 
     fn has_branch(&self, repo: &Path, full: &str) -> Result<bool, Fault> {
@@ -254,26 +248,29 @@ impl Git {
         }
     }
 
-    fn command(&self, repo: &Path) -> Command {
-        self.command_in(repo, Some(repo))
+    /// Removes the worktree at `path` of `repo`, with whatever it holds; its branch stays.
+    pub(crate) fn remove_worktree(&self, repo: &Path, path: &Path) -> Result<(), Fault> {
+        absolute(&[repo, path])?;
+        run(self
+            .command(repo)
+            .args(["worktree", "remove", "--force", "--"])
+            .arg(path))
+        .map(drop)
     }
 
-    // Git run in `at`; when this git has a worktree's git folder, with that folder and
-    // `work_tree`.
-    fn command_in(&self, at: &Path, work_tree: Option<&Path>) -> Command {
+    // Git run in `repo`; when this git has a worktree's git folder, with that folder and `repo`
+    // as its work tree.
+    fn command(&self, repo: &Path) -> Command {
         let mut hooks = OsString::from("core.hooksPath=");
         hooks.push(&self.no_hooks);
         let mut command = Command::new(&self.program);
-        command.arg("-C").arg(at);
+        command.arg("-C").arg(repo);
         if let Some(dir) = &self.folder {
             let mut git_dir = OsString::from("--git-dir=");
             git_dir.push(dir);
-            command.arg(git_dir);
-            if let Some(work_tree) = work_tree {
-                let mut named = OsString::from("--work-tree=");
-                named.push(work_tree);
-                command.arg(named);
-            }
+            let mut work_tree = OsString::from("--work-tree=");
+            work_tree.push(repo);
+            command.arg(git_dir).arg(work_tree);
         }
         command
             .arg("-c")
@@ -343,30 +340,15 @@ fn text(out: Vec<u8>) -> Result<String, Fault> {
     })
 }
 
-/// One working tree as `git worktree list` lists it.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct Listed {
-    pub(super) tree: Worktree,
-    /// Whether git calls it prunable.
-    pub(super) prunable: bool,
-    /// Why it is locked, if it is; empty for a lock given no reason.
-    pub(super) locked: Option<String>,
-}
-
-// Every working tree in the output of `git worktree list --porcelain -z`.
-pub(super) fn records(listing: &str) -> impl Iterator<Item = Listed> + '_ {
-    listing.split("\0\0").filter_map(parse_worktree)
-}
-
-// One record of `git worktree list --porcelain -z`; none for a bare repository.
-fn parse_worktree(record: &str) -> Option<Listed> {
-    let (mut path, mut branch, mut prunable, mut locked) = (None, None, false, None);
+// One record of `git worktree list --porcelain -z`, and whether git calls it prunable; none
+// for a bare repository.
+fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
+    let (mut path, mut branch, mut prunable) = (None, None, false);
     for field in record.split('\0') {
         match field.split_once(' ').unwrap_or((field, "")) {
             ("worktree", value) => path = Some(PathBuf::from(value)),
             ("branch", value) => branch = Some(value.to_owned()),
             ("prunable", _) => prunable = true,
-            ("locked", reason) => locked = Some(reason.to_owned()),
             ("bare", _) => return None,
             _ => {}
         }
@@ -376,11 +358,7 @@ fn parse_worktree(record: &str) -> Option<Listed> {
         branch,
         start: None,
     };
-    Some(Listed {
-        tree,
-        prunable,
-        locked,
-    })
+    Some((tree, prunable))
 }
 
 // Refuses a path git would read relative to wherever it runs.
@@ -528,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_or_folder_with_the_chats_name_is_never_taken_over() {
+    fn a_folder_or_a_checked_out_branch_with_the_chats_name_is_never_taken_over() {
         let dir = TempDir::new().unwrap();
         let (git, repo) = (git(&dir), repo(&dir));
         let first = dir.join("trees/c-c");
@@ -631,34 +609,26 @@ mod tests {
 
     #[test]
     fn listed_worktrees_skip_bare_ones_and_mark_missing_ones() {
-        let listed = |path: &str, branch: Option<&str>, prunable, locked: Option<&str>| Listed {
-            tree: Worktree {
+        let listed = |path: &str, branch: Option<&str>, prunable: bool| {
+            let tree = Worktree {
                 path: PathBuf::from(path),
                 branch: branch.map(str::to_owned),
                 start: None,
-            },
-            prunable,
-            locked: locked.map(str::to_owned),
+            };
+            (tree, prunable)
         };
 
         assert_eq!(
             parse_worktree("worktree /t/a\0HEAD 1234\0branch refs/heads/weacon/a"),
-            Some(listed("/t/a", Some("refs/heads/weacon/a"), false, None))
+            Some(listed("/t/a", Some("refs/heads/weacon/a"), false))
         );
         assert_eq!(
             parse_worktree("worktree /t/b\0HEAD 1234\0detached\0locked"),
-            Some(listed("/t/b", None, false, Some("")))
+            Some(listed("/t/b", None, false))
         );
         assert_eq!(
-            parse_worktree(
-                "worktree /t/c\0HEAD 1234\0branch refs/heads/c\0locked In the Trash\0prunable gone"
-            ),
-            Some(listed(
-                "/t/c",
-                Some("refs/heads/c"),
-                true,
-                Some("In the Trash")
-            ))
+            parse_worktree("worktree /t/c\0HEAD 1234\0branch refs/heads/c\0prunable gone"),
+            Some(listed("/t/c", Some("refs/heads/c"), true))
         );
         assert_eq!(parse_worktree("worktree /t/r.git\0bare"), None);
         assert_eq!(parse_worktree(""), None);
@@ -749,22 +719,6 @@ mod tests {
         git.chat_worktree(&repo, &chat("p"), &path).unwrap();
 
         assert!(path.join("README.md").exists());
-    }
-
-    #[test]
-    fn a_locked_worktree_whose_folder_is_gone_isnt_listed_or_used() {
-        let dir = TempDir::new().unwrap();
-        let (git, repo) = (git(&dir), repo(&dir));
-        let path = dir.join("trees/c-l");
-        git.chat_worktree(&repo, &chat("l"), &path).unwrap();
-        fixture(&dir, &repo, &["worktree", "lock", path.to_str().unwrap()]);
-        fs::remove_dir_all(&path).unwrap();
-
-        assert_eq!(git.worktrees(&repo).unwrap().len(), 1);
-        let error = git.chat_worktree(&repo, &chat("l"), &path).unwrap_err();
-
-        assert_eq!(error.code().as_str(), "git.failed");
-        assert!(!path.exists());
     }
 
     #[test]

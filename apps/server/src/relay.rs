@@ -1560,7 +1560,7 @@ mod tests {
         let offered = [
             sent(diff_query("c-1", "w1")).await,
             sent(worktree_query("c-1")).await,
-            sent(worktree_command("c-1", WorktreeAction::Restore)).await,
+            sent(worktree_command("c-1", WorktreeAction::Remove)).await,
         ];
         let no_terminal = sent(terminal()).await;
         drop(attached);

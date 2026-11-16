@@ -4,7 +4,7 @@ import "./worktree.css";
 
 /**
  * Where the chat's worktree stands, with what its owner can do with it: open a pull request,
- * remove it to the Trash after saying what goes, restore it, and open a terminal on its machine,
+ * remove it after saying what goes, and open a terminal on its machine,
  * or carry the chat on by hand with the line it shows.
  */
 export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>; title: string }) {
@@ -29,11 +29,6 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
                   Remove
                 </button>
               </>
-            )}
-            {standing.kind === "state" && standing.removed && (
-              <button type="button" disabled={waiting} onClick={bar.restore}>
-                Restore
-              </button>
             )}
             {standing.kind === "unknown" && outcome?.kind === "problem" && !waiting && (
             <button type="button" onClick={bar.refresh}>

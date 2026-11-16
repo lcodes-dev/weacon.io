@@ -1,5 +1,5 @@
 //! The made-up worktree of the fake chat `c-1`: it has uncommitted work and unpushed commits,
-//! goes to the Trash and comes back, and pushes its branch to a made-up compare page. Any other
+//! is removed, and pushes its branch to a made-up compare page. Any other
 //! chat has no worktree, and this core opens no terminals.
 
 use weacon_protocol::{
@@ -12,7 +12,7 @@ const COMPARE: &str = "https://github.com/example/shopping-list/compare/weacon-c
 
 type Answer = Result<WorktreeAnswerKind, Code>;
 
-/// Whether the worktree is in the Trash.
+/// Whether the worktree was removed.
 #[derive(Debug, Default)]
 pub(crate) struct FakeWorktree {
     removed: bool,
@@ -44,9 +44,7 @@ impl FakeWorktree {
         match action {
             WorktreeAction::OpenTerminal => return Some(Err(code!("request.unknown"))),
             WorktreeAction::Newer => return None,
-            WorktreeAction::Remove
-            | WorktreeAction::Restore
-            | WorktreeAction::OpenPullRequest { .. } => {}
+            WorktreeAction::Remove | WorktreeAction::OpenPullRequest { .. } => {}
         }
         if chat.as_str() != CHAT {
             return Some(Err(code!("worktree.none")));
@@ -55,7 +53,7 @@ impl FakeWorktree {
             let url = DownloadUrl::try_from(COMPARE.to_owned()).ok()?;
             return Some(Ok(WorktreeAnswerKind::PullRequestPage { url }));
         }
-        self.removed = matches!(action, WorktreeAction::Remove);
+        self.removed = true;
         Some(self.state(chat))
     }
 
@@ -171,18 +169,15 @@ mod tests {
     }
 
     #[test]
-    fn the_worktree_goes_to_the_trash_and_back_and_a_repeat_answers_the_same() {
+    fn the_worktree_is_removed_and_a_repeat_answers_the_same() {
         let mut fake = FakeWorktree::default();
         let ask = query("c-1", WorktreeQueryKind::State);
         let remove = command("c-1", WorktreeAction::Remove);
-        let restore = command("c-1", WorktreeAction::Restore);
 
         assert_eq!(told(&mut fake, &ask), Ok(state(false)));
         assert_eq!(told(&mut fake, &remove), Ok(state(true)));
         assert_eq!(told(&mut fake, &remove), Ok(state(true)));
         assert_eq!(told(&mut fake, &ask), Ok(state(true)));
-        assert_eq!(told(&mut fake, &restore), Ok(state(false)));
-        assert_eq!(told(&mut fake, &restore), Ok(state(false)));
     }
 
     #[test]
@@ -222,7 +217,6 @@ mod tests {
         for asked in [
             query("c-2", WorktreeQueryKind::State),
             command("c-2", WorktreeAction::Remove),
-            command("c-2", WorktreeAction::Restore),
             command("c-2", pull),
         ] {
             assert_eq!(

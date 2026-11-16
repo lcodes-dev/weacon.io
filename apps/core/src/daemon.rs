@@ -72,7 +72,6 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             app.log.clone(),
         )?;
         daemon.shared.outside = app.outside.clone();
-        // The daemon's own worktrees, so a relayed removal and a local one share their lock.
         let (chats, worktrees) = (daemon.shared.chats.clone(), daemon.shared.worktrees.clone());
         let maps = daemon.shared.maps.clone();
         if let Some(proposing) = daemon.proposing.take() {
