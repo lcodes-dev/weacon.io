@@ -391,7 +391,7 @@ mod tests {
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-2", 4), ("c-1", 0)]);
+        assert_eq!(ids, [("c-1", 0), ("c-2", 4)]);
         assert_eq!(two.legs_on(&id("mc-1"), 9).await.unwrap().len(), 1);
         // A run at work comes first, so it is followed whatever the bound.
         append(&one, "c-2", &[(Some(5), status(RunState::Running))])
@@ -399,6 +399,22 @@ mod tests {
             .unwrap();
         let first = one.legs_on(&id("mc-1"), 1).await.unwrap();
         assert_eq!(first, [(id("c-2"), 5)]);
+    }
+
+    #[tokio::test]
+    async fn a_chat_with_no_run_yet_counts_as_at_rest_and_the_latest_used_comes_first() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW - 60).await.unwrap();
+        append(&one, "c-1", &[(Some(1), status(RunState::Idle))])
+            .await
+            .unwrap();
+        make(&one, "c-2", "m1", NOW).await.unwrap();
+        one.pair_for("m1", "mc-1").await;
+
+        let first = one.legs_on(&id("mc-1"), 1).await.unwrap();
+
+        assert_eq!(first, [(id("c-2"), 0)]);
     }
 
     #[tokio::test]

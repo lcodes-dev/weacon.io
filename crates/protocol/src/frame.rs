@@ -265,6 +265,7 @@ mod tests {
                 chat: chat(),
                 action: ChatAction::Prompt {
                     quotes: Vec::new(),
+                    pick: None,
                     text: "Hi".to_owned(),
                     repo: None,
                     machine: None,
@@ -280,6 +281,7 @@ mod tests {
                     seq: 1,
                     event: ChatEvent::Prompt {
                         author: None,
+                        pick: None,
                         request: request(),
                         text: "Hi".to_owned(),
                         repo: None,

@@ -23,8 +23,6 @@ test("a person calls an agent only where the server takes commands, on a connect
   assert.deepEqual(readiness(true, []), { kind: "unpaired" });
   assert.deepEqual(readiness(true, [away]), { kind: "offline" });
   assert.deepEqual(readiness(true, [away, old]), { kind: "outdated" });
-  const silent = machine("mc-5", { connected: true, missing: ["chat.answers"] });
-  assert.deepEqual(readiness(true, [silent]), { kind: "outdated" });
   const other = machine("mc-4", { connected: true, missing: ["terminal.relay"] });
   assert.deepEqual(readiness(true, [other]), { kind: "ready", machines: [other] });
 });

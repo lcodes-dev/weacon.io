@@ -276,6 +276,7 @@ mod tests {
             .await
             .unwrap();
         let queued = crate::runs::Queued {
+            pick: None,
             request: request("r-2"),
             text: "More".to_owned(),
         };

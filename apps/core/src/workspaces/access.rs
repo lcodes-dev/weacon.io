@@ -18,9 +18,6 @@ pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
     /// Whether other people are in the workspace.
     pub(crate) team: bool,
-    /// Commands the guard also asks about, each as its first words.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) additions: Vec<Vec<String>>,
 }
 
 impl Default for Settings {
@@ -28,7 +25,6 @@ impl Default for Settings {
         Self {
             access: AccessLevel::AskFirst,
             team: false,
-            additions: Vec::new(),
         }
     }
 }
@@ -105,11 +101,7 @@ pub(crate) fn store(
 ) -> Result<Settings, Fault> {
     let current = workspaces.settings(workspace);
     let settings = match team {
-        Some(team) => Settings {
-            access,
-            team,
-            ..current.unwrap_or_default()
-        },
+        Some(team) => Settings { access, team },
         None => Settings { access, ..current? },
     };
     workspaces.save(workspace, &settings).map_err(|error| {
@@ -123,8 +115,7 @@ pub(crate) fn store(
     Ok(settings)
 }
 
-/// Sets what `workspace`'s agents may do on this machine and says what it is now, holding the
-/// settings so one change at a time reads, changes and saves them.
+/// Sets what `workspace`'s agents may do on this machine and says what it is now.
 pub(crate) fn run(
     app: &App,
     workspace: &WorkspaceId,
@@ -133,22 +124,9 @@ pub(crate) fn run(
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     let workspaces = Workspaces::new(app.state_dir()?, None);
-    let _held = workspaces.hold(workspace).map_err(|error| {
-        Fault::new(
-            code!("access.not_saved"),
-            "The access level couldn't be saved",
-        )
-        .because(error)
-    })?;
-    // Saying whether it's a team replaces settings that can't be read, guard additions too.
-    let lost = if workspaces.settings(workspace).is_err() {
-        "Its guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
-    } else {
-        ""
-    };
     let settings = store(&workspaces, workspace, access, team, &app.log)?;
     let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
-    write!(out, "Workspace {id}: access {level}\n{warning}{lost}").map_err(|error| {
+    write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
         Fault::new(
             code!("access.output_failed"),
             "The access level couldn't be printed",
@@ -194,7 +172,6 @@ mod tests {
             Settings {
                 access: AccessLevel::ReadOnly,
                 team: false,
-                additions: Vec::new(),
             }
         );
         assert_eq!(
@@ -230,14 +207,7 @@ mod tests {
 
     #[test]
     fn only_full_access_in_a_team_workspace_has_a_warning() {
-        let warning = |access, team| {
-            Settings {
-                access,
-                team,
-                additions: Vec::new(),
-            }
-            .warning()
-        };
+        let warning = |access, team| Settings { access, team }.warning();
 
         assert!(warning(AccessLevel::Full, true).starts_with("Warning: full access"));
         assert_eq!(warning(AccessLevel::Full, false), "");
@@ -266,7 +236,6 @@ mod tests {
             Settings {
                 access: AccessLevel::Full,
                 team: true,
-                additions: Vec::new(),
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
@@ -296,10 +265,7 @@ mod tests {
         assert_eq!(unreadable.code().as_str(), "workspace.settings_unreadable");
         assert_eq!(unsaved.code().as_str(), "access.not_saved");
         assert_eq!(kept.code().as_str(), "workspace.settings_unreadable");
-        assert_eq!(
-            replaced,
-            "Workspace w1: access off\nIts guard additions couldn't be read and are gone; add them again with weacon guard add.\n"
-        );
+        assert_eq!(replaced, "Workspace w1: access off\n");
         let full = set(&broken, AccessLevel::Full, None).unwrap();
         assert_eq!(full.lines().count(), 2);
         assert_eq!(nowhere.code().as_str(), "state.unavailable");

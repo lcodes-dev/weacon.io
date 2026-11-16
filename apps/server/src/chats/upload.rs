@@ -34,9 +34,9 @@ pub(crate) async fn store(
         ("chat_id", chat.as_str().into()),
     ];
     match append(shared, machine, (&workspace, &chat), entry).await {
-        Ok(Stored::Kept(event)) => {
+        Ok(Stored::Kept { turned }) => {
             // Someone writing, or a turn's end, changes the chat's summary in the list.
-            if turns(&event) {
+            if turned {
                 shared.wake_feeds(&workspace);
             }
             shared.chats.stored(workspace, chat);
@@ -61,7 +61,8 @@ pub(crate) async fn store(
 
 /// What became of an event a machine sent.
 enum Stored {
-    Kept(ChatEvent),
+    /// Kept, and whether it [`turns`] its chat.
+    Kept { turned: bool },
     /// Not one the server keeps.
     Dropped,
     /// Not the machine's to send.
@@ -79,6 +80,7 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
         ChatEvent::Prompt {
             request,
             text,
+            pick,
             repo,
             agent,
             task,
@@ -86,6 +88,7 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
         } => Some(ChatEvent::Prompt {
             request,
             text,
+            pick,
             author: Some(leg.member.clone()),
             repo,
             agent,
@@ -165,7 +168,9 @@ async fn append(
     let from = (&leg.member, machine);
     match place.append_from(from, chat, &[incoming]).await {
         Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
-        appended => appended.map(|_| Stored::Kept(event)),
+        appended => appended.map(|_| Stored::Kept {
+            turned: turns(&event),
+        }),
     }
 }
 
@@ -477,6 +482,7 @@ mod tests {
             machine: Some(id("Not mine")),
         };
         let prompt = |author: Option<&str>| ChatEvent::Prompt {
+            pick: None,
             request: id("r-1"),
             text: "Go".to_owned(),
             author: author.map(member_id),

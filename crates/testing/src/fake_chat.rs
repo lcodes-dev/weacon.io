@@ -218,6 +218,7 @@ impl FakeChat {
             }),
             ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
                 author: Some(self.member.clone()),
+                pick: None,
                 request: request.clone(),
                 text: text.clone(),
                 repo: None,
@@ -291,6 +292,7 @@ impl FakeChat {
         let request = RequestId::try_from(request.to_owned())?;
         self.commit(ChatEvent::Prompt {
             author: Some(self.member.clone()),
+            pick: None,
             request,
             text: text.to_owned(),
             repo: None,
@@ -463,6 +465,7 @@ mod tests {
     fn prompt(text: &str) -> Envelope {
         command(ChatAction::Prompt {
             quotes: Vec::new(),
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: None,
@@ -831,6 +834,7 @@ mod tests {
         let named = |agent| {
             command(ChatAction::Prompt {
                 quotes: Vec::new(),
+                pick: None,
                 text: "Go.".to_owned(),
                 repo: None,
                 machine: None,
@@ -1053,6 +1057,7 @@ mod tests {
         );
         let unnamed = command(ChatAction::Prompt {
             quotes: Vec::new(),
+            pick: None,
             text: "Hi".to_owned(),
             repo: None,
             machine: None,

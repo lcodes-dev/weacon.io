@@ -62,7 +62,7 @@ async fn follow_again(shared: &Shared, connected: &Connected) -> Result<usize, F
             let follow = link::follow(workspace.id(), &chat, core_seq);
             // What can't be followed now is the next time the machine connects.
             let sent = vec![(shared.links.next_id(), follow)];
-            if link::send_all(shared, machine, link::SERVE, sent).is_err() {
+            if link::send_all(shared, machine, sent).is_err() {
                 unsent += 1;
             }
         }

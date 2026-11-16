@@ -105,6 +105,12 @@ export type Envelope = {
   | {
     type: "chat_live";
   } & ChatLive
+  | {
+    type: "chats_query";
+  } & ChatsQuery
+  | {
+    type: "chats_answer";
+  } & ChatsAnswer
 );
 
 /**
@@ -289,6 +295,7 @@ export type ChatAction = (
     agent?: AgentKind;
     kind: "prompt";
     machine?: MachineId;
+    pick?: RequestId;
     quotes?: Array<Quote>;
     repo?: RepoId;
     task?: ChatTask;
@@ -369,6 +376,7 @@ export type ChatEvent = (
     agent?: AgentKind;
     author?: MemberId;
     kind: "prompt";
+    pick?: PickNote;
     repo?: RepoId;
     request: RequestId;
     task?: ChatTask;
@@ -512,6 +520,34 @@ export type ChatUpdate = {
   entry: ChatEntry;
   workspace: WorkspaceId;
 };
+
+/**
+ * The core's answer to a [`ChatsQuery`], under the query's envelope id.
+ */
+export type ChatsAnswer = {
+  answer: ChatsAnswerKind;
+};
+
+export type ChatsAnswerKind = (
+  | {
+    chats: Array<LocalChat>;
+    kind: "list";
+  }
+);
+
+/**
+ * A local client asks the core which chats it serves, in every workspace.
+ * Never relayed by the server, which lists a workspace's chats itself.
+ */
+export type ChatsQuery = {
+  query: ChatsQueryKind;
+};
+
+export type ChatsQueryKind = (
+  | {
+    kind: "list";
+  }
+);
 
 /**
  * A log record from a client that has no log of its own, such as the web app: an event name
@@ -817,6 +853,22 @@ export type LineOp = (
     | "removed"
   )
 );
+
+/**
+ * A chat a core serves: `title` is its first prompt's first line, as the server titles it, and
+ * `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
+ */
+export type LocalChat = {
+  agent: AgentKind;
+  chat: ChatId;
+  /**
+   * What its latest run is doing; left out when it has had none.
+   */
+  run?: RunState;
+  title: string;
+  updated_at: number;
+  workspace: WorkspaceId;
+};
 
 /**
  * What happened, such as `run started`: one to four words of lowercase letters or `_`, one
@@ -1229,11 +1281,16 @@ export type PermissionAnswer = {
 };
 
 /**
- * An element someone picked in Chrome, from the extension's host to a core that offers
- * `element.pick`, for a chat. The sender cuts the HTML short and shrinks the screenshot so the
- * message fits in one frame.
+ * An element someone picked in Chrome, from the extension to a core that offers `element.pick`,
+ * which keeps it on the machine for a prompt that names its `request`. The
+ * sender cuts the HTML short and shrinks the screenshot so the message fits in one frame.
+ * Everything in it comes from the page, so it is untrusted.
  */
 export type Pick = {
+  /**
+   * The name of the component that rendered the element, where the page's framework says.
+   */
+  component?: string;
   /**
    * The element's outer HTML.
    */
@@ -1247,6 +1304,20 @@ export type Pick = {
   /**
    * A CSS selector that finds the element on the page.
    */
+  selector: string;
+  /**
+   * The source file of that component, where the framework says, as the page names it.
+   */
+  source?: string;
+  title: string;
+  url: string;
+};
+
+/**
+ * What a chat's log keeps of a pick a prompt carried: the page's address without its query,
+ * fragment or sign-in, its title and the element's selector, never its HTML or screenshot.
+ */
+export type PickNote = {
   selector: string;
   title: string;
   url: string;

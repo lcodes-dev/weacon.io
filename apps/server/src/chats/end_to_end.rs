@@ -109,11 +109,7 @@ async fn connected(fixture: &Fixture, server: &Running) -> (MachineId, Socket, S
     let mut core = open(server.address, "/api/machines/connect", &paired.token)
         .await
         .unwrap();
-    say(
-        &mut core,
-        &["machine.connect", "chat.serve", "chat.answers"],
-    )
-    .await;
+    say(&mut core, &["machine.connect", "chat.serve"]).await;
     assert!(matches!(next(&mut core).await, Message::Welcome(_)));
     let ada = feed(server, "w1", &paired.session).await;
     (paired.machine_id(), core, ada)
@@ -255,6 +251,7 @@ async fn a_feed_answers_a_chat_query_before_what_its_client_sends_next() {
 fn turn() -> [ChatEvent; 4] {
     let prompted = ChatEvent::Prompt {
         author: None,
+        pick: None,
         request: id("r-1"),
         text: "MARKER-PROMPT".to_owned(),
         repo: None,
@@ -280,6 +277,7 @@ fn turn() -> [ChatEvent; 4] {
 // The first two of [`turn`] as the server stores them, named by Ada's leg.
 fn named() -> [ChatEvent; 2] {
     let prompted = ChatEvent::Prompt {
+        pick: None,
         author: Some(id("m1")),
         request: id("r-1"),
         text: "MARKER-PROMPT".to_owned(),

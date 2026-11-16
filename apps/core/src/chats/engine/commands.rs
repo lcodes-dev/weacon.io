@@ -19,6 +19,11 @@ impl<A: Agent> Engine<A> {
         key: &ChatKey,
         command: ChatCommand,
     ) -> Result<(), Fault> {
+        if matches!(&command.action, ChatAction::Prompt { pick: Some(_), .. })
+            && command.by.is_some()
+        {
+            return Err(super::picked::local_only());
+        }
         let request = command.request;
         let author = command.by.map(|by| by.member);
         let asked = (request.clone(), author);
@@ -49,6 +54,7 @@ impl<A: Agent> Engine<A> {
                 quotes,
                 repo,
                 agent: named,
+                pick,
                 task,
                 ..
             } => {
@@ -64,6 +70,7 @@ impl<A: Agent> Engine<A> {
                 // The log keeps the person's own words; the agent also gets the quotes.
                 let told = quoted::prompt(&text, &quotes);
                 let prompt = ChatEvent::Prompt {
+                    pick: self.pick_note(pick.as_ref()).await?,
                     request: request.clone(),
                     text,
                     author,
@@ -72,7 +79,12 @@ impl<A: Agent> Engine<A> {
                     task,
                 };
                 self.commit(key, prompt).await?;
-                self.prompt(key, request, told, agent).await
+                let queued = Queued {
+                    request,
+                    text: told,
+                    pick,
+                };
+                self.prompt(key, queued, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
@@ -127,17 +139,19 @@ impl<A: Agent> Engine<A> {
     async fn prompt(
         &mut self,
         key: &ChatKey,
-        request: RequestId,
-        text: String,
+        queued: Queued,
         agent: AgentKind,
     ) -> Result<(), Fault> {
-        let queued = Queued {
-            request: request.clone(),
-            text,
-        };
+        let request = queued.request.clone();
         self.runs.enqueue(key, agent, queued, self.now()).await?;
-        self.commit_receipt(key, &request, Outcome::Accepted)
-            .await?;
+        if let Err(fault) = self.commit_receipt(key, &request, Outcome::Accepted).await {
+            // Refused, so it never runs.
+            let taken_back = |record: &mut crate::runs::Record| {
+                record.queue.retain(|queued| queued.request != request);
+            };
+            self.runs.update(key, taken_back).await?;
+            return Err(fault);
+        }
         self.advance(key).await
     }
 
@@ -167,9 +181,11 @@ impl<A: Agent> Engine<A> {
                 answer: answer.clone(),
             },
         };
-        self.commit(key, ChatEvent::Run { update }).await?;
+        let logged = self.commit(key, ChatEvent::Run { update }).await;
         let run = answer.run.clone();
+        // Its receipt is in, so the agent is told even when the answer's own entry failed.
         self.order(key, Order::Answer(answer));
+        logged?;
         self.running_again(key, &run).await
     }
 
@@ -354,6 +370,7 @@ mod tests {
         let kept = ChatEvent::Prompt {
             request: "r-1".parse().unwrap(),
             text: "MARKER-OWN".to_owned(),
+            pick: None,
             author: Some(ada.clone()),
             repo: None,
             agent: None,
@@ -496,6 +513,28 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn an_answer_whose_receipt_is_in_is_given_though_its_entry_fails() {
+        let mut on = on_turn().await;
+        assert_eq!(
+            soon(on.agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        hear(&mut on.engine, asks("run-1", 1)).await.unwrap();
+        let answer = PermissionAnswer {
+            run: run("run-1"),
+            prompt: 1,
+            allow: true,
+        };
+        let allow = command("r-2", "c-1", ChatAction::Permission { answer });
+        on.engine.open(&key()).await.unwrap().log.jam_after(1);
+
+        on.engine.command(&key(), allow).await.unwrap();
+        assert!(
+            matches!(soon(on.agent.told.recv()).await, Some(Told::Answer(answer)) if answer.allow)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn a_permission_of_a_run_cut_off_by_a_restart_takes_no_answer() {
         let mut on = on_ask().await;
         // As after a restart: the log still shows the prompt, but its run is gone.
@@ -520,6 +559,23 @@ mod tests {
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
         assert_eq!(soon(on.agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_whose_receipt_fails_leaves_the_queue() {
+        let (_bench, mut engine) = parts();
+        engine.open(&key()).await.unwrap().log.jam();
+
+        let queued = Queued {
+            request: crate::chats::test_support::request("r-1"),
+            text: "Hi".to_owned(),
+            pick: None,
+        };
+        let refused = engine.prompt(&key(), queued, AgentKind::Claude).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
+        let queue = engine.runs.of(&key()).map(|record| record.queue.len());
+        assert_eq!(queue, Some(0));
     }
 
     #[tokio::test(start_paused = true)]

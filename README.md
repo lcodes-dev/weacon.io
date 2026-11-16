@@ -65,7 +65,7 @@ Weacon is in early development. This is what works on `main` today:
 | Search | ⌘K finds docs, tasks and chats by their words, each chat once, and opens a message where it is in its chat; and the code's symbols on your machine | |
 | Code map | `weacon map` and the local MCP the core gives its agents; at the start of a Claude Code session, the flows of the chat's task, then the folder's map | The task's flows for Codex, whose runs get no MCP token |
 | Server MCP | | An MCP endpoint for agents Weacon didn't start |
-| Chrome extension | Builds and registers with the core | |
+| Chrome extension | A side panel that lists the chats your machine's core serves, shows one live and sends prompts, permission answers and Stop; **Pick an element** attaches an element of any web page, with its screenshot, to the next message, and the agent gets the page's part quoted apart from your words | Starting a new chat from the panel; signing the extension in without a core |
 | Updates | `weacon update`, `weacon update check` and `weacon update schedule`, which check a release's signature | A signed release to install: none is published yet |
 
 ## Run it on your machine
@@ -297,6 +297,8 @@ unset WEACON_STATE_DIR
 target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop, Chrome"
 target/debug/weacon connect-chrome
 ```
+
+Click Weacon's button in Chrome's toolbar to open the side panel beside the page. It lists the chats this core serves, newest first; make a chat in the web app with **New chat** on "Dev laptop, Chrome", then choose it in the panel. To point at something, click Weacon's button on the page first, which lets the extension into that tab, then **Pick an element** and click the element. The element's screenshot and HTML go only to your agent on this machine; the chat keeps your message and a note of the page's address without its query, its title and the element's selector.
 
 ### The layout
 

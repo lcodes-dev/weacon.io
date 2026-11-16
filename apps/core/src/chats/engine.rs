@@ -10,7 +10,9 @@ mod cut;
 mod handle;
 mod hold;
 mod launch;
+mod named;
 mod pending;
+mod picked;
 mod queries;
 mod rest;
 mod said;
@@ -21,7 +23,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
 use tokio::sync::{mpsc, watch};
-use weacon_observability::{Fault, Field, Logger};
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
     AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId,
     RunState, RunStatus, code,
@@ -33,7 +35,9 @@ use self::handle::Ask;
 pub(crate) use self::handle::{Chats, WeakChats};
 use self::launch::Launched;
 pub(crate) use self::launch::{Host, RunAs};
+use self::named::{about, chat_about, failed};
 use self::pending::{PendingEnd, PendingInterrupt};
+pub(crate) use self::queries::Listed;
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
 use crate::runs::{ChatKey, Runs};
@@ -344,26 +348,6 @@ impl<A: Agent> Engine<A> {
             self.open_chats.remove(key);
         }
     }
-}
-
-// What names a chat's run on a log line.
-fn about(key: &ChatKey, run: &RunId) -> [(&'static str, Field); 3] {
-    let [workspace, chat] = chat_about(key);
-    [workspace, chat, ("run_id", run.as_str().into())]
-}
-
-// What names a chat on a log line.
-fn chat_about(key: &ChatKey) -> [(&'static str, Field); 2] {
-    [
-        ("workspace_id", key.workspace.as_str().into()),
-        ("chat_id", key.chat.as_str().into()),
-    ]
-}
-
-// What names a chat's run on a log line, and the fault it met.
-fn failed(key: &ChatKey, run: &RunId, fault: &Fault) -> [(&'static str, Field); 4] {
-    let [workspace, chat, run] = about(key, run);
-    [workspace, chat, run, ("err", Field::error(fault))]
 }
 
 fn update(key: &ChatKey, entry: ChatEntry) -> Message {

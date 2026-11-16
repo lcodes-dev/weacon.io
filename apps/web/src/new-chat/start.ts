@@ -11,7 +11,7 @@ export function readiness(sends: boolean, machines: MachineSummary[]): Readiness
   if (!sends) {
     return { kind: "unserved" };
   }
-  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve") && !lacks(machine, "chat.answers"));
+  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve"));
   if (usable.length > 0) {
     return { kind: "ready", machines: usable };
   }

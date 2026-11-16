@@ -4,6 +4,7 @@ mod access;
 mod account;
 mod capability;
 mod chat;
+mod chats;
 mod code;
 mod diff;
 mod doc;
@@ -46,6 +47,7 @@ pub use chat::{
     ChatList, ChatLive, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatTask, ChatUpdate,
     Quote, QuotedAgent,
 };
+pub use chats::{ChatsAnswer, ChatsAnswerKind, ChatsQuery, ChatsQueryKind, LocalChat};
 pub use code::Code;
 pub use diff::{
     DiffAnswer, DiffAnswerKind, DiffContent, DiffFile, DiffLine, DiffQuery, DiffQueryKind,
@@ -66,7 +68,7 @@ pub use machine::{
 pub use map::{MapAnswer, MapQuery, MapQueryKind};
 pub use mcp::{FlowArgs, MapArgs, McpCall, ProposeArgs, SearchArgs, SymbolArgs};
 pub use message::{App, Envelope, ErrorBody, Hello, Message, PROTOCOL, Welcome};
-pub use pick::Pick;
+pub use pick::{Pick, PickNote};
 pub use proposal::{
     AnchorChange, Batched, MAX_PROPOSAL, MergeHunk, PinnedDoc, ProposalAbout, ProposalAction,
     ProposalAnswer, ProposalAnswerKind, ProposalChange, ProposalCommand, ProposalDecision,

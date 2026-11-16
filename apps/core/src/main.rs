@@ -9,7 +9,6 @@ mod db;
 mod disk;
 mod doctor;
 mod git;
-mod guard;
 mod hold;
 mod hook;
 mod integrations;
@@ -88,13 +87,6 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
             level,
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
-        Command::Guard(command) => guard::run(
-            app,
-            command,
-            env,
-            &mut io::stdin().lock(),
-            &mut io::stdout().lock(),
-        ),
         Command::Pair { server, name, pin } => {
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }

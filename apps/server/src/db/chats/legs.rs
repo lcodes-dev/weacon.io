@@ -298,8 +298,8 @@ impl Workspace {
              WHERE l.workspace_id = ? AND l.machine_id = ? AND l.detached = 0 AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
-             ORDER BY json_extract(c.run_status, '$.state') IN ('starting', 'running', 'waiting')
-                 DESC, c.updated_at DESC, c.chat_id
+             ORDER BY COALESCE(json_extract(c.run_status, '$.state')
+                     IN ('starting', 'running', 'waiting'), 0) DESC, c.updated_at DESC, c.chat_id
              LIMIT ?"
         );
         sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(select))

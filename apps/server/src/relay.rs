@@ -28,8 +28,6 @@ use kinds::{About, Asked, answering, machine_needs, stamped};
 const MOST_WAITING: usize = 4096;
 /// How long an ask waits for its answer, or a diff for its next file.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// The most files one diff may bring back, as many as the core sends.
-const MOST_FILES: u32 = 500;
 /// What a machine's core offers, and the server offers, to have its settings relayed.
 pub(crate) const SETTINGS: Code = code!("machine.settings");
 /// What a client and a core offer to have a person's own sessions, run outside Weacon, read
@@ -41,7 +39,7 @@ pub(crate) const DIFF: Code = code!("diff.view");
 pub(crate) const WORKTREE: Code = code!("worktree.manage");
 /// What a client and a core offer to have a person's search of their own machine's code relayed.
 pub(crate) const SYMBOLS: Code = code!("symbols.search");
-/// What a core offers once its owner lets it open terminals.
+/// What a core offers where its machine has a desktop terminal.
 const TERMINAL: Code = code!("worktree.open_terminal");
 
 /// The asks waiting for their machines' answers.
@@ -87,9 +85,8 @@ impl Waiter {
         self.back.try_send(envelope).is_ok() && sendable
     }
 
-    /// Whether `message` leaves more of a diff to come; a first file past [`MOST_FILES`] ends
-    /// the diff as `diff.too_many`.
-    fn more_after(&mut self, message: &mut Message) -> bool {
+    /// Whether `message` leaves more of a diff to come.
+    fn more_after(&mut self, message: &Message) -> bool {
         let Message::DiffAnswer(DiffAnswer {
             answer: DiffAnswerKind::File { files, .. },
             ..
@@ -97,10 +94,6 @@ impl Waiter {
         else {
             return false;
         };
-        if *files > MOST_FILES {
-            *message = refusal(code!("diff.too_many"));
-            return false;
-        }
         let left = self.files_left.get_or_insert(*files);
         *left = left.saturating_sub(1);
         *left > 0
@@ -203,7 +196,7 @@ pub(crate) fn command(
         (relayed, Message::ChatCommand(command)),
         (shared.links.next_id(), follow),
     ];
-    let sent = crate::chats::send_all(shared, machine, crate::chats::ANSWERS, messages);
+    let sent = crate::chats::send_all(shared, machine, messages);
     if sent.is_err() {
         shared.relay.lock().remove(&relayed);
     }
@@ -267,7 +260,7 @@ impl Relay {
         let Entry::Occupied(mut entry) = waiting.entry(envelope.id) else {
             return false;
         };
-        let mut message = envelope.message;
+        let message = envelope.message;
         let named = answering(&message);
         let waiter = entry.get_mut();
         let asked = &waiter.sent.asked;
@@ -281,7 +274,7 @@ impl Relay {
         if waiter.sent.machine != *machine || !answers {
             return true;
         }
-        if waiter.more_after(&mut message) {
+        if waiter.more_after(&message) {
             // The asker's other asks keep their room, and the last of the rest goes to telling
             // a slow asker it fell behind.
             if waiter.back.capacity() <= others + 1 {
@@ -1602,28 +1595,6 @@ mod tests {
 
     fn mc1() -> MachineId {
         MachineId::try_from("mc-1".to_owned()).unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_diff_of_one_file_past_the_most_is_too_many() {
-        let (relay, mut answers) = diff_waiting(4, ANSWER_WITHIN);
-
-        assert!(relay.answered(&mc1(), envelope(7, file(MOST_FILES + 1, "a", "x"))));
-        assert_eq!(
-            error_of(&heard(&mut answers).await),
-            (41, "diff.too_many", false)
-        );
-        assert!(relay.lock().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_diff_of_the_most_files_comes_back_whole() {
-        let (relay, mut answers) = diff_waiting(2, ANSWER_WITHIN);
-        for _ in 0..MOST_FILES {
-            assert!(relay.answered(&mc1(), envelope(7, file(MOST_FILES, "a", "x"))));
-            assert_eq!(heard(&mut answers).await.id, 41);
-        }
-        assert!(relay.lock().is_empty());
     }
 
     #[tokio::test]

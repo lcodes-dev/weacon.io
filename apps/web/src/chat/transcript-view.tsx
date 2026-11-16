@@ -158,6 +158,11 @@ function LineView({
         <div className={landed ? "row prompt landed" : "row prompt"} data-key={line.key}>
           {line.author !== undefined && <span className="author">{line.author}</span>}
           {line.text}
+          {line.pick === undefined ? null : (
+            <div className="picked">
+              Picked <code>{line.pick.selector}</code> on {line.pick.title === "" ? line.pick.url : line.pick.title}
+            </div>
+          )}
         </div>
       );
     case "agent":

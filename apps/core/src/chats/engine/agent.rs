@@ -15,7 +15,12 @@ use crate::runs::ChatKey;
 /// What the engine needs of a running agent: the driver's run in the daemon, a fake in tests.
 /// Dropping it stops the agent.
 pub(crate) trait Agent: Send + 'static {
-    fn send(&mut self, prompt: &str) -> impl Future<Output = Result<(), Fault>> + Send;
+    /// Starts a turn with `prompt`, and `png`, a base64 PNG, for an agent that takes images.
+    fn send(
+        &mut self,
+        prompt: &str,
+        png: Option<&str>,
+    ) -> impl Future<Output = Result<(), Fault>> + Send;
     fn answer(
         &mut self,
         answer: &PermissionAnswer,
@@ -26,8 +31,8 @@ pub(crate) trait Agent: Send + 'static {
 }
 
 impl Agent for AgentRun {
-    async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
-        Self::send(self, prompt).await
+    async fn send(&mut self, prompt: &str, png: Option<&str>) -> Result<(), Fault> {
+        Self::send(self, prompt, png).await
     }
 
     async fn answer(&mut self, answer: &PermissionAnswer) -> Result<(), Fault> {
@@ -45,7 +50,7 @@ impl Agent for AgentRun {
 
 // Orders and what a run says carry prompts and agent output, so neither has a `Debug`.
 pub(crate) enum Order {
-    Send(String),
+    Send { text: String, png: Option<String> },
     Answer(PermissionAnswer),
     Interrupt,
 }
@@ -114,7 +119,7 @@ pub(crate) async fn drive<A: Agent>(
 async fn obey<A: Agent>(agent: &mut A, order: Order) -> Result<(), Fault> {
     let obeyed = async {
         match order {
-            Order::Send(prompt) => agent.send(&prompt).await,
+            Order::Send { text, png } => agent.send(&text, png.as_deref()).await,
             Order::Answer(answer) => agent.answer(&answer).await,
             Order::Interrupt => agent.interrupt().await,
         }
@@ -142,7 +147,7 @@ mod tests {
     }
 
     impl Agent for Brief {
-        async fn send(&mut self, _prompt: &str) -> Result<(), Fault> {
+        async fn send(&mut self, _prompt: &str, _png: Option<&str>) -> Result<(), Fault> {
             Ok(())
         }
 
@@ -193,7 +198,7 @@ mod tests {
     }
 
     impl Agent for Refuses {
-        async fn send(&mut self, prompt: &str) -> Result<(), Fault> {
+        async fn send(&mut self, prompt: &str, _png: Option<&str>) -> Result<(), Fault> {
             Err(match prompt {
                 "broken" => Fault::new(code!("agent.io_failed"), "The agent's pipes failed"),
                 "stuck" => return std::future::pending().await,
@@ -224,8 +229,18 @@ mod tests {
     async fn an_agent_whose_pipes_break_is_stopped_once_it_has_said_its_last_words() {
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
-        orders.send(Order::Send("busy".to_owned())).unwrap();
-        orders.send(Order::Send("broken".to_owned())).unwrap();
+        orders
+            .send(Order::Send {
+                text: "busy".to_owned(),
+                png: None,
+            })
+            .unwrap();
+        orders
+            .send(Order::Send {
+                text: "broken".to_owned(),
+                png: None,
+            })
+            .unwrap();
 
         let driven = tokio::spawn(drive(
             Refuses { said: false },
@@ -254,7 +269,12 @@ mod tests {
     async fn an_agent_that_stops_reading_its_orders_is_stopped() {
         let (orders, ordered) = mpsc::unbounded_channel();
         let (says, mut heard) = mpsc::channel(8);
-        orders.send(Order::Send("stuck".to_owned())).unwrap();
+        orders
+            .send(Order::Send {
+                text: "stuck".to_owned(),
+                png: None,
+            })
+            .unwrap();
 
         let driven = drive(Refuses { said: true }, key(), run("run-1"), ordered, says);
         tokio::time::timeout(ORDER_WRITE + LAST_WORDS * 2, driven)
@@ -306,7 +326,6 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
-                hook: None,
                 mcp: None,
                 plugin: None,
             };
@@ -321,7 +340,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 allow: true,
             };
 
-            Agent::send(&mut agent, "Hi").await.unwrap();
+            Agent::send(&mut agent, "Hi", None).await.unwrap();
             assert_eq!(
                 next(&mut agent).await,
                 Some(RunEvent::Started { session: session() })

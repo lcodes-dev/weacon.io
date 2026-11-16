@@ -9,9 +9,6 @@ use weacon_protocol::{
 use crate::db::Chat;
 use crate::socket::sendable;
 
-/// The most characters of a chat's title, which is the first line of its first words.
-const TITLE_MAX: usize = 80;
-
 /// A command the server takes, of a chat that is there or, for its first words, isn't yet.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Admitted {
@@ -113,12 +110,6 @@ pub(super) fn detached() -> Fault {
     )
 }
 
-/// What a chat whose first words are `text` is called.
-pub(super) fn title(text: &str) -> String {
-    let line = text.trim().lines().next().unwrap_or_default().trim_end();
-    line.chars().take(TITLE_MAX).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{AccountId, ChatId, MemberId, PermissionAnswer, RequestId, WorkspaceId};
@@ -146,6 +137,7 @@ mod tests {
     fn prompt(text: &str, machine: Option<&str>) -> ChatAction {
         ChatAction::Prompt {
             quotes: Vec::new(),
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: machine.map(id),
@@ -240,8 +232,6 @@ mod tests {
         };
         assert_eq!(later.unwrap(), said);
         assert_eq!(refused(None, "m3", say(" \n ")), "chat.empty_prompt");
-        assert_eq!(title(&format!("  {}\nand more", "x".repeat(90))).len(), 80);
-        assert_eq!(title("Fix it \n"), "Fix it");
     }
 
     #[test]
@@ -318,6 +308,7 @@ mod tests {
         }
         let newer_agent = ChatAction::Prompt {
             quotes: Vec::new(),
+            pick: None,
             text: "Go".to_owned(),
             repo: None,
             machine: Some(id("mc-1")),

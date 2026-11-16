@@ -610,11 +610,11 @@ mod tests {
     }
 
     // What the core sends up, in brief, until a run finishes.
+    // What `peer` hears until the run finished and its prompt was answered, in either order.
     async fn until_finished(peer: &mut Peer) -> Vec<String> {
-        let mut briefs = Vec::new();
-        while briefs
-            .last()
-            .is_none_or(|brief: &String| !brief.contains("finished"))
+        let mut briefs: Vec<String> = Vec::new();
+        while !briefs.iter().any(|brief| brief.contains("finished"))
+            || !briefs.iter().any(|brief| brief == "another message")
         {
             briefs.push(brief(&heard(peer).await));
         }

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
 use crate::{
-    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, Receipt, RepoId,
-    RequestId, RunState, RunStatus, RunUpdate, TaskId, WorkspaceId,
+    AgentKind, Asker, MachineId, MachineName, MemberId, PermissionAnswer, PickNote, Receipt,
+    RepoId, RequestId, RunState, RunStatus, RunUpdate, TaskId, WorkspaceId,
 };
 
 token_id!(
@@ -44,12 +44,17 @@ pub enum ChatAction {
     /// prompt naming another agent is refused as `chat.agent_conflict`, and an agent the core
     /// doesn't know as `message.unsupported`. `task` links a new chat to a task of its
     /// workspace; the server relays it with the task's title as it is then, and a later prompt
-    /// naming a task with the chat's own, or none. `quotes` is what the chat's others said since
-    /// the sender's last prompt there, which only the server fills in.
+    /// naming a task with the chat's own, or none. `quotes` is what was written in the chat
+    /// since the sender's last prompt there, which only the server fills in. `pick` names a
+    /// [`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as
+    /// quoted page content.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         quotes: Vec<Quote>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "RequestId")]
+        pick: Option<RequestId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "RepoId")]
         repo: Option<RepoId>,
@@ -146,14 +151,18 @@ pub enum ChatEvent {
         text: String,
     },
     /// A person's prompt to their own agent, accepted under `request`, with the repository, the
-    /// agent and the task it named, if any. `author` is who wrote it, which the server stamps
-    /// from its own record of the machine that sent it; left out when not known.
+    /// agent and the task it named, and a note of the element it carried, if any. `author` is
+    /// who wrote it, which the server stamps from its own record of the machine that sent it;
+    /// left out when not known.
     Prompt {
         request: RequestId,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "MemberId")]
         author: Option<MemberId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "PickNote")]
+        pick: Option<PickNote>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(with = "RepoId")]
         repo: Option<RepoId>,
@@ -425,6 +434,7 @@ mod tests {
         let cases = [
             (
                 ChatAction::Prompt {
+                    pick: None,
                     text: "Run the tests".to_owned(),
                     quotes: Vec::new(),
                     repo: None,
@@ -436,6 +446,7 @@ mod tests {
             ),
             (
                 ChatAction::Prompt {
+                    pick: None,
                     text: "Fix the build".to_owned(),
                     quotes: quotes(),
                     repo: Some(repo()),
@@ -523,6 +534,7 @@ mod tests {
         let cases = [
             (
                 ChatEvent::Prompt {
+                    pick: None,
                     request: request(),
                     text: "Run the tests".to_owned(),
                     author: None,
@@ -573,6 +585,7 @@ mod tests {
     #[test]
     fn a_prompt_event_keeps_its_author_and_the_repo_the_agent_and_the_task_it_fixed() {
         let event = ChatEvent::Prompt {
+            pick: None,
             request: request(),
             text: "Fix the build".to_owned(),
             author: Some("m-1".parse().unwrap()),
@@ -586,6 +599,44 @@ mod tests {
                 &json!({ "kind": "prompt", "request": "r-1", "text": "Fix the build",
                                 "author": "m-1", "repo": "site", "agent": "codex",
                                 "task": { "id": "t-1", "title": "Speed up the build" } }),
+            ),
+        );
+    }
+
+    #[test]
+    fn a_prompt_names_its_pick_and_its_event_keeps_only_a_note_of_it() {
+        let action = ChatAction::Prompt {
+            quotes: Vec::new(),
+            task: None,
+            text: "Make it blue".to_owned(),
+            pick: Some("p-1".parse().unwrap()),
+            repo: None,
+            machine: None,
+            agent: None,
+        };
+        travels(
+            &command(action),
+            command_wire(&json!({ "kind": "prompt", "text": "Make it blue", "pick": "p-1" })),
+        );
+        let event = ChatEvent::Prompt {
+            author: None,
+            task: None,
+            request: request(),
+            text: "Make it blue".to_owned(),
+            pick: Some(PickNote {
+                url: "http://localhost:3000/".to_owned(),
+                title: "Home".to_owned(),
+                selector: "main > button".to_owned(),
+            }),
+            repo: None,
+            agent: None,
+        };
+        travels(
+            &update(event),
+            entry_wire(
+                &json!({ "kind": "prompt", "request": "r-1", "text": "Make it blue",
+                "pick": { "url": "http://localhost:3000/", "title": "Home",
+                          "selector": "main > button" } }),
             ),
         );
     }

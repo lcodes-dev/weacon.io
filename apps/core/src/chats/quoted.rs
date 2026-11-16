@@ -2,6 +2,7 @@
 
 use weacon_protocol::Quote;
 
+use crate::picks::quote::unmarked;
 use crate::workspaces::vendor_name;
 
 const START: &str = "[[chat messages]]";
@@ -37,13 +38,8 @@ fn who(quote: &Quote) -> String {
     }
 }
 
-// A quote can't end the quoting early: its copies of either marker go, however they nest.
 fn bare(text: &str) -> String {
-    let mut text = text.to_owned();
-    while text.contains(START) || text.contains(END) {
-        text = text.replace(START, "").replace(END, "");
-    }
-    text
+    unmarked(text.to_owned(), [START, END])
 }
 
 #[cfg(test)]

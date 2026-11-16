@@ -171,6 +171,7 @@ pub(crate) fn prompt(
         chat: id(chat),
         action: ChatAction::Prompt {
             quotes: Vec::new(),
+            pick: None,
             text: text.to_owned(),
             repo: None,
             machine: machine.cloned(),
@@ -296,6 +297,16 @@ impl Workspace {
         .bind(machine)
         .bind(self.id.as_str())
         .bind(member)
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
+    /// Makes every change this workspace records fail in the database, as a full disk would.
+    pub(crate) async fn break_changes(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken_changes BEFORE INSERT ON changes BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
         .execute(&self.db.writer)
         .await
         .unwrap();

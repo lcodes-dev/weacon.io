@@ -194,6 +194,7 @@ impl Daemon {
             tokio::select! {
                 () = &mut shutdown => break,
                 _ = disk_check.tick() => {
+                    route::sweep(&self.shared).await;
                     self.disk.check(&self.shared.log).await;
                     self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
                 }
@@ -753,6 +754,105 @@ mod tests {
             })
         );
         assert!(messages(&records).contains(&"pick not kept"));
+        assert!(messages(&records).contains(&"picks not swept"));
+    }
+
+    // Writes a runs journal with a waiting chat in `w-1` for each of `chats`: its id, its agent,
+    // its run as JSON and when it was last active.
+    fn journal(dir: &Path, chats: &[(&str, &str, &str, u32)]) {
+        let records: Vec<_> = chats
+            .iter()
+            .map(|(chat, agent, run, at)| {
+                format!(
+                    r#"{{"workspace":"w-1","chat":"{chat}","agent":"{agent}","run":{run},"state":"waiting","session":null,"turn":null,"queue":[],"active_at":{at}}}"#
+                )
+            })
+            .collect();
+        let journal = format!(r#"{{"issued":2,"chats":[{}]}}"#, records.join(","));
+        fs::write(dir.join("runs.json"), journal).unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_chats_served_here_are_listed_newest_first_with_their_titles() {
+        use weacon_protocol::{
+            AgentKind, ChatEvent, ChatsAnswer, ChatsAnswerKind, ChatsQuery, ChatsQueryKind,
+            LocalChat, RunState,
+        };
+
+        use crate::chats::log::ChatLog;
+
+        let dir = TempDir::new().unwrap();
+        let workspace: WorkspaceId = "w-1".parse().unwrap();
+        let root = crate::workspaces::Workspaces::new(&dir, None).root(&workspace);
+        let mut log = ChatLog::open(&root, &"c-1".parse().unwrap()).await.unwrap();
+        let text = "Fix the header\nand the footer".to_owned();
+        log.append(ChatEvent::OutsidePrompt { text }).await.unwrap();
+        journal(
+            &dir,
+            &[
+                ("c-1", "claude", "null", 10),
+                ("c-2", "codex", r#""run-2""#, 20),
+            ],
+        );
+        let running = start(&dir).unwrap();
+        let list = |id, query| {
+            let message = Message::ChatsQuery(ChatsQuery { query });
+            encode_line(&Envelope { id, message }).unwrap()
+        };
+        let mut bytes = hello(PROTOCOL);
+        bytes.extend(list(2, ChatsQueryKind::List));
+        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        running.stop().await;
+
+        let chat = |id: &str, title: &str, agent, updated_at, run| LocalChat {
+            workspace: workspace.clone(),
+            chat: id.parse().unwrap(),
+            title: title.to_owned(),
+            agent,
+            updated_at,
+            run,
+        };
+        let chats = vec![
+            chat("c-2", "", AgentKind::Codex, 20, Some(RunState::Sleeping)),
+            chat("c-1", "Fix the header", AgentKind::Claude, 10, None),
+        ];
+        assert_eq!(
+            replies[1],
+            Message::ChatsAnswer(ChatsAnswer {
+                answer: ChatsAnswerKind::List { chats }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_whose_log_cant_be_read_is_listed_untitled() {
+        use weacon_protocol::{ChatsAnswerKind, ChatsQuery, ChatsQueryKind};
+
+        let dir = TempDir::new().unwrap();
+        let root = crate::workspaces::Workspaces::new(&dir, None).root(&"w-1".parse().unwrap());
+        fs::create_dir_all(root.join("chats/c-c-1.jsonl")).unwrap();
+        journal(&dir, &[("c-1", "claude", "null", 1)]);
+        let running = start(&dir).unwrap();
+        let message = Message::ChatsQuery(ChatsQuery {
+            query: ChatsQueryKind::List,
+        });
+        let mut bytes = hello(PROTOCOL);
+        bytes.extend(encode_line(&Envelope { id: 2, message }).unwrap());
+        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
+        let records = running.stop().await;
+
+        let Message::ChatsAnswer(answer) = &replies[1] else {
+            panic!("not a list: {:?}", replies[1]);
+        };
+        let ChatsAnswerKind::List { chats } = &answer.answer;
+        assert_eq!(
+            chats
+                .iter()
+                .map(|chat| chat.title.as_str())
+                .collect::<Vec<_>>(),
+            [""]
+        );
+        assert!(messages(&records).contains(&"chat titles unreadable"));
     }
 
     #[tokio::test]

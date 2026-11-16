@@ -42,8 +42,6 @@ pub(crate) use workspace::{MemberRow, Workspace};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const READERS: u32 = 8;
-const WAL_TRIES: u32 = 50;
-const WAL_RETRY: Duration = Duration::from_millis(100);
 
 /// One database file in WAL mode: a single writer connection, and readers beside it.
 #[derive(Clone, Debug)]
@@ -243,33 +241,17 @@ fn not_found() -> Fault {
     Fault::new(code!("db.not_found"), "There is no database there")
 }
 
-/// Switches the file to WAL mode, which lasts. The switch needs a lock that the busy timeout
-/// doesn't wait for, so it is tried again while another process holds the file.
+/// Switches the file to WAL mode, which lasts.
 async fn use_wal(writer: &mut SqliteConnection) -> Result<(), Fault> {
-    for _ in 0..WAL_TRIES {
-        let switched = sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
-            .fetch_one(&mut *writer)
-            .await;
-        match switched {
-            Ok(mode) if mode == "wal" => return Ok(()),
-            Err(error) if is_busy(&error) => tokio::time::sleep(WAL_RETRY).await,
-            Ok(_) => return Err(open_fault()),
-            Err(error) => return Err(open_failed(error)),
-        }
+    let mode = sqlx::query_scalar::<_, String>("PRAGMA journal_mode = WAL")
+        .fetch_one(writer)
+        .await
+        .map_err(open_failed)?;
+    if mode == "wal" {
+        Ok(())
+    } else {
+        Err(open_fault())
     }
-    Err(Fault::new(
-        code!("db.busy"),
-        "Another process is holding the database",
-    ))
-}
-
-/// Whether `error` is `SQLITE_BUSY` or one of its extended codes, which share its low byte.
-fn is_busy(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(sqlx::error::DatabaseError::code)
-        .and_then(|code| code.parse::<u32>().ok())
-        .is_some_and(|code| code & 0xff == 5)
 }
 
 fn options(path: &Path) -> SqliteConnectOptions {
@@ -306,7 +288,6 @@ fn exists() -> Fault {
 #[cfg(test)]
 mod tests {
     use sqlx::{ConnectOptions, Row};
-    use tokio::time::Instant;
     use weacon_testing::TempDir;
 
     use super::*;
@@ -373,64 +354,6 @@ mod tests {
 
         assert!(db.writer.is_closed());
         assert!(db.readers.is_closed());
-    }
-
-    // A database that another connection is about to write to, so it can't change its mode.
-    async fn held(dir: &TempDir) -> (SqliteConnection, SqliteConnection) {
-        let path = dir.join("weacon.db");
-        let mut holder = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::raw_sql("BEGIN IMMEDIATE; CREATE TABLE held (x INTEGER)")
-            .execute(&mut holder)
-            .await
-            .unwrap();
-        let writer = options(&path).connect().await.unwrap();
-        (holder, writer)
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_switch_to_wal_waits_out_another_writer() {
-        let dir = TempDir::new().unwrap();
-        let (mut holder, mut writer) = held(&dir).await;
-        let switching = tokio::spawn(async move { use_wal(&mut writer).await });
-        tokio::time::sleep(WAL_RETRY * 3).await;
-        sqlx::raw_sql("COMMIT").execute(&mut holder).await.unwrap();
-
-        switching.await.unwrap().unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_switch_to_wal_gives_up_after_a_while() {
-        let dir = TempDir::new().unwrap();
-        let (_holder, mut writer) = held(&dir).await;
-        let started = Instant::now();
-        let error = use_wal(&mut writer).await.unwrap_err();
-
-        assert_eq!(error.code().as_str(), "db.busy");
-        assert_eq!(started.elapsed(), WAL_RETRY * WAL_TRIES);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn other_errors_are_not_tried_again() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        drop(
-            options(&path)
-                .create_if_missing(true)
-                .connect()
-                .await
-                .unwrap(),
-        );
-        let mut read_only = options(&path).read_only(true).connect().await.unwrap();
-        let started = Instant::now();
-        let error = use_wal(&mut read_only).await.unwrap_err();
-
-        assert_eq!(error.code().as_str(), "db.open_failed");
-        assert_eq!(started.elapsed(), Duration::ZERO);
     }
 
     #[tokio::test]

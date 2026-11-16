@@ -115,6 +115,7 @@ mod tests {
 
     fn prompt(text: &str) -> ChatEvent {
         ChatEvent::Prompt {
+            pick: None,
             request: id("r-1"),
             text: text.to_owned(),
             author: None,

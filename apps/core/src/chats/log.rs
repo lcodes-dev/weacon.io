@@ -16,8 +16,10 @@ use crate::app::blocking;
 use crate::platform;
 
 mod line;
+mod title;
 
 use line::entry_line;
+pub(crate) use title::title;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
 const ENTRY_MAX: usize = MAX_FRAME - (32 << 10);
@@ -40,6 +42,9 @@ pub(crate) struct ChatLog {
     receipts: HashMap<RequestId, bool>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    /// How many more writes succeed before the log behaves as after a failed one.
+    #[cfg(test)]
+    writes_left: Option<u32>,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
     /// Who wrote the chat's first prompt, when it says: the member whose agent this is.
@@ -61,6 +66,13 @@ fn open_or_create(path: &Path, workspace_root: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+// Where `chat`'s log is under its workspace's folder.
+fn path(workspace_root: &Path, chat: &ChatId) -> PathBuf {
+    workspace_root
+        .join("chats")
+        .join(super::file_stem(chat) + ".jsonl")
+}
+
 fn unreadable(error: io::Error) -> Fault {
     Fault::new(code!("chat.log_unreadable"), "The chat's log can't be read").because(error)
 }
@@ -73,8 +85,7 @@ impl ChatLog {
     /// # Errors
     /// When the log can't be read or an entry before its last is damaged.
     pub(crate) async fn open(workspace_root: &Path, chat: &ChatId) -> Result<Self, Fault> {
-        let dir = workspace_root.join("chats");
-        let path = dir.join(super::file_stem(chat) + ".jsonl");
+        let path = path(workspace_root, chat);
         let workspace_root = workspace_root.to_path_buf();
         blocking(move || {
             let mut log = Self {
@@ -85,6 +96,8 @@ impl ChatLog {
                 end: 0,
                 receipts: HashMap::new(),
                 broken: false,
+                #[cfg(test)]
+                writes_left: None,
                 agent: None,
                 owner: None,
                 repo: None,
@@ -232,6 +245,8 @@ impl ChatLog {
         };
         let line = entry_line(&entry)?;
         let len = line.len();
+        #[cfg(test)]
+        self.count_write();
         self.ensure_file()
             .await
             .map_err(|error| not_written().because(error))?;
@@ -305,6 +320,21 @@ impl ChatLog {
     #[cfg(test)]
     pub(crate) const fn jam(&mut self) {
         self.broken = true;
+    }
+
+    /// Lets `writes` more writes through, then behaves as [`jam`](Self::jam) does.
+    #[cfg(test)]
+    pub(crate) const fn jam_after(&mut self, writes: u32) {
+        self.writes_left = Some(writes);
+    }
+
+    #[cfg(test)]
+    fn count_write(&mut self) {
+        match self.writes_left {
+            Some(0) => self.broken = true,
+            Some(left) => self.writes_left = Some(left - 1),
+            None => {}
+        }
     }
 
     // Creates the log file on the first entry of a chat that had none.
@@ -447,6 +477,7 @@ mod tests {
         };
         let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
             author: None,
+            pick: None,
             request: request(id),
             text: "Go".to_owned(),
             repo: Some(RepoId::try_from(repo.to_owned()).unwrap()),

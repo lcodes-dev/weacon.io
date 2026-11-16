@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { build } from "esbuild";
@@ -12,16 +12,26 @@ const source = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8")) 
 const { version, commit } = buildVersion(new URL("../../", root), process.env);
 const options = {
   bundle: true,
+  minify: true,
   target: `chrome${String(source["minimum_chrome_version"])}`,
   absWorkingDir: fileURLToPath(root),
   outdir: fileURLToPath(dist),
-  define: { WEACON_VERSION: JSON.stringify(version), WEACON_COMMIT: JSON.stringify(commit) },
+  define: {
+    WEACON_VERSION: JSON.stringify(version),
+    WEACON_COMMIT: JSON.stringify(commit),
+    "process.env.NODE_ENV": '"production"',
+  },
   logLevel: "warning",
 } as const;
 
-await build({ ...options, entryPoints: ["src/background.ts"], format: "esm" });
-if (/WEACON_(VERSION|COMMIT)/.test(readFileSync(new URL("background.js", dist), "utf8"))) {
-  throw new Error("the build left its version or commit undefined");
+await build({ ...options, entryPoints: ["src/background.ts", "src/panel.tsx"], format: "esm", jsx: "automatic" });
+for (const built of ["background.js", "panel.js"]) {
+  if (/WEACON_(VERSION|COMMIT)/.test(readFileSync(new URL(built, dist), "utf8"))) {
+    throw new Error("the build left its version or commit undefined");
+  }
+}
+for (const file of ["panel.html", "panel.css"]) {
+  copyFileSync(new URL(`src/${file}`, root), new URL(file, dist));
 }
 // Injected scripts can't be modules.
 await build({ ...options, entryPoints: ["src/picker.ts"], format: "iife" });

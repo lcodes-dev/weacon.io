@@ -1,4 +1,4 @@
-import type { AgentRef, ChatEntry, MemberId, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
+import type { AgentRef, ChatEntry, MemberId, PickNote, RunEvent, RunId, RunState, RunStatus } from "../protocol.ts";
 import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcript.ts";
 
 /** A permission prompt, shown after `at` rows of its turn, and how the log says it ended. */
@@ -15,7 +15,7 @@ export type Turn = { key: string; run: RunId; transcript: Transcript; asks: read
  * What the screen shows, in order: what people wrote, to the chat or to their own agent, by
  * `author` when the log says who, and agents' turns.
  */
-export type Item = { kind: "prompt"; seq: number; text: string; author: MemberId | undefined } | { kind: "turn"; turn: Turn };
+export type Item = { kind: "prompt"; seq: number; text: string; author: MemberId | undefined; pick?: PickNote } | { kind: "turn"; turn: Turn };
 
 /** A run as its chat's log records it. */
 export type Run = { state: RunState; agent: AgentRef | undefined };
@@ -196,7 +196,9 @@ function fold(chat: Chat, entries: readonly ChatEntry[]): Item[] {
 function step(items: Item[], entry: ChatEntry, waiting: boolean, tools: ReadonlyMap<string, string>): void {
   const { event } = entry;
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "outside_prompt") {
-    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author: event.kind === "outside_prompt" ? undefined : event.author });
+    const pick = event.kind === "prompt" ? event.pick : undefined;
+    const author = event.kind === "outside_prompt" ? undefined : event.author;
+    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author, ...(pick === undefined ? {} : { pick }) });
     return;
   }
   closeBy(items, entry);
