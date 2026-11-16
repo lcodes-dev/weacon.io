@@ -199,8 +199,8 @@ async fn prompt(
         return Err(link::offline());
     }
     let (id, now) = (command.chat.clone(), from.shared.now());
-    let leg = leg_for(from, chat, machine, &command).await?;
     one_at_a_time(from.shared, workspace, chat, &id, member).await?;
+    let leg = leg_for(from, chat, machine, &command).await?;
     if !workspace.call(&id, &member.id, now).await? {
         return Err(agent_working());
     }
@@ -233,10 +233,9 @@ async fn leg_for(
     });
     match fixed {
         // One that took no prompt yet stays too, unless this prompt names a machine.
-        Some(leg) if leg.core_seq > 0 || machine.is_none() => named(&leg)
+        Some(leg) if leg.core_seq > 0 || machine.is_none() || calling => named(&leg)
             .then_some(leg)
             .ok_or_else(crate::db::machine_fixed),
-        Some(leg) if calling && !named(&leg) => Err(crate::db::machine_fixed()),
         _ => {
             let ChatAction::Prompt { repo, agent, .. } = &command.action else {
                 return Err(super::unsupported());
@@ -248,7 +247,7 @@ async fn leg_for(
                 agent: agent.unwrap_or(AgentKind::Claude),
                 repo: repo.as_ref(),
             };
-            workspace.set_leg(&command.chat, &member.id, &leg).await?;
+            workspace.set_leg(&command.chat, &member.id, &leg, from.shared.now()).await?;
             let made = workspace.leg(&command.chat, &member.id).await?;
             made.ok_or_else(crate::db::machine_not_found)
         }
