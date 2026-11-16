@@ -274,7 +274,6 @@ mod tests {
 
     use super::*;
     use crate::db::Db;
-    use crate::db::schema::{database_before, steps};
     use crate::db::test_support::{NOW, by, code};
     use crate::test_support::data::shared_owner;
     use crate::test_support::{agent, member_id, two_teams, workspace_id};
@@ -548,7 +547,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_agent_from_before_agents_were_named_reads_as_none_and_someone_elses_is_refused() {
+    async fn an_agent_no_one_named_reads_as_none_and_someone_elses_is_refused() {
         let dir = TempDir::new().unwrap();
         let path = dir.join("weacon.db");
         let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
@@ -559,8 +558,8 @@ mod tests {
              INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, author_kind,
                  author_member, accepted_by, at)
                  VALUES ('w1', 'd1', 1, 'Framing', 'Plain.', 'agent', 'm1', 'm1', 0);";
-        database_before(&path, steps::VERSION_AGENTS, rows).await;
-        let db = Db::open(&path).await.unwrap();
+        let db = Db::create(&path).await.unwrap();
+        sqlx::raw_sql(rows).execute(&db.writer).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
         let someone_elses = weacon_protocol::AgentOwner::Member {
             member: member_id("m3"),

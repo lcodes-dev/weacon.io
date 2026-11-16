@@ -222,7 +222,6 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::schema::{database_before, steps};
     use crate::db::test_support::{NOW, id};
     use crate::test_support::{email, member_id, workspace_id};
 
@@ -425,20 +424,5 @@ mod tests {
         try_code(&db, "c2", "code", later).await.unwrap();
 
         assert_eq!(count(&db, "sessions").await, 1);
-    }
-
-    #[tokio::test]
-    async fn hashed_codes_are_dropped_and_codes_after_work() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        let rows = "INSERT INTO accounts (account_id, email, owner) VALUES ('a1', 'ada@example.com', 1);
-             INSERT INTO sign_in_challenges VALUES ('c0', 'ada@example.com', x'02', 9999999999, 0, 1)";
-        database_before(&path, steps::PLAIN_CODES, rows).await;
-        let db = Db::open(&path).await.unwrap();
-        let dropped = count(&db, "sign_in_challenges").await;
-
-        assert_eq!(dropped, 0);
-        challenge(&db, "ada@example.com", "c1", "k1", NOW).await;
-        assert_eq!(try_code(&db, "c1", "k1", NOW).await.as_deref(), Some("a1"));
     }
 }

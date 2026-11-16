@@ -4,104 +4,352 @@ use weacon_protocol::code;
 
 use super::failed;
 
-pub(super) mod steps;
+/// Every table and index. Until the first release a database is never carried from one schema
+/// to another: a change is made here, and a database made before it is deleted.
+const SCHEMA: &str = "
+CREATE TABLE workspaces (
+    workspace_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    doc_bytes INTEGER NOT NULL DEFAULT 0,
+    chat_bytes INTEGER NOT NULL DEFAULT 0
+) STRICT;
 
-/// Each step brings the schema from its index to the next version; steps are only appended.
-pub(super) const STEPS: &[&str] = &[
-    steps::WORKSPACES,
-    steps::SIGN_IN,
-    steps::CHALLENGES,
-    steps::ACCOUNTS,
-    steps::ACCOUNT_SIGN_IN,
-    steps::TASKS,
-    steps::ROLES,
-    steps::CHALLENGES_BY_EMAIL,
-    steps::MAILED,
-    steps::DOCS,
-    steps::MACHINES,
-    steps::DOC_BYTES,
-    steps::VERSION_AGENTS,
-    steps::PROPOSALS,
-    steps::CHATS,
-    steps::SEARCH,
-    steps::SEARCH_CHATS,
-    steps::CORE_BUILDS,
-    steps::DOC_REPOS,
-    steps::PLAIN_CODES,
-    steps::CHAT_TASKS,
-    steps::INVITATIONS,
-    steps::REQUESTS_GONE,
-    steps::CHAT_LEGS,
-    steps::SHARED_MACHINES,
-    steps::LEGS_BY_MACHINE,
-    steps::PLAIN_TOKENS,
-];
+CREATE TABLE accounts (
+    account_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    personal_made INTEGER NOT NULL DEFAULT 0,
+    owner INTEGER NOT NULL DEFAULT 0
+) STRICT;
 
-/// Applies the steps the database hasn't had yet, each in its own transaction that holds the
-/// write lock from the start, so that two processes opening a new file don't both apply one.
-pub(super) async fn migrate(writer: &SqlitePool) -> Result<(), Fault> {
-    loop {
-        let mut transaction = writer.begin_with("BEGIN IMMEDIATE").await.map_err(failed)?;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        let done = usize::try_from(version).map_err(|_| too_new())?;
-        let Some(step) = STEPS.get(done) else {
-            return if done == STEPS.len() {
-                Ok(())
-            } else {
-                Err(too_new())
-            };
-        };
-        sqlx::raw_sql(*step)
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        // A number from this file, never input.
-        sqlx::raw_sql(AssertSqlSafe(format!("PRAGMA user_version = {}", done + 1)))
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        transaction.commit().await.map_err(failed)?;
-    }
+CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
+
+CREATE TABLE members (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    member_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    role TEXT NOT NULL DEFAULT 'member',
+    PRIMARY KEY (workspace_id, member_id),
+    UNIQUE (workspace_id, email)
+) STRICT;
+
+CREATE UNIQUE INDEX members_account ON members (workspace_id, account_id);
+
+CREATE TABLE invitations (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    email TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, email)
+) STRICT;
+
+CREATE TABLE sign_in_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    code TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    attempts INTEGER NOT NULL,
+    mailed INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
+
+CREATE TABLE sessions (
+    token TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE machines (
+    machine_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts (account_id),
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    paired_at INTEGER NOT NULL,
+    core_build TEXT,
+    core_offers TEXT
+) STRICT;
+
+CREATE TABLE pairings (
+    pairing_id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    secret TEXT NOT NULL,
+    token TEXT NOT NULL,
+    name TEXT NOT NULL,
+    os TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    account_id TEXT REFERENCES accounts (account_id),
+    machine_id TEXT,
+    confirmed_at INTEGER,
+    claimed INTEGER NOT NULL DEFAULT 0
+) STRICT;
+
+-- Each row is what a machine's core says its owner shares, so the machine is plain text.
+CREATE TABLE shared_machines (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    machine_id TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, machine_id)
+) STRICT;
+
+CREATE TABLE tasks (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    order_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, task_id),
+    UNIQUE (workspace_id, order_key)
+) STRICT;
+
+CREATE TABLE task_versions (
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    agent TEXT,
+    PRIMARY KEY (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE docs (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id)
+) STRICT;
+
+CREATE TABLE doc_versions (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    commit_id TEXT,
+    author_kind TEXT NOT NULL,
+    author_member TEXT NOT NULL,
+    accepted_by TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    agent TEXT,
+    repo_id TEXT,
+    PRIMARY KEY (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, doc_id) REFERENCES docs (workspace_id, doc_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, accepted_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE doc_pins (
+    workspace_id TEXT NOT NULL,
+    doc_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    pin TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, doc_id, version, position),
+    FOREIGN KEY (workspace_id, doc_id, version)
+        REFERENCES doc_versions (workspace_id, doc_id, version)
+) STRICT;
+
+-- The proposing machine is plain text, as it outlives the machine's pairing.
+CREATE TABLE proposals (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    proposal_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    doc_id TEXT,
+    task_id TEXT,
+    new_id TEXT,
+    base INTEGER,
+    change TEXT,
+    change_hash BLOB NOT NULL,
+    snapshot TEXT,
+    bytes INTEGER NOT NULL,
+    author_member TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    decided_by TEXT,
+    version INTEGER,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, proposal_id),
+    FOREIGN KEY (workspace_id, doc_id) REFERENCES docs (workspace_id, doc_id),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id),
+    FOREIGN KEY (workspace_id, author_member) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, decided_by) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX proposals_open ON proposals (workspace_id, author_member) WHERE state = 'open';
+
+CREATE TABLE chats (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    chat_id TEXT NOT NULL,
+    owner_member TEXT NOT NULL,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    run_id TEXT,
+    run_status TEXT,
+    called_by TEXT,
+    called_at INTEGER,
+    called_on TEXT,
+    called_for TEXT,
+    PRIMARY KEY (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, owner_member) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX chats_updated ON chats (workspace_id, updated_at);
+
+CREATE TABLE chat_events (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    core_seq INTEGER,
+    body TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    member_id TEXT,
+    machine_id TEXT,
+    PRIMARY KEY (workspace_id, chat_id, seq),
+    UNIQUE (workspace_id, chat_id, core_seq),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id)
+) STRICT;
+
+CREATE TABLE chat_waiting (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    prompt INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id, run_id, prompt),
+    FOREIGN KEY (workspace_id, chat_id, seq) REFERENCES chat_events (workspace_id, chat_id, seq)
+) STRICT;
+
+CREATE TABLE chat_tasks (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id)
+) STRICT;
+
+CREATE TABLE chat_legs (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    machine_name TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    repo TEXT,
+    core_seq INTEGER NOT NULL DEFAULT 0,
+    detached INTEGER NOT NULL DEFAULT 0,
+    quoted_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, chat_id, machine_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE INDEX chat_legs_machine ON chat_legs (workspace_id, machine_id);
+
+CREATE TABLE chat_calls (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, chat_id, request_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+CREATE TABLE changes (
+    workspace_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    task_id TEXT,
+    task_version INTEGER,
+    doc_id TEXT,
+    doc_version INTEGER,
+    proposal_id TEXT,
+    chat_id TEXT,
+    PRIMARY KEY (workspace_id, seq),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id),
+    FOREIGN KEY (workspace_id, task_id, task_version)
+        REFERENCES task_versions (workspace_id, task_id, version),
+    FOREIGN KEY (workspace_id, doc_id, doc_version)
+        REFERENCES doc_versions (workspace_id, doc_id, version),
+    FOREIGN KEY (workspace_id, proposal_id) REFERENCES proposals (workspace_id, proposal_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id)
+) STRICT;
+
+CREATE VIRTUAL TABLE search USING fts5(
+    workspace_id UNINDEXED,
+    kind UNINDEXED,
+    item UNINDEXED,
+    title,
+    body,
+    tokenize = 'trigram remove_diacritics 1'
+);
+
+CREATE TABLE search_rows (
+    workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
+    kind TEXT NOT NULL,
+    item TEXT NOT NULL,
+    row INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (workspace_id, kind, item)
+) STRICT;
+
+CREATE INDEX search_rows_by_row ON search_rows (workspace_id, row);
+";
+
+/// What `PRAGMA user_version` holds beside this schema: a hash of [`SCHEMA`] (FNV-1a), so it
+/// changes when the schema does. It fits the pragma and is never 0, which a new file has.
+fn version() -> u32 {
+    let hash = SCHEMA.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    (hash >> 1) | 1
 }
 
-/// The steps that come before `step`.
-#[cfg(test)]
-pub(super) fn steps_before(step: &str) -> &'static [&'static str] {
-    let at = STEPS.iter().position(|each| *each == step).unwrap();
-    &STEPS[..at]
-}
-
-/// Makes a database at `path` from before `step`, holding `rows`, for tests of what that step
-/// and the ones after it do to existing data.
-#[cfg(test)]
-pub(super) async fn database_before(path: &std::path::Path, step: &str, rows: &str) {
-    use sqlx::ConnectOptions;
-
-    let mut old = sqlx::sqlite::SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .connect()
+/// Makes the schema in a new database, in a transaction that holds the write lock from the
+/// start, so that two processes opening a new file don't both make it.
+///
+/// # Errors
+/// `db.other_schema` for a database made with another schema.
+pub(super) async fn prepare(writer: &SqlitePool) -> Result<(), Fault> {
+    let mut transaction = writer.begin_with("BEGIN IMMEDIATE").await.map_err(failed)?;
+    let version = version();
+    let found: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
         .await
-        .unwrap();
-    let before = steps_before(step);
-    for step in before {
-        sqlx::raw_sql(*step).execute(&mut old).await.unwrap();
+        .map_err(failed)?;
+    if found == i64::from(version) {
+        return Ok(());
     }
-    let rows = format!("{rows}; PRAGMA user_version = {};", before.len());
-    sqlx::raw_sql(AssertSqlSafe(rows))
-        .execute(&mut old)
+    if found != 0 {
+        return Err(Fault::new(
+            code!("db.other_schema"),
+            "The database was made by another build of the server; delete it to start again",
+        ));
+    }
+    sqlx::raw_sql(SCHEMA)
+        .execute(&mut *transaction)
         .await
-        .unwrap();
-}
-
-fn too_new() -> Fault {
-    Fault::new(
-        code!("db.too_new"),
-        "The database is from a newer version of the server",
-    )
+        .map_err(failed)?;
+    // A number from this file, never input.
+    sqlx::raw_sql(AssertSqlSafe(format!("PRAGMA user_version = {version}")))
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
+    transaction.commit().await.map_err(failed)
 }
 
 #[cfg(test)]
@@ -111,17 +359,19 @@ mod tests {
     use crate::db::Db;
 
     #[tokio::test]
-    async fn a_schema_newer_than_this_build_is_refused() {
+    async fn a_database_with_this_schema_opens_again_and_one_with_another_is_refused() {
         let dir = TempDir::new().unwrap();
-        let db = Db::create(&dir.join("weacon.db")).await.unwrap();
-        sqlx::raw_sql("PRAGMA user_version = 1000")
+        let path = dir.join("weacon.db");
+        Db::create(&path).await.unwrap().close().await;
+        let db = Db::open(&path).await.unwrap();
+        sqlx::raw_sql("PRAGMA user_version = 27")
             .execute(&db.writer)
             .await
             .unwrap();
         db.close().await;
 
-        let error = Db::open(&dir.join("weacon.db")).await.unwrap_err();
-        assert_eq!(error.code().as_str(), "db.too_new");
+        let error = Db::open(&path).await.unwrap_err();
+        assert_eq!(error.code().as_str(), "db.other_schema");
     }
 
     async fn first_columns(db: &Db, sql: &'static str, table: &str) -> Vec<String> {
@@ -221,8 +471,14 @@ mod tests {
             tables(&db).await,
             [
                 "workspaces",
-                "members",
                 "accounts",
+                "members",
+                "invitations",
+                "sign_in_challenges",
+                "sessions",
+                "machines",
+                "pairings",
+                "shared_machines",
                 "tasks",
                 "task_versions",
                 "docs",
@@ -232,18 +488,12 @@ mod tests {
                 "chats",
                 "chat_events",
                 "chat_waiting",
-                "changes",
-                "search",
-                "search_rows",
-                "sign_in_challenges",
                 "chat_tasks",
-                "invitations",
-                "shared_machines",
                 "chat_legs",
                 "chat_calls",
-                "sessions",
-                "machines",
-                "pairings"
+                "changes",
+                "search",
+                "search_rows"
             ]
         );
         for table in SERVER_WIDE {
