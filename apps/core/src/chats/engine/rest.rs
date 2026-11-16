@@ -10,8 +10,8 @@ use super::{Chat, ChatKey, Engine, about, chat_about};
 pub(super) const IDLE: u64 = 30 * 60;
 
 impl<A: Agent> Engine<A> {
-    // Stops each agent idle for `IDLE`, never on a turn, while a person is asked something or
-    // while a write is owed. Its session stays, so the chat's next prompt resumes it.
+    // Stops each agent idle for `IDLE`, never on a turn or while a person is asked something.
+    // Its session stays, so the chat's next prompt resumes it.
     pub(super) async fn sleep_idle(&mut self) {
         // The backstop for a connection whose end wasn't reported.
         self.close_unused().await;
@@ -23,8 +23,7 @@ impl<A: Agent> Engine<A> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in idle {
-            let slept = self.sleep(&key).await;
-            if let Some(fault) = self.unlogged(&key, None, slept).await {
+            if let Err(fault) = self.sleep(&key).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
             self.close_if_unused(&key);
@@ -39,7 +38,6 @@ impl<A: Agent> Engine<A> {
             && chat.launching.is_none()
             && record.turn.is_none()
             && chat.log.runs().waiting().is_empty()
-            && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now
     }
 
@@ -94,8 +92,7 @@ impl<A: Agent> Engine<A> {
             })
             .collect();
         for (key, recent) in awake {
-            let picked = self.pick_up(&key, recent).await;
-            if let Some(fault) = self.unlogged(&key, None, picked).await {
+            if let Err(fault) = self.pick_up(&key, recent).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
