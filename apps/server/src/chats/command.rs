@@ -16,7 +16,7 @@ use crate::shared::Shared;
 
 /// Who sends a command: a member of the chat's workspace, and their account.
 #[derive(Clone, Copy)]
-struct From<'a> {
+struct Sender<'a> {
     shared: &'a Shared,
     member: &'a Member,
     asker: &'a Asker,
@@ -34,7 +34,7 @@ pub(crate) async fn take(
     back: Back<'_>,
 ) -> Result<Option<Message>, Fault> {
     let (id, request) = (command.chat.clone(), command.request.clone());
-    let from = From {
+    let from = Sender {
         shared,
         member,
         asker,
@@ -73,7 +73,7 @@ pub(crate) async fn take(
 
 // Stores a person's message, in a chat it makes when there is none.
 async fn say(
-    From { shared, member, .. }: From<'_>,
+    Sender { shared, member, .. }: Sender<'_>,
     chat: Option<&Chat>,
     id: &ChatId,
     text: String,
@@ -125,12 +125,12 @@ async fn say(
 // A chat's first prompt: the chat is made before it is sent, so two at once can't both reach
 // the machine, and taken back when it can't be sent.
 async fn start(
-    from: From<'_>,
+    from: Sender<'_>,
     machine: Option<MachineId>,
     mut command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
-    let From { shared, member, .. } = from;
+    let Sender { shared, member, .. } = from;
     let workspace = &member.workspace;
     let ChatAction::Prompt {
         text,
@@ -173,7 +173,7 @@ async fn start(
 // A prompt to a chat that is there: to the asker's own agent in it, which their first one
 // there fixes, with what the others said since their last.
 async fn prompt(
-    from: From<'_>,
+    from: Sender<'_>,
     chat: &Chat,
     machine: Option<MachineId>,
     mut command: ChatCommand,
@@ -217,7 +217,7 @@ async fn prompt(
 
 // The asker's machine `named`, which a first prompt must name, and what it is called.
 async fn own_machine(
-    From { shared, asker, .. }: From<'_>,
+    Sender { shared, asker, .. }: Sender<'_>,
     named: Option<MachineId>,
 ) -> Result<(MachineId, weacon_protocol::MachineName), Fault> {
     let named = named.ok_or_else(|| {
@@ -257,7 +257,7 @@ async fn one_at_a_time(workspace: &Workspace, chat: &ChatId, member: &Member) ->
 
 // Relays `command` to the machine of `leg`, the asker's own, while they still own it.
 async fn serve(
-    From { shared, member, .. }: From<'_>,
+    Sender { shared, member, .. }: Sender<'_>,
     leg: &Leg,
     command: ChatCommand,
     back: Back<'_>,
