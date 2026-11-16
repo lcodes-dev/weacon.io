@@ -21,16 +21,6 @@ pub struct Pin {
     pub fingerprint: Fingerprint,
 }
 
-/// A pin that no longer matches the code.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Finding {
-    Missing(Anchor),
-    /// The pin as it reads now.
-    Changed(Pin),
-    /// A line, counting from 1, that isn't a pin.
-    Malformed(usize),
-}
-
 const FLOW_STEP: &str = "->";
 
 impl Index {
@@ -45,31 +35,6 @@ impl Index {
                 .collect::<Option<Vec<_>>>()
                 .map(Fingerprint::combine),
             Anchor::Area(id) => self.area(id).map(Area::fingerprint),
-        }
-    }
-
-    /// Checks one pin per line, blank lines skipped, and lists the ones that no longer match.
-    #[must_use]
-    pub fn check(&self, pins: &str) -> Vec<Finding> {
-        pins.lines()
-            .map(str::trim)
-            .enumerate()
-            .filter(|(_, line)| !line.is_empty())
-            .filter_map(|(number, line)| match line.parse::<Pin>() {
-                Err(()) => Some(Finding::Malformed(number.saturating_add(1))),
-                Ok(pin) => self.recheck(pin),
-            })
-            .collect()
-    }
-
-    fn recheck(&self, pin: Pin) -> Option<Finding> {
-        match self.fingerprint(&pin.anchor) {
-            None => Some(Finding::Missing(pin.anchor)),
-            Some(now) if now == pin.fingerprint => None,
-            Some(now) => Some(Finding::Changed(Pin {
-                anchor: pin.anchor,
-                fingerprint: now,
-            })),
         }
     }
 }
@@ -138,16 +103,6 @@ impl fmt::Display for Pin {
     }
 }
 
-impl fmt::Display for Finding {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing(anchor) => write!(formatter, "missing {anchor}"),
-            Self::Changed(pin) => write!(formatter, "changed {pin}"),
-            Self::Malformed(line) => write!(formatter, "malformed line {line}"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,16 +116,6 @@ mod tests {
             file("a/src/m.rs", "pub struct S;\nimpl S { pub fn go() {} }\n"),
         ])
         .unwrap()
-    }
-
-    fn pin(index: &Index, anchor: &str) -> String {
-        let anchor: Anchor = anchor.parse().unwrap();
-        let fingerprint = index.fingerprint(&anchor).unwrap();
-        Pin {
-            anchor,
-            fingerprint,
-        }
-        .to_string()
     }
 
     const LIB: &str = "mod m;\npub fn run() { m::S::go() }\n";
@@ -200,48 +145,6 @@ mod tests {
                 "{path}"
             );
         }
-    }
-
-    #[test]
-    fn current_pins_have_no_findings() {
-        let index = repo(LIB);
-        let area = format!("area:{}", index.areas[0].id);
-        let pins = format!(
-            "{}\n\n  {}  \n{}\n",
-            pin(&index, "sym:a_b::m::S::go"),
-            pin(&index, "flow:a_b::run->a_b::m::S::go"),
-            pin(&index, &area),
-        );
-        assert_eq!(index.check(&pins), []);
-    }
-
-    #[test]
-    fn reports_missing_changed_and_malformed_pins() {
-        let before = repo(LIB);
-        let pins = [
-            pin(&before, "sym:a_b::run"),
-            pin(&before, "sym:a_b::m::S"),
-            pin(&before, "flow:a_b::run->a_b::m::S::go"),
-            "sym:a_b::gone#0000000000000000".to_owned(),
-            "flow:a_b::m::S->a_b::gone#0000000000000000".to_owned(),
-            "sym:a_b::run".to_owned(),
-            "area:a/src/gone#0000000000000000".to_owned(),
-        ]
-        .join("\n");
-
-        let after = repo("mod m;\npub fn run() { m::S::go(); m::S::go() }\n");
-        let changed = |anchor: &str| Finding::Changed(pin(&after, anchor).parse().unwrap());
-        assert_eq!(
-            after.check(&pins),
-            [
-                changed("sym:a_b::run"),
-                changed("flow:a_b::run->a_b::m::S::go"),
-                Finding::Missing(Anchor::Symbol("a_b::gone".to_owned())),
-                Finding::Missing("flow:a_b::m::S->a_b::gone".parse().unwrap()),
-                Finding::Malformed(6),
-                Finding::Missing(Anchor::Area("a/src/gone".to_owned())),
-            ]
-        );
     }
 
     #[test]
@@ -285,19 +188,5 @@ mod tests {
         ] {
             assert_eq!(text.parse::<Pin>(), Err(()), "{text}");
         }
-    }
-
-    #[test]
-    fn prints_findings() {
-        let pin: Pin = "sym:a::b#0123456789abcdef".parse().unwrap();
-        assert_eq!(
-            Finding::Missing(pin.anchor.clone()).to_string(),
-            "missing sym:a::b"
-        );
-        assert_eq!(
-            Finding::Changed(pin).to_string(),
-            "changed sym:a::b#0123456789abcdef"
-        );
-        assert_eq!(Finding::Malformed(3).to_string(), "malformed line 3");
     }
 }
