@@ -1,9 +1,11 @@
 //! The workspaces a machine is shared with: every member of one may call agents on it, for as
 //! long as its owner is a member too and keeps it paired.
 
+use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MachineId, MachineName, SharedMachine, WorkspaceId};
 
+use crate::db::changes::Versioned;
 use crate::db::{Db, Workspace, failed, stored};
 
 /// The member of leg `l`'s workspace who owns its machine and shares it with that workspace;
@@ -15,12 +17,13 @@ pub(in crate::db) const SHARER: &str = "(SELECT o.member_id FROM shared_machines
 
 impl Db {
     /// Keeps `workspaces`, those of them its owner is a member of, as all that `machine` is
-    /// shared with.
+    /// shared with. What other members ran on it where it is no longer shared is detached, for
+    /// good even if it is shared there once more; gives the workspaces whose chats that changed.
     pub(crate) async fn set_shares(
         &self,
         machine: &MachineId,
         workspaces: &[WorkspaceId],
-    ) -> Result<(), Fault> {
+    ) -> Result<Vec<WorkspaceId>, Fault> {
         let mut transaction = self.write().await?;
         sqlx::query("DELETE FROM shared_machines WHERE machine_id = ?")
             .bind(machine.as_str())
@@ -40,23 +43,47 @@ impl Db {
             .await
             .map_err(failed)?;
         }
-        // What other members ran on it where it is no longer shared can't be called again, even
-        // if it is shared there once more.
-        sqlx::query(
+        let changed = self.detach_unserved(&mut transaction, machine).await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(changed)
+    }
+
+    // Detaches the legs on `machine` that it serves no longer: neither their member's own nor
+    // shared with their workspace. Gives each workspace that had one.
+    async fn detach_unserved(
+        &self,
+        transaction: &mut SqliteConnection,
+        machine: &MachineId,
+    ) -> Result<Vec<WorkspaceId>, Fault> {
+        let detached = sqlx::query_as::<_, (String, String, String)>(
             "UPDATE chat_legs SET detached = 1
-             WHERE machine_id = ?1
+             WHERE machine_id = ?1 AND detached = 0
                  AND NOT EXISTS (SELECT 1 FROM shared_machines AS s
                      WHERE s.workspace_id = chat_legs.workspace_id AND s.machine_id = ?1)
                  AND NOT EXISTS (SELECT 1 FROM members AS m
                      JOIN machines AS d ON d.account_id = m.account_id
                      WHERE m.workspace_id = chat_legs.workspace_id
-                         AND m.member_id = chat_legs.member_id AND d.machine_id = ?1)",
+                         AND m.member_id = chat_legs.member_id AND d.machine_id = ?1)
+             RETURNING workspace_id, chat_id, member_id",
         )
         .bind(machine.as_str())
-        .execute(&mut *transaction)
+        .fetch_all(&mut *transaction)
         .await
         .map_err(failed)?;
-        transaction.commit().await.map_err(failed)
+        let mut changed = Vec::new();
+        for (workspace, chat, member) in detached {
+            let workspace = Workspace {
+                db: self.clone(),
+                id: stored(workspace)?,
+            };
+            let (chat, member) = (stored(chat)?, stored(member)?);
+            workspace
+                .record_change(transaction, Versioned::Chat(&chat), &member)
+                .await?;
+            changed.push(workspace.id);
+        }
+        changed.dedup();
+        Ok(changed)
     }
 }
 
@@ -117,7 +144,8 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::test_support::id;
+    use crate::db::NewLeg;
+    use crate::db::test_support::{NOW, id, make};
     use crate::test_support::{member_id, two_teams};
 
     async fn account_of(workspace: &Workspace, member: &str) -> AccountId {
@@ -187,9 +215,6 @@ mod tests {
 
     #[tokio::test]
     async fn ending_a_share_detaches_the_other_members_agents_for_good_and_never_the_owners() {
-        use crate::db::NewLeg;
-        use crate::db::test_support::{NOW, make};
-
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         one.pair_for("m3", "mc-3").await;
@@ -211,14 +236,18 @@ mod tests {
             .unwrap();
         one.set_leg(&id("c-2"), &bo, &on_desk, later).await.unwrap();
         // Saying the same again changes nothing.
-        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        let same = db.set_shares(&desk, &[id("w1")]).await.unwrap();
         let kept = detached(&one, "c-1", &ada).await;
-        db.set_shares(&desk, &[]).await.unwrap();
-        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        let before = one.changes_since(0, 99).await.unwrap().len();
+        let ended = db.set_shares(&desk, &[]).await.unwrap();
+        let again = db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        assert_eq!(one.changes_since(0, 99).await.unwrap().len(), before + 1);
 
         assert!(!kept);
         assert!(detached(&one, "c-1", &ada).await);
         assert!(!detached(&one, "c-2", &bo).await);
+        // Its workspace's feeds are told once, as the share ended.
+        assert_eq!((same, ended, again), (vec![], vec![id("w1")], vec![]));
     }
 
     #[tokio::test]
@@ -240,7 +269,22 @@ mod tests {
             [("mc-4", "m3")]
         );
         assert_eq!(one.callable(&ada, &desk).await.unwrap(), None);
+        // What Ada ran on Bo's other machine goes with him, for good.
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        let name = id("Bo's shelf");
+        let on_shelf = NewLeg {
+            machine_id: &shelf,
+            machine: &name,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: None,
+        };
+        let adas = member_id("m1");
+        one.set_leg(&id("c-1"), &adas, &on_shelf, NOW + 1_000)
+            .await
+            .unwrap();
+        assert!(!detached(&one, "c-1", &adas).await);
         one.leave(&member_id("m3")).await.unwrap();
+        assert!(detached(&one, "c-1", &adas).await);
         assert!(one.shared_machines().await.unwrap().is_empty());
         assert_eq!(one.callable(&ada, &shelf).await.unwrap(), None);
     }

@@ -157,9 +157,16 @@ export function working(chat: Chat, me: MemberId | undefined): boolean {
   return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state) && theirs(run));
 }
 
-/** Whether an agent of the chat runs on a machine `me` shares with the workspace: they answer its prompts and can stop it. */
-export function shares(chat: Chat, me: MemberId | undefined): boolean {
-  return [...chat.runs.values()].some(({ agent }) => agent?.owner.kind === "shared" && agent.owner.owner === me);
+/**
+ * Whether a run of the chat names `me`: as its agent's owner, as who called a shared agent, or as
+ * the owner of the machine a shared agent runs on. They can stop it, and its machine's owner
+ * answers its prompts, whether or not the chat's list shows an agent of theirs yet.
+ */
+export function named(chat: Chat, me: MemberId | undefined): boolean {
+  return [...chat.runs.values()].some(({ agent }) => {
+    const owner = agent?.owner;
+    return me !== undefined && (owner?.kind === "member" ? owner.member === me : owner?.kind === "shared" && (owner.member === me || owner.owner === me));
+  });
 }
 
 // The states of a run on a turn, which streams text and can be stopped.

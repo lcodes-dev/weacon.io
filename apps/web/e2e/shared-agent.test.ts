@@ -102,11 +102,10 @@ test("a member calls the agent of a machine shared with the workspace, and only 
   assert.equal(await grace.getByText("grace's Claude Code", { exact: false }).count(), 0);
   assert.equal(await grace.getByText("Allowed Bash").count(), 1);
 
-  // Once Ada stops sharing it, Grace's next call is refused and never reaches the machine.
+  // Once Ada stops sharing it, Grace's agent there is gone from the chat at once: the box no longer calls it.
   await ada.getByRole("button", { name: "Settings", exact: true }).click();
   await share(ada, "Team VPS", false);
   await box(grace).fill("@Claude Code And the linter");
-  await grace.getByRole("button", { name: "Send" }).click();
-  await grace.getByText("Your agent's machine no longer has this chat, so your agent can't be called here.").waitFor();
+  await grace.getByText("The agent you mention can't be called now. Remove the mention, or pick your agent again.").waitFor();
   assert.equal(vps.heard().length, 1);
 });

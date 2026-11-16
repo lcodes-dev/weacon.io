@@ -13,7 +13,7 @@ import { ReviewBar } from "../worktree/review-bar.tsx";
 import { useWorktree } from "../worktree/use-worktree.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
-import { calling, shares, working } from "./chat.ts";
+import { calling, named, working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
 import { landing } from "./landing.ts";
 import type { Names } from "../members/names.ts";
@@ -86,8 +86,9 @@ export function ChatScreen({
     }
   }, [landed.kind, chat?.first, subscribed]);
   const acts = mine && access.send;
-  // The owner of a machine shared with the workspace answers and stops its agents in any chat.
-  const answers = access.send && (mine || (chat !== undefined && shares(chat, me)));
+  // A run that names the reader is theirs to stop, and to answer where its machine is theirs,
+  // in any chat and before the list shows their agent there.
+  const answers = access.send && (mine || (chat !== undefined && named(chat, me)));
   const stop = answers && chat !== undefined && working(chat, me) ? commands.stop : undefined;
   const why = blocked(live, chatRef, access.send);
   const askable = mine && changes.askable;

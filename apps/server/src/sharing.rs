@@ -21,9 +21,16 @@ pub(crate) async fn keep(
 ) -> Result<(), Closed> {
     let kept = shared.db.set_shares(&machine.id, &told.workspaces).await;
     let machine_id = ("machine_id", machine.id.as_str().into());
-    let Err(fault) = kept else {
-        shared.log.info("machine shares kept", &[machine_id]);
-        return Ok(());
+    let fault = match kept {
+        Ok(changed) => {
+            shared.log.info("machine shares kept", &[machine_id]);
+            // A chat whose member's agent was just detached shows so at once.
+            changed
+                .iter()
+                .for_each(|workspace| shared.wake_feeds(workspace));
+            return Ok(());
+        }
+        Err(fault) => fault,
     };
     let fields = [machine_id, ("err", Field::error(&fault))];
     shared.log.warn("machine shares not kept", &fields);
