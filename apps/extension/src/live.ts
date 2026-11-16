@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ME } from "./build.ts";
 import { Failure, HOST, type Link, connect } from "./core.ts";
+import { fitsFrame } from "./fit.ts";
 import type { Incoming } from "./incoming.ts";
 import type { ChatAction, Envelope, LocalChat, Pick } from "./protocol.ts";
 import { type ChatRef, type Sync, hear, open } from "./sync.ts";
@@ -105,8 +106,12 @@ export function useLive(ref: ChatRef | undefined): Live {
       }
       setRefused(undefined);
       const id = to.next();
+      const envelope: Envelope = { id, type: "chat_command", request: crypto.randomUUID(), ...ref, action };
+      if (!fitsFrame(envelope)) {
+        throw new Failure("extension.message_too_large");
+      }
       commands.current.add(id);
-      to.send({ id, type: "chat_command", request: crypto.randomUUID(), ...ref, action });
+      to.send(envelope);
     },
     [ref?.workspace, ref?.chat],
   );

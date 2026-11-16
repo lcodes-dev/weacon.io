@@ -52,10 +52,10 @@ function cut(text: string, length: number): string {
 }
 
 function fits(pick: Pick): boolean {
-  // Measured under the largest id an envelope can have, whichever it is sent under.
-  return frameSize({ id: MAX_ID, type: "pick", ...pick }) < MAX_FRAME;
+  return fitsFrame({ id: 0, type: "pick", ...pick });
 }
 
-function frameSize(envelope: Envelope): number {
-  return new TextEncoder().encode(JSON.stringify(envelope)).length;
+/** Whether `envelope` fits one frame under any id; the core drops one that doesn't, unanswered. */
+export function fitsFrame(envelope: Envelope): boolean {
+  return new TextEncoder().encode(JSON.stringify({ ...envelope, id: MAX_ID })).length < MAX_FRAME;
 }

@@ -22,6 +22,7 @@ function Panel() {
   const [failed, setFailed] = useState<string>();
   // Counts the changes of tab and chat, so a pick begun before one isn't attached after it.
   const moves = useRef(0);
+  const choices = useRef(0);
 
   useEffect(() => {
     moves.current += 1;
@@ -31,12 +32,16 @@ function Panel() {
 
   const open = async (next: ChatRef | undefined) => {
     moves.current += 1;
+    const chose = (choices.current += 1);
     setRef(next);
     setFailed(undefined);
     setPick(undefined);
     if (tab !== undefined && next !== undefined) {
       const tabs = await chrome.tabs.query({});
-      choose(localStorage, tab, next, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
+      // An earlier choice that hears of the open tabs later doesn't replace this one.
+      if (chose === choices.current) {
+        choose(localStorage, tab, next, tabs.flatMap((each) => (each.id === undefined ? [] : [each.id])));
+      }
     }
   };
   // Runs `work`, showing what stopped it.
@@ -136,7 +141,15 @@ function Panel() {
 function useActiveTab(): number | undefined {
   const [tab, setTab] = useState<number>();
   useEffect(() => {
-    const look = async () => setTab((await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id);
+    let looks = 0;
+    // Only the latest look says which tab shows.
+    const look = async () => {
+      const mine = (looks += 1);
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (mine === looks) {
+        setTab(active?.id);
+      }
+    };
     void look();
     const changed = () => void look();
     chrome.tabs.onActivated.addListener(changed);

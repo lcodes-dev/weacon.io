@@ -3,6 +3,7 @@ const SAID: Record<string, string> = {
   "extension.page_not_allowed": "Click Weacon's button on this page, then pick again.",
   "extension.element_hidden": "That element isn't on the screen.",
   "extension.pick_too_large": "The element is too large to send.",
+  "extension.message_too_large": "The message is too long to send.",
   "extension.core_unreachable": "Weacon isn't running on this machine, or Chrome isn't connected to it.",
   "extension.core_no_reply": "Weacon on this machine didn't answer.",
   "extension.core_other_protocol": "Update Weacon on this machine.",
