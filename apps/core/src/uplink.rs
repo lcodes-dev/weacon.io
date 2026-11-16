@@ -91,29 +91,18 @@ pub(crate) struct Uplink {
 
 impl Uplink {
     pub(crate) async fn run(self, mut from_daemon: FromDaemon) -> ! {
-        let (mut retry, mut last) = (Retry::default(), None);
+        let mut retry = Retry::default();
         loop {
-            let wait = self.step(&mut retry, &mut from_daemon, &mut last).await;
+            let wait = self.step(&mut retry, &mut from_daemon).await;
             sleep(wait).await;
         }
     }
 
     /// Connects once if the machine is paired, and says how long to wait before the next try.
-    /// `last` is the pairing it connected with before: what the daemon queued for that one
-    /// goes to no other.
-    async fn step(
-        &self,
-        retry: &mut Retry,
-        from_daemon: &mut FromDaemon,
-        last: &mut Option<Paired>,
-    ) -> Duration {
+    async fn step(&self, retry: &mut Retry, from_daemon: &mut FromDaemon) -> Duration {
         let Some(paired) = self.paired().await else {
             return LOOK_EVERY;
         };
-        if last.as_ref().is_some_and(|last| *last != paired) {
-            while from_daemon.try_recv().is_ok() {}
-        }
-        *last = Some(paired.clone());
         let log = self
             .log
             .child(&[("machine_id", paired.machine.as_str().into())]);
@@ -1262,44 +1251,19 @@ mod tests {
     async fn after_an_unpairing_or_without_a_pairing_the_core_waits_to_look_again() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let link = uplink(&dir);
-        let (mut retry, mut last) = (Retry::default(), None);
+        let mut retry = Retry::default();
         let mut from_daemon = mpsc::channel(1).1;
         machine::write(&dir, &paired(&tls)).unwrap();
 
         let (unpaired, ()) = tokio::join!(
-            link.step(&mut retry, &mut from_daemon, &mut last),
+            link.step(&mut retry, &mut from_daemon),
             refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
         );
-        let alone = link.step(&mut retry, &mut from_daemon, &mut last).await;
+        let alone = link.step(&mut retry, &mut from_daemon).await;
 
         assert_eq!(unpaired, LOOK_EVERY);
         assert_eq!(alone, LOOK_EVERY);
         assert_eq!(machine::read(&dir).unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn what_was_queued_for_one_pairing_goes_to_no_other() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = uplink(&dir);
-        let pairing = paired(&tls);
-        machine::write(&dir, &pairing).unwrap();
-        let mut earlier = pairing.clone();
-        earlier.token = "0lder".to_owned();
-        let (daemon, mut from_daemon) = mpsc::channel(2);
-        // The server refuses each try, so nothing queued is sent.
-        let mut tried = async |last: Paired| {
-            daemon.try_send(command("r-1", None)).unwrap();
-            let refused = refusing(&tls, "403 Forbidden", code!("request.forbidden"));
-            let (mut retry, mut last) = (Retry::default(), Some(last));
-            tokio::join!(link.step(&mut retry, &mut from_daemon, &mut last), refused);
-            from_daemon.try_recv().is_ok()
-        };
-
-        let same = tried(pairing).await;
-        let other = tried(earlier).await;
-
-        assert!(same, "the same pairing's queue was dropped");
-        assert!(!other, "another pairing's queue was kept");
     }
 
     #[tokio::test]
