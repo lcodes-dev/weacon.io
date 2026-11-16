@@ -28,7 +28,7 @@ export function AskView({
       {wants?.more !== undefined && <span className="cut">{wants.more}</span>}
       {ask.state === "open" && onAnswer !== undefined && (
         <span className="choices">
-          <button type="button" disabled={sending} onClick={() => onAnswer(true)}>
+          <button type="button" className="primary" disabled={sending} onClick={() => onAnswer(true)}>
             Allow
           </button>
           <button type="button" disabled={sending} onClick={() => onAnswer(false)}>

@@ -286,9 +286,31 @@
   font-size: 12px;
 }
 
+/* The chat's task, as a chip under the heading. */
 .chat-task {
   margin: 0;
-  padding: 4px 16px 0;
+  padding: 8px 18px 0;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.chat-task a {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 2px 9px;
+  font: 500 12px/1.5 system-ui, sans-serif;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
+  text-decoration: none;
+  background: var(--surface-2);
+  border-radius: 7px;
+}
+
+.chat-task a:hover {
+  background: var(--hover);
 }
 
 .chats ul {
@@ -451,6 +473,13 @@
 
   .chat-task {
     padding: 4px 12px 0;
+  }
+
+  .chat-task a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
   }
 
   .new-chat {
