@@ -1,4 +1,5 @@
-//! Ada, a member of w1 with a paired machine, and that machine's connection, for chats' tests.
+//! Ada and Grace, members of w1 each with a paired machine, and those machines' connections,
+//! for chats' tests.
 
 use weacon_protocol::{Asker, Envelope, MachineId, Message, WorkspaceId};
 
@@ -40,6 +41,37 @@ pub(crate) async fn ada(fixture: &Fixture) -> Ada {
         },
         machine: id(paired.machine["id"].as_str().unwrap()),
     }
+}
+
+// Grace, another member of w1, and a machine of her own.
+pub(crate) async fn grace(fixture: &Fixture) -> Ada {
+    let db = &fixture.shared.db;
+    let workspace = db.workspace(&id::<WorkspaceId>("w1")).await.unwrap();
+    let account = crate::test_support::fresh_account();
+    let address = email("grace@example.com");
+    let m5 = member_id("m5");
+    workspace.add_member(&m5, &account, &address).await.unwrap();
+    workspace.pair_for("m5", "mc-grace").await;
+    Ada {
+        _server: run(fixture.shared.clone()).await,
+        member: Member {
+            workspace,
+            id: member_id("m5"),
+            token_hash: [0; 32],
+        },
+        asker: Asker {
+            account,
+            member: member_id("m5"),
+        },
+        machine: id("mc-grace"),
+    }
+}
+
+/// `heard` with the first leg's run `run-1` under the name its own machine gives it, for
+/// comparing with what that machine sent.
+pub(crate) fn core_named<T: serde::Serialize + serde::de::DeserializeOwned>(heard: &T) -> T {
+    let json = serde_json::to_string(heard).unwrap();
+    serde_json::from_str(&json.replace("run-1-l1", "run-1")).unwrap()
 }
 
 pub(crate) fn attach(shared: &Shared, ada: &Ada, offers: &[&str]) -> Attached {

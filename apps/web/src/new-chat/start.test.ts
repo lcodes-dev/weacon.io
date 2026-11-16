@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MachineSettings, MachineSummary } from "../protocol.ts";
-import { missingText, readiness, signedIn, startBlocked, startProblem } from "./start.ts";
+import { agentMissing, missingText, readiness, signedIn, startProblem } from "./start.ts";
 
 const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary => ({
   id,
@@ -13,7 +13,7 @@ const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary
   ...more,
 });
 
-test("a chat starts only where the server takes commands, on a connected machine whose core runs chats", () => {
+test("a person calls an agent only where the server takes commands, on a connected machine of theirs whose core runs chats", () => {
   const online = machine("mc-1", { connected: true });
   const old = machine("mc-2", { connected: true, missing: ["chat.serve"] });
   const away = machine("mc-3");
@@ -27,11 +27,11 @@ test("a chat starts only where the server takes commands, on a connected machine
   assert.deepEqual(readiness(true, [other]), { kind: "ready", machines: [other] });
 });
 
-test("each thing missing reads as its own line, and nothing is missing once a chat can start", () => {
+test("each thing missing to call an agent reads as its own line", () => {
   const lines = (["unserved", "unpaired", "offline", "outdated"] as const).map(missingText);
   assert.equal(new Set(lines).size, 4);
-  assert.equal(missingText("unpaired"), "Pair a machine in Settings to start a chat.");
-  assert.equal(missingText("offline"), "Your machine is offline. Start Weacon on it to start a chat.");
+  assert.equal(missingText("unpaired"), "Pair a machine in Settings to call your own agent.");
+  assert.equal(missingText("offline"), "Your machine is offline. Start Weacon on it to call your agent.");
 });
 
 test("a first prompt that didn't start its chat says why, and the right way on", () => {
@@ -44,24 +44,22 @@ test("a first prompt that didn't start its chat says why, and the right way on",
   assert.equal(startProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });
 
-test("the box says what the machine picked still needs before a chat can start there", () => {
-  const ready = { live: true, repos: ["api"], agent: true };
-  assert.equal(startBlocked(ready), undefined);
-  assert.equal(startBlocked({ ...ready, live: false }), "Chats start once the server is connected.");
-  assert.equal(startBlocked({ ...ready, repos: undefined }), "Pick a repository to start a chat.");
-  assert.equal(startBlocked({ ...ready, repos: [] }), "Add a repository on this machine to start a chat.");
-  assert.equal(startBlocked({ ...ready, agent: false }), "No agent is signed in for this workspace on this machine.");
+test("the fields say what the machine picked still needs before its agent can be called", () => {
+  const ready = { repos: ["api"], agent: true };
+  assert.equal(agentMissing(ready), undefined);
+  assert.equal(agentMissing({ ...ready, repos: undefined }), "Looking for this machine's repositories.");
+  assert.equal(agentMissing({ ...ready, repos: [] }), "Add a repository on this machine to call your agent.");
+  assert.equal(agentMissing({ ...ready, agent: false }), "No agent is signed in for this workspace on this machine.");
 });
 
-test("New chat offers every agent until the machine answers, then only those signed in for the workspace", () => {
-  const settings = (states: Array<[string, string]>) => ({
-    access: "ask_first" as const,
-    team: false,
-    sign_ins: states.map(([agent, state]) => ({ agent, state })) as MachineSettings["sign_ins"],
-  });
+test("every agent is offered until the machine answers, then only those signed in there for the workspace", () => {
+  const settings = (states: MachineSettings["sign_ins"]): MachineSettings => ({ sign_ins: states }) as unknown as MachineSettings;
+  const mixed = settings([
+    { agent: "claude", state: "signed_out" },
+    { agent: "codex", state: "signed_in" },
+  ]);
 
   assert.deepEqual(signedIn(undefined), ["claude", "codex"]);
-  assert.deepEqual(signedIn(settings([["claude", "signed_out"], ["codex", "signed_in"]])), ["codex"]);
-  assert.deepEqual(signedIn(settings([["codex", "signed_in"], ["claude", "signed_in"], ["aider", "signed_in"]])), ["claude", "codex"]);
-  assert.deepEqual(signedIn(settings([["claude", "not_installed"]])), []);
+  assert.deepEqual(signedIn(mixed), ["codex"]);
+  assert.deepEqual(signedIn(settings([])), []);
 });

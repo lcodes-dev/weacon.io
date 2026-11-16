@@ -1,7 +1,7 @@
 //! A made-up chat log that the fake server keeps for its client: a person's prompt and a shared
 //! Codex run's long answer, then another prompt and a member's Claude run. It commits the
 //! recording's events as that run's, which asks to use Bash once the recording ends, and answers
-//! the client's chat queries and commands. A prompt of exactly [`LOSE`] makes it tell the client
+//! the client's chat queries and commands. A message or prompt of exactly [`LOSE`] makes it tell the client
 //! it lost events; a query or command about any other chat, or one it doesn't know, is refused.
 
 use weacon_model::ChatRuns;
@@ -39,6 +39,8 @@ pub(crate) const SEEDED: u64 = 69;
 pub(crate) struct FakeChat {
     workspace: WorkspaceId,
     chat: ChatId,
+    /// The client's own member, who writes every message and prompt.
+    member: MemberId,
     entries: Vec<ChatEntry>,
     subscription: Option<u32>,
     /// Runs a person stopped, whose recording plays no further.
@@ -51,12 +53,13 @@ impl FakeChat {
         let mut fake = Self {
             workspace: WorkspaceId::try_from("w-1".to_owned())?,
             chat: ChatId::try_from("c-1".to_owned())?,
+            member: MemberId::try_from("m-1".to_owned())?,
             entries: Vec::new(),
             subscription: None,
             stopped: Vec::new(),
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
-        let member = MemberId::try_from("m-1".to_owned())?;
+        let member = fake.member.clone();
         fake.prompt("q-0", FIRST)?;
         fake.start(
             &shared,
@@ -115,7 +118,7 @@ impl FakeChat {
         let seq = self.seq();
         self.command(request, action);
         let mut told = self.told_since(seq);
-        if matches!(action, ChatAction::Prompt { text, .. } if text == LOSE)
+        if matches!(action, ChatAction::Prompt { text, .. } | ChatAction::Say { text, .. } if text == LOSE)
             && let Some(id) = self.subscription.take()
         {
             told.push(self.envelope(id, ChatAnswerKind::EventsLost));
@@ -209,7 +212,12 @@ impl FakeChat {
             },
         });
         match action {
+            ChatAction::Say { text, .. } => self.commit(ChatEvent::Message {
+                author: self.member.clone(),
+                text: text.clone(),
+            }),
             ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
+                author: Some(self.member.clone()),
                 pick: None,
                 request: request.clone(),
                 text: text.clone(),
@@ -283,6 +291,7 @@ impl FakeChat {
     fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
         let request = RequestId::try_from(request.to_owned())?;
         self.commit(ChatEvent::Prompt {
+            author: Some(self.member.clone()),
             pick: None,
             request,
             text: text.to_owned(),
@@ -455,6 +464,7 @@ mod tests {
 
     fn prompt(text: &str) -> Envelope {
         command(ChatAction::Prompt {
+            quotes: Vec::new(),
             pick: None,
             text: text.to_owned(),
             repo: None,
@@ -512,6 +522,7 @@ mod tests {
 
     fn kind(event: &ChatEvent) -> String {
         match event {
+            ChatEvent::Message { text, .. } => format!("message {text}"),
             ChatEvent::Prompt { text, .. } => format!("prompt {text}"),
             ChatEvent::OutsidePrompt { text } => format!("outside {text}"),
             ChatEvent::Run { update } => format!(
@@ -822,6 +833,7 @@ mod tests {
         let mut fake = fake();
         let named = |agent| {
             command(ChatAction::Prompt {
+                quotes: Vec::new(),
                 pick: None,
                 text: "Go.".to_owned(),
                 repo: None,
@@ -876,6 +888,18 @@ mod tests {
         );
         assert!(after.is_empty());
         assert!(fake.answer(&prompt(LOSE)).is_empty());
+        // A plain message of it loses a new subscription the same way.
+        let after = ChatQueryKind::Subscribe { after: fake.seq() };
+        fake.answer(&query(5, "c-1", after));
+        let mut said = prompt(LOSE);
+        if let Message::ChatCommand(command) = &mut said.message {
+            command.action = ChatAction::Say {
+                text: LOSE.to_owned(),
+                task: None,
+            };
+        }
+        let lost = fake.answer(&said);
+        assert_eq!(shape(&lost).last(), Some(&(5, "lost".to_owned())));
     }
 
     #[test]
@@ -1034,6 +1058,7 @@ mod tests {
             [refusal(3, code!("message.unsupported"))]
         );
         let unnamed = command(ChatAction::Prompt {
+            quotes: Vec::new(),
             pick: None,
             text: "Hi".to_owned(),
             repo: None,

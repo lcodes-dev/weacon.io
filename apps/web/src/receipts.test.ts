@@ -98,13 +98,14 @@ test("a state this build doesn't know is unsure, whatever its name", async () =>
 
 test("how a command ended is said once for every subject", () => {
   const subject = { subject: "the answer", refused: "wasn't taken", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes no answers" };
-  const said = (["accepted", "refused", "offline", "detached", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));
+  const said = (["accepted", "refused", "offline", "detached", "working", "lost", "unsure"] as const).map((settled) => settledText(settled, subject));
 
   assert.deepEqual(said, [
     undefined,
     "The answer wasn't taken.",
     "The machine is offline, so the answer wasn't sent. Try again once it's back.",
-    "This chat's machine is gone, so it takes no answers.",
+    "Your machine no longer has this chat, so it takes no answers.",
+    "Another person's agent is working in this chat, so the answer wasn't sent. Try again once it's done.",
     "The connection closed. The answer may not have been sent.",
     "No answer came. The answer may not have been sent.",
   ]);
@@ -117,13 +118,17 @@ test("a full workspace and a core that can't do a command each end it as their o
   const unsupported = all.wait("r-3", 4);
   const failed = all.wait("r-4", 5);
   const other = all.wait("r-5", 6);
+  const working = all.wait("r-6", 7);
 
+  all.take({ id: 7, type: "error", code: "chat.agent_working", retryable: false });
   all.take({ id: 2, type: "error", code: "chat.quota_full", retryable: false });
   all.take({ id: 3, type: "error", code: "store.full", retryable: false });
   all.take({ id: 4, type: "error", code: "message.unsupported", retryable: false });
   all.take({ id: 9, type: "receipt", request: "r-4", state: "failed", code: "message.unsupported" });
   all.take({ id: 9, type: "receipt", request: "r-5", state: "failed", code: "chat.agent_conflict" });
   assert.deepEqual(await Promise.all([full, store, unsupported, failed, other]), ["full", "full", "unsupported", "unsupported", "refused"]);
+  // Another person's agent on a turn refuses a call, which can go again once it is done.
+  assert.equal(await working, "working");
   const about = { subject: "the message", refused: "wasn't sent", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes none" };
   assert.equal(settledText("full", about), "This workspace is full, so the message wasn't sent.");
   assert.equal(settledText("unsupported", about), "The machine's core can't do this, so the message wasn't sent.");

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { AgentRef, ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Chat, type Item, type Run, answered, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import { type Chat, type Item, type Run, answered, calling, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -79,7 +79,7 @@ test("each run's turn gathers its events until it finishes, beside another run's
   assert.deepEqual(shown(screen.items), [
     "> Both of you, look",
     "r-1 done: Looking., finished",
-    "r-2: Me too., Found it.",
+    "r-2 done: Me too., Found it.",
     "> Again",
     "r-1: Again.",
   ]);
@@ -196,6 +196,31 @@ test("a status keeps the agent the run had when it names none", () => {
   assert.deepEqual(next.runs.get("r-3"), { state: "starting", agent: undefined });
 });
 
+test("a person's messages go to their agent while their last one in the chat called it", () => {
+  const of = (events: Parameters<typeof fromSnapshot>[0]["events"]) => fromSnapshot({ seq: events.length, runs: new Map(), waiting: [], events });
+  const call = (seq: number, author: string) => ({ seq, event: { kind: "prompt" as const, request: `q-${seq}`, text: "@Claude Code go", author } });
+  const plain = (seq: number, author: string) => ({ seq, event: { kind: "message" as const, author, text: "Hi" } });
+
+  assert.equal(calling(of([call(1, "m-1")]), "m-1"), true);
+  // What someone else writes changes nothing; a plain message of one's own switches it off.
+  assert.equal(calling(of([call(1, "m-1"), plain(2, "m-2"), call(3, "m-2")]), "m-1"), true);
+  assert.equal(calling(of([call(1, "m-1"), plain(2, "m-1")]), "m-1"), false);
+  assert.equal(calling(of([plain(1, "m-1"), call(2, "m-2")]), "m-1"), false);
+  assert.equal(calling(of([]), "m-1"), false);
+  assert.equal(calling(undefined, "m-1"), false);
+  assert.equal(calling(of([{ seq: 1, event: { kind: "outside_prompt", text: "Hi" } }]), undefined), false);
+});
+
+test("only a run of the reader's own agent, or one no one is named for, is theirs to stop", () => {
+  const owned = (member: string) => ({ kind: "claude" as const, owner: { kind: "member" as const, member } });
+  const on = (agent: ReturnType<typeof owned> | undefined) => fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "running", agent }]]), waiting: [], events: [] });
+
+  assert.equal(working(on(owned("m-1")), "m-1"), true);
+  assert.equal(working(on(owned("m-2")), "m-1"), false);
+  assert.equal(working(on(owned("m-2")), undefined), false);
+  assert.equal(working(on(undefined), "m-1"), true);
+});
+
 test("a chat is working while one of its runs starts, runs or waits", () => {
   const states: [RunState, boolean][] = [
     ["starting", true],
@@ -207,7 +232,7 @@ test("a chat is working while one of its runs starts, runs or waits", () => {
   ];
   for (const [state, expected] of states) {
     const one = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state, agent: undefined }]]), waiting: [], events: [] });
-    assert.equal(working(one), expected, state);
+    assert.equal(working(one, "m-1"), expected, state);
   }
 });
 
@@ -293,7 +318,7 @@ test("earlier runs take their agents from the statuses the log holds, by the sna
   assert.deepEqual(widened.runs.get("r-1"), { state: "ended", agent: codex });
   // A run the snapshot doesn't hold is over, whatever its last logged status said.
   assert.deepEqual(widened.runs.get("r-2"), { state: "ended", agent: claude });
-  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] })), false);
+  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] }), "m-1"), false);
   // The snapshot's own word on a run wins over what its log said before.
   assert.deepEqual(widened.runs.get("r-3"), { state: "waiting", agent: claude });
   assert.equal(snapshot.runs.get("r-1"), undefined);
@@ -322,4 +347,20 @@ test("text heard live after its message was stored is not shown again, and newer
   assert.deepEqual(rows(stream(started, "r-1", delta("lo"), 2)), ["Hello"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"), 3)), ["Hello", "Next"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"))), ["Hello", "Next"]);
+});
+
+test("what a run does after someone writes during its turn shows after their words, with the text and tool still under way", () => {
+  const tool = (seq: number, call: string) => ran(seq, "r-1", { event: "tool_call", call, tool: "Bash", input: {} });
+  const done = (seq: number, call: string) => ran(seq, "r-1", { event: "tool_done", call, failed: false });
+  const start = commitAll(chat([]), [said(1, "Go"), text(2, "r-1", "On it."), asked(3, "r-1", 1), tool(4, "c-1")]);
+  const between = commitAll(stream(start, "r-1", delta("Half")), [at(5, { kind: "message", author: "m-2", text: "Wait" })]);
+  const after = commitAll(between, [done(6, "c-1"), text(7, "r-1", "Half done."), asked(8, "r-1", 2), finished(9, "r-1")]);
+
+  assert.deepEqual(shown(between.items), ["> Go", "r-1 done: On it., ask 1@1 open", "> Wait", "r-1: tool, Half"]);
+  assert.deepEqual(shown(after.items), ["> Go", "r-1 done: On it., ask 1@1", "> Wait", "r-1 done: tool, Half done., finished, ask 2@2"]);
+  const last = after.items.at(-1);
+  assert.ok(last?.kind === "turn" && last.turn.transcript.rows[0]?.kind === "tool" && last.turn.transcript.rows[0].state === "done");
+  // A turn with nothing under way waits for its run's next event to show again.
+  const quiet = commitAll(chat([]), [said(1, "Go"), text(2, "r-1", "On it."), at(3, { kind: "message", author: "m-2", text: "Wait" }), text(4, "r-1", "More.")]);
+  assert.deepEqual(shown(quiet.items), ["> Go", "r-1 done: On it.", "> Wait", "r-1: More."]);
 });

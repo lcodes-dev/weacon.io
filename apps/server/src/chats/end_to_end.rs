@@ -170,7 +170,7 @@ async fn ada_chats(machine: &MachineId, core: &mut Socket, ada: &mut Socket) {
 async fn chat_event(client: &mut Socket) -> ChatEntry {
     loop {
         if let Message::Chat(update) = heard(client).await {
-            return update.entry;
+            return crate::chats::test_support::core_named(&update.entry);
         }
     }
 }
@@ -190,9 +190,21 @@ async fn a_prompt_runs_on_its_owners_machine_and_only_the_workspace_reads_the_ch
     let snapshot = matches!(&read, Message::ChatAnswer(read)
         if matches!(read.answer, ChatAnswerKind::Snapshot { seq: 2, .. }));
     assert!(snapshot, "{read:?}");
+    // Bo may write in Ada's chat, but has no agent there to call, and may not stop hers.
     let asked = prompt("r-2", "c-1", "MARKER-PROMPT", None);
     let refused = ask(&mut bo, 3, Message::ChatCommand(asked)).await;
+    assert_eq!(refusal(&refused), "chat.machine_required");
+    let mut stop = prompt("r-3", "c-1", "x", None);
+    stop.action = weacon_protocol::ChatAction::Interrupt;
+    let refused = ask(&mut bo, 4, Message::ChatCommand(stop)).await;
     assert_eq!(refusal(&refused), "chat.not_owner");
+    let mut hello = prompt("r-4", "c-1", "x", None);
+    hello.action = weacon_protocol::ChatAction::Say {
+        text: "MARKER-HELLO".to_owned(),
+        task: None,
+    };
+    let taken = ask(&mut bo, 5, Message::ChatCommand(hello)).await;
+    assert!(matches!(taken, Message::Receipt(_)), "{taken:?}");
     let cy_token = token(&fixture, &server, "cy@example.com").await;
     let w1 = open(server.address, "/api/workspaces/w1/feed", &cy_token).await;
     assert_eq!(upgrade_status(w1), 401);
@@ -238,6 +250,7 @@ async fn a_feed_answers_a_chat_query_before_what_its_client_sends_next() {
 // its end.
 fn turn() -> [ChatEvent; 4] {
     let prompted = ChatEvent::Prompt {
+        author: None,
         pick: None,
         request: id("r-1"),
         text: "MARKER-PROMPT".to_owned(),
@@ -259,6 +272,31 @@ fn turn() -> [ChatEvent; 4] {
         said("MARKER-REPLY"),
         ended,
     ]
+}
+
+// The first two of [`turn`] as the server stores them, named by Ada's leg.
+fn named() -> [ChatEvent; 2] {
+    let prompted = ChatEvent::Prompt {
+        pick: None,
+        author: Some(id("m1")),
+        request: id("r-1"),
+        text: "MARKER-PROMPT".to_owned(),
+        repo: None,
+        agent: None,
+        task: None,
+    };
+    let running = ChatEvent::RunStatus {
+        status: weacon_protocol::RunStatus {
+            run: id("run-1"),
+            state: RunState::Running,
+            agent: Some(weacon_protocol::AgentRef {
+                kind: weacon_protocol::AgentKind::Claude,
+                owner: weacon_protocol::AgentOwner::Member { member: id("m1") },
+                machine: Some(id("Studio")),
+            }),
+        },
+    };
+    [prompted, running]
 }
 
 #[tokio::test]
@@ -285,8 +323,10 @@ async fn a_new_chat_followed_at_once_or_later_is_heard_whole_and_in_order() {
     )
     .await;
     let [prompted, running, text, ended] = turn();
-    socket::send(&mut core, uploaded(1, prompted.clone())).await;
-    socket::send(&mut core, uploaded(2, running.clone())).await;
+    socket::send(&mut core, uploaded(1, prompted)).await;
+    socket::send(&mut core, uploaded(2, running)).await;
+    // The server names the prompt's author and the run's agent from its own record.
+    let [prompted, running] = named();
     assert_eq!(chat_event(&mut ada).await.event, prompted);
     assert_eq!(chat_event(&mut ada).await.event, running);
     // Followed a moment later, after some of it was stored.

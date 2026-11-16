@@ -43,8 +43,9 @@ pub use account::{
 };
 pub use capability::Capability;
 pub use chat::{
-    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatList,
-    ChatLive, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatTask, ChatUpdate,
+    ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatId, ChatLeg,
+    ChatList, ChatLive, ChatQuery, ChatQueryKind, ChatState, ChatSummary, ChatTask, ChatUpdate,
+    Quote, QuotedAgent,
 };
 pub use chats::{ChatsAnswer, ChatsAnswerKind, ChatsQuery, ChatsQueryKind, LocalChat};
 pub use code::Code;

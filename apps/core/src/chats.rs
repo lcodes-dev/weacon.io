@@ -3,6 +3,7 @@
 pub(crate) mod engine;
 pub(crate) mod feed;
 pub(crate) mod log;
+mod quoted;
 #[cfg(test)]
 pub(crate) mod test_support;
 

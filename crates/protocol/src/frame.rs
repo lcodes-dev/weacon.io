@@ -264,6 +264,7 @@ mod tests {
                 workspace: workspace(),
                 chat: chat(),
                 action: ChatAction::Prompt {
+                    quotes: Vec::new(),
                     pick: None,
                     text: "Hi".to_owned(),
                     repo: None,
@@ -279,6 +280,7 @@ mod tests {
                 entry: ChatEntry {
                     seq: 1,
                     event: ChatEvent::Prompt {
+                        author: None,
                         pick: None,
                         request: request(),
                         text: "Hi".to_owned(),

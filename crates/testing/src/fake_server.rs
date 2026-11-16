@@ -640,6 +640,7 @@ mod tests {
 
     fn hi() -> ChatAction {
         ChatAction::Prompt {
+            quotes: Vec::new(),
             pick: None,
             text: "hi".to_owned(),
             repo: None,

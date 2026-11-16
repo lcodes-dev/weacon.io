@@ -36,7 +36,7 @@ async fn quiet(client: &mut Socket) -> bool {
 async fn live_heard(client: &mut Socket) -> ChatLive {
     loop {
         if let Message::ChatLive(live) = heard(client).await {
-            return live;
+            return crate::chats::test_support::core_named(&live);
         }
     }
 }

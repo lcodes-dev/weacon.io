@@ -3,7 +3,7 @@ import { type RefObject, memo, useLayoutEffect, useRef } from "react";
 import { type Answers, askKey } from "./asks.ts";
 import type { Line } from "./lines.ts";
 import { AskView } from "./ask-view.tsx";
-import type { Outcome, RunId } from "../protocol.ts";
+import type { MemberId, Outcome, RunId } from "../protocol.ts";
 import { MarkdownView } from "../transcript/markdown-view.ts";
 import { useFollow, useHeldFormatting } from "../transcript/transcript-hooks.ts";
 import type { TranscriptRow, ToolState } from "../transcript/transcript.ts";
@@ -23,11 +23,14 @@ export function TranscriptView({
   loading,
   retry,
   landed,
+  me,
 }: {
   lines: readonly Line[];
   away: boolean;
-  /** Answers the permission prompts; none for someone who may not. */
+  /** Answers the permission prompts of the reader's own agent; none for someone who has none. */
   answering: Answerer | undefined;
+  /** The reader, whose own agent's prompts they answer. */
+  me: MemberId | undefined;
   /** Shows the events before the first one shown, when there are any. */
   older: (() => void) | undefined;
   /** Whether the chat's first snapshot is on its way. */
@@ -78,6 +81,7 @@ export function TranscriptView({
             landed={line.key === landed}
             formatted={line.kind === "row" && line.row.kind === "text" && !line.writing && mayFormat(line.key)}
             answering={answering}
+            me={me}
           />
         ))}
       </div>
@@ -135,11 +139,24 @@ function useLanding(content: RefObject<HTMLDivElement | null>, landed: string | 
   });
 }
 
-function LineView({ line, formatted, answering, landed }: { line: Line; formatted: boolean; answering: Answerer | undefined; landed: boolean }) {
+function LineView({
+  line,
+  formatted,
+  answering,
+  landed,
+  me,
+}: {
+  line: Line;
+  formatted: boolean;
+  answering: Answerer | undefined;
+  landed: boolean;
+  me: MemberId | undefined;
+}) {
   switch (line.kind) {
     case "prompt":
       return (
         <div className={landed ? "row prompt landed" : "row prompt"} data-key={line.key}>
+          {line.author !== undefined && <span className="author">{line.author}</span>}
           {line.text}
           {line.pick === undefined ? null : (
             <div className="picked">
@@ -150,14 +167,18 @@ function LineView({ line, formatted, answering, landed }: { line: Line; formatte
       );
     case "agent":
       return <div className="row agent">{line.label}</div>;
-    case "ask":
+    case "ask": {
+      // An agent whose owner the log doesn't name is answered by whoever has one here.
+      const mine = answering !== undefined && (line.owner === undefined || line.owner === me);
       return (
         <AskView
           ask={line.ask}
-          answering={answering?.answers.get(askKey(line.run, line.ask.prompt))}
-          onAnswer={answering && ((allow) => answering.answer(line.run, line.ask.prompt, allow))}
+          answering={mine ? answering.answers.get(askKey(line.run, line.ask.prompt)) : undefined}
+          onAnswer={mine ? (allow) => answering.answer(line.run, line.ask.prompt, allow) : undefined}
+          waitsFor={mine ? undefined : line.waitsFor}
         />
       );
+    }
     case "row":
       return <RowView rowKey={line.key} row={line.row} writing={line.writing} formatted={formatted} landed={landed} />;
   }

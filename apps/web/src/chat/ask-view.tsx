@@ -3,15 +3,20 @@ import "./chat.css";
 import { type Answering, answerProblem, askText, toolName, wantsShown } from "./asks.ts";
 import type { Ask } from "./chat.ts";
 
-/** A permission prompt: the tool the agent asks to use and, while it waits, what the tool wants, with Allow and Deny for whoever may answer. */
+/**
+ * A permission prompt: the tool the agent asks to use and, while it waits, what the tool wants,
+ * with Allow and Deny for its owner; anyone else reads that it `waitsFor` them.
+ */
 export function AskView({
   ask,
   answering,
   onAnswer,
+  waitsFor,
 }: {
   ask: Ask;
   answering: Answering | undefined;
   onAnswer: ((allow: boolean) => void) | undefined;
+  waitsFor: string | undefined;
 }) {
   const sending = answering !== undefined && answering.settled === undefined;
   const problem = answerProblem(answering);
@@ -31,6 +36,7 @@ export function AskView({
           </button>
         </span>
       )}
+      {ask.state === "open" && onAnswer === undefined && waitsFor !== undefined && <span className="waits">Waiting for {waitsFor}</span>}
       {ask.state === "open" && problem !== undefined && (
         <span className="problem" role="alert">
           {problem}

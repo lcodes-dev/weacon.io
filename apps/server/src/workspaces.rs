@@ -137,6 +137,15 @@ fn name_of<'a>(rows: &[MemberRow], row: &'a MemberRow) -> &'a str {
     }
 }
 
+/// What each of `rows` is called, by [`name_of`].
+pub(crate) fn names(
+    rows: &[MemberRow],
+) -> std::collections::HashMap<weacon_protocol::MemberId, String> {
+    rows.iter()
+        .map(|row| (row.id.clone(), name_of(rows, row).to_owned()))
+        .collect()
+}
+
 /// The Personal workspace a sign-in makes, if its account has never had one.
 pub(crate) fn personal() -> Result<NewWorkspace, Fault> {
     new_workspace(PERSONAL)

@@ -220,12 +220,13 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
             return Err(refused(code!("chat.not_found"), false));
         }
         About::Diff(chat) | About::Worktree(chat) | About::Command(chat) => {
-            let chat = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
-            let chat = chat.ok_or_else(|| refused(code!("chat.not_found"), false))?;
-            if chat.owner != ask.asker.member {
-                return Err(refused(code!("chat.not_owner"), false));
-            }
-            chat.machine
+            let found = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
+            found.ok_or_else(|| refused(code!("chat.not_found"), false))?;
+            // Each member reaches only their own agent's machine in a chat.
+            let leg = ask.workspace.leg(chat, &ask.asker.member).await;
+            let leg = leg.map_err(Refusal::Failed)?;
+            let leg = leg.ok_or_else(|| refused(code!("chat.not_owner"), false))?;
+            leg.machine
         }
     };
     theirs(shared, ask, &machine).await?;

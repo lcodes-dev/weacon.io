@@ -36,7 +36,8 @@ impl Live {
         let run = match &update.entry.event {
             ChatEvent::RunStatus { status } => &status.run,
             ChatEvent::Run { update: run } => &run.run,
-            ChatEvent::Prompt { .. }
+            ChatEvent::Message { .. }
+            | ChatEvent::Prompt { .. }
             | ChatEvent::OutsidePrompt { .. }
             | ChatEvent::Receipt { .. }
             | ChatEvent::Newer => return,

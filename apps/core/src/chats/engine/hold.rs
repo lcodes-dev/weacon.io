@@ -23,7 +23,8 @@ impl<A: Agent> Engine<A> {
         match command.action {
             ChatAction::Hold => self.hold(key, client).await,
             ChatAction::Release => self.release(key, client).await,
-            ChatAction::Prompt { .. }
+            ChatAction::Say { .. }
+            | ChatAction::Prompt { .. }
             | ChatAction::Permission { .. }
             | ChatAction::Interrupt
             | ChatAction::Newer => self.command(key, command).await,

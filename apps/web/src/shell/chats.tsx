@@ -1,5 +1,3 @@
-import type { ReactNode } from "react";
-
 import type { Loading } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import type { ChatId, ChatList } from "../protocol.ts";
@@ -8,7 +6,7 @@ import { newestFirst, rowNote } from "./chat-list.ts";
 
 /**
  * The workspace's chats, newest first, with the one `chosen` marked; picking one calls `choose`.
- * New chat calls `start`, where one can be started, and `missing` says what is missing otherwise.
+ * New chat calls `start`, where one can be started.
  */
 export function ChatsNav({
   loaded,
@@ -16,7 +14,6 @@ export function ChatsNav({
   choose,
   names,
   start,
-  missing,
 }: {
   /** The chats, or none yet while the server is connecting, or none it serves. */
   loaded: Loading<ChatList> | "connecting" | "none";
@@ -25,8 +22,6 @@ export function ChatsNav({
   /** The members' names, for each chat's owner. */
   names: Names;
   start: (() => void) | undefined;
-  /** What is missing to start a chat, with a way to fix it. */
-  missing: ReactNode;
 }) {
   const listed = typeof loaded === "string" ? undefined : loaded;
   const chats = listed?.value === undefined ? undefined : newestFirst(listed.value.chats);
@@ -36,7 +31,6 @@ export function ChatsNav({
       <button type="button" disabled={start === undefined} onClick={start}>
         New chat
       </button>
-      {missing}
       {(loaded === "connecting" || listed?.loading === true) && <p className="muted">Loading</p>}
       {(loaded === "none" || chats?.length === 0) && <p className="muted">No chats yet.</p>}
       {chats !== undefined && chats.length > 0 && (

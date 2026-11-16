@@ -219,6 +219,8 @@ function isEntry(value: unknown): value is ChatEntry {
         delete event["pick"];
       }
       return typeof event["request"] === "string" && typeof event["text"] === "string";
+    case "message":
+      return typeof event["author"] === "string" && typeof event["text"] === "string";
     case "outside_prompt":
       return typeof event["text"] === "string";
     case "receipt":
