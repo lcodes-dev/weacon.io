@@ -5,7 +5,7 @@ import type { ChatEntry, MachineSettings } from "../src/protocol.ts";
 import { type Outside, core, pair } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
 
-const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [] };
+const SETTINGS: MachineSettings = { access: "ask_first", sign_ins: [] };
 const SESSION = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
 const run = (seq: number, event: Extract<ChatEntry["event"], { kind: "run" }>["update"]["event"]): ChatEntry => ({

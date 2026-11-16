@@ -279,7 +279,6 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
   const signIns = fields["sign_ins"];
   return (
     text(fields, "access") &&
-    typeof fields["team"] === "boolean" &&
     Array.isArray(signIns) &&
     signIns.every((signIn: unknown) => {
       const one = record(signIn);

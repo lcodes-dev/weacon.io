@@ -23,7 +23,7 @@ pub(crate) struct Attempt<'a> {
     pub(crate) email: &'a Email,
     pub(crate) challenge: &'a ChallengeId,
     pub(crate) code: &'a str,
-    pub(crate) token_hash: &'a [u8],
+    pub(crate) token: &'a str,
     pub(crate) now: i64,
     pub(crate) token_expires_at: i64,
     /// The account's Personal workspace, made with the session unless it has had one.
@@ -113,18 +113,18 @@ impl Db {
         Ok(account)
     }
 
-    /// The account, and its address, whose live session's token is hashed as `token_hash`.
+    /// The account, and its address, whose live session's token is `token`.
     pub(crate) async fn session(
         &self,
-        token_hash: &[u8],
+        token: &str,
         now: i64,
     ) -> Result<Option<(AccountId, Email)>, Fault> {
         sqlx::query_as::<_, (String, String)>(
             "SELECT a.account_id, a.email
              FROM sessions AS s JOIN accounts AS a ON a.account_id = s.account_id
-             WHERE s.token_hash = ? AND s.expires_at > ?",
+             WHERE s.token = ? AND s.expires_at > ?",
         )
-        .bind(token_hash)
+        .bind(token)
         .bind(now)
         .fetch_optional(&self.readers)
         .await
@@ -136,10 +136,10 @@ impl Db {
         .transpose()
     }
 
-    /// Ends the session whose token is hashed as `token_hash`, if there is one.
-    pub(crate) async fn end_session(&self, token_hash: &[u8]) -> Result<(), Fault> {
-        sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
-            .bind(token_hash)
+    /// Ends the session whose token is `token`, if there is one.
+    pub(crate) async fn end_session(&self, token: &str) -> Result<(), Fault> {
+        sqlx::query("DELETE FROM sessions WHERE token = ?")
+            .bind(token)
             .execute(&self.writer)
             .await
             .map_err(failed)?;
@@ -207,8 +207,8 @@ async fn start_session(
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-    sqlx::query("INSERT INTO sessions (token_hash, account_id, expires_at) VALUES (?, ?, ?)")
-        .bind(attempt.token_hash)
+    sqlx::query("INSERT INTO sessions (token, account_id, expires_at) VALUES (?, ?, ?)")
+        .bind(attempt.token)
         .bind(account.as_str())
         .bind(attempt.token_expires_at)
         .execute(&mut *transaction)
@@ -269,7 +269,7 @@ mod tests {
                 email: &who,
                 challenge: &challenge,
                 code,
-                token_hash: name.as_bytes(),
+                token: name,
                 now,
                 token_expires_at: now + 100,
                 personal: &personal(name),
@@ -404,14 +404,14 @@ mod tests {
         let ada = Some((id("a1"), email("ada@example.com")));
         let bo = Some((id("a2"), email("bo@example.com")));
 
-        assert_eq!(db.session(b"c1", NOW).await.unwrap(), ada);
-        assert_eq!(db.session(b"c2", ends - 1).await.unwrap(), bo);
-        assert_eq!(db.session(b"other", NOW).await.unwrap(), None);
-        assert_eq!(db.session(b"c1", ends).await.unwrap(), None);
-        db.end_session(b"c1").await.unwrap();
-        db.end_session(b"never").await.unwrap();
-        assert_eq!(db.session(b"c1", NOW).await.unwrap(), None);
-        assert_eq!(db.session(b"c2", NOW).await.unwrap(), bo);
+        assert_eq!(db.session("c1", NOW).await.unwrap(), ada);
+        assert_eq!(db.session("c2", ends - 1).await.unwrap(), bo);
+        assert_eq!(db.session("other", NOW).await.unwrap(), None);
+        assert_eq!(db.session("c1", ends).await.unwrap(), None);
+        db.end_session("c1").await.unwrap();
+        db.end_session("never").await.unwrap();
+        assert_eq!(db.session("c1", NOW).await.unwrap(), None);
+        assert_eq!(db.session("c2", NOW).await.unwrap(), bo);
     }
 
     #[tokio::test]

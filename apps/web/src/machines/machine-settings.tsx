@@ -64,7 +64,7 @@ export function MachineSettingsView({ machine, socket, later, relays, team }: Pr
           settings={shown}
           busy={changing.busy}
           set={set}
-          team={team ?? shown.team}
+          team={team === true}
           signIn={relays && signingIn === undefined ? setSigningIn : undefined}
         />
       )}
@@ -116,7 +116,7 @@ function Shown({ settings, busy, set, team, signIn }: ShownProps) {
           onChange={(event) => {
             const level = LEVELS.find(([value]) => value === event.target.value)?.[0];
             if (level !== undefined) {
-              set({ kind: "set_access", level, team });
+              set({ kind: "set_access", level });
             }
           }}
         >

@@ -30,11 +30,6 @@ pub(crate) struct Serve {
     /// The database file, created if missing.
     #[arg(long)]
     pub(crate) db: PathBuf,
-    /// The file with the server's key for pairing codes, made if missing and readable only by
-    /// this user. To change the key, replace the file and restart: pairing codes already shown
-    /// stop working, and nobody is signed out.
-    #[arg(long)]
-    pub(crate) secret: PathBuf,
 }
 
 /// Commands an operator runs against the database.
@@ -112,28 +107,20 @@ mod tests {
 
     #[test]
     fn serves_where_it_is_told() {
-        let args = [
-            "weacon-server",
-            "serve",
-            "--db",
-            "team.db",
-            "--secret",
-            "secret",
-        ];
+        let args = ["weacon-server", "serve", "--db", "team.db"];
 
         assert_eq!(
             serve(&args),
             Serve {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
-                secret: PathBuf::from("secret"),
             }
         );
         let told = ["--listen", "0.0.0.0:9000"];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
-        run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
+        run(&["weacon-server", "serve"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();
     }
 

@@ -2145,22 +2145,17 @@
           "items": {
             "$ref": "#/$defs/AgentSignIn"
           }
-        },
-        "team": {
-          "description": "Whether other people are in the workspace.",
-          "type": "boolean"
         }
       },
       "required": [
         "access",
-        "team",
         "sign_ins"
       ]
     },
     "MachineSettingsAction": {
       "oneOf": [
         {
-          "description": "What `workspace`'s agents may do on the machine, and whether other people are in it;\n`team` is kept as it was when left out.",
+          "description": "What `workspace`'s agents may do on the machine.",
           "type": "object",
           "properties": {
             "kind": {
@@ -2169,9 +2164,6 @@
             },
             "level": {
               "$ref": "#/$defs/AccessLevel"
-            },
-            "team": {
-              "type": "boolean"
             }
           },
           "required": [

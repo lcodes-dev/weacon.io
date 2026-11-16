@@ -108,16 +108,16 @@ impl Db {
             .ok_or_else(|| Fault::new(code!("workspace.not_found"), "There is no such workspace"))
     }
 
-    /// The workspace `id` and who is asking, if the token hashed as `token_hash` has a live
+    /// The workspace `id` and who is asking, if the token `token` has a live
     /// session whose account is a member there.
     pub(crate) async fn member_workspace(
         &self,
         id: &WorkspaceId,
-        token_hash: &[u8],
+        token: &str,
         now: i64,
     ) -> Result<Option<(Workspace, MemberId)>, Fault> {
         let workspace = Workspace::new(self.clone(), id.clone());
-        let member = workspace.session_member(token_hash, now).await?;
+        let member = workspace.session_member(token, now).await?;
         Ok(member.map(|member| (workspace, member)))
     }
 

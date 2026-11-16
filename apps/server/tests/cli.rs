@@ -65,9 +65,7 @@ mod tests {
         let (code, logs) = exits(
             server()
                 .args(["serve", "--listen", &address, "--db"])
-                .arg(db.join("weacon.db"))
-                .arg("--secret")
-                .arg(db.join("secret")),
+                .arg(db.join("weacon.db")),
         );
 
         assert_eq!(code, Some(2));
@@ -97,8 +95,6 @@ mod tests {
             server()
                 .args(["serve", "--listen", "127.0.0.1:0", "--db"])
                 .arg(db.join("weacon.db"))
-                .arg("--secret")
-                .arg(db.join("secret"))
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),

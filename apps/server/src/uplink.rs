@@ -65,7 +65,7 @@ impl Link {
     /// Goes on only while the machine is still paired; a lookup that fails ends the
     /// connection too, without telling the core it was unpaired.
     async fn paired(&mut self, shared: &Shared) -> Result<(), Closed> {
-        match shared.db.machine_with(&self.machine.token_hash).await {
+        match shared.db.machine_with(&self.machine.token).await {
             Ok(Some(_)) => Ok(()),
             Ok(None) => {
                 self.gone = true;
@@ -110,19 +110,14 @@ pub(crate) fn offers() -> Vec<Capability> {
     .into()
 }
 
-/// The most capabilities of a core's hello that the machines list keeps.
-const MOST_KEPT_OFFERS: usize = 64;
-
-/// What of `hello` the machines list keeps: its build if every part reads as a machine name, and
-/// all its capabilities or none.
-fn kept(hello: &Hello) -> (Option<&App>, Option<&[Capability]>) {
+/// The build of `hello` that the machines list keeps: none unless every part reads as a
+/// machine name.
+fn kept(hello: &Hello) -> Option<&App> {
     let build = &hello.app;
     let plain = [&build.name, &build.version, &build.commit]
         .into_iter()
         .all(|part| MachineName::try_from(part.clone()).is_ok());
-    let offers = &hello.capabilities;
-    let whole = offers.len() <= MOST_KEPT_OFFERS;
-    (plain.then_some(build), whole.then_some(offers.as_slice()))
+    plain.then_some(build)
 }
 
 async fn run(
@@ -142,7 +137,7 @@ async fn run(
     link.paired(shared).await?;
     link.connected = true;
     link.log.info("machine connected", &[]);
-    let (build, offered) = kept(&hello);
+    let (build, offered) = (kept(&hello), &hello.capabilities);
     if let Err(fault) = shared.db.saw_core(&link.machine.id, build, offered).await {
         // The machines list shows it as it last was; the connection goes on.
         link.log
@@ -262,29 +257,20 @@ mod tests {
     }
 
     #[test]
-    fn only_a_plain_build_and_every_offer_up_to_the_most_kept_are_kept() {
-        let hello = |version: &str, offered: Vec<String>| Hello {
+    fn only_a_plain_build_is_kept() {
+        let hello = |version: &str| Hello {
             protocol: PROTOCOL,
             app: App {
                 name: "weacon-core".to_owned(),
                 version: version.to_owned(),
                 commit: "abc".to_owned(),
             },
-            capabilities: serde_json::from_value(serde_json::json!(offered)).unwrap(),
+            capabilities: Vec::new(),
         };
-        let named = |count: usize| (0..count).map(|n| format!("future.thing{n}")).collect();
-        let most = hello("1.2.3", named(MOST_KEPT_OFFERS));
-        let (build, offers) = kept(&most);
-        assert_eq!(build, Some(&most.app));
-        assert_eq!(offers, Some(most.capabilities.as_slice()));
-        let more = hello("1.2.3", named(MOST_KEPT_OFFERS + 1));
-        assert_eq!(kept(&more), (Some(&more.app), None));
+        let plain = hello("1.2.3");
+        assert_eq!(kept(&plain), Some(&plain.app));
         for version in ["1.2.3\u{202e}", "1.2.3\n", &"9".repeat(65), ""] {
-            assert_eq!(
-                kept(&hello(version, Vec::new())),
-                (None, Some(&[][..])),
-                "{version:?}"
-            );
+            assert_eq!(kept(&hello(version)), None, "{version:?}");
         }
     }
 

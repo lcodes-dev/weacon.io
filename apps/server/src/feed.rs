@@ -132,11 +132,9 @@ impl Feed {
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
-            workspace,
-            token_hash,
-            ..
+            workspace, token, ..
         } = &self.member;
-        match workspace.session_member(token_hash, shared.now()).await {
+        match workspace.session_member(token, shared.now()).await {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(Closed),
             Err(fault) => Err(feed_failed(shared, workspace.id(), &fault)),
@@ -677,12 +675,10 @@ mod tests {
             .unwrap();
         // Past what the feed sends meanwhile, the pong says it took the long one.
         pong_past_the_rest(&mut client).await;
-        client
-            .send(Wire::text("x".repeat(MAX_MESSAGE + 1)))
-            .await
-            .unwrap();
+        // The server may hang up while the oversized one is still being sent.
+        let sent = client.send(Wire::text("x".repeat(MAX_MESSAGE + 1))).await;
 
-        assert!(ends(&mut client).await);
+        assert!(sent.is_err() || ends(&mut client).await);
     }
 
     #[tokio::test]

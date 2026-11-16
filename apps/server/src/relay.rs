@@ -465,7 +465,6 @@ mod tests {
             workspace: workspace_id("w1"),
             answer: MachineSettingsAnswerKind::Current(MachineSettings {
                 access: AccessLevel::AskFirst,
-                team: false,
                 shared: false,
                 sign_ins: Vec::new(),
             }),

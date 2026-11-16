@@ -31,7 +31,7 @@ const cargo = (...args: string[]) => ["run", "--locked", "--quiet", "-p", "weaco
 export async function serve(device?: BrowserContextOptions): Promise<Served> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-shell-"));
   const db = join(dir, "db");
-  const child = spawn("cargo", cargo("serve", "--listen", "127.0.0.1:0", "--db", db, "--secret", join(dir, "key")), {
+  const child = spawn("cargo", cargo("serve", "--listen", "127.0.0.1:0", "--db", db), {
     cwd: REPO,
     stdio: ["ignore", "pipe", "inherit"],
   });

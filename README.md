@@ -262,7 +262,7 @@ Ctrl-C in the first terminal stops the server and the core. `scripts/dev.sh` sta
 
 | Folder | What it holds |
 | --- | --- |
-| `.dev/server/` | The server's database and its key for pairing codes |
+| `.dev/server/` | The server's database |
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
 

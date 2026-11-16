@@ -62,7 +62,7 @@ check_serves() {
   local binary=$1 dir log address file route version
   dir=$(mktemp -d)
   log="$dir/log"
-  "$binary" serve --listen 127.0.0.1:0 --db "$dir/db" --secret "$dir/secret" >"$log" 2>&1 &
+  "$binary" serve --listen 127.0.0.1:0 --db "$dir/db" >"$log" 2>&1 &
   local pid=$!
   # shellcheck disable=SC2064 # The values are fixed now, on purpose.
   trap "kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf '$dir'" EXIT

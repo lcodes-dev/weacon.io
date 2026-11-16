@@ -9,7 +9,6 @@ import { agents, change, current, repos } from "./remote-settings.ts";
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
   access: "ask_first",
-  team: false,
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
 
@@ -22,7 +21,7 @@ test("a query names the machine and the socket's workspace, and takes the answer
   const core = fake();
   const asked = current(core.socket, "mc-1", core.later);
   const [query] = core.sent;
-  core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, team: true } });
+  core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, access: "full" } });
   core.deliver({ id: 2, type: "machine_settings_answer", request: request(query), ...PLACE, answer: { kind: "current", ...SETTINGS } });
   core.expire();
 

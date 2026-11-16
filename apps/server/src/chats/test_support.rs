@@ -30,7 +30,7 @@ pub(crate) async fn ada(fixture: &Fixture) -> Ada {
     let member = Member {
         workspace,
         id: member_id("m1"),
-        token_hash: [0; 32],
+        token: String::new(),
     };
     Ada {
         _server: server,
@@ -57,7 +57,7 @@ pub(crate) async fn grace(fixture: &Fixture) -> Ada {
         member: Member {
             workspace,
             id: member_id("m5"),
-            token_hash: [0; 32],
+            token: String::new(),
         },
         asker: Asker {
             account,

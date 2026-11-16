@@ -31,17 +31,16 @@ impl Db {
         .collect()
     }
 
-    /// Keeps the build `core` of `machine` and what it `offers`, as it said when it connected;
-    /// with no offers kept, it is never shown lacking any.
+    /// Keeps the build `core` of `machine` and what it `offers`, as it said when it connected.
     pub(crate) async fn saw_core(
         &self,
         machine: &MachineId,
         core: Option<&App>,
-        offers: Option<&[Capability]>,
+        offers: &[Capability],
     ) -> Result<(), Fault> {
         sqlx::query("UPDATE machines SET core_build = ?, core_offers = ? WHERE machine_id = ?")
             .bind(core.and_then(|core| serde_json::to_string(core).ok()))
-            .bind(offers.and_then(|offers| serde_json::to_string(offers).ok()))
+            .bind(serde_json::to_string(offers).ok())
             .bind(machine.as_str())
             .execute(&self.writer)
             .await
@@ -84,7 +83,7 @@ mod tests {
         let Setup { _dir, db, ada, .. } = setup().await;
         start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
-        claim(&db, "p1", b"secret", NOW + 1).await;
+        claim(&db, "p1", "secret", NOW + 1).await;
         let offered = [
             Capability::new(code!("machine.connect")),
             Capability::new(code!("machine.settings")),
@@ -96,18 +95,16 @@ mod tests {
         };
 
         let before = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered[..1]))
+        db.saw_core(&id("mc-p1"), Some(&core), &offered[..1])
             .await
             .unwrap();
         let older = db.machines_of(&ada, &offered).await.unwrap();
         let earlier_server = db.machines_of(&ada, &offered[..1]).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), Some(&offered))
+        db.saw_core(&id("mc-p1"), Some(&core), &offered)
             .await
             .unwrap();
         let current = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), None).await.unwrap();
-        let unrecorded = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), None, Some(&offered[..1]))
+        db.saw_core(&id("mc-p1"), None, &offered[..1])
             .await
             .unwrap();
         let unplain = db.machines_of(&ada, &offered).await.unwrap();
@@ -120,8 +117,6 @@ mod tests {
         assert_eq!(older[0].missing, offered[1..]);
         assert_eq!(earlier_server[0].missing, []);
         assert_eq!(current[0].missing, []);
-        assert_eq!(unrecorded[0].core.as_ref(), Some(&core));
-        assert_eq!(unrecorded[0].missing, []);
         assert_eq!(unplain[0].core, None);
         assert_eq!(unplain[0].missing, []);
     }
@@ -131,7 +126,7 @@ mod tests {
         let Setup { _dir, db, ada, .. } = setup().await;
         start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
-        claim(&db, "p1", b"secret", NOW + 1).await;
+        claim(&db, "p1", "secret", NOW + 1).await;
         sqlx::query("UPDATE machines SET core_build = 'x', core_offers = 'y'")
             .execute(&db.writer)
             .await

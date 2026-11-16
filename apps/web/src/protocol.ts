@@ -860,17 +860,12 @@ export type MachineSettings = {
    * Each agent the core runs, signed in or not with the workspace's own config folder.
    */
   sign_ins: Array<AgentSignIn>;
-  /**
-   * Whether other people are in the workspace.
-   */
-  team: boolean;
 };
 
 export type MachineSettingsAction = (
   | {
     kind: "set_access";
     level: AccessLevel;
-    team?: boolean;
   }
   | {
     kind: "set_shared";

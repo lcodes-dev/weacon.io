@@ -43,9 +43,6 @@ pub(crate) enum Command {
         /// What its agents may do: off, read-only, ask-first or full.
         #[arg(value_parser = crate::workspaces::access::parse_level)]
         level: AccessLevel,
-        /// Whether other people are in the workspace; kept as it was when left out.
-        #[arg(long)]
-        team: Option<bool>,
     },
     /// Share this machine with a workspace: every member can call agents on it, and you
     /// answer their prompts.
@@ -442,17 +439,15 @@ mod tests {
     }
 
     #[test]
-    fn access_takes_a_workspace_a_level_and_whether_its_a_team() {
+    fn access_takes_a_workspace_and_a_level() {
         let levels = ["off", "read-only", "ask-first", "full"].map(|level| {
             let access = run(&["weacon", "access", "w-1", level]).unwrap().command;
-            let Command::Access { level, team, .. } = access else {
+            let Command::Access { level, .. } = access else {
                 panic!("not an access command");
             };
-            assert_eq!(team, None);
             level
         });
-        let team = run(&["weacon", "access", "w-1", "full", "--team", "true"]).unwrap();
-        let left = run(&["weacon", "access", "w-1", "full", "--team", "false"]).unwrap();
+        let full = run(&["weacon", "access", "w-1", "full"]).unwrap();
         for bad in ["read_only", "Full", "newer", "on", ""] {
             run(&["weacon", "access", "w-1", bad]).unwrap_err();
         }
@@ -467,18 +462,11 @@ mod tests {
             ]
         );
         assert!(matches!(
-            &team.command,
-            Command::Access { workspace, team: Some(true), .. } if workspace.as_str() == "w-1"
-        ));
-        assert!(matches!(
-            left.command,
-            Command::Access {
-                team: Some(false),
-                ..
-            }
+            &full.command,
+            Command::Access { workspace, .. } if workspace.as_str() == "w-1"
         ));
         assert_eq!(
-            (team.command.name(), team.command.log_name()),
+            (full.command.name(), full.command.log_name()),
             ("access", "cli.log")
         );
         for bad in [

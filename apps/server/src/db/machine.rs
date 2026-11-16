@@ -5,7 +5,8 @@ use sqlx::SqliteConnection;
 use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AccountId, MachineId, MachineName, MachineOs, MachineSummary, PairPending, PairingId, code,
+    AccountId, MachineId, MachineName, MachineOs, MachineSummary, PairPending, PairingId, Secret,
+    code,
 };
 
 use super::{Db, failed, stored, unreadable};
@@ -15,11 +16,12 @@ mod shares;
 
 pub(super) use shares::SHARER;
 
-/// A pairing a core started, with its code and claim secret hashed.
+/// A pairing a core started, with its code, its claim secret and the token its machine gets.
 pub(crate) struct NewPairing<'a> {
     pub(crate) id: &'a PairingId,
-    pub(crate) code_hash: &'a [u8],
-    pub(crate) secret_hash: &'a [u8],
+    pub(crate) code: &'a str,
+    pub(crate) secret: &'a str,
+    pub(crate) token: &'a str,
     pub(crate) name: &'a MachineName,
     pub(crate) os: MachineOs,
     pub(crate) expires_at: i64,
@@ -30,16 +32,15 @@ pub(crate) struct NewPairing<'a> {
 pub(crate) struct Confirmation<'a> {
     pub(crate) account: &'a AccountId,
     pub(crate) pairing: &'a PairingId,
-    pub(crate) code_hash: &'a [u8],
+    pub(crate) code: &'a str,
     pub(crate) machine: &'a MachineId,
     pub(crate) claim_by: i64,
 }
 
-/// A core's claim of a pairing, with the hash of the token its machine gets.
+/// A core's claim of a pairing.
 pub(crate) struct Claiming<'a> {
     pub(crate) pairing: &'a PairingId,
-    pub(crate) secret_hash: &'a [u8],
-    pub(crate) token_hash: &'a [u8],
+    pub(crate) secret: &'a str,
 }
 
 /// What a core's claim finds.
@@ -48,16 +49,24 @@ pub(crate) enum Claim {
     /// No live pairing with that id and secret.
     Unknown,
     Waiting,
-    /// Paired with `owner`; the token is now the machine's.
+    /// Paired with `owner`; `token` is now the machine's.
     Paired {
         machine: MachineId,
         owner: AccountId,
+        token: Secret,
     },
 }
 
-/// A pairing's secret hash, and once it is confirmed its account, machine, when it was
+/// A pairing's secret and token, and once it is confirmed its account, machine, when it was
 /// confirmed and whether it was claimed, as stored.
-type PairingRow = (Vec<u8>, Option<String>, Option<String>, Option<i64>, bool);
+type PairingRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    bool,
+);
 
 impl Db {
     /// Records `pairing`, and ends the expired ones so they don't pile up.
@@ -72,15 +81,14 @@ impl Db {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        // Nothing reads `machine_key`.
         sqlx::query(
-            "INSERT INTO pairings
-                 (pairing_id, code_hash, secret_hash, name, os, machine_key, expires_at)
-             VALUES (?, ?, ?, ?, ?, '', ?)",
+            "INSERT INTO pairings (pairing_id, code, secret, token, name, os, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(pairing.id.as_str())
-        .bind(pairing.code_hash)
-        .bind(pairing.secret_hash)
+        .bind(pairing.code)
+        .bind(pairing.secret)
+        .bind(pairing.token)
         .bind(pairing.name.as_str())
         .bind(os_text(pairing.os)?)
         .bind(pairing.expires_at)
@@ -90,17 +98,17 @@ impl Db {
         transaction.commit().await.map_err(failed)
     }
 
-    /// The live pairing nobody has confirmed whose code is hashed as `code_hash`.
+    /// The live pairing nobody has confirmed whose code is `code`.
     pub(crate) async fn pending_pairing(
         &self,
-        code_hash: &[u8],
+        code: &str,
         now: i64,
     ) -> Result<Option<PairPending>, Fault> {
         let found = sqlx::query_as::<_, (String, String, String)>(
             "SELECT pairing_id, name, os FROM pairings
-             WHERE code_hash = ? AND expires_at > ? AND account_id IS NULL",
+             WHERE code = ? AND expires_at > ? AND account_id IS NULL",
         )
-        .bind(code_hash)
+        .bind(code)
         .bind(now)
         .fetch_optional(&self.readers)
         .await
@@ -126,13 +134,13 @@ impl Db {
         let Confirmation {
             account,
             pairing,
-            code_hash,
+            code,
             machine,
             claim_by,
         } = *confirmation;
         let mut transaction = self.write().await?;
-        let Some((stored_hash, name, os)) = sqlx::query_as::<_, (Vec<u8>, String, String)>(
-            "SELECT code_hash, name, os FROM pairings
+        let Some((stored_code, name, os)) = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT code, name, os FROM pairings
                  WHERE pairing_id = ? AND expires_at > ? AND account_id IS NULL",
         )
         .bind(pairing.as_str())
@@ -143,7 +151,7 @@ impl Db {
         else {
             return Ok(None);
         };
-        if !bool::from(stored_hash.ct_eq(code_hash)) {
+        if !bool::from(stored_code.as_bytes().ct_eq(code.as_bytes())) {
             return Ok(None);
         }
         sqlx::query(
@@ -169,15 +177,11 @@ impl Db {
         claiming: &Claiming<'_>,
         now: i64,
     ) -> Result<Claim, Fault> {
-        let Claiming {
-            pairing,
-            secret_hash,
-            token_hash,
-        } = *claiming;
+        let Claiming { pairing, secret } = *claiming;
         let mut transaction = self.write().await?;
-        let Some((stored_hash, owner, machine, confirmed_at, claimed)) =
+        let Some((stored_secret, token, owner, machine, confirmed_at, claimed)) =
             sqlx::query_as::<_, PairingRow>(
-                "SELECT secret_hash, account_id, machine_id, confirmed_at, claimed FROM pairings
+                "SELECT secret, token, account_id, machine_id, confirmed_at, claimed FROM pairings
              WHERE pairing_id = ? AND expires_at > ?",
             )
             .bind(pairing.as_str())
@@ -188,7 +192,7 @@ impl Db {
         else {
             return Ok(Claim::Unknown);
         };
-        if !bool::from(stored_hash.ct_eq(secret_hash)) {
+        if !bool::from(stored_secret.as_bytes().ct_eq(secret.as_bytes())) {
             return Ok(Claim::Unknown);
         }
         let (Some(owner), Some(machine), Some(confirmed_at)) = (owner, machine, confirmed_at)
@@ -196,24 +200,25 @@ impl Db {
             return Ok(Claim::Waiting);
         };
         if !claimed {
-            add_machine(&mut transaction, pairing, token_hash, confirmed_at).await?;
+            add_machine(&mut transaction, pairing, confirmed_at).await?;
         }
         transaction.commit().await.map_err(failed)?;
         Ok(Claim::Paired {
             machine: stored(machine)?,
             owner: stored(owner)?,
+            token: token.into(),
         })
     }
 
-    /// The paired machine whose token is hashed as `token_hash`, and its owner.
+    /// The paired machine whose token is `token`, and its owner.
     pub(crate) async fn machine_with(
         &self,
-        token_hash: &[u8],
+        token: &str,
     ) -> Result<Option<(MachineId, AccountId)>, Fault> {
         sqlx::query_as::<_, (String, String)>(
-            "SELECT machine_id, account_id FROM machines WHERE token_hash = ?",
+            "SELECT machine_id, account_id FROM machines WHERE token = ?",
         )
-        .bind(token_hash)
+        .bind(token)
         .fetch_optional(&self.readers)
         .await
         .map_err(failed)?
@@ -268,20 +273,17 @@ impl Db {
     }
 }
 
-/// Pairs the machine of the confirmed `pairing`, with the token hashed as `token_hash`.
+/// Pairs the machine of the confirmed `pairing`, with the pairing's token.
 async fn add_machine(
     transaction: &mut SqliteConnection,
     pairing: &PairingId,
-    token_hash: &[u8],
     paired_at: i64,
 ) -> Result<(), Fault> {
     sqlx::query(
-        "INSERT INTO machines
-                 (machine_id, account_id, name, os, machine_key, token_hash, paired_at)
-             SELECT machine_id, account_id, name, os, machine_key, ?, ?
+        "INSERT INTO machines (machine_id, account_id, name, os, token, paired_at)
+             SELECT machine_id, account_id, name, os, token, ?
              FROM pairings WHERE pairing_id = ?",
     )
-    .bind(token_hash)
     .bind(paired_at)
     .bind(pairing.as_str())
     .execute(&mut *transaction)
@@ -368,12 +370,14 @@ mod tests {
         }
     }
 
-    // Starts pairing `pairing`, whose code hash is its id and whose secret hash is "secret".
+    // Starts pairing `pairing`, whose code is its id, whose secret is "secret" and whose
+    // machine gets the token "token-" and its id.
     pub(super) async fn start(db: &Db, pairing: &str, now: i64) {
         let new = NewPairing {
             id: &id(pairing),
-            code_hash: pairing.as_bytes(),
-            secret_hash: b"secret",
+            code: pairing,
+            secret: "secret",
+            token: &format!("token-{pairing}"),
             name: &id("Studio"),
             os: MachineOs::Linux,
             expires_at: now + 600,
@@ -385,7 +389,7 @@ mod tests {
         let confirmation = Confirmation {
             account,
             pairing: &id(pairing),
-            code_hash: code.as_bytes(),
+            code,
             machine: &id(&format!("mc-{pairing}")),
             claim_by: NOW + 121,
         };
@@ -395,11 +399,10 @@ mod tests {
             .is_some()
     }
 
-    pub(super) async fn claim(db: &Db, pairing: &str, secret: &[u8], now: i64) -> Claim {
+    pub(super) async fn claim(db: &Db, pairing: &str, secret: &str, now: i64) -> Claim {
         let claiming = Claiming {
             pairing: &id(pairing),
-            secret_hash: secret,
-            token_hash: b"token",
+            secret,
         };
         db.claim_pairing(&claiming, now).await.unwrap()
     }
@@ -408,15 +411,15 @@ mod tests {
     async fn a_confirmed_pairing_is_claimed_once_by_its_secret() {
         let Setup { _dir, db, ada, .. } = setup().await;
         start(&db, "p1", NOW).await;
-        let pending = db.pending_pairing(b"p1", NOW).await.unwrap().unwrap();
-        let before = claim(&db, "p1", b"secret", NOW).await;
+        let pending = db.pending_pairing("p1", NOW).await.unwrap().unwrap();
+        let before = claim(&db, "p1", "secret", NOW).await;
         assert!(!confirm(&db, &ada, "p1", "p2").await);
         assert!(confirm(&db, &ada, "p1", "p1").await);
         let again = confirm(&db, &ada, "p1", "p1").await;
-        let gone = db.pending_pairing(b"p1", NOW).await.unwrap();
-        let wrong = claim(&db, "p1", b"other", NOW).await;
-        let claimed = claim(&db, "p1", b"secret", NOW + 2).await;
-        let twice = claim(&db, "p1", b"secret", NOW + 2).await;
+        let gone = db.pending_pairing("p1", NOW).await.unwrap();
+        let wrong = claim(&db, "p1", "other", NOW).await;
+        let claimed = claim(&db, "p1", "secret", NOW + 2).await;
+        let twice = claim(&db, "p1", "secret", NOW + 2).await;
 
         assert_eq!(
             pending,
@@ -435,6 +438,7 @@ mod tests {
             Claim::Paired {
                 machine: id("mc-p1"),
                 owner: ada.clone(),
+                token: "token-p1".into(),
             }
         );
         assert_eq!(twice, claimed);
@@ -461,15 +465,15 @@ mod tests {
         assert!(confirm(&db, &ada, "p2", "p2").await);
 
         assert_eq!(
-            db.pending_pairing(b"p1", NOW + 599)
+            db.pending_pairing("p1", NOW + 599)
                 .await
                 .unwrap()
                 .map(|pending| pending.pairing),
             Some(id("p1"))
         );
-        assert_eq!(db.pending_pairing(b"p1", NOW + 600).await.unwrap(), None);
-        assert_eq!(claim(&db, "p1", b"secret", NOW + 600).await, Claim::Unknown);
-        assert_eq!(claim(&db, "p2", b"secret", NOW + 121).await, Claim::Unknown);
+        assert_eq!(db.pending_pairing("p1", NOW + 600).await.unwrap(), None);
+        assert_eq!(claim(&db, "p1", "secret", NOW + 600).await, Claim::Unknown);
+        assert_eq!(claim(&db, "p2", "secret", NOW + 121).await, Claim::Unknown);
         // The next start ends both, so either may be started again.
         start(&db, "p3", NOW + 600).await;
         start(&db, "p1", NOW + 600).await;
@@ -486,7 +490,7 @@ mod tests {
 
         start(&db, "p-x", NOW).await;
 
-        assert!(db.pending_pairing(b"p-x", NOW).await.unwrap().is_some());
+        assert!(db.pending_pairing("p-x", NOW).await.unwrap().is_some());
     }
 
     #[tokio::test]
@@ -495,7 +499,7 @@ mod tests {
         start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
         let unclaimed = db.machines_of(&ada, &[]).await.unwrap();
-        claim(&db, "p1", b"secret", NOW + 2).await;
+        claim(&db, "p1", "secret", NOW + 2).await;
         let machine = id("mc-p1");
 
         assert_eq!(unclaimed, []);
@@ -508,7 +512,7 @@ mod tests {
         assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
         assert!(!db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.unpair(&ada, &machine).await.unwrap());
-        assert_eq!(claim(&db, "p1", b"secret", NOW + 3).await, Claim::Unknown);
+        assert_eq!(claim(&db, "p1", "secret", NOW + 3).await, Claim::Unknown);
     }
 
     #[test]
@@ -519,5 +523,38 @@ mod tests {
         let (newer, damaged) = (os_text(MachineOs::Newer), stored_os("plan9"));
         assert_eq!(code(&newer.unwrap_err()), "machine.unknown_value");
         assert_eq!(code(&damaged.unwrap_err()), "db.unreadable");
+    }
+
+    #[tokio::test]
+    async fn hashed_sessions_machines_and_pairings_are_dropped_and_pairing_after_works() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("weacon.db");
+        let rows = "INSERT INTO accounts (account_id, email, owner) VALUES ('a1', 'ada@example.com', 1);
+             INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'Team');
+             INSERT INTO sessions VALUES (x'01', 'a1', 9999999999);
+             INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash, paired_at)
+                 VALUES ('mc-old', 'a1', 'Studio', 'linux', '', x'02', 1);
+             INSERT INTO pairings (pairing_id, code_hash, secret_hash, name, os, machine_key, expires_at)
+                 VALUES ('p0', x'03', x'04', 'Studio', 'linux', '', 9999999999);
+             INSERT INTO shared_machines VALUES ('w1', 'mc-old')";
+        crate::db::schema::database_before(&path, crate::db::schema::steps::PLAIN_TOKENS, rows)
+            .await;
+        let db = Db::open(&path).await.unwrap();
+        let ada: AccountId = id("a1");
+
+        for table in ["sessions", "machines", "pairings", "shared_machines"] {
+            let counted = sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}"));
+            let left: i64 = sqlx::query_scalar(counted)
+                .fetch_one(&db.readers)
+                .await
+                .unwrap();
+            assert_eq!(left, 0, "{table}");
+        }
+        start(&db, "p1", NOW).await;
+        assert!(confirm(&db, &ada, "p1", "p1").await);
+        let claimed = claim(&db, "p1", "secret", NOW + 2).await;
+        assert!(matches!(claimed, Claim::Paired { token, .. } if token.expose() == "token-p1"));
+        let found = db.machine_with("token-p1").await.unwrap();
+        assert_eq!(found, Some((id("mc-p1"), ada)));
     }
 }

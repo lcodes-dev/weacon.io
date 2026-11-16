@@ -6,7 +6,6 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use weacon_protocol::{AccountId, MachineId, MemberId, WorkspaceId, code};
 
 use crate::db::Workspace;
@@ -34,8 +33,8 @@ pub(crate) struct Session {
 pub(crate) struct Member {
     pub(crate) workspace: Workspace,
     pub(crate) id: MemberId,
-    /// The hash of the session token that proved it.
-    pub(crate) token_hash: [u8; 32],
+    /// The session token that proved it.
+    pub(crate) token: String,
 }
 
 /// A paired machine, proved by the bearer token its core got when it claimed the pairing.
@@ -43,7 +42,7 @@ pub(crate) struct Member {
 pub(crate) struct Machine {
     pub(crate) id: MachineId,
     pub(crate) owner: AccountId,
-    pub(crate) token_hash: [u8; 32],
+    pub(crate) token: String,
 }
 
 impl FromRequestParts<Shared> for Machine {
@@ -51,16 +50,10 @@ impl FromRequestParts<Shared> for Machine {
 
     async fn from_request_parts(parts: &mut Parts, shared: &Shared) -> Result<Self, Response> {
         let unpaired = || unauthorized(code!("machine.unpaired"));
-        let token_hash = bearer(&parts.headers)
-            .map(token_hash)
-            .ok_or_else(unpaired)?;
-        let found = shared.db.machine_with(&token_hash).await.map_err(failure)?;
+        let token = bearer(&parts.headers).ok_or_else(unpaired)?.to_owned();
+        let found = shared.db.machine_with(&token).await.map_err(failure)?;
         let (id, owner) = found.ok_or_else(unpaired)?;
-        Ok(Self {
-            id,
-            owner,
-            token_hash,
-        })
+        Ok(Self { id, owner, token })
     }
 }
 
@@ -68,10 +61,10 @@ impl FromRequestParts<Shared> for Session {
     type Rejection = Response;
 
     async fn from_request_parts(parts: &mut Parts, shared: &Shared) -> Result<Self, Response> {
-        let token_hash = proof(&parts.method, &parts.headers)?;
+        let token = proof(&parts.method, &parts.headers)?;
         let found = shared
             .db
-            .session(&token_hash, shared.now())
+            .session(token, shared.now())
             .await
             .map_err(failure)?;
         let (account, email) = found.ok_or_else(required)?;
@@ -92,17 +85,17 @@ impl FromRequestParts<Shared> for Member {
         let Path(InWorkspace { workspace }) = Path::from_request_parts(parts, shared)
             .await
             .map_err(|_| error(StatusCode::BAD_REQUEST, code!("request.invalid"), false))?;
-        let token_hash = proof(&parts.method, &parts.headers)?;
+        let token = proof(&parts.method, &parts.headers)?.to_owned();
         let found = shared
             .db
-            .member_workspace(&workspace, &token_hash, shared.now())
+            .member_workspace(&workspace, &token, shared.now())
             .await
             .map_err(failure)?;
         let (workspace, id) = found.ok_or_else(required)?;
         Ok(Self {
             workspace,
             id,
-            token_hash,
+            token,
         })
     }
 }
@@ -128,18 +121,18 @@ impl From<Unproven> for Response {
     }
 }
 
-/// The hash of the session token a request carries: a bearer token, or else the session
+/// The session token a request carries: a bearer token, or else the session
 /// cookie. The cookie counts only from the server's own pages; a request no page sent may use
 /// it to read.
-pub(crate) fn proof(method: &Method, headers: &HeaderMap) -> Result<[u8; 32], Unproven> {
+pub(crate) fn proof<'a>(method: &Method, headers: &'a HeaderMap) -> Result<&'a str, Unproven> {
     if let Some(token) = bearer(headers) {
-        return Ok(token_hash(token));
+        return Ok(token);
     }
     let token = session_cookie(headers).ok_or(Unproven::Missing)?;
     let reads = matches!(*method, Method::GET | Method::HEAD);
     match sender(headers) {
-        Sender::OwnPage => Ok(token_hash(token)),
-        Sender::NoPage if reads => Ok(token_hash(token)),
+        Sender::OwnPage => Ok(token),
+        Sender::NoPage if reads => Ok(token),
         Sender::NoPage | Sender::OtherSite => Err(Unproven::CrossSite),
     }
 }
@@ -195,11 +188,6 @@ pub(crate) fn sender(headers: &HeaderMap) -> Sender {
     } else {
         Sender::OtherSite
     }
-}
-
-/// Unkeyed: a token is too long to guess.
-pub(crate) fn token_hash(text: &str) -> [u8; 32] {
-    Sha256::digest(text.as_bytes()).into()
 }
 
 /// Whether `host`, with or without a port, names this machine.
@@ -292,7 +280,7 @@ mod tests {
             &method,
             &headers(pairs),
         ) {
-            Ok(hash) => (hash == token_hash("abc")).then_some("proven").unwrap(),
+            Ok(token) => (token == "abc").then_some("proven").unwrap(),
             Err(Unproven::Missing) => "missing",
             Err(Unproven::CrossSite) => "cross-site",
         };
@@ -332,15 +320,5 @@ mod tests {
         assert_eq!(found(&[("cookie", "x__Host-weacon_session=abc")]), None);
         assert_eq!(found(&[("cookie", "theme=dark")]), None);
         assert_eq!(found(&[]), None);
-    }
-
-    #[test]
-    fn a_token_hashes_the_same_each_time_and_apart_from_others() {
-        assert_eq!(token_hash("a"), token_hash("a"));
-        assert_ne!(token_hash("a"), token_hash("b"));
-        assert_eq!(
-            token_hash("abc").map(|byte| format!("{byte:02x}")).concat(),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
     }
 }
