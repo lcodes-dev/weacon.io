@@ -20,6 +20,15 @@ use session::Session;
 // Inputs waiting for a terminal that hasn't taken them yet.
 const WAITING: usize = 64;
 
+/// What the uplink tells the terminals, in the order it happened.
+#[derive(Debug)]
+pub(crate) enum Told {
+    /// The owner's command, from the server.
+    Command(TerminalCommand),
+    /// The connection the commands before this came on has ended.
+    Down,
+}
+
 /// This machine's sign-in terminals, which it answers its owner's terminal commands with.
 pub(crate) struct Terminals {
     workspaces: Workspaces,
@@ -77,9 +86,10 @@ impl Terminals {
         }
     }
 
-    /// Closes every terminal, once the connection their browsers reach them through is gone.
+    /// Closes every terminal and frees its slot at once, when the connection their browsers
+    /// reach them through is gone.
     pub(crate) fn close_all(&mut self) {
-        self.open.values_mut().for_each(|open| open.inputs = None);
+        self.open.clear();
     }
 
     async fn start(&mut self, command: TerminalCommand, agent: AgentKind, size: (u32, u32)) {

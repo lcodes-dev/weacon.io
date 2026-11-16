@@ -1,18 +1,18 @@
 //! The daemon's connection to the server it is paired with: it dials out, proves the machine
 //! with its token, and dials again with backoff whenever the connection drops.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, MachineShares,
-    Message, Outcome, PROTOCOL, Receipt, Welcome, WorkspaceId, code,
+    Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
 };
 
 use self::asking::{Asking, asking, for_members};
@@ -22,6 +22,7 @@ use crate::chats::Chats;
 use crate::machine::{self, Paired};
 use crate::proposals;
 use crate::server::{Failure, Server, Socket};
+use crate::terminal::Told;
 use crate::workspaces::sharing;
 
 /// What the core must be offered by the server to keep its connection.
@@ -81,8 +82,8 @@ pub(crate) struct Uplink {
     pub(crate) capabilities: fn(&Path) -> Vec<Capability>,
     pub(crate) log: Logger,
     pub(crate) to_daemon: ToDaemon,
-    /// Told each time a connection ends.
-    pub(crate) down: Arc<Notify>,
+    /// Where the owner's terminal commands go, and word of each connection's end after them.
+    pub(crate) terminals: mpsc::Sender<Told>,
     pub(crate) chats: Chats,
     pub(crate) timing: Timing,
     /// Random numbers, for the backoff's jitter.
@@ -159,20 +160,17 @@ impl Uplink {
         log.info("uplink connected", &[]);
         let up = Instant::now();
         let offers = |code| welcome.capabilities.contains(&Capability::new(code));
-        let mut link = Link {
-            chats: ChatLink::new(
-                self.chats.clone(),
-                offers(UPLOAD),
-                offers(LIVE),
-                log.clone(),
-            ),
-            proposals: offers(PROPOSALS),
-            shared: None,
-        };
+        let chats = ChatLink::new(
+            self.chats.clone(),
+            offers(UPLOAD),
+            offers(LIVE),
+            log.clone(),
+        );
+        let mut link = Link::new(chats, offers(PROPOSALS));
         let unpaired = self
             .serve(&mut socket, paired, from_daemon, &mut link)
             .await;
-        self.down.notify_one();
+        drop(self.terminals.send(Told::Down).await);
         if unpaired {
             return Ok(Ended::Unpaired);
         }
@@ -218,7 +216,7 @@ impl Uplink {
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, &paired.owner, &mut link.chats).await {
+                    match self.answer(frame, &paired.owner, link).await {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
@@ -269,7 +267,7 @@ impl Uplink {
     /// whatever the server allows, but for what a member of a workspace the machine is shared
     /// with may ask; a kind whose asker it can't find is refused. The rest goes to the chats
     /// or the daemon.
-    async fn answer(&self, frame: Wire, owner: &AccountId, chats: &mut ChatLink) -> Step {
+    async fn answer(&self, frame: Wire, owner: &AccountId, link: &mut Link) -> Step {
         let Wire::Text(text) = frame else {
             return Step::Nothing;
         };
@@ -294,12 +292,20 @@ impl Uplink {
             return reply(failure(envelope.id, code!("machine.not_owner")));
         }
         if ChatLink::is_for(&envelope.message) {
-            return chats.take(envelope);
+            return link.chats.take(envelope);
         }
         let id = envelope.id;
-        match self.to_daemon.try_send(envelope) {
-            Ok(()) => Step::Nothing,
-            Err(_) => reply(for_now(id, code!("uplink.busy"))),
+        let taken = if let Message::TerminalCommand(command) = &envelope.message {
+            link.terminals.insert(command.terminal.clone());
+            let told = Told::Command(command.clone());
+            self.terminals.try_send(told).is_ok()
+        } else {
+            self.to_daemon.try_send(envelope).is_ok()
+        };
+        if taken {
+            Step::Nothing
+        } else {
+            reply(for_now(id, code!("uplink.busy")))
         }
     }
 }
@@ -358,12 +364,29 @@ struct Link {
     proposals: bool,
     /// The workspaces it was last told the machine is shared with.
     shared: Option<Vec<WorkspaceId>>,
+    /// The terminals the server's commands on this connection named.
+    terminals: HashSet<TerminalId>,
 }
 
 impl Link {
+    fn new(chats: ChatLink, proposals: bool) -> Self {
+        Self {
+            chats,
+            proposals,
+            shared: None,
+            terminals: HashSet::new(),
+        }
+    }
+
     /// `envelope` from the daemon, unless the server doesn't take it: a proposal to a server
-    /// that doesn't offer them is refused to the daemon at once.
+    /// that doesn't offer them is refused to the daemon at once, and word of a terminal no
+    /// command on this connection named, such as one an earlier connection opened, is dropped.
     fn offered(&self, envelope: Envelope, to_daemon: &ToDaemon) -> Option<Envelope> {
+        if let Message::Terminal(update) = &envelope.message
+            && !self.terminals.contains(&update.terminal)
+        {
+            return None;
+        }
         let refusal = proposals::unoffered(&envelope.message).filter(|_| !self.proposals);
         let Some(message) = refusal else {
             return Some(envelope);
@@ -410,12 +433,12 @@ async fn send(socket: &mut Socket, envelope: &Envelope) {
     drop(socket.send(Wire::text(text)).await);
 }
 
-/// The daemon's uplink, which takes the server's chat messages to `chats`, hands the rest of
-/// what it asks to `to_daemon` and tells `down` each time its connection ends.
+/// The daemon's uplink, which takes the server's chat messages to `chats`, its owner's
+/// terminal commands to `terminals` and hands the rest of what it asks to `to_daemon`.
 pub(crate) fn new(
     app: &crate::app::App,
     state_dir: &Path,
-    (to_daemon, down): (ToDaemon, Arc<Notify>),
+    (to_daemon, terminals): (ToDaemon, mpsc::Sender<Told>),
     chats: Chats,
 ) -> Uplink {
     Uplink {
@@ -424,7 +447,7 @@ pub(crate) fn new(
         capabilities: |dir| crate::session::offered(dir, &|key| std::env::var_os(key)),
         log: app.log.child(&[("component", "uplink".into())]),
         to_daemon,
-        down,
+        terminals,
         chats,
         timing: TIMING,
         random: weacon_appkit::random_id,
@@ -469,6 +492,12 @@ mod tests {
         with_commands(dir, mpsc::channel(1).0)
     }
 
+    // A way to terminals that take nothing, open for as long as the test runs.
+    fn terminals() -> (mpsc::Sender<Told>, &'static mut mpsc::Receiver<Told>) {
+        let (sender, receiver) = mpsc::channel(8);
+        (sender, Box::leak(Box::new(receiver)))
+    }
+
     fn with_commands(dir: &TempDir, to_daemon: ToDaemon) -> Uplink {
         Uplink {
             state_dir: dir.to_path_buf(),
@@ -476,7 +505,7 @@ mod tests {
             capabilities: |_| vec![Capability::new(CONNECT)],
             log: recording_logger().0,
             to_daemon,
-            down: Arc::default(),
+            terminals: terminals().0,
             // A way to an engine that has stopped.
             chats: crate::chats::test_support::parts().0.chats,
             timing: Timing {
@@ -639,6 +668,20 @@ mod tests {
             .iter()
             .filter(|heard| matches!(heard, Message::Error(_)));
         assert_eq!(errors.count(), 1, "{heard_back:?}");
+    }
+
+    // The owner's close of `terminal`.
+    fn terminal_command(terminal: &str) -> Envelope {
+        Envelope {
+            id: 9,
+            message: Message::TerminalCommand(TerminalCommand {
+                terminal: TerminalId::try_from(terminal.to_owned()).unwrap(),
+                machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                action: TerminalAction::Close,
+                by: Some(the_owner()),
+            }),
+        }
     }
 
     fn the_owner() -> Asker {
@@ -819,8 +862,11 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     async fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let reply = match link.answer(frame, &owner(), &mut chats).await {
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let reply = match link
+            .answer(frame, &owner(), &mut Link::new(chats, false))
+            .await
+        {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
             Step::Reply(reply) => *reply,
@@ -1019,7 +1065,9 @@ mod tests {
         let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
             .map(|envelope| envelope.message)
             .collect();
+        // The terminals take their commands themselves.
         let mut expected = every_ask(Some(&owner()));
+        expected.retain(|message| !matches!(message, Message::TerminalCommand(_)));
         expected.push(other_error);
         assert_eq!(passed, expected);
     }
@@ -1071,8 +1119,9 @@ mod tests {
             id: 9,
             message: ask(),
         });
-        let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats).await else {
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let mut carried = Link::new(chats, false);
+        let Step::Reply(reply) = link.answer(frame, &owner(), &mut carried).await else {
             panic!("not refused");
         };
 
@@ -1090,20 +1139,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connection_that_breaks_is_lost_and_says_it_is_down() {
-        use futures_util::FutureExt;
+    async fn a_connection_that_breaks_is_lost_and_tells_the_terminals_after_their_commands() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        let link = uplink(&dir);
+        let (terminals, told) = terminals();
+        let link = Uplink {
+            terminals,
+            ..uplink(&dir)
+        };
         let pairing = paired(&tls);
-        let told = || link.down.notified().now_or_never().is_some();
-        let before = told();
+        let close = terminal_command("t-1");
 
         let (ended, ()) = tokio::join!(once(&link, &pairing), async {
-            drop(welcoming(&tls, &[CONNECT]).await);
+            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            peer.send(text(&close)).await.unwrap();
+            // Its answer shows the command was taken before the connection goes.
+            peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
+            while !matches!(peer.next().await, Some(Ok(Wire::Pong(_)))) {}
         });
 
         assert_eq!(ended.unwrap(), Ended::Lost);
-        assert_eq!((before, told()), (false, true));
+        assert!(
+            matches!(told.try_recv(), Ok(Told::Command(command)) if command.terminal.as_str() == "t-1")
+        );
+        assert!(matches!(told.try_recv(), Ok(Told::Down)));
+        told.try_recv().unwrap_err();
+    }
+
+    #[tokio::test]
+    async fn only_word_of_a_terminal_this_connection_named_goes_to_the_server() {
+        let dir = TempDir::new().unwrap();
+        let link = uplink(&dir);
+        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
+        let mut carried = Link::new(chats, false);
+        let update = |terminal: &str| Envelope {
+            id: 0,
+            message: Message::Terminal(weacon_protocol::TerminalUpdate {
+                terminal: TerminalId::try_from(terminal.to_owned()).unwrap(),
+                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
+                event: weacon_protocol::TerminalEvent::Opened,
+            }),
+        };
+        let sent = |carried: &Link, terminal: &str| {
+            carried.offered(update(terminal), &link.to_daemon).is_some()
+        };
+
+        // As one an earlier connection opened, whose word was still queued.
+        let before = sent(&carried, "t-1");
+        let (command, owner) = (text(&terminal_command("t-1")), owner());
+        let taken = link.answer(command, &owner, &mut carried).await;
+        assert!(matches!(taken, Step::Nothing));
+
+        assert!(!before);
+        assert!(sent(&carried, "t-1"));
+        assert!(!sent(&carried, "t-2"));
     }
 
     #[tokio::test]
