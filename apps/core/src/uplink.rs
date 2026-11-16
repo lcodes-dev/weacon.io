@@ -86,8 +86,6 @@ pub(crate) struct Uplink {
     pub(crate) terminals: mpsc::Sender<Told>,
     pub(crate) chats: Chats,
     pub(crate) timing: Timing,
-    /// Random numbers, for the backoff's jitter.
-    pub(crate) random: fn() -> u128,
 }
 
 impl Uplink {
@@ -112,7 +110,7 @@ impl Uplink {
                 self.unpaired(&paired, &log).await;
                 LOOK_EVERY
             }
-            ended => retry.after(ended, &log, (self.random)()),
+            ended => retry.after(ended, &log),
         }
     }
 
@@ -450,7 +448,6 @@ pub(crate) fn new(
         terminals,
         chats,
         timing: TIMING,
-        random: weacon_appkit::random_id,
     }
 }
 
@@ -513,7 +510,6 @@ mod tests {
                 steady_after: Duration::ZERO,
                 look_every: Duration::from_hours(1),
             },
-            random: || 0,
         }
     }
 
