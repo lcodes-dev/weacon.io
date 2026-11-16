@@ -12,10 +12,10 @@ use weacon_protocol::{RepoId, WorkspaceId, code};
 
 use super::chats::ChatRepos;
 use super::repos::{Repo, Repos};
+use super::resolved;
 use crate::db::LocalRepo;
 use crate::hold::{Hold, hold as take};
 use crate::workspaces::Workspaces;
-use crate::workspaces::resolved;
 
 /// A workspace's git state: its repositories and its chats' worktrees.
 pub(crate) struct Stores {
