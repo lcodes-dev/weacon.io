@@ -90,13 +90,13 @@ impl<A: Agent> Engine<A> {
             Ask::Command(command, client, answer) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let done = self.command_from(&key, *command, &client).await;
-                drop(answer.send(self.checked(&key, done).await));
+                drop(answer.send(done));
                 Some(key)
             }
             Ask::Query(query, client, answer) => {
                 let key = ChatKey::new(&query.workspace, &query.chat);
                 let answered = self.query(&key, query.query, &client).await;
-                drop(answer.send(self.checked(&key, answered).await));
+                drop(answer.send(answered));
                 Some(key)
             }
             Ask::List(answer) => {

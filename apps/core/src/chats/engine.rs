@@ -16,7 +16,6 @@ mod queries;
 mod rest;
 mod said;
 mod turns;
-mod unwritten;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -24,8 +23,8 @@ use std::collections::hash_map::Entry;
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId,
-    RunState, RunStatus, code,
+    ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId, RunState,
+    RunStatus, code,
 };
 
 use self::agent::{Agent, FromRun, Order};
@@ -34,7 +33,7 @@ pub(crate) use self::handle::Chats;
 use self::launch::Launched;
 pub(crate) use self::launch::{Host, RunAs};
 use self::named::{about, chat_about, failed};
-use self::pending::{PendingEnd, PendingInterrupt};
+use self::pending::PendingInterrupt;
 pub(crate) use self::queries::Listed;
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
@@ -63,13 +62,8 @@ struct Chat {
     orders: Option<mpsc::UnboundedSender<Order>>,
     /// The run whose agent is starting, off the engine's loop.
     launching: Option<RunId>,
-    /// A run let go after a failed write whose agent is still starting.
-    let_go: Option<RunId>,
-    pending_end: Option<PendingEnd>,
     /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
     pending_interrupts: Vec<PendingInterrupt>,
-    /// The agent's session when the runs journal couldn't save it.
-    pending_session: Option<AgentSession>,
     /// The local client carrying the chat on by hand: no turn starts while it holds it.
     held: Option<Client>,
 }
@@ -82,19 +76,12 @@ impl Chat {
         self.held.take_if(|holder| holder.is_gone()).is_some()
     }
 
-    // Whether an agent is starting for the chat, even one let go after a failed write.
-    const fn is_starting(&self) -> bool {
-        self.launching.is_some() || self.let_go.is_some()
-    }
-
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
-            && !self.is_starting()
+            && self.launching.is_none()
             && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
-            && self.pending_end.is_none()
-            && self.pending_session.is_none()
             && self.held.is_none()
     }
 }
@@ -303,10 +290,7 @@ impl<A: Agent> Engine<A> {
                 subscribers: Vec::new(),
                 orders: None,
                 launching: None,
-                let_go: None,
-                pending_end: None,
                 pending_interrupts: Vec::new(),
-                pending_session: None,
                 held: None,
             })),
         }
