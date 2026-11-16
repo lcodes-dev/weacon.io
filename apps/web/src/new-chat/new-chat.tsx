@@ -11,10 +11,8 @@ import { vendorName } from "../chat/label.ts";
 import { current, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Readiness, Starts, missingText, startBlocked, startProblem } from "./start.ts";
+import { type Readiness, Starts, missingText, signedIn, startBlocked, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
-
-const KINDS: AgentKind[] = ["claude", "codex"];
 
 /**
  * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
@@ -79,17 +77,18 @@ export function NewChat({
   );
   const shownRepos = listed.value;
   const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
-  const signIn = settings.value?.sign_ins.find((one) => one.agent === agent)?.state;
-  const agentName = vendorName(agent);
-  const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: agentName, signIn });
+  // Once the machine answers, only the agents signed in there for this workspace are offered.
+  const offered = signedIn(settings.value);
+  const chosenAgent = offered.find((kind) => kind === agent) ?? offered[0];
+  const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: chosenAgent !== undefined });
   const send: Send = async (text, request) => {
-    if (machine === undefined || chosenRepo === undefined) {
+    if (machine === undefined || chosenRepo === undefined || chosenAgent === undefined) {
       return "refused";
     }
     // The server gives the task its title, so a task picked before the list loaded still goes;
     // one the loaded list doesn't have doesn't.
     const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
-    const choice = { machine: machine.id, repo: chosenRepo, agent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
+    const choice = { machine: machine.id, repo: chosenRepo, agent: chosenAgent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
     const start = starts.begin(request, socket.workspace, text, choice, newId);
     const sent = await commands.start(start.chatRef, start.action, request);
     const chat = starts.end(request, sent);
@@ -132,18 +131,20 @@ export function NewChat({
         </p>
       )}
       {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
-      <label>
-        Agent
-        <select value={agent} onChange={(event) => setAgent(KINDS.find((kind) => kind === event.target.value) ?? agent)}>
-          {KINDS.map((kind) => (
-            <option key={kind} value={kind}>
-              {vendorName(kind)}
-            </option>
-          ))}
-        </select>
-      </label>
+      {offered.length > 0 && (
+        <label>
+          Agent
+          <select value={chosenAgent} onChange={(event) => setAgent(offered.find((kind) => kind === event.target.value) ?? agent)}>
+            {offered.map((kind) => (
+              <option key={kind} value={kind}>
+                {vendorName(kind)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       {tasks !== undefined && <TaskField tasks={tasks} chosen={forTask} choose={setTaskId} />}
-      {signIn === "signed_out" && (
+      {settings.value !== undefined && offered.length < 2 && (
         <p>
           <button type="button" onClick={() => openSettings(machine?.id)}>
             Sign in from Settings

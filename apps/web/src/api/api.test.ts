@@ -20,7 +20,7 @@ function serve(...answers: Array<{ status: number; body?: unknown } | "unreachab
       json: () => ("body" in answer ? Promise.resolve(answer.body) : Promise.reject(new SyntaxError("no body"))),
     });
   };
-  return { api: new Api(fetch, () => ends++), sent, ended: () => ends };
+  return { api: new Api(fetch, () => ends++, () => {}), sent, ended: () => ends };
 }
 
 const ADA = { account: "acc-1", email: "ada@example.com" };
@@ -86,7 +86,7 @@ test("a refusal carries the server's code, and anything else that goes wrong a c
 test("workspaces are listed and made, and an answer of the wrong shape is refused", async () => {
   const personal = { id: "ws-1", name: "Personal", role: "owner" };
   const { api, sent } = serve(
-    { status: 200, body: { workspaces: [personal] } },
+    { status: 200, body: { workspaces: [personal], invitations: [] } },
     { status: 201, body: { id: "ws-2", name: "Made up", role: "owner" } },
     { status: 422, body: { code: "workspace.name_invalid", retryable: false } },
     { status: 200, body: { workspaces: [{ id: "ws-1", name: "Personal" }] } },
@@ -94,7 +94,7 @@ test("workspaces are listed and made, and an answer of the wrong shape is refuse
     { status: 200, body: { workspaces: [{ ...personal, id: "a/b" }] } },
   );
 
-  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal] } });
+  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal], invitations: [] } });
   assert.deepEqual(await api.createWorkspace("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
   assert.deepEqual(await api.createWorkspace(" "), { ok: false, code: "workspace.name_invalid" });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
@@ -118,6 +118,53 @@ test("whenever the server says the session is over, the page is told", async () 
   assert.equal(ended(), 2);
 });
 
+test("a workspace refused to a session that still is one is left, and one refused after the session ended signs out", async () => {
+  const over = { status: 401, body: { code: "sign_in.required", retryable: false } };
+  const sent: string[] = [];
+  const answers = [over, { status: 200, body: ADA }, over, over];
+  const fetch: Fetch = (path) => {
+    sent.push(path);
+    const answer = answers.shift() ?? over;
+    return Promise.resolve({ status: answer.status, json: () => Promise.resolve(answer.body) });
+  };
+  let ends = 0;
+  const left: string[] = [];
+  const api = new Api(fetch, () => ends++, (workspace) => left.push(workspace));
+
+  assert.deepEqual(await api.members("w 1"), { ok: false, code: "sign_in.required" });
+  assert.deepEqual([left, ends], [["w 1"], 0]);
+  assert.deepEqual(await api.workspace("w-2"), { ok: false, code: "sign_in.required" });
+  assert.deepEqual([left, ends], [["w 1"], 1]);
+  assert.deepEqual(sent, ["/api/workspaces/w%201/members", "/api/session", "/api/workspaces/w-2", "/api/session"]);
+});
+
+test("members are changed, invitations taken up, and lists with invitations of the wrong shape refused", async () => {
+  const offer = { workspace: "w-1", name: "Crew", expires_at: 9 };
+  const invitation = { email: "bo@example.com", expires_at: 9 };
+  const { api, sent } = serve(
+    { status: 204 },
+    { status: 200, body: { id: "w-1", name: "Crew", role: "member" } },
+    { status: 200, body: { workspaces: [], invitations: [offer] } },
+    { status: 200, body: { workspaces: [], invitations: [{ ...offer, workspace: "a/b" }] } },
+    { status: 200, body: { workspaces: [], invitations: [{ ...offer, expires_at: "soon" }] } },
+    { status: 200, body: { members: [{ id: "m-1", name: "ada", role: "owner" }], invitations: [invitation] } },
+    { status: 200, body: { members: [], invitations: [{ ...invitation, expires_at: undefined }] } },
+  );
+
+  assert.deepEqual(await api.changeMembers("w-1", { kind: "invite", email: "bo@example.com" }), { ok: true, value: undefined });
+  assert.deepEqual(await api.acceptInvitation("w-1"), { ok: true, value: { id: "w-1", name: "Crew", role: "member" } });
+  assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [], invitations: [offer] } });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  assert.equal((await api.members("w-1")).ok, true);
+  assert.deepEqual(await api.members("w-1"), { ok: false, code: MALFORMED });
+  const json = { "content-type": "application/json" };
+  assert.deepEqual(sent.slice(0, 2), [
+    { path: "/api/workspaces/w-1/members", method: "POST", headers: json, body: '{"action":{"kind":"invite","email":"bo@example.com"}}' },
+    { path: "/api/workspaces/w-1/accept", method: "POST" },
+  ]);
+});
+
 test("a request sent before a newer sign-in can't end it, but one before a failed sign-in can", async () => {
   type Response = Awaited<ReturnType<Fetch>>;
   const answer = (status: number, body: unknown): Response => ({ status, json: () => Promise.resolve(body) });
@@ -132,7 +179,7 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
       () => new Promise((resolve) => (answerLate = resolve)),
       () => Promise.resolve(signIn),
     ];
-    const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++);
+    const api = new Api(() => answers.shift()?.() ?? Promise.reject(new TypeError("none")), () => ends++, () => {});
 
     const late = api.workspaces();
     await api.finishSignIn({ email: "ada@example.com", code: "12345678", challenge: "ch-1" });

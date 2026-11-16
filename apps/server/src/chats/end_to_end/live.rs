@@ -147,7 +147,7 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
     assert_eq!(live_heard(&mut bo).await, live("c-1", writing()));
     assert!(quiet(&mut older).await);
     let w1 = fixture.shared.db.workspace(&id("w1")).await.unwrap();
-    w1.unlink(&member_id("m3")).await;
+    w1.leave(&member_id("m3")).await.unwrap();
     socket::send(&mut core, up(live("c-1", writing()))).await;
     assert_eq!(live_heard(&mut ada).await, live("c-1", writing()));
     assert!(socket::ends(&mut bo).await);

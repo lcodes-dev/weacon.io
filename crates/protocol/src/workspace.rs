@@ -2,7 +2,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::token::token_id;
-use crate::{AccountId, ChatId, DocId, ProposalId, TaskId};
+use crate::{AccountId, ChatId, DocId, Invitation, InvitationOffer, ProposalId, TaskId};
 
 token_id!(
     /// A workspace on the server, 1–64 ASCII letters, digits, `-` or `_`.
@@ -28,7 +28,7 @@ pub struct Asker {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceRole {
-    /// Made the workspace.
+    /// Made the workspace; there is one.
     Owner,
     /// Was added to it.
     Member,
@@ -58,10 +58,11 @@ pub struct WorkspaceSummary {
     pub member: Option<MemberId>,
 }
 
-/// The workspaces the signed-in account is a member of.
+/// The workspaces the signed-in account is a member of, and the live invitations to its address.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceList {
     pub workspaces: Vec<WorkspaceSummary>,
+    pub invitations: Vec<InvitationOffer>,
 }
 
 /// A member as the workspace's other members see them, under the name the server shows for
@@ -70,13 +71,21 @@ pub struct WorkspaceList {
 pub struct MemberSummary {
     pub id: MemberId,
     pub name: String,
+    /// Their role; left out for a past member.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "WorkspaceRole")]
+    pub role: Option<WorkspaceRole>,
 }
 
 /// A workspace's members, past ones included, in the order they were added, from the server to
-/// clients that have the capability `workspace.members`.
+/// clients that have the capability `workspace.members`. Only its owner gets the live
+/// invitations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberList {
     pub members: Vec<MemberSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<Invitation>")]
+    pub invitations: Option<Vec<Invitation>>,
 }
 
 /// What changed in a workspace.
@@ -85,6 +94,9 @@ pub struct MemberList {
 pub enum WorkspaceChange {
     /// A member opened the workspace for the first time.
     MemberJoined { member: MemberId },
+    /// Someone was invited, joined, left or was removed, or an invitation ended; clients read
+    /// the members again.
+    MembersChanged,
     /// A task was made, at version 1, or changed. Only for clients that have the capability
     /// `workspace.tasks`, which read the tasks again to see what it now is.
     TaskChanged { task: TaskId, version: u64 },
@@ -125,13 +137,21 @@ mod tests {
             members: vec![MemberSummary {
                 id: "m-1".parse().unwrap(),
                 name: "Ada".to_owned(),
+                role: Some(WorkspaceRole::Owner),
             }],
+            invitations: None,
+        };
+        let past = MemberSummary {
+            id: "m-2".parse().unwrap(),
+            name: "Bo".to_owned(),
+            role: None,
         };
 
         round_trips(
             &list,
-            json!({ "members": [{ "id": "m-1", "name": "Ada" }] }),
+            json!({ "members": [{ "id": "m-1", "name": "Ada", "role": "owner" }] }),
         );
+        round_trips(&past, json!({ "id": "m-2", "name": "Bo" }));
     }
 
     #[test]
@@ -158,6 +178,10 @@ mod tests {
                     member: "m-1".parse().unwrap(),
                 },
                 json!({ "kind": "member_joined", "member": "m-1" }),
+            ),
+            (
+                WorkspaceChange::MembersChanged,
+                json!({ "kind": "members_changed" }),
             ),
             (
                 WorkspaceChange::TaskChanged {
@@ -204,13 +228,14 @@ mod tests {
         let wire = json!({ "id": "w-1", "name": "Personal", "role": "owner", "member": "m-1" });
         let list = WorkspaceList {
             workspaces: vec![summary.clone()],
+            invitations: Vec::new(),
         };
         let create = WorkspaceCreate {
             name: "Team".to_owned(),
         };
 
         round_trips(&summary, wire.clone());
-        round_trips(&list, json!({ "workspaces": [wire] }));
+        round_trips(&list, json!({ "workspaces": [wire], "invitations": [] }));
         round_trips(&create, json!({ "name": "Team" }));
         round_trips(&WorkspaceRole::Owner, json!("owner"));
         round_trips(&WorkspaceRole::Member, json!("member"));

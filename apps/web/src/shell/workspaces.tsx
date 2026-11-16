@@ -1,8 +1,7 @@
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
-import { useAsk } from "../api/ask.ts";
-import { type Loading, answered, useLoaded } from "../api/loaded.ts";
+import { answered, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { workspaceOf } from "../chat-ref.ts";
 import { useChatAccess } from "../chat/access.ts";
@@ -12,8 +11,8 @@ import type { Log } from "../log.ts";
 import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
-import { useNames } from "../members/use-names.ts";
-import type { ChatId, MachineId, WorkspaceId, WorkspaceList, WorkspaceSummary } from "../protocol.ts";
+import { useMembers, useNames } from "../members/use-names.ts";
+import type { ChatId, MachineId, WorkspaceId, WorkspaceSummary } from "../protocol.ts";
 import { NewChat, StartMissing } from "../new-chat/new-chat.tsx";
 import { readiness } from "../new-chat/start.ts";
 import { ProposalsPage } from "../proposals/proposals-page.tsx";
@@ -24,27 +23,36 @@ import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
 import { Frame } from "./frame.tsx";
+import { Landing } from "./landing.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { type Place, placeOf, searchOf } from "./place.ts";
+import { WorkspaceMenu } from "./workspace-menu.tsx";
 import { type WorkspaceSocket, useOffers, useSocketFor } from "./workspace-socket.ts";
+
+/** The open workspace, as a page shown over it, such as Settings, sees it. */
+export type OpenWorkspace = { workspace: WorkspaceSummary; socket: WorkspaceSocket; left(notice: string): void };
 
 /**
  * The signed-in person's workspaces, and the one `?workspace=` names, or else the last one opened
- * here, open on its feed with a selector in the header; `who` is the header's account part. A
- * `page`, such as Settings, shows in their place while they stay open beneath it, given the open
- * workspace's socket.
+ * here, open on its feed with a selector at the foot of its sidebar; `who` is the header's account
+ * part. A `page`, such as Settings, shows in their place while they stay open beneath it. When the
+ * server stops letting the person into `left`'s workspace, it closes, and the landing says why.
  */
 export function Workspaces({
   api,
   log,
   who,
+  email,
+  left,
   page,
   openSettings,
 }: {
   api: Api;
   log: Log;
   who: ReactNode;
-  page?: ((socket: WorkspaceSocket | undefined) => ReactNode) | undefined;
+  email: string;
+  left: { workspace: WorkspaceId } | undefined;
+  page?: ((open: OpenWorkspace | undefined) => ReactNode) | undefined;
   /** Opens Settings, where the person pairs machines and signs agents in. */
   openSettings(machine?: MachineId): void;
 }) {
@@ -53,6 +61,7 @@ export function Workspaces({
   const { open, place, choose, go } = useOpenWorkspace();
   const workspace = list?.find(({ id }) => id === open);
   const socket = useSocketFor(workspace?.id);
+  const [notice, setNotice] = useState<string>();
   // Whether the list is on screen when a workspace made from it arrives, so one made after the
   // person moved on doesn't pull them back, and one made before they came back does open.
   const listing = useRef(false);
@@ -64,30 +73,49 @@ export function Workspaces({
       listing.current = false;
     };
   }, [shown, covered]);
-  const selector = list !== undefined && workspace !== undefined && (
-    <span className="selector">
-      <select aria-label="Workspace" value={workspace.id} onChange={(event) => choose(event.target.value)}>
-        {list.map(({ id, name }) => (
-          <option key={id} value={id}>
-            {name}
-          </option>
-        ))}
-      </select>
-      <button type="button" onClick={() => choose(undefined)}>
-        All workspaces
-      </button>
-    </span>
-  );
+  // A workspace left goes from the list, which then shows in its place, saying why.
+  const leave = (text: string) => {
+    setNotice(text);
+    void loaded.load();
+  };
+  // The one the person chose to leave, whose refusals that follow are no news.
+  const departed = useRef<WorkspaceId>(undefined);
+  useEffect(() => {
+    if (left !== undefined && left.workspace !== departed.current) {
+      const name = list?.find(({ id }) => id === left.workspace)?.name;
+      leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
+    }
+  }, [left]);
+  // A workspace opened again is one the person is back in, so leaving it is news once more.
+  const pick = (id: WorkspaceId | undefined) => {
+    if (id === departed.current) {
+      departed.current = undefined;
+    }
+    setNotice(undefined);
+    choose(id);
+  };
+  const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={pick} />;
+  const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
+          departed.current = workspace.id;
+          leave(text);
+        },
+      } : undefined;
   return (
-    <Frame middle={page === undefined && selector} right={who}>
+    <Frame right={who}>
       <div className={page === undefined ? "pane" : "pane away"}>
         {workspace !== undefined && socket !== undefined ? (
-          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} />
+          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} menu={menu} />
         ) : (
-          <AllWorkspaces api={api} loaded={loaded} listing={listing} choose={choose} />
+          <Landing
+            api={api}
+            loaded={loaded}
+            listing={listing}
+            notice={notice}
+            choose={pick}
+          />
         )}
       </div>
-      {page !== undefined && <div className="pane">{page(socket)}</div>}
+      {page !== undefined && <div className="pane">{page(opened)}</div>}
     </Frame>
   );
 }
@@ -131,80 +159,6 @@ function placeIn(search: string): Place {
   return workspaceOf(search) === undefined ? { view: "chats" } : placeOf(search);
 }
 
-// Every workspace, to open one, and a form to make another.
-function AllWorkspaces({
-  api,
-  loaded,
-  listing,
-  choose,
-}: {
-  api: Api;
-  loaded: Loading<WorkspaceList>;
-  listing: RefObject<boolean>;
-  choose(id: WorkspaceId): void;
-}) {
-  const list = loaded.value?.workspaces;
-  return (
-    <section className="page workspaces">
-      <h1>Workspaces</h1>
-      {loaded.loading && <p className="muted">Loading</p>}
-      {list !== undefined && (
-        <ul>
-          {list.map(({ id, name, role }) => (
-            <li key={id}>
-              <button type="button" onClick={() => choose(id)}>
-                {name}
-              </button>
-              {role === "owner" && <span className="muted">Owner</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-      {loaded.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
-      {list !== undefined && (
-        <NewWorkspace
-          api={api}
-          made={(made) => {
-            loaded.change((before) => ({ workspaces: [...(before?.workspaces ?? []), made] }));
-            if (listing.current) {
-              choose(made.id);
-            }
-          }}
-        />
-      )}
-    </section>
-  );
-}
-
-function NewWorkspace({ api, made }: { api: Api; made(workspace: WorkspaceSummary): void }) {
-  const [name, setName] = useState("");
-  const { busy, problem, ask } = useAsk();
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        void ask(
-          () => api.createWorkspace(name),
-          (workspace) => {
-            setName("");
-            made(workspace);
-          },
-        );
-      }}
-    >
-      <h2>New workspace</h2>
-      <label>
-        Name
-        <input required value={name} onChange={(event) => setName(event.target.value)} />
-      </label>
-      <button type="submit" disabled={busy}>
-        Create
-      </button>
-      {problem !== undefined && <p role="alert">{problem}</p>}
-    </form>
-  );
-}
-
 type Open = {
   api: Api;
   workspace: WorkspaceSummary;
@@ -213,6 +167,8 @@ type Open = {
   place: Place;
   go(place: Place): void;
   openSettings(machine?: MachineId): void;
+  /** The workspace selector, at the sidebar's foot. */
+  menu: ReactNode;
 };
 
 /** The open workspace on its feed: its sections, and its chats or the section `place` names. */
@@ -221,7 +177,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
   const status = useFeed(workspace.id, api, socket, log);
   // Whether the server serves chats, known once the feed is welcomed.
   const { read, send } = useChatAccess(socket);
-  const names = useNames(api, workspace.id, socket);
+  const names = useNames(useMembers(api, workspace.id, socket));
   const served = useSections(socket);
   const searches = useOffers(socket, "workspace.search");
   const palette = (chatMachine?: MachineId) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
@@ -233,6 +189,7 @@ function Workspace({ log, ...open }: Open & { log: Log }) {
       {palette()}
       <div className="side">
         <Sections {...open} />
+        {open.menu}
       </div>
       <section>
         <Heading title={TITLES[place.view]} status={status} />
@@ -306,6 +263,7 @@ function WorkspaceChats({
   names,
   palette,
   openSettings,
+  menu,
   tasksServed,
 }: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: MachineId): ReactNode; tasksServed: boolean }) {
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
@@ -350,6 +308,7 @@ function WorkspaceChats({
           }
           missing={<StartMissing ready={ready} problem={machines.problem} check={() => void machines.load()} openSettings={openSettings} />}
         />
+        {menu}
       </div>
       <section>
         <Heading title={newChat !== undefined ? "New chat" : (open?.title ?? workspace.name)} status={status} />

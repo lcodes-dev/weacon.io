@@ -187,7 +187,7 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap();
-        w1.unlink(&member_id("m1")).await;
+        w1.leave(&member_id("m1")).await.unwrap();
 
         let log = ClientLog {
             level: Level::Info,

@@ -2,11 +2,13 @@ mod chats;
 mod codes;
 mod cores;
 mod search;
+mod team;
 
 pub(crate) use chats::{CHAT_TASKS, CHATS};
 pub(crate) use codes::PLAIN_CODES;
 pub(crate) use cores::CORE_BUILDS;
 pub(crate) use search::{SEARCH, SEARCH_CHATS};
+pub(crate) use team::INVITATIONS;
 
 pub(crate) const WORKSPACES: &str = "
 CREATE TABLE workspaces (

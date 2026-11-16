@@ -161,13 +161,15 @@ impl Fixture {
         drop(self.shared.sign_ins.acquire_many(every).await.unwrap());
     }
 
-    /// Who each printed mail that no test has taken is for, and the code in it.
+    /// Who each printed sign-in mail that no test has taken is for, and the code in it.
     pub(crate) fn letters(&self) -> Vec<(String, String)> {
         let records = self.records.lock().unwrap();
-        let mails = records.iter().filter(|record| record.msg == "mail printed");
         let text = |record: &weacon_observability::Record, key: &str| {
             record.fields[key].as_str().unwrap().to_owned()
         };
+        let mails = records.iter().filter(|record| {
+            record.msg == "mail printed" && text(record, "subject") == sign_in::SUBJECT
+        });
         mails
             .skip(self.taken.load(Ordering::Relaxed))
             .map(|mail| (text(mail, "to"), code_in(&text(mail, "text"))))

@@ -28,6 +28,8 @@ use crate::shared::Shared;
 use crate::sign_up;
 use crate::workspaces;
 
+/// The subject of the mail that carries a code.
+pub(crate) const SUBJECT: &str = "Your Weacon sign-in code";
 /// How long a mailed code works, in seconds.
 pub(crate) const CODE_LIFETIME: i64 = 10 * 60;
 /// How long a session lasts, in seconds.
@@ -114,9 +116,7 @@ async fn send_code(
             shown(&code),
             CODE_LIFETIME / 60
         );
-        shared
-            .log
-            .mail(email.as_str(), "Your Weacon sign-in code", &text);
+        shared.log.mail(email.as_str(), SUBJECT, &text);
     }
     Ok(())
 }
