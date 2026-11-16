@@ -69,29 +69,6 @@ pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
     file.lock()
 }
 
-/// Bytes this user may still write on the disk holding `dir`.
-#[expect(unsafe_code, reason = "GetDiskFreeSpaceExW has no safe API in std")]
-pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-
-    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
-    let mut available = 0_u64;
-    // SAFETY: `wide` is NUL-terminated, `available` is writable and the totals may be null.
-    let done = unsafe {
-        GetDiskFreeSpaceExW(
-            wide.as_ptr(),
-            &raw mut available,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    };
-    if done == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(available)
-}
-
 /// Creates `dir`, making it private if it's new; parents get the access they inherit.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     let new = !dir.exists();

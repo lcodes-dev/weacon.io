@@ -5,7 +5,6 @@ use weacon_protocol::AgentKind;
 
 mod beneath;
 mod chrome;
-mod procs;
 mod programs;
 mod spawn_policy;
 mod terminal_app;
@@ -16,7 +15,6 @@ mod windows;
 
 pub(crate) use beneath::open_beneath;
 pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
-pub(crate) use procs::{PROCESSES, Process, processes};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::{plant_link, plant_program};
@@ -120,8 +118,6 @@ pub(crate) fn agent_homes(env: Env<'_>) -> Vec<(AgentKind, PathBuf)> {
 
 #[cfg(test)]
 mod tests {
-    use weacon_testing::TempDir;
-
     use super::*;
     use crate::test_support::env;
 
@@ -236,13 +232,5 @@ mod tests {
         assert_eq!(state(&[home, ("XDG_STATE_HOME", "state")]), default);
         assert_eq!(state(&[home, ("WEACON_STATE_DIR", "")]), default);
         assert_eq!(state(&[]), None);
-    }
-
-    #[test]
-    fn free_space_is_read_for_a_folder_and_refused_for_a_missing_one() {
-        let dir = TempDir::new().unwrap();
-
-        assert!(free_space(&dir).unwrap() > 0);
-        free_space(&dir.join("missing")).unwrap_err();
     }
 }
