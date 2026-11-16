@@ -1,18 +1,36 @@
+/* The tasks as one raised table, a row each. */
 .tasks ul {
   list-style: none;
   margin: 0 0 16px;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-width: 72ch;
+  max-width: 880px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .tasks li {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tasks li:last-child {
+  border-bottom: none;
+}
+
+.tasks li select {
+  font-size: 12px;
+  color: var(--ink-2);
+  background: var(--surface-2);
+  border-color: transparent;
+  border-radius: 11px;
 }
 
 .tasks li form,
@@ -25,8 +43,14 @@
 .tasks li .title {
   flex: 1;
   text-align: left;
+  font-size: 13px;
+  background: transparent;
   border-color: transparent;
   overflow-wrap: anywhere;
+}
+
+.tasks li .title:hover {
+  background: var(--hover);
 }
 
 .tasks .title.done {
@@ -45,12 +69,11 @@
 }
 
 .new-task {
-  max-width: 72ch;
+  max-width: 880px;
 }
 
 .tasks li.shown {
-  background: var(--line);
-  border-radius: 6px;
+  background: var(--violet-soft);
 }
 
 @media (max-width: 720px) {
