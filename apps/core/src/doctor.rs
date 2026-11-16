@@ -8,7 +8,6 @@ use weacon_protocol::code;
 use crate::app::{App, runtime, state_unavailable};
 use crate::machine::{self, Paired};
 use crate::workspaces::{Workspaces, sign_ins};
-use crate::{disk, platform};
 
 /// Prints the build and where this install keeps its state, and fails when it has nowhere to.
 pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
@@ -21,7 +20,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
             .because(error)
         })
     };
-    print(report(app, platform::free_space))?;
+    print(report(app))?;
     if let Some(dir) = &app.state_dir {
         print(pairing(&app.log, machine::read(dir)))?;
         let runtime = runtime()?;
@@ -61,7 +60,7 @@ fn or_unavailable(log: &Logger, lines: io::Result<String>) -> String {
     })
 }
 
-fn report(app: &App, free_space: disk::FreeSpace) -> String {
+fn report(app: &App) -> String {
     let path = |path: Option<&Path>| {
         path.map_or_else(
             || "unavailable".to_owned(),
@@ -70,13 +69,8 @@ fn report(app: &App, free_space: disk::FreeSpace) -> String {
     };
     let on = app.reporter.is_on() && app.reporter.agreed();
     let reports = if on { "on" } else { "off" };
-    let disk = app
-        .state_dir
-        .as_deref()
-        .and_then(|dir| free_space(dir).ok())
-        .map_or_else(|| "unavailable".to_owned(), disk::describe);
     format!(
-        "weacon {}\nState folder: {}\nLog file: {}\nDisk: {disk}\nError reports: {reports}\n{}",
+        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n{}",
         app.version.with_commit(),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
@@ -125,7 +119,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(out).unwrap(),
             format!(
-                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nDisk: unavailable\nError reports: off\n"
+                "weacon 0.1.0 (1a2b3c4)\nState folder: {state}\nLog file: /srv/weacon/logs/weacon.log\nError reports: off\n"
             )
         );
     }
@@ -172,13 +166,6 @@ mod tests {
     }
 
     #[test]
-    fn prints_the_state_folders_free_space() {
-        let text = report(&app(Some("/srv"), None), |_| Ok(3 << 30));
-
-        assert!(text.contains("\nDisk: 3072 MiB free (low)\n"));
-    }
-
-    #[test]
     fn reports_are_on_only_with_a_dsn_and_consent() {
         let mut app = app(Some("/srv"), None);
         let reports = weacon_observability::Reports::new(
@@ -192,14 +179,14 @@ mod tests {
             false,
             Box::new(|_| Ok(())),
         ));
-        let without_consent = report(&app, platform::free_space);
+        let without_consent = report(&app);
         app.reporter.set_agreed(true);
 
         assert!(
             without_consent.contains("Error reports: off\n"),
             "{without_consent}"
         );
-        assert!(report(&app, platform::free_space).contains("Error reports: on\n"));
+        assert!(report(&app).contains("Error reports: on\n"));
     }
 
     #[test]
@@ -214,7 +201,7 @@ mod tests {
             oom_score_adj: Some(500),
         };
 
-        assert!(report(&app, platform::free_space).ends_with(
+        assert!(report(&app).ends_with(
             "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
         ));
     }
