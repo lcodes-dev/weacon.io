@@ -2,7 +2,6 @@
 //! about a workspace goes through its [`Workspace`] handle.
 
 mod account;
-mod backup;
 mod changes;
 mod chats;
 mod docs;
@@ -33,7 +32,6 @@ use weacon_observability::Fault;
 use weacon_protocol::{AccountId, AgentOwner, AgentRef, Author, MemberId, WorkspaceId, code};
 
 pub(crate) use account::{Account, NewWorkspace};
-pub(crate) use backup::restore;
 pub(crate) use machine::{Claim, Claiming, Confirmation, NewPairing};
 pub(crate) use proposals::Proposed;
 pub(crate) use sign_in::{Attempt, NewChallenge};

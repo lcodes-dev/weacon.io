@@ -226,29 +226,4 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
-
-    #[test]
-    fn a_backup_restores_a_workspace() {
-        let db = TempDir::new().unwrap();
-        let workspace = admin(&["create-workspace", "--name", "Team"], &db);
-        let member = admin(
-            &[
-                "add-member",
-                "--workspace",
-                &workspace,
-                "--email",
-                "ada@example.com",
-            ],
-            &db,
-        );
-        admin(&["backup", "--to", "backup.db"], &db);
-        let restored = TempDir::new().unwrap();
-        let backup = db.join("backup.db");
-        admin(&["restore", "--from", backup.to_str().unwrap()], &restored);
-
-        assert_eq!(
-            admin(&["members", "--workspace", &workspace], &restored),
-            format!("{member} ada@example.com")
-        );
-    }
 }

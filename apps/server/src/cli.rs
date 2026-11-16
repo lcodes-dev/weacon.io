@@ -92,20 +92,6 @@ pub(crate) enum AdminCommand {
         #[arg(long)]
         workspace: WorkspaceId,
     },
-    /// Copy the database to a new file while the server runs, and check the copy.
-    Backup {
-        #[arg(long)]
-        db: PathBuf,
-        #[arg(long)]
-        to: PathBuf,
-    },
-    /// Check a backup and copy it to a new database file, with the server stopped.
-    Restore {
-        #[arg(long)]
-        from: PathBuf,
-        #[arg(long)]
-        db: PathBuf,
-    },
 }
 
 /// The command line, or the help, version or error text clap would print instead.
@@ -233,7 +219,6 @@ mod tests {
                 email: "a@b.example".to_owned(),
             })
         );
-        run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
         let bad_id = [
             "weacon-server",
             "members",

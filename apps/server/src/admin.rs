@@ -5,7 +5,7 @@ use weacon_protocol::{AccountId, MemberId, WorkspaceId, code};
 
 use crate::app::fresh;
 use crate::cli::AdminCommand;
-use crate::db::{self, Db};
+use crate::db::Db;
 use crate::email::Email;
 use crate::workspaces::workspace_name;
 
@@ -50,13 +50,6 @@ pub(crate) async fn run(
             })
             .await
         }
-        AdminCommand::Backup { db, to } => {
-            closed(Db::open(&db).await?, async |db| {
-                db.backup(&to).await.map(|()| String::new())
-            })
-            .await
-        }
-        AdminCommand::Restore { from, db } => db::restore(&from, &db).await.map(|()| String::new()),
     }?;
     out.write_all(printed.as_bytes()).map_err(|error| {
         Fault::new(code!("output.failed"), "The output couldn't be written").because(error)
@@ -181,28 +174,6 @@ mod tests {
         assert_eq!(added, "id1\n");
         assert_eq!(again.code().as_str(), "db.exists");
         assert_eq!(invalid.code().as_str(), "email.invalid");
-    }
-
-    #[tokio::test]
-    async fn backups_neither_print_nor_overwrite() {
-        let dir = TempDir::new().unwrap();
-        let (db, backup) = (dir.join("weacon.db"), dir.join("backup.db"));
-        Db::create(&db).await.unwrap();
-        let to_backup = || AdminCommand::Backup {
-            db: db.clone(),
-            to: backup.clone(),
-        };
-        let printed = admin(to_backup()).await.unwrap();
-        let again = admin(to_backup()).await.unwrap_err();
-        let restored = admin(AdminCommand::Restore {
-            from: backup.clone(),
-            db: dir.join("restored.db"),
-        })
-        .await
-        .unwrap();
-
-        assert_eq!((printed, restored), (String::new(), String::new()));
-        assert_eq!(again.code().as_str(), "db.file_exists");
     }
 
     #[tokio::test]
@@ -333,9 +304,9 @@ mod tests {
             })
             .await
             .unwrap_err(),
-            admin(AdminCommand::Restore {
-                from: dir.join("MARKER-PATH.db"),
-                db: dir.join("restored.db"),
+            admin(AdminCommand::Members {
+                db: dir.join("MARKER-PATH.db"),
+                workspace: workspace_id("id1"),
             })
             .await
             .unwrap_err(),
