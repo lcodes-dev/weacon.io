@@ -87,7 +87,7 @@ impl<A: Agent> Engine<A> {
                 self.prompt(key, queued, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
-            ChatAction::Interrupt => self.interrupt(key, request).await,
+            ChatAction::Interrupt => self.interrupt(key, request, author.as_ref()).await,
             // A hold is taken before the log, by `command_from`, and only the server takes a
             // message to a chat's people.
             ChatAction::Say { .. } | ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {
@@ -189,14 +189,28 @@ impl<A: Agent> Engine<A> {
         self.running_again(key, &run).await
     }
 
-    // Bound to the turn it stops, so it never stops a later one.
-    async fn interrupt(&mut self, key: &ChatKey, request: RequestId) -> Result<(), Fault> {
+    // Bound to the turn it stops, so it never stops a later one. One `by` a member ends only a
+    // turn whose prompt they wrote; one with no member is the machine's owner's, and ends any.
+    async fn interrupt(
+        &mut self,
+        key: &ChatKey,
+        request: RequestId,
+        by: Option<&MemberId>,
+    ) -> Result<(), Fault> {
         // While its run starts, a chat's turn is the prompt that run will take first.
         let starting = self.is_launching(key).then(|| self.runs.of(key)).flatten();
         let first = starting.and_then(|record| record.queue.first());
         let turn = self
             .turn(key)
             .or_else(|| first.map(|queued| queued.request.clone()));
+        if let (Some(by), Some(turn)) = (by, &turn)
+            && self.open(key).await?.log.author(turn) != Some(by)
+        {
+            return Err(Fault::new(
+                code!("chat.not_owner"),
+                "Only who called this turn or the machine's owner can stop it",
+            ));
+        }
         self.commit_receipt(key, &request, Outcome::Completed)
             .await?;
         self.open(key)
@@ -572,6 +586,85 @@ mod tests {
         let refused = on.engine.command(&key(), allow_one("r-2").0).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "agent.no_such_prompt");
+    }
+
+    // `command` as the server relays it from `member`.
+    fn from(member: &str, mut command: ChatCommand) -> ChatCommand {
+        command.by = Some(weacon_protocol::Asker {
+            account: "a-9".parse().unwrap(),
+            member: member.parse().unwrap(),
+        });
+        command
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_members_stop_ends_only_a_turn_they_called_and_the_owners_any() {
+        // Grace's stop arrives behind Ada's prompt; then Ada's own, or the owner's.
+        for rightful in [Some("m-1"), None] {
+            let (mut bench, mut engine) = parts();
+            let called = from("m-1", prompt("r-1", "Hi"));
+            engine.command(&key(), called).await.unwrap();
+            launched(&mut engine).await;
+            let mut agent = soon(bench.started.recv()).await.unwrap();
+            assert_eq!(
+                soon(agent.told.recv()).await,
+                Some(Told::Send("Hi".to_owned()))
+            );
+
+            // Nor does a prompt of hers under the turn's own request make it hers.
+            let again = from("m-2", prompt("r-1", "Mine"));
+            engine.command(&key(), again).await.unwrap();
+            let stop = from("m-2", command("r-2", "c-1", ChatAction::Interrupt));
+            let refused = engine.command(&key(), stop).await;
+
+            assert_eq!(refused.unwrap_err().code().as_str(), "chat.not_owner");
+            assert_eq!(soon(agent.told.recv()).await, None, "{rightful:?}");
+            let log = &engine.open(&key()).await.unwrap().log;
+            assert!(!log.has_receipt(&"r-2".parse().unwrap()));
+            let stop = command("r-3", "c-1", ChatAction::Interrupt);
+            let stop = match rightful {
+                Some(member) => from(member, stop),
+                None => stop,
+            };
+            engine.command(&key(), stop).await.unwrap();
+            assert_eq!(soon(agent.told.recv()).await, Some(Told::Interrupt));
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stop_before_a_run_has_started_is_for_the_prompt_it_will_take_first() {
+        let (_bench, mut engine) = parts();
+        let called = from("m-1", prompt("r-1", "Hi"));
+        engine.command(&key(), called).await.unwrap();
+
+        let hers = from("m-2", command("r-2", "c-1", ChatAction::Interrupt));
+        let refused = engine.command(&key(), hers).await;
+        let own = from("m-1", command("r-3", "c-1", ChatAction::Interrupt));
+        let taken = engine.command(&key(), own).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.not_owner");
+        taken.unwrap();
+        let log = &engine.open(&key()).await.unwrap().log;
+        let receipts = ["r-2", "r-3"].map(|request| log.has_receipt(&request.parse().unwrap()));
+        assert_eq!(receipts, [false, true]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_begun_on_the_machine_is_stopped_by_its_owner_alone() {
+        let mut on = on_turn().await;
+        assert_eq!(
+            soon(on.agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+
+        let stop = from("m-2", command("r-2", "c-1", ChatAction::Interrupt));
+        let refused = on.engine.command(&key(), stop).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.not_owner");
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        let stop = command("r-3", "c-1", ChatAction::Interrupt);
+        on.engine.command(&key(), stop).await.unwrap();
+        assert_eq!(soon(on.agent.told.recv()).await, Some(Told::Interrupt));
     }
 
     #[tokio::test(start_paused = true)]

@@ -11,8 +11,8 @@ use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, MachineShares,
-    Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
+    AccountId, App, Capability, ChatAction, ChatCommand, Code, Envelope, ErrorBody, Hello,
+    MachineShares, Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
 };
 
 use self::asking::{Asking, asking, for_members};
@@ -305,7 +305,7 @@ impl Uplink {
             return reply(failure(envelope.id, code!("machine.not_owner")));
         }
         if ChatLink::is_for(&envelope.message) {
-            return link.chats.take(envelope);
+            return link.chats.take(owners_stop(envelope, owner));
         }
         let id = envelope.id;
         let taken = if let Message::TerminalCommand(command) = &envelope.message {
@@ -321,6 +321,18 @@ impl Uplink {
             reply(for_now(id, code!("uplink.busy")))
         }
     }
+}
+
+// A stop from the machine's owner goes on as one made on the machine itself, with no member:
+// the chats let that end any turn, and a member's only a turn they called.
+fn owners_stop(mut envelope: Envelope, owner: &AccountId) -> Envelope {
+    if let Message::ChatCommand(command) = &mut envelope.message
+        && matches!(command.action, ChatAction::Interrupt)
+        && command.by.as_ref().is_some_and(|by| by.account == *owner)
+    {
+        command.by = None;
+    }
+    envelope
 }
 
 impl Uplink {
@@ -626,6 +638,28 @@ mod tests {
             return None;
         };
         Some((request.as_str(), code.as_str()))
+    }
+
+    #[test]
+    fn the_owners_stop_goes_on_as_the_machines_own_and_a_members_under_their_name() {
+        let owner = AccountId::try_from("a-1".to_owned()).unwrap();
+        let other = AccountId::try_from("a-other".to_owned()).unwrap();
+        let by = |envelope: Envelope| {
+            let Message::ChatCommand(command) = envelope.message else {
+                panic!("not a chat command");
+            };
+            command.by.map(|by| by.account)
+        };
+
+        assert_eq!(by(owners_stop(command("r-1", Some(&owner)), &owner)), None);
+        let members = owners_stop(command("r-2", Some(&other)), &owner);
+        assert_eq!(by(members), Some(other));
+        // Anything else of the owner's keeps their name, as a prompt must.
+        let mut held = command("r-3", Some(&owner));
+        if let Message::ChatCommand(command) = &mut held.message {
+            command.action = ChatAction::Hold;
+        }
+        assert_eq!(by(owners_stop(held, &owner)), Some(owner));
     }
 
     #[tokio::test]
