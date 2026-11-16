@@ -133,7 +133,9 @@ mod tests {
 
     use super::super::by_hand::{OnTurn, hear, launched, on_ask, on_turn};
     use super::*;
-    use crate::chats::test_support::{FakeAgent, Told, chat, key, prompt, run, session, soon};
+    use crate::chats::test_support::{
+        FakeAgent, Told, chat, key, parts, prompt, run, session, soon,
+    };
     use crate::runs::Queued;
 
     // Makes chat `c-1`'s last turn start or end `ago` seconds before now.
