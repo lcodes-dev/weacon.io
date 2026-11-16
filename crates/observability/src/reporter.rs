@@ -1,7 +1,6 @@
-//! Decides whether each report goes out, and hands it to the sender.
+//! Hands each report to the sender, when reports are on.
 
 use std::error::Error;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use weacon_protocol::Code;
 
@@ -10,60 +9,36 @@ use crate::{Clock, Fault, Field, Logger, Reports, Upload};
 /// Delivers one report; the real one POSTs it, tests record it.
 pub type Deliver = Box<dyn Fn(&Upload) -> Result<(), Fault> + Send + Sync>;
 
-/// Gives each report a new random id.
-pub type NewId = Box<dyn Fn() -> u128 + Send + Sync>;
-
-/// Sends error reports when a DSN is set and the person has agreed, and does nothing otherwise.
+/// Sends error reports when whoever runs the program set an endpoint, and does nothing
+/// otherwise.
 pub struct Reporter {
     reports: Option<Reports>,
-    agreed: AtomicBool,
     deliver: Deliver,
-    new_id: NewId,
     now: Clock,
 }
 
 impl Reporter {
-    /// `agreed` is whether the person has agreed to send reports; where there is no one to
-    /// ask, as on a team's own server, it is `true`.
     #[must_use]
-    pub fn new(
-        reports: Option<Reports>,
-        agreed: bool,
-        deliver: Deliver,
-        new_id: NewId,
-        now: Clock,
-    ) -> Self {
+    pub fn new(reports: Option<Reports>, deliver: Deliver, now: Clock) -> Self {
         Self {
             reports,
-            agreed: AtomicBool::new(agreed),
             deliver,
-            new_id,
             now,
         }
     }
 
-    /// Whether reports can be sent at all: a DSN is set.
+    /// Whether an endpoint is set.
     #[must_use]
     pub const fn is_on(&self) -> bool {
         self.reports.is_some()
     }
 
-    /// Records the person's answer, which the next error goes by.
-    pub fn set_agreed(&self, agreed: bool) {
-        self.agreed.store(agreed, Ordering::Relaxed);
-    }
-
-    #[must_use]
-    pub fn agreed(&self) -> bool {
-        self.agreed.load(Ordering::Relaxed)
-    }
-
     /// Reports `error` under `code`; a report that can't be sent is logged and dropped.
     pub fn capture_error<E: Error + 'static>(&self, error: &E, code: &Code, log: &Logger) {
-        let Some(reports) = self.reports.as_ref().filter(|_| self.agreed()) else {
+        let Some(reports) = &self.reports else {
             return;
         };
-        let upload = reports.upload(error, code, (self.new_id)(), (self.now)());
+        let upload = reports.upload(error, code, (self.now)());
         if let Err(error) = (self.deliver)(&upload) {
             log.warn("report failed", &[("err", Field::error(&error))]);
         }
@@ -72,11 +47,10 @@ impl Reporter {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use weacon_protocol::code;
+    use weacon_protocol::{App, code};
 
     use super::*;
     use crate::Level;
@@ -95,24 +69,17 @@ mod tests {
         (deliver, uploads)
     }
 
-    fn reporter(reports: Option<Reports>, deliver: Deliver) -> Reporter {
-        let next = AtomicU64::new(1);
+    fn reporter(on: bool, deliver: Deliver) -> Reporter {
+        let build = App {
+            name: "weacon-core".to_owned(),
+            version: "0.1.0".to_owned(),
+            commit: "1a2b3c4".to_owned(),
+        };
         Reporter::new(
-            reports,
-            true,
+            on.then(|| Reports::new("http://localhost:4318", build)),
             deliver,
-            Box::new(move || u128::from(next.fetch_add(1, Ordering::Relaxed))),
             Box::new(|| UNIX_EPOCH + Duration::from_hours(489_466)),
         )
-    }
-
-    fn reports() -> Option<Reports> {
-        Reports::new(
-            "https://public@sentry.example.com/42",
-            "weacon/0.1.0",
-            "weacon-core@0.1.0+1a2b3c4",
-        )
-        .ok()
     }
 
     fn fault() -> Fault {
@@ -120,9 +87,9 @@ mod tests {
     }
 
     #[test]
-    fn without_a_dsn_nothing_is_sent() {
+    fn without_an_endpoint_nothing_is_sent() {
         let (deliver, uploads) = recorder(false);
-        let reporter = reporter(None, deliver);
+        let reporter = reporter(false, deliver);
         reporter.capture_error(&fault(), &code!("store.full"), &capture(Level::Info).0);
 
         assert!(!reporter.is_on());
@@ -130,9 +97,9 @@ mod tests {
     }
 
     #[test]
-    fn with_a_dsn_each_error_is_sent_once_with_its_own_id_and_time() {
+    fn with_an_endpoint_each_error_is_sent_with_the_time() {
         let (deliver, uploads) = recorder(false);
-        let reporter = reporter(reports(), deliver);
+        let reporter = reporter(true, deliver);
         let (log, records) = capture(Level::Info);
         reporter.capture_error(&fault(), &code!("store.full"), &log);
         reporter.capture_error(&fault(), &code!("store.full"), &log);
@@ -141,20 +108,18 @@ mod tests {
 
         assert!(reporter.is_on());
         assert_eq!(uploads.len(), 2);
-        assert_ne!(uploads[0].body, uploads[1].body);
+        assert_eq!(uploads[0].url, "http://localhost:4318/v1/logs");
         assert!(
-            first.contains("00000000000000000000000000000001"),
+            first.contains(r#""timeUnixNano":"1762077600000000000""#),
             "{first}"
         );
-        assert!(first.contains("\"timestamp\":1762077600"), "{first}");
-        assert!(first.contains("weacon-core@0.1.0+1a2b3c4"), "{first}");
         assert!(records.lock().unwrap().is_empty());
     }
 
     #[test]
     fn a_report_that_cant_be_sent_is_logged() {
         let (deliver, _) = recorder(true);
-        let reporter = reporter(reports(), deliver);
+        let reporter = reporter(true, deliver);
         let (log, records) = capture(Level::Info);
         reporter.capture_error(&fault(), &code!("store.full"), &log);
         let records = records.lock().unwrap();
@@ -162,21 +127,5 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].msg, "report failed");
         assert_eq!(records[0].level, Level::Warn);
-    }
-
-    #[test]
-    fn nothing_is_sent_until_the_person_agrees() {
-        let (deliver, uploads) = recorder(false);
-        let reporter = reporter(reports(), deliver);
-        let log = capture(Level::Info).0;
-        reporter.set_agreed(false);
-        reporter.capture_error(&fault(), &code!("store.full"), &log);
-        let before = uploads.lock().unwrap().len();
-        reporter.set_agreed(true);
-        reporter.capture_error(&fault(), &code!("store.full"), &log);
-
-        assert_eq!(before, 0);
-        assert!(reporter.agreed());
-        assert_eq!(uploads.lock().unwrap().len(), 1);
     }
 }

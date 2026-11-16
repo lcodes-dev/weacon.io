@@ -77,8 +77,7 @@ mod tests {
     fn keeps_each_report_in_order() {
         let (deliver, uploads) = recording_deliver();
         let upload = |body: &str| Upload {
-            url: "https://sentry.example.com/api/1/envelope/".to_owned(),
-            auth: "Sentry sentry_key=key".to_owned(),
+            url: "http://localhost:4318/v1/logs".to_owned(),
             body: body.as_bytes().to_vec(),
         };
 

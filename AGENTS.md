@@ -10,7 +10,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 2. **Workspaces never mix.** An agent runs only with a sign-in from its chat's workspace. Every stored row carries its workspace id, references between rows include it in their foreign keys, and every query goes through the `db` module's workspace handle. Only a person's account and what belongs to them alone on the server, their sessions, email sign-in challenges and paired machines, are server-wide, and they hold no workspace content. A membership carries its workspace id and refers to its account by id; the `db` module's account handle reaches only that account's own rows and lists its memberships, and everything in a workspace goes through the workspace handle. Membership is checked on every request and by every open feed, so removing it ends access at once, open feeds included, and nothing one workspace sees reveals another.
 3. **Nothing listens publicly but the server.** The core only dials out: to the server, over TLS it verifies against a trusted or pinned certificate, never skipped, proving itself with the machine key it got at pairing. Its socket is reachable only by its user. Local HTTP, such as the MCP the core serves to its own runs, binds to 127.0.0.1 and checks a per-run token. The server's API, and its MCP endpoint for agents Weacon didn't start, accept only signed-in people, paired machines, and tokens a person granted for one workspace, with no more rights than theirs, that expire and can be revoked.
 4. **No content in logs or error reports.** Messages, prompts, agent output, file contents, diffs and credentials never reach a log line or an error report. The one exception: until the server sends mail itself, it prints each mail it would send, sign-in codes included, to its own log.
-5. **Every build is identifiable.** Every program reports its version and the commit it was built from, and logs and reports errors from its first commit.
+5. **Every build is identifiable.** Every program reports its version and the commit it was built from; the Rust programs log and report errors from their first commit.
 6. **Schemas first.** Every message that crosses a process boundary is a serde type in `crates/protocol` before it is used, and is parsed where it arrives. Until the first release every program is built from one commit, so a schema changes in place, both ends in one change: no variants, fields or checks kept for other builds, and a peer on another protocol version is refused at its hello. Enums carry a tag; no untagged unions.
 7. **Proposals, not writes.** Changes that agents or Weacon's AI make to docs and tasks arrive as proposals a person accepts.
 8. **Draft first, then review.** Every change reaches `main` through a PR, opened as a draft, unless the owner explicitly asks for something else. Once steps 1 to 7 of the definition of done pass, the agent marks it ready for review, which starts CodeRabbit's review, and fixes what it finds. Agents never merge.
@@ -48,7 +48,6 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - Only a `platform` module (`src/platform.rs` or `src/platform/`) selects an operating system with `cfg`; in the core that is `apps/core/src/platform`.
 - Only `crates/agents` starts agent processes.
 - `integrations/` holds only JSON and Markdown. Its text reaches people's agents, so it follows the UI copy rules and names no real project.
-- Only `crates/observability` depends on Sentry's crates.
 - No TODO or FIXME: finish the work, or leave the note out.
 
 ## Code style
@@ -66,7 +65,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 - **Refreshes** never clear what they refresh: fetch, then replace; show loading only when nothing is there yet; keep good data when a fetch fails.
 - **Command lines:** ids and paths are checked before they reach a command line, so none can be read as an option.
 - **Exit codes:** every Rust app ends through appkit's `App::finish`, which logs `app stopped` or `app failed` and exits 0 on success and 2 when a command fails. Help, the version and usage errors answer before the app starts, so they log nothing.
-- **App wiring is shared.** Startup, the root logger, log files, error reporting, signals, the runtime and the exit live in `crates/appkit`, their pure parts in `crates/observability`. A second app uses them and never copies the first one's. On people's devices a `Reporter` sends nothing until the person has agreed, so the core starts with agreement off; the server starts with it on, because its operator set the DSN.
+- **App wiring is shared.** Startup, the root logger, log files, error reporting, signals, the runtime and the exit live in `crates/appkit`, their pure parts in `crates/observability`. A second app uses them and never copies the first one's.
 - **Protocol messages:** one `Message` variant for each role a feature's messages play (a command, an event, a query, an answer), never one per action: actions are a tagged enum inside the body. Each body is a named struct in that feature's module, with a doc line saying who sends it. Ids are token newtypes made with `token_id!`, and a type that holds a secret has a `Debug` that hides it. A new command is `XCommand { action: XAction }` and a new query `XQuery { query: XQueryKind }`, each enum tagged `kind`. An optional field takes `#[serde(default, skip_serializing_if = "Option::is_none")]` and `#[schemars(with = "T")]`, so it is left out, never null.
 - **Subcommands:** one `Command` variant each, `Name(NameCommand)` when it nests, and one `module::run(&app, …)` call in `main.rs`; side effects such as `current_exe` stay inside the module.
 - **TypeScript apps** share one type generator and one pinned Node version, and take their version and commit by the rules of `crates/version`.
@@ -78,7 +77,7 @@ The default branch is `main`: start from it and open draft PRs against it. This 
 
 ## Logs, error reports and versions
 
-Every program logs, reports errors and says which build it is from its first commit, through `crates/observability` and `crates/version`.
+Every program says which build it is, and the Rust programs log and report errors, from their first commit, through `crates/observability` and `crates/version`.
 
 - **One logger.** Create a `Logger` once in each app and pass it down; take a `child` for a component or a request. No `println!`, `eprintln!` or `dbg!` anywhere: clippy rejects them.
 - **Start with the build.** Bind `name`, `version` and `commit` from `weacon_version::version!()` on the root logger, and log `app started` first.
@@ -88,10 +87,10 @@ Every program logs, reports errors and says which build it is from its first com
 - **Errors once.** Log an error where it is handled, as `("err", Field::error(&error))`, never again on the way up. Only a `Fault` keeps its message; other errors are described by type, code, I/O error kind and causes.
 - **Libraries' logs** through `log` or `tracing` reach the same sink with their level and target only; their messages are dropped.
 - **Levels.** `fatal`: about to exit. `error`: a person needs to look. `warn`: failed and handled. `info`: lifecycle, the default. `debug`: developer detail. `trace`: very noisy.
-- **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The server: stdout, one record per request (method, route template, status, duration, request id). The web app: forwarded to the server. The extension: forwarded to the core.
-- **Error reports** use the Sentry protocol, off without a DSN. On people's devices the core sends them only after the person agrees, and Settings can turn them off. The web app forwards its reports to the server, like its logs. `crates/observability` builds each report (`Reports::upload`) and the app sends it through `crates/appkit`, which only apps use; report errors with `capture_error` and a `code` tag, never messages. A DSN in `WEACON_SENTRY_DSN` turns them on. The release is `version!().release()`.
+- **Where logs go.** The core: rotated JSON lines in its state folder, and stderr in a terminal. CLI commands: warnings and errors on stderr, `--verbose` adds info. The server: stdout, one record per request (method, route template, status, duration, request id).
+- **Error reports** are OpenTelemetry log records, sent as OTLP/HTTP JSON to `/v1/logs` under the address in `OTEL_EXPORTER_OTLP_ENDPOINT`, and off unless whoever runs the program sets it. `crates/observability` builds each report (`Reports::upload`): the build, the error's code and its types, never a message. The app sends it through `crates/appkit`, which only apps use; report errors with `capture_error`.
 - **Versions** come only from `weacon_version::version!()`: `weacon --version`, `GET /version` on the server (`{"name", "version", "commit"}`, `Cache-Control: no-store`), Settings › About in the web app, and the extension's `version_name`.
-- **Tests.** Each app has a test that puts marker strings in a message, a token and a file path, triggers a log line and an error report, and checks that no marker reaches either.
+- **Tests.** Each Rust app has a test that puts marker strings in a message, a token and a file path, triggers a log line and an error report, and checks that no marker reaches either.
 
 ## Setup and commands
 

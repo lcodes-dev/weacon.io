@@ -1,98 +1,82 @@
-//! Builds error reports: a Sentry event for an error, ready to upload.
+//! Builds error reports: one OTLP log record for an error, as OTLP/HTTP JSON.
 
-use std::borrow::Cow;
 use std::error::Error;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use sentry_types::protocol::v7::{Envelope, Event, Exception, Map, Uuid, Values};
-use sentry_types::{Dsn, Scheme};
-use weacon_protocol::{Code, code};
+use serde_json::{Value, json};
+use weacon_protocol::{App, Code};
 
-use crate::errors::{ErrorInfo, Fault, describe_error};
+use crate::errors::describe_error;
 
-/// Where error reports go, from a Sentry DSN.
+const SEVERITY_ERROR: u8 = 17;
+
+/// Where error reports go, and the build they are from.
 #[derive(Clone, Debug)]
 pub struct Reports {
-    dsn: Dsn,
-    client: String,
-    release: String,
+    url: String,
+    build: App,
 }
 
-/// One report, ready to POST: the body goes to `url` with `auth` as `X-Sentry-Auth`.
+/// One report, ready to POST to `url` as `application/json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Upload {
     pub url: String,
-    pub auth: String,
     pub body: Vec<u8>,
 }
 
 impl Reports {
-    /// Reports from `client` running `release`.
-    ///
-    /// # Errors
-    /// When `dsn` isn't a valid DSN.
-    pub fn new(dsn: &str, client: &str, release: &str) -> Result<Self, Fault> {
-        let invalid = || {
-            Fault::new(
-                code!("report.dsn_invalid"),
-                "The DSN isn't a valid https DSN",
-            )
-        };
-        let dsn: Dsn = dsn
-            .trim()
-            .parse()
-            .map_err(|error| invalid().because(error))?;
-        if dsn.scheme() != Scheme::Https {
-            return Err(invalid());
+    /// Reports from `build` to the OTLP endpoint whose base URL is `endpoint`.
+    #[must_use]
+    pub fn new(endpoint: &str, build: App) -> Self {
+        Self {
+            url: format!("{}/v1/logs", endpoint.trim().trim_end_matches('/')),
+            build,
         }
-        Ok(Self {
-            dsn,
-            client: client.to_owned(),
-            release: release.to_owned(),
-        })
     }
 
-    /// A report of `error`, tagged with `code`, without any error message.
-    pub fn upload<E: Error + 'static>(
-        &self,
-        error: &E,
-        code: &Code,
-        event_id: u128,
-        time: SystemTime,
-    ) -> Upload {
-        let event = Event {
-            event_id: Uuid::from_u128(event_id),
-            timestamp: time,
-            release: Some(Cow::Owned(self.release.clone())),
-            exception: Values {
-                values: exceptions(&describe_error(error)),
-            },
-            tags: Map::from([("code".to_owned(), code.as_str().to_owned())]),
-            ..Event::default()
-        };
-        let mut envelope = Envelope::new();
-        envelope.add_item(event);
-        let mut body = Vec::new();
-        // Writing to a Vec can't fail.
-        drop(envelope.to_writer(&mut body));
+    /// A report of `error` under `code`: its types, never a message.
+    pub fn upload<E: Error + 'static>(&self, error: &E, code: &Code, time: SystemTime) -> Upload {
+        let info = describe_error(error);
+        let types: Vec<_> = std::iter::successors(Some(&info), |info| info.cause.as_deref())
+            .map(|info| info.name.as_deref().unwrap_or("Error"))
+            .collect();
+        let nanos = time
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let record = json!({
+            // OTLP/JSON writes 64-bit integers as decimal strings.
+            "timeUnixNano": nanos.to_string(),
+            "severityNumber": SEVERITY_ERROR,
+            "severityText": "ERROR",
+            "eventName": "exception",
+            "body": text(code.as_str()),
+            "attributes": [
+                attribute("exception.type", &types.join(": ")),
+                attribute("weacon.code", code.as_str()),
+            ],
+        });
+        let body = json!({ "resourceLogs": [{
+            "resource": { "attributes": [
+                attribute("service.name", &self.build.name),
+                attribute("service.version", &self.build.version),
+                attribute("vcs.ref.head.revision", &self.build.commit),
+            ] },
+            "scopeLogs": [{ "scope": { "name": "weacon" }, "logRecords": [record] }],
+        }] });
         Upload {
-            url: self.dsn.envelope_api_url().to_string(),
-            auth: self.dsn.to_auth(Some(&self.client)).to_string(),
-            body,
+            url: self.url.clone(),
+            body: body.to_string().into_bytes(),
         }
     }
 }
 
-// Sentry lists the root cause first and the error itself last.
-fn exceptions(info: &ErrorInfo) -> Vec<Exception> {
-    let mut chain: Vec<Exception> = std::iter::successors(Some(info), |info| info.cause.as_deref())
-        .map(|info| Exception {
-            ty: info.name.as_deref().unwrap_or("Error").to_owned(),
-            ..Exception::default()
-        })
-        .collect();
-    chain.reverse();
-    chain
+fn attribute(key: &str, value: &str) -> Value {
+    json!({ "key": key, "value": text(value) })
+}
+
+fn text(value: &str) -> Value {
+    json!({ "stringValue": value })
 }
 
 #[cfg(test)]
@@ -101,11 +85,10 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    use sentry_types::protocol::v7::{EnvelopeItem, Level};
+    use weacon_protocol::code;
 
     use super::*;
-
-    const DSN: &str = "https://public@sentry.example.com/42";
+    use crate::Fault;
 
     #[derive(Debug)]
     struct Leaky;
@@ -119,77 +102,74 @@ mod tests {
     impl Error for Leaky {}
 
     fn time() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_hours(489_466)
+        UNIX_EPOCH + Duration::from_hours(489_466)
     }
 
-    fn reports() -> Reports {
-        Reports::new(DSN, "weacon/0.1.0", "weacon-core@0.1.0+1a2b3c4").unwrap()
-    }
-
-    fn sent_event(upload: &Upload) -> Event<'static> {
-        let envelope = Envelope::from_slice(&upload.body).unwrap();
-        let Some(EnvelopeItem::Event(event)) = envelope.items().next() else {
-            panic!("the envelope holds no event");
+    fn reports(endpoint: &str) -> Reports {
+        let build = App {
+            name: "weacon-core".to_owned(),
+            version: "0.1.0".to_owned(),
+            commit: "1a2b3c4".to_owned(),
         };
-        event.clone().into_owned()
+        Reports::new(endpoint, build)
+    }
+
+    fn sent(upload: &Upload) -> Value {
+        serde_json::from_slice(&upload.body).unwrap()
     }
 
     #[test]
-    fn a_report_goes_to_the_dsn_with_its_auth() {
-        let reports = reports();
-        let upload = reports.upload(&Leaky, &code!("doctor.failed"), 7, time());
-
-        assert_eq!(upload.url, "https://sentry.example.com/api/42/envelope/");
-        assert!(upload.auth.contains("sentry_key=public"), "{}", upload.auth);
-        assert!(
-            upload.auth.contains("sentry_client=weacon/0.1.0"),
-            "{}",
-            upload.auth
-        );
+    fn a_report_goes_to_the_endpoints_logs_path() {
+        for endpoint in ["http://localhost:4318", " http://localhost:4318/ "] {
+            let upload = reports(endpoint).upload(&Leaky, &code!("doctor.failed"), time());
+            assert_eq!(upload.url, "http://localhost:4318/v1/logs");
+        }
+        let under = reports("https://otel.example.com/collector/");
+        let upload = under.upload(&Leaky, &code!("doctor.failed"), time());
+        assert_eq!(upload.url, "https://otel.example.com/collector/v1/logs");
     }
 
     #[test]
-    fn a_report_carries_ids_types_and_the_code_but_no_text() {
-        let reports = reports();
+    fn a_report_is_one_otlp_log_record_with_the_build_the_types_and_the_code_but_no_text() {
         let error = Fault::new(code!("store.full"), "The store is full").because(Leaky);
-        let upload = reports.upload(&error, &code!("store.full"), 7, time());
-        let event = sent_event(&upload);
-        let types: Vec<_> = event
-            .exception
-            .values
-            .iter()
-            .map(|ex| ex.ty.as_str())
-            .collect();
+        let upload = reports("http://localhost:4318").upload(&error, &code!("store.full"), time());
 
-        assert_eq!(event.event_id, Uuid::from_u128(7));
-        assert_eq!(event.timestamp, time());
-        assert_eq!(event.level, Level::Error);
-        assert_eq!(event.release.as_deref(), Some("weacon-core@0.1.0+1a2b3c4"));
         assert_eq!(
-            event.tags.get("code").map(String::as_str),
-            Some("store.full")
+            sent(&upload),
+            json!({ "resourceLogs": [{
+                "resource": { "attributes": [
+                    { "key": "service.name", "value": { "stringValue": "weacon-core" } },
+                    { "key": "service.version", "value": { "stringValue": "0.1.0" } },
+                    { "key": "vcs.ref.head.revision", "value": { "stringValue": "1a2b3c4" } },
+                ] },
+                "scopeLogs": [{ "scope": { "name": "weacon" }, "logRecords": [{
+                    "timeUnixNano": "1762077600000000000",
+                    "severityNumber": 17,
+                    "severityText": "ERROR",
+                    "eventName": "exception",
+                    "body": { "stringValue": "store.full" },
+                    "attributes": [
+                        { "key": "exception.type", "value": {
+                            "stringValue": "weacon_observability::errors::Fault: Error" } },
+                        { "key": "weacon.code", "value": { "stringValue": "store.full" } },
+                    ],
+                }] }],
+            }] })
         );
-        assert_eq!(types, ["Error", "weacon_observability::errors::Fault"]);
         assert!(!String::from_utf8_lossy(&upload.body).contains("MARKER"));
     }
 
     #[test]
     fn an_io_error_is_reported_by_its_type() {
-        let reports = reports();
         let error = io::Error::new(io::ErrorKind::NotFound, "/home/ada/MARKER-PATH");
-        let event = sent_event(&reports.upload(&error, &code!("doctor.failed"), 7, time()));
+        let upload =
+            reports("http://localhost:4318").upload(&error, &code!("doctor.failed"), time());
+        let body = String::from_utf8(upload.body).unwrap();
 
-        assert_eq!(event.exception.values.len(), 1);
-        assert_eq!(event.exception.values[0].ty, "std::io::error::Error");
-        assert_eq!(event.exception.values[0].value, None);
-    }
-
-    #[test]
-    fn an_invalid_dsn_is_refused() {
-        for dsn in ["not a dsn", "http://public@sentry.example.com/42"] {
-            let error = Reports::new(dsn, "weacon/0.1.0", "").unwrap_err();
-
-            assert_eq!(error.code().as_str(), "report.dsn_invalid");
-        }
+        assert!(
+            body.contains(r#""stringValue":"std::io::error::Error""#),
+            "{body}"
+        );
+        assert!(!body.contains("MARKER"), "{body}");
     }
 }

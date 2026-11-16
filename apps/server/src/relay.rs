@@ -448,7 +448,7 @@ mod tests {
             request: query.request,
             machine: query.machine,
             workspace: query.workspace,
-            action: MachineSettingsAction::SetReports { send: true },
+            action: MachineSettingsAction::SetShared { shared: true },
             by: query.by,
         })
     }
@@ -464,7 +464,6 @@ mod tests {
             machine: machine.clone(),
             workspace: workspace_id("w1"),
             answer: MachineSettingsAnswerKind::Current(MachineSettings {
-                reports: None,
                 access: AccessLevel::AskFirst,
                 team: false,
                 shared: false,

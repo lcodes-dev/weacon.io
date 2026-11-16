@@ -748,7 +748,7 @@ mod tests {
                 request: request.clone(),
                 machine: machine.clone(),
                 workspace: workspace.clone(),
-                action: MachineSettingsAction::SetReports { send: true },
+                action: MachineSettingsAction::SetShared { shared: true },
                 by: by.clone(),
             }),
             Message::SessionsQuery(SessionsQuery {

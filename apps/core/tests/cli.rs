@@ -21,7 +21,7 @@ mod tests {
         command
             .args(args)
             .env("WEACON_STATE_DIR", state_dir)
-            .env_remove("WEACON_SENTRY_DSN");
+            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT");
         command
     }
 

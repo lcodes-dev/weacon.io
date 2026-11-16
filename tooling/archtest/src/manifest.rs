@@ -196,7 +196,6 @@ mod tests {
                 ("weacon-protocol", None),
                 ("weacon-agents", Some(Kind::Dev)),
                 ("sqlx", None),
-                ("sentry-types", None),
                 ("tokio", None),
                 ("mio", Some(Kind::Dev)),
                 ("weacon-testing", Some(Kind::Dev)),
@@ -213,7 +212,6 @@ mod tests {
             [
                 "weacon-model: may not depend on weacon-agents",
                 "weacon-model: may not depend on sqlx; only weacon-core, weacon-server may",
-                "weacon-model: may not depend on sentry-types; only weacon-observability may",
                 "weacon-model: does no I/O, so it may not depend on tokio",
                 "weacon-model: may not depend on weacon-testing",
             ]

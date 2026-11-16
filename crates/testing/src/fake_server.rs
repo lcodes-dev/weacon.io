@@ -22,7 +22,6 @@ use crate::replay::{BUFFER, play};
 use crate::{fake_core, fake_diff, fake_symbols};
 
 const OFFERED: &[Capability] = &[
-    Capability::new(code!("log.forward")),
     Capability::new(code!("workspace.chats")),
     Capability::new(code!("workspace.chat_commands")),
     Capability::new(code!("diff.view")),
@@ -291,8 +290,8 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(30), texts(&mut client, expected.len()))
                 .await
                 .unwrap();
-        let log = r#"{"id":0,"type":"log","level":"warn","msg":"feed lost"}"#;
-        client.send(Frame::text(log)).await.unwrap();
+        let other = r#"{"id":0,"type":"error","code":"feed.lost","retryable":false}"#;
+        client.send(Frame::text(other)).await.unwrap();
         client.send(Frame::Ping(Vec::new().into())).await.unwrap();
         client.close(None).await.unwrap();
         served.await.unwrap().unwrap();
@@ -302,7 +301,6 @@ mod tests {
             welcome[0]["capabilities"],
             json!([
                 "run.stream",
-                "log.forward",
                 "workspace.chats",
                 "workspace.chat_commands",
                 "diff.view",
@@ -311,7 +309,7 @@ mod tests {
             ])
         );
         assert_eq!(streamed, expected);
-        assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
+        assert_eq!(fs::read_to_string(&received).unwrap(), format!("{other}\n"));
     }
 
     /// Reads until a status in `state`, with a deadline so a silent server fails the test.
@@ -601,8 +599,8 @@ mod tests {
         let first = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 2))
             .await
             .unwrap();
-        let log = r#"{"id":0,"type":"log","level":"info","msg":"run shown"}"#;
-        client.send(Frame::text(log)).await.unwrap();
+        let other = r#"{"id":0,"type":"error","code":"feed.lost","retryable":false}"#;
+        client.send(Frame::text(other)).await.unwrap();
         client.close(None).await.unwrap();
         let after: Vec<_> = client.collect().await;
 
@@ -614,7 +612,7 @@ mod tests {
             "the close went unanswered"
         );
         served.await.unwrap().unwrap();
-        assert_eq!(fs::read_to_string(&received).unwrap(), format!("{log}\n"));
+        assert_eq!(fs::read_to_string(&received).unwrap(), format!("{other}\n"));
     }
 
     fn workspace() -> WorkspaceId {
@@ -693,10 +691,10 @@ mod tests {
         texts(&mut client, 1).await;
         let interrupt = command(2, request("q-1"), ChatAction::Interrupt);
         let prompt = command(3, request("q-2"), hi());
-        let log = r#"{"id":0,"type":"log","level":"info","msg":"sent"}"#;
+        let other = r#"{"id":0,"type":"error","code":"feed.lost","retryable":false}"#;
         for text in [
             subscription(7, SEEDED),
-            log.to_owned(),
+            other.to_owned(),
             interrupt.clone(),
             prompt.clone(),
         ] {
@@ -721,7 +719,7 @@ mod tests {
         assert_eq!(replayed, accepted(8));
         let sent = [
             subscription(7, SEEDED),
-            log.to_owned(),
+            other.to_owned(),
             interrupt,
             prompt,
             subscription(8, SEEDED),

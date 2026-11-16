@@ -145,7 +145,6 @@ pub(super) fn server(
     let host = Host {
         state_dir: state_dir.to_owned(),
         path: app.path.clone(),
-        reporter: Arc::clone(&app.reporter),
         outside: app.outside.clone(),
         log: app.log.child(&[("component", "asks".into())]),
     };
@@ -374,7 +373,6 @@ async fn owner(host: &Host) -> Result<Identity, Fault> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use weacon_protocol::{
         AccountId, AgentKind, Asker, ErrorBody, MachineSettingsAction, MachineSettingsAnswerKind,
@@ -387,7 +385,6 @@ mod tests {
     use super::*;
     use crate::machine::{Key, Paired};
     use crate::outside::Outside;
-    use crate::reports;
     use crate::test_support::{self, SESSION, claude_home};
 
     fn id<T: TryFrom<String>>(id: &str) -> T
@@ -398,12 +395,10 @@ mod tests {
     }
 
     fn host(dir: &TempDir) -> (Asked, weacon_testing::Records) {
-        let app = test_support::app(Some(dir), None);
         let (log, records) = test_support::recording_logger();
         let host = Host {
             state_dir: dir.to_path_buf(),
             path: Some(dir.join("bin").into_os_string()),
-            reporter: Arc::clone(&app.reporter),
             outside: Outside::new(
                 vec![(
                     AgentKind::Claude,
@@ -794,14 +789,14 @@ mod tests {
         assert!(!logged.contains("MARKER"), "{logged}");
     }
 
-    fn reports(envelope: u32, send: bool) -> Envelope {
+    fn shares(envelope: u32, shared: bool) -> Envelope {
         Envelope {
             id: envelope,
             message: Message::MachineSettingsCommand(MachineSettingsCommand {
                 request: id("r-2"),
                 machine: id("mc-1"),
                 workspace: id("w1"),
-                action: MachineSettingsAction::SetReports { send },
+                action: MachineSettingsAction::SetShared { shared },
                 by: Some(by("a-1")),
             }),
         }
@@ -816,11 +811,11 @@ mod tests {
         let (replies, mut from_daemon) = mpsc::channel(8);
         tokio::spawn(uplink(host, asks, replies, mpsc::channel(1).0));
         for ask in [
-            reports(1, true),
+            shares(1, false),
             settings("a-2"),
-            reports(2, false),
-            reports(3, true),
-            reports(4, false),
+            shares(2, true),
+            shares(3, false),
+            shares(4, true),
         ] {
             to_daemon.send(ask).await.unwrap();
         }
@@ -851,7 +846,7 @@ mod tests {
 
         assert_eq!(commands, [1, 2, 3, 4]);
         assert_eq!(refused, [7]);
-        assert_eq!(reports::current(&dir), Some(false));
+        assert!(sharing::shares(&dir, &id("w1")).await);
     }
 
     #[tokio::test]

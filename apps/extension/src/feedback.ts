@@ -18,8 +18,3 @@ const SAID: Record<string, string> = {
 export function say(code: string): string {
   return SAID[code] ?? `Something went wrong (${code}).`;
 }
-
-/** Whether to tell the core about `code`: codes from the core are already in its log. */
-export function reported(code: string): boolean {
-  return code.startsWith("extension.");
-}

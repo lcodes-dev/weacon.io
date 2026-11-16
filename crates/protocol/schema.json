@@ -107,19 +107,6 @@
       "properties": {
         "type": {
           "type": "string",
-          "const": "log"
-        }
-      },
-      "$ref": "#/$defs/ClientLog",
-      "required": [
-        "type"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
           "const": "chat_command"
         }
       },
@@ -1507,31 +1494,6 @@
         }
       ]
     },
-    "ClientLog": {
-      "description": "A log record from a client that has no log of its own, such as the web app: an event name\nand typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events\nit knows, so no other text reaches its log.",
-      "type": "object",
-      "properties": {
-        "code": {
-          "$ref": "#/$defs/Code"
-        },
-        "level": {
-          "$ref": "#/$defs/Level"
-        },
-        "msg": {
-          "$ref": "#/$defs/LogEvent"
-        },
-        "request_id": {
-          "$ref": "#/$defs/RequestId"
-        },
-        "run_id": {
-          "$ref": "#/$defs/RunId"
-        }
-      },
-      "required": [
-        "level",
-        "msg"
-      ]
-    },
     "Code": {
       "description": "A dotted code such as `store.full`: two or more lowercase words joined by dots. It names\nerrors, and capabilities too.",
       "type": "string",
@@ -2082,40 +2044,6 @@
         "expires_at"
       ]
     },
-    "Level": {
-      "oneOf": [
-        {
-          "description": "Very noisy.",
-          "type": "string",
-          "const": "trace"
-        },
-        {
-          "description": "Developer detail.",
-          "type": "string",
-          "const": "debug"
-        },
-        {
-          "description": "Lifecycle.",
-          "type": "string",
-          "const": "info"
-        },
-        {
-          "description": "Failed and handled.",
-          "type": "string",
-          "const": "warn"
-        },
-        {
-          "description": "A person needs to look.",
-          "type": "string",
-          "const": "error"
-        },
-        {
-          "description": "About to exit.",
-          "type": "string",
-          "const": "fatal"
-        }
-      ]
-    },
     "LineOp": {
       "oneOf": [
         {
@@ -2160,12 +2088,6 @@
         "agent",
         "updated_at"
       ]
-    },
-    "LogEvent": {
-      "description": "What happened, such as `run started`: one to four words of lowercase letters or `_`, one\nspace apart, at most 40 bytes; no digits, so ids and secrets can't be spelt in it.",
-      "type": "string",
-      "maxLength": 40,
-      "pattern": "^[a-z][a-z_]*( [a-z_]+){0,3}$"
     },
     "MachineId": {
       "description": "A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.",
@@ -2213,15 +2135,11 @@
       ]
     },
     "MachineSettings": {
-      "description": "What a machine keeps for one workspace, and whether it sends error reports.",
+      "description": "What a machine keeps for one workspace.",
       "type": "object",
       "properties": {
         "access": {
           "$ref": "#/$defs/AccessLevel"
-        },
-        "reports": {
-          "description": "The owner's answer to error reports; absent until they give one, when none are sent.",
-          "type": "boolean"
         },
         "shared": {
           "description": "Whether every member of the workspace may call agents on the machine.",
@@ -2247,23 +2165,6 @@
     },
     "MachineSettingsAction": {
       "oneOf": [
-        {
-          "description": "Whether the machine sends error reports; for the whole machine, not one workspace.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "set_reports"
-            },
-            "send": {
-              "type": "boolean"
-            }
-          },
-          "required": [
-            "kind",
-            "send"
-          ]
-        },
         {
           "description": "What `workspace`'s agents may do on the machine, and whether other people are in it;\n`team` is kept as it was when left out.",
           "type": "object",

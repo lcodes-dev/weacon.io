@@ -1,19 +1,18 @@
 use std::sync::Arc;
 
-use weacon_appkit::{App, random_id, reporter, reports, root_logger};
+use weacon_appkit::{App, random_id, reporter, root_logger};
 use weacon_observability::{Deliver, Fault, Sink};
 use weacon_protocol::code;
 use weacon_version::Version;
 
-/// Starts the server's app: it logs to `logs`, and sends error reports when `dsn` is set.
-pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, dsn: Option<&str>) -> App {
+/// Starts the server's app: it logs to `logs`, and sends error reports to the OTLP endpoint at
+/// `endpoint` when there is one.
+pub(crate) fn start(version: Version, logs: Sink, deliver: Deliver, endpoint: Option<&str>) -> App {
     let log = root_logger(logs, &version);
     log.info("app started", &[]);
-    let client = format!("{}/{}", version.name, version.version);
-    let reports = dsn.and_then(|dsn| reports(dsn, &client, &version, &log));
     App {
+        reporter: Arc::new(reporter(endpoint, &version, deliver)),
         version,
-        reporter: Arc::new(reporter(reports, true, deliver)),
         log,
     }
 }
@@ -42,12 +41,12 @@ mod tests {
     use super::*;
     use crate::test_support::{Records, VERSION, messages, recording_sink};
 
-    const DSN: &str = "https://key@sentry.example.com/1";
+    const ENDPOINT: &str = "http://localhost:4318";
 
-    fn started(dsn: Option<&str>) -> (App, Records, Uploads) {
+    fn started(endpoint: Option<&str>) -> (App, Records, Uploads) {
         let (logs, records) = recording_sink();
         let (deliver, uploads) = recording_deliver();
-        (start(VERSION, logs, deliver, dsn), records, uploads)
+        (start(VERSION, logs, deliver, endpoint), records, uploads)
     }
 
     #[test]
@@ -62,22 +61,18 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_dsn_turns_reports_off_with_a_warning() {
-        let (app, records, uploads) = started(Some("not a dsn"));
+    fn without_an_endpoint_a_failure_is_logged_and_not_reported() {
+        let (app, records, uploads) = started(None);
         let exit = app.finish(Err(Fault::new(code!("store.full"), "The store is full")));
 
         assert_eq!(exit, ExitCode::from(2));
-
-        assert_eq!(
-            messages(&records),
-            ["app started", "report setup failed", "app failed"]
-        );
+        assert_eq!(messages(&records), ["app started", "app failed"]);
         assert!(uploads.lock().unwrap().is_empty());
     }
 
     #[test]
     fn success_exits_cleanly_and_reports_nothing() {
-        let (app, records, uploads) = started(Some(DSN));
+        let (app, records, uploads) = started(Some(ENDPOINT));
 
         assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
         assert_eq!(messages(&records), ["app started", "app stopped"]);
@@ -91,7 +86,7 @@ mod tests {
 
     #[test]
     fn no_content_reaches_a_log_line_or_an_error_report() {
-        let (app, records, uploads) = started(Some(DSN));
+        let (app, records, uploads) = started(Some(ENDPOINT));
         let leak =
             io::Error::other("could not open /srv/MARKER-PATH: token MARKER-TOKEN, MARKER-MESSAGE");
         let fault = Fault::new(code!("store.full"), "The store is full").because(leak);

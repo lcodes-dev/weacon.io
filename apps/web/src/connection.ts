@@ -15,7 +15,6 @@ export type WebCapability =
   | "chat.live"
   | "workspace.search"
   | "diff.view"
-  | "log.forward"
   | "machine.settings"
   | "sessions.read"
   | "symbols.search"
@@ -28,11 +27,6 @@ export const HELLO_ID = 1;
 
 /** What a connection asks of the server: what it must offer, and what else this app can use. */
 export type Asks = { needs: WebCapability; offers: WebCapability[] };
-
-/** Whether the server is live and offers `capability`. */
-export function offers(status: Status, capability: WebCapability): boolean {
-  return status.state === "live" && status.capabilities.includes(capability);
-}
 
 /** Why a connection ended. */
 export type End =

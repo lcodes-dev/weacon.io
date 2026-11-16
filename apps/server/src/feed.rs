@@ -1,6 +1,5 @@
 use std::convert::Infallible;
 
-use axum::Extension;
 use axum::Router;
 use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
@@ -17,8 +16,7 @@ use weacon_protocol::{
 
 use crate::auth::{Member, Session};
 use crate::chats::{self, Asking, Watch};
-use crate::client_log::{ClientLogs, LOG_FORWARD};
-use crate::http::{RequestTag, failure};
+use crate::http::failure;
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::search::SEARCH;
@@ -38,7 +36,7 @@ const CHATS: Code = code!("workspace.chats");
 /// What the server offers to clients that ask chats' agents.
 const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
 /// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 16] = [
+const OFFERED: [Code; 15] = [
     FEED,
     TASKS,
     DOCS,
@@ -51,7 +49,6 @@ const OFFERED: [Code; 16] = [
     DIFF,
     WORKTREE,
     SESSIONS,
-    LOG_FORWARD,
     TERMINALS,
     SEARCH,
     SYMBOLS,
@@ -79,7 +76,6 @@ pub(crate) fn routes() -> Router<Shared> {
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
-    Extension(request): Extension<RequestTag>,
     (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -97,7 +93,6 @@ pub(crate) async fn feed(
     };
     let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
-        logs: ClientLogs::new(&shared, &member, &request),
         member,
         asker,
         changes,
@@ -114,8 +109,6 @@ pub(crate) async fn feed(
 }
 
 struct Feed {
-    /// The logs the client forwards, if it offered to.
-    logs: ClientLogs,
     member: Member,
     /// Who the feed's client is, for the messages it relays to its machines.
     asker: Asker,
@@ -256,13 +249,6 @@ async fn received(
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if let Message::Log(record) = &envelope.message {
-        if feed.hears(LOG_FORWARD) {
-            feed.allowed(shared).await?;
-            feed.logs.take(shared, record);
-        }
-        return Ok(());
-    }
     if let Some(needs) = relay::needs(&envelope.message)
         && feed.hears(needs)
     {
@@ -447,7 +433,6 @@ mod tests {
                 DIFF,
                 WORKTREE,
                 SESSIONS,
-                LOG_FORWARD,
                 TERMINALS,
                 SEARCH,
                 SYMBOLS

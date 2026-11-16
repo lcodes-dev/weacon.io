@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { working } from "./chat.ts";
+import { codeOf } from "./core.ts";
 import { afterSend } from "./draft.ts";
 import { say } from "./feedback.ts";
 import { useLive } from "./live.ts";
@@ -9,7 +10,6 @@ import { pickOn } from "./pick.ts";
 import type { Pick } from "./protocol.ts";
 import type { ChatRef } from "./sync.ts";
 import { choose, chosen, forget } from "./tabs.ts";
-import { codeOf, tell } from "./tell.ts";
 import { Attached, ChatList, Transcript } from "./views.tsx";
 
 function Panel() {
@@ -48,7 +48,6 @@ function Panel() {
       await work();
     } catch (error: unknown) {
       const code = codeOf(error);
-      tell(code);
       setFailed(code);
     }
   };

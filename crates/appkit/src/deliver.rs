@@ -5,25 +5,17 @@ use weacon_protocol::code;
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Sends reports over HTTPS, so their auth header never travels in the clear.
+/// POSTs each report to its OTLP endpoint as JSON.
 #[must_use]
-pub fn deliver_over_https() -> Deliver {
-    over(true)
-}
-
-fn over(https_only: bool) -> Deliver {
+pub fn deliver_over_http() -> Deliver {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(TIMEOUT))
-        .https_only(https_only)
-        // A redirect would carry the auth header to wherever it points.
-        .max_redirects(0)
         .build()
         .into();
     Box::new(move |upload| {
         let response = agent
             .post(&upload.url)
-            .header("X-Sentry-Auth", &upload.auth)
-            .header("Content-Type", "application/x-sentry-envelope")
+            .header("Content-Type", "application/json")
             .send(upload.body.as_slice())
             .map_err(|error| send_failed().because(error))?;
         if response.status().is_success() {
@@ -86,64 +78,29 @@ mod tests {
 
     fn upload(port: u16) -> Upload {
         Upload {
-            url: format!("http://127.0.0.1:{port}/api/42/envelope/"),
-            auth: "Sentry sentry_key=public".to_owned(),
-            body: b"envelope".to_vec(),
+            url: format!("http://127.0.0.1:{port}/v1/logs"),
+            body: b"{}".to_vec(),
         }
     }
 
     #[test]
-    fn delivery_posts_the_envelope_with_its_auth() {
+    fn delivery_posts_the_report_as_json() {
         let (port, server) = serve_once("200 OK".to_owned());
-        over(false)(&upload(port)).unwrap();
+        deliver_over_http()(&upload(port)).unwrap();
         let (head, body) = server.join().unwrap();
         let has = |header: &str| head.iter().any(|line| line.eq_ignore_ascii_case(header));
 
-        assert_eq!(head[0], "POST /api/42/envelope/ HTTP/1.1");
-        assert!(has("x-sentry-auth: Sentry sentry_key=public"), "{head:?}");
-        assert!(
-            has("content-type: application/x-sentry-envelope"),
-            "{head:?}"
-        );
-        assert_eq!(body, b"envelope");
+        assert_eq!(head[0], "POST /v1/logs HTTP/1.1");
+        assert!(has("content-type: application/json"), "{head:?}");
+        assert_eq!(body, b"{}");
     }
 
     #[test]
     fn delivery_fails_for_a_refused_report() {
         let (port, server) = serve_once("500 Internal Server Error".to_owned());
-        let error = over(false)(&upload(port)).unwrap_err();
+        let error = deliver_over_http()(&upload(port)).unwrap_err();
         drop(server.join().unwrap());
 
         assert_eq!(error.code().as_str(), "report.send_failed");
-    }
-
-    #[test]
-    fn delivery_refuses_to_send_in_the_clear() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let error = deliver_over_https()(&upload(port)).unwrap_err();
-
-        assert_eq!(error.code().as_str(), "report.send_failed");
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
-    }
-
-    #[test]
-    fn a_redirect_is_a_failure_and_is_not_followed() {
-        let elsewhere = TcpListener::bind("127.0.0.1:0").unwrap();
-        elsewhere.set_nonblocking(true).unwrap();
-        let target = elsewhere.local_addr().unwrap();
-        let (port, server) = serve_once(format!("302 Found\r\nlocation: http://{target}/"));
-        let error = over(false)(&upload(port)).unwrap_err();
-        drop(server.join().unwrap());
-
-        assert_eq!(error.code().as_str(), "report.send_failed");
-        assert_eq!(
-            elsewhere.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
     }
 }

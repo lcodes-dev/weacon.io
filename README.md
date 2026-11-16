@@ -55,7 +55,7 @@ Weacon is in early development. This is what works on `main` today:
 | --- | --- | --- |
 | Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: nothing sends mail yet, so the server prints each one to its log |
 | Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Sending invitations by email: the server prints each one to its log |
-| Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
+| Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
 | Chats | **New chat** starts a chat with a message and, if you want, an open task; every member of the workspace writes in every chat; a message that mentions your own agent calls it on your own machine, with what the others wrote since as quotes; the server keeps the messages and what each agent says | Changing a chat's task after it starts; the agent's text as it is written, proven with a real agent |
 | Agents | Claude Code and Codex | |
@@ -159,10 +159,11 @@ target/debug/weacon doctor
 
 Open your workspace, then **Settings**, then the machine's **Settings**. There you choose:
 
-- **Error reports**: off until you turn them on.
 - **Agent access**: what the workspace's agents may do on this machine: off, read only, ask first or full.
 - **Sharing**: whether every member of the workspace may call agents on this machine (see "A shared machine" below). Off until you turn it on.
 - **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal sealed between the browser and your core. The server only relays bytes it can't read. But the server also serves the web app's code, so this trusts whoever runs the server; if you don't, sign in over SSH on the machine instead, with the command below.
+
+Error reports: a core or server started with `OTEL_EXPORTER_OTLP_ENDPOINT` set sends each error's code and type, never content, to that OpenTelemetry endpoint; without it nothing is sent.
 
 To sign in from a terminal, on the machine or over SSH, use the workspace's id, the `workspace=` part of the web app's address:
 

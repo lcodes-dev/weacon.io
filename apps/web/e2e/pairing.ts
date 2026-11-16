@@ -135,9 +135,7 @@ export async function core(
         return;
       } else if (envelope.type === "machine_settings_command") {
         const { action } = envelope;
-        if (action.kind === "set_reports") {
-          held.settings = { ...held.settings, reports: action.send };
-        } else if (action.kind === "set_access") {
+        if (action.kind === "set_access") {
           held.settings = { ...held.settings, access: action.level, team: action.team ?? held.settings.team };
         } else if (action.kind === "set_shared") {
           held.settings = { ...held.settings, shared: action.shared };

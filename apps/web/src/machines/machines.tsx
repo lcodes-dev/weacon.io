@@ -107,8 +107,8 @@ function Machine({
 }) {
   const [confirming, setConfirming] = useState(false);
   const [open, setOpen] = useState(false);
-  // Its settings open by themselves once: a machine just paired asks about error reports at once,
-  // and one opened from New chat shows its sign-ins.
+  // Its settings open by themselves once: a machine just paired, or one opened from New chat,
+  // shows its sign-ins.
   useEffect(() => {
     if (justPaired && socket !== undefined) {
       setOpen(true);
