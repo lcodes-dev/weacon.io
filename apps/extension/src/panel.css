@@ -1,150 +1,324 @@
+/* The web app's colours, by the same names: dark, or light where the system is. */
 :root {
-  color-scheme: light dark;
-  font: 14px/1.45 system-ui, sans-serif;
+  color-scheme: dark;
+  --bg: #1a1917;
+  --side: #141312;
+  --surface: #211f1d;
+  --surface-2: #2a2825;
+  --hover: #2c2a27;
+  --line: #2e2b28;
+  --field: #3c3834;
+  --ink: #ece7df;
+  --ink-2: #aaa398;
+  --ink-3: #918b81;
+  --accent: #e8714a;
+  --accent-soft: rgb(232 113 74 / 14%);
+  --violet: #ab9be6;
+  --violet-soft: rgb(171 155 230 / 13%);
+  --warn-soft: rgb(228 180 94 / 11%);
+  --warn-line: rgb(228 180 94 / 45%);
+  --primary: #ece7df;
+  --primary-ink: #1a1917;
+  --primary-hover: #ffffff;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  font: 13.5px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #fbfaf7;
+    --side: #f4f2ed;
+    --surface: #ffffff;
+    --surface-2: #efece6;
+    --hover: #ebe8e2;
+    --line: #e7e3dc;
+    --field: #d9d4cb;
+    --ink: #1f1d1a;
+    --ink-2: #6b665e;
+    --ink-3: #77716a;
+    --accent: #b83a1b;
+    --accent-soft: #fbe8e2;
+    --violet: #5d4a8c;
+    --violet-soft: #efeaf7;
+    --warn-soft: oklch(0.96 0.04 85);
+    --warn-line: oklch(0.8 0.09 80);
+    --primary: #1f1d1a;
+    --primary-ink: #ffffff;
+    --primary-hover: #38342f;
+  }
+}
+
 body {
   margin: 0;
+  color: var(--ink);
+  background: var(--bg);
 }
+
 main {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
 }
+
 header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
 }
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+header {
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+header .quiet {
+  margin-left: auto;
+}
+
 h1 {
   margin: 0;
   font-size: 15px;
-}
-h2 {
-  margin: 12px 12px 4px;
-  font-size: 12px;
   font-weight: 600;
-  opacity: 0.7;
+  letter-spacing: -0.01em;
 }
+
+/* Workspace names over their chats, in small monospace capitals. */
+h2 {
+  margin: 14px 12px 4px;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 button {
+  min-height: 28px;
+  padding: 2px 10px;
   font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--field);
+  border-radius: 8px;
   cursor: pointer;
 }
+
+button:hover {
+  border-color: var(--ink-3);
+}
+
+button[type="submit"],
+button.primary {
+  color: var(--primary-ink);
+  background: var(--primary);
+  border-color: var(--primary);
+  font-weight: 600;
+}
+
+button[type="submit"]:hover,
+button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 2px;
+}
+
 code {
-  font: 12px ui-monospace, monospace;
+  font: 12px var(--mono);
   overflow-wrap: anywhere;
 }
+
 .quiet {
-  opacity: 0.7;
   padding: 0 12px;
+  color: var(--ink-2);
 }
+
 .problem {
   margin: 8px 12px;
-  padding: 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, #d33 15%, transparent);
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--ink);
+  background: var(--accent-soft);
 }
+
 .chats ul {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 6px;
 }
+
 .chats button {
   display: flex;
   justify-content: space-between;
   gap: 8px;
   width: 100%;
-  padding: 8px 12px;
-  border: 0;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 400;
+  border-color: transparent;
   background: none;
-  color: inherit;
+  border-radius: 7px;
   text-align: left;
 }
+
 .chats button:hover {
-  background: color-mix(in srgb, currentColor 8%, transparent);
+  background: var(--hover);
+  border-color: transparent;
 }
+
 .chats .title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
 .chats .state {
   flex: none;
-  opacity: 0.7;
+  font-size: 11px;
+  color: var(--ink-3);
 }
+
 .transcript {
   flex: 1;
   list-style: none;
   margin: 0;
   padding: 8px 12px;
 }
+
 .transcript li {
-  margin: 6px 0;
+  margin: 8px 0;
 }
+
 .transcript p {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
 .transcript .wants {
-  margin: 4px 0;
+  margin: 6px 0;
+  padding: 7px 9px;
   max-height: 12em;
   overflow: auto;
+  font: 12px/1.5 var(--mono);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  background: var(--side);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
+
 .transcript .prompt {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: color-mix(in srgb, #2563eb 12%, transparent);
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: var(--surface-2);
 }
-.transcript .tool,
+
 .transcript .note {
-  opacity: 0.75;
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: var(--violet);
+}
+
+.transcript .tool {
+  padding: 4px 9px;
   font-size: 12px;
+  color: var(--ink-2);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
+
 .transcript .ask {
-  padding: 6px 8px;
-  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
-  border-radius: 6px;
+  padding: 9px 11px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  border-radius: 10px;
 }
+
 .actions {
   display: flex;
   gap: 6px;
-  margin: 6px 0 0;
+  margin: 8px 0 0;
 }
+
 .composer {
   position: sticky;
   bottom: 0;
-  padding: 8px 12px;
-  border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent);
-  background: Canvas;
+  margin: 0 8px 8px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--field);
+  border-radius: 12px;
 }
+
+.composer:focus-within {
+  border-color: var(--violet);
+}
+
 .composer textarea {
   box-sizing: border-box;
   width: 100%;
+  padding: 2px 0;
   font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  outline: none;
   resize: vertical;
 }
+
+.composer textarea::placeholder {
+  color: var(--ink-3);
+}
+
 .composer .actions {
   justify-content: flex-end;
 }
+
 .pick {
   display: flex;
   gap: 8px;
   align-items: flex-start;
   margin: 0 0 6px;
 }
+
 .pick img {
   max-width: 96px;
   max-height: 64px;
-  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 6px;
 }
+
 .pick figcaption {
   display: flex;
   flex: 1;
   flex-direction: column;
   min-width: 0;
   font-size: 12px;
+  color: var(--ink-2);
 }

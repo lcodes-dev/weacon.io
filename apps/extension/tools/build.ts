@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 import { buildVersion } from "../../../tooling/ts/build.ts";
-import { release } from "./manifest.ts";
+import { release, statics } from "./manifest.ts";
 
 const root = new URL("..", import.meta.url);
 const dist = new URL("dist/", root);
@@ -30,7 +30,7 @@ for (const built of ["background.js", "panel.js"]) {
     throw new Error("the build left its version or commit undefined");
   }
 }
-for (const file of ["panel.html", "panel.css"]) {
+for (const file of statics(source)) {
   copyFileSync(new URL(`src/${file}`, root), new URL(file, dist));
 }
 // Injected scripts can't be modules.

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { release } from "./manifest.ts";
+import { release, statics } from "./manifest.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -13,6 +13,17 @@ test("the released manifest names its version and commit", () => {
     version: "0.1.0",
     version_name: "0.1.0 (1a2b3c4)",
   });
+});
+
+test("every file the manifest names is one the build copies, and exists", () => {
+  const manifest = JSON.parse(read("../manifest.json")) as Record<string, unknown> & { action: { default_icon: Record<string, string> } };
+  const copied = statics(manifest);
+  const named = [...Object.values(manifest.action.default_icon), ...copied];
+  assert.deepEqual(Object.keys(manifest.action.default_icon), ["16", "32", "48", "128"]);
+  for (const file of named) {
+    assert.ok(copied.includes(file), `the build doesn't copy ${file}`);
+    assert.ok(existsSync(new URL(`../src/${file}`, import.meta.url)), `src/${file} is missing`);
+  }
 });
 
 test("the manifest's key gives the id the core lets start its native host", () => {
