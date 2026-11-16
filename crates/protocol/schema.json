@@ -4634,6 +4634,45 @@
       "type": "string",
       "pattern": "^[0-9a-f]{64}$"
     },
+    "SharedMachine": {
+      "description": "A machine shared with a workspace, as each of its members sees it: `owner` is its owner's\nmember there.",
+      "type": "object",
+      "properties": {
+        "connected": {
+          "description": "Whether its core is connected now.",
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "name": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "owner": {
+          "$ref": "#/$defs/MemberId"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "owner"
+      ]
+    },
+    "SharedMachineList": {
+      "description": "The machines shared with a workspace, from the server to its members.",
+      "type": "object",
+      "properties": {
+        "machines": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SharedMachine"
+          }
+        }
+      },
+      "required": [
+        "machines"
+      ]
+    },
     "SignInFinish": {
       "description": "Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its\n[`SignInStarted`] gave; a server that hands out challenges refuses a finish without one.",
       "type": "object",

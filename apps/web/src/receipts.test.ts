@@ -104,7 +104,7 @@ test("how a command ended is said once for every subject", () => {
     undefined,
     "The answer wasn't taken.",
     "The machine is offline, so the answer wasn't sent. Try again once it's back.",
-    "Your machine no longer has this chat, so it takes no answers.",
+    "Your agent's machine no longer has this chat, so it takes no answers.",
     "Another person's agent is working in this chat, so the answer wasn't sent. Try again once it's done.",
     "The connection closed. The answer may not have been sent.",
     "No answer came. The answer may not have been sent.",

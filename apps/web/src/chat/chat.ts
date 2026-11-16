@@ -146,12 +146,20 @@ export function calling(chat: Chat | undefined, me: MemberId | undefined): boole
 }
 
 /**
- * Whether a run of `me`'s own agent is on a turn in the chat, so that they can stop it; a run whose
- * owner the log doesn't name counts as theirs.
+ * Whether a run `me` can stop is on a turn in the chat: one of their own agent, or of a shared agent
+ * they called or whose machine is theirs; a run whose owner the log doesn't name counts as theirs.
  */
 export function working(chat: Chat, me: MemberId | undefined): boolean {
-  const theirs = ({ agent }: Run) => agent?.owner.kind !== "member" || agent.owner.member === me;
+  const theirs = ({ agent }: Run) => {
+    const owner = agent?.owner;
+    return owner?.kind === "member" ? owner.member === me : owner?.kind !== "shared" || owner.member === me || owner.owner === me;
+  };
   return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state) && theirs(run));
+}
+
+/** Whether an agent of the chat runs on a machine `me` shares with the workspace: they answer its prompts and can stop it. */
+export function shares(chat: Chat, me: MemberId | undefined): boolean {
+  return [...chat.runs.values()].some(({ agent }) => agent?.owner.kind === "shared" && agent.owner.owner === me);
 }
 
 // The states of a run on a turn, which streams text and can be stopped.

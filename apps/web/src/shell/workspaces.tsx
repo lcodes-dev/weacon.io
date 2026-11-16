@@ -265,16 +265,22 @@ function WorkspaceChats({
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
-  // Back from Settings, where a machine may have been paired, they are read again.
+  const shared = useLoaded(() => api.sharedMachines(workspace.id), workspace.id);
+  const loadMachines = () => {
+    void machines.load();
+    void shared.load();
+  };
+  // Back from Settings, where a machine may have been paired or shared, they are read again.
   const wasAway = useRef(away);
   useEffect(() => {
     if (wasAway.current && !away) {
-      void machines.load();
+      loadMachines();
     }
     wasAway.current = away;
   }, [away]);
+  const others = shared.value?.machines ?? [];
   // Until the feed is welcomed, whether it takes commands isn't known yet.
-  const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
+  const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines, others);
   const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);
   const tasks = loadedTasks.value?.tasks;
   // New chat for a task opens with it; going to a chat, however, leaves the new one.
@@ -286,10 +292,11 @@ function WorkspaceChats({
   const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
   const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, legs: [] } : undefined);
   // The view stays while the feed reconnects; it sends only once the feed is back.
-  const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines);
+  const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
   const mine = own?.kind === "ready" ? own.machines : [];
-  const missing = <StartMissing ready={ready} problem={machines.problem} check={() => void machines.load()} openSettings={openSettings} />;
+  const missing = <StartMissing ready={ready} problem={machines.problem} check={loadMachines} openSettings={openSettings} />;
   const leg = legOf(workspace.member, open);
+  const guest = leg !== undefined && machines.value !== undefined && !machines.value.machines.some(({ id }) => id === leg.machine_id);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">
@@ -308,7 +315,7 @@ function WorkspaceChats({
             send && status.state !== "connecting"
               ? () => {
                   setStarting(true);
-                  void machines.load();
+                  loadMachines();
                 }
               : undefined
           }
@@ -348,6 +355,7 @@ function WorkspaceChats({
                 me={workspace.member}
                 leg={leg}
                 machines={mine}
+                guest={guest}
                 missing={missing}
                 openSettings={openSettings}
                 away={away}

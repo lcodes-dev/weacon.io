@@ -111,6 +111,9 @@ export type Envelope = {
   | {
     type: "chats_answer";
   } & ChatsAnswer
+  | {
+    type: "machine_shares";
+  } & MachineShares
 );
 
 /**
@@ -178,6 +181,8 @@ export type AgentOwner = (
   }
   | {
     kind: "shared";
+    member: MemberId;
+    owner: MemberId;
   }
 );
 
@@ -921,6 +926,10 @@ export type MachineSettings = {
    */
   reports?: boolean;
   /**
+   * Whether every member of the workspace may call agents on the machine.
+   */
+  shared?: boolean;
+  /**
    * Each agent the core runs, signed in or not with the workspace's own config folder.
    */
   sign_ins: Array<AgentSignIn>;
@@ -939,6 +948,10 @@ export type MachineSettingsAction = (
     kind: "set_access";
     level: AccessLevel;
     team?: boolean;
+  }
+  | {
+    kind: "set_shared";
+    shared: boolean;
   }
 );
 
@@ -960,6 +973,10 @@ export type MachineSettingsAnswerKind = (
   | {
     kind: "repos";
     repos: Array<RepoId>;
+  }
+  | {
+    agents: Array<AgentKind>;
+    kind: "agents";
   }
 );
 
@@ -983,8 +1000,9 @@ export type MachineSettingsCommand = {
 /**
  * From the owner of `machine` to its core, which offers `machine.settings`: what the machine
  * keeps for `workspace`. The server relays it only from the machine's owner, and the core
- * answers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
- * `request`.
+ * answers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered
+ * to, any member of a workspace the machine is shared with. The answer is a
+ * [`MachineSettingsAnswer`] that echoes `request`.
  */
 export type MachineSettingsQuery = {
   /**
@@ -1004,7 +1022,18 @@ export type MachineSettingsQueryKind = (
   | {
     kind: "repos";
   }
+  | {
+    kind: "agents";
+  }
 );
+
+/**
+ * The workspaces a machine's owner shares it with, all of them each time, from a core to a
+ * server that offers `machine.share`: when it connects, and when the set changes.
+ */
+export type MachineShares = {
+  workspaces: Array<WorkspaceId>;
+};
 
 /**
  * A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
@@ -1566,6 +1595,10 @@ export type Quote = {
 export type QuotedAgent = {
   kind: AgentKind;
   machine: MachineName;
+  /**
+   * Whether it is the workspace's shared agent, and not its caller's own.
+   */
+  shared?: boolean;
 };
 
 /**
@@ -1828,6 +1861,27 @@ export type SessionsQueryKind = (
  * A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
  */
 export type Sha256 = string;
+
+/**
+ * A machine shared with a workspace, as each of its members sees it: `owner` is its owner's
+ * member there.
+ */
+export type SharedMachine = {
+  /**
+   * Whether its core is connected now.
+   */
+  connected?: boolean;
+  id: MachineId;
+  name: MachineName;
+  owner: MemberId;
+};
+
+/**
+ * The machines shared with a workspace, from the server to its members.
+ */
+export type SharedMachineList = {
+  machines: Array<SharedMachine>;
+};
 
 /**
  * Trades the one-time code sent to `email` for a [`SignedIn`]. `challenge` is the one its

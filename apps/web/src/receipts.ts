@@ -21,7 +21,7 @@ const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slic
 const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => string> = {
   refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
   offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
-  detached: ({ gone }) => `Your machine no longer has this chat, so ${gone}.`,
+  detached: ({ gone }) => `Your agent's machine no longer has this chat, so ${gone}.`,
   full: ({ subject, unsent }) => `This workspace is full, so ${subject} ${unsent}.`,
   unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
   working: ({ subject, unsent }) => `Another person's agent is working in this chat, so ${subject} ${unsent}. Try again once it's done.`,

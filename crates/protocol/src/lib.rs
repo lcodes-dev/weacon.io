@@ -148,6 +148,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<SharedMachineList>();
         generator.subschema_for::<MemberList>();
         generator.subschema_for::<MemberCommand>();
         generator.subschema_for::<SearchQuery>();
