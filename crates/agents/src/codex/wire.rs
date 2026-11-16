@@ -245,6 +245,8 @@ impl Wire {
             }
             "item/started" => item(params).and_then(started).into_iter().collect(),
             "item/completed" => item(params).and_then(completed).into_iter().collect(),
+            // The whole message follows in its `item/completed`, which replaces these.
+            "item/agentMessage/delta" => text_delta(params).into_iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -289,6 +291,11 @@ fn item(params: &Value) -> Option<Item> {
     ItemNote::deserialize(params).ok().map(|note| note.item)
 }
 
+fn text_delta(params: &Value) -> Option<Effect> {
+    let text = params.get("delta")?.as_str()?.to_owned();
+    Some(Effect::Event(RunEvent::TextDelta { text }))
+}
+
 fn started(item: Item) -> Option<Effect> {
     let (call, tool, input) = match item {
         Item::CommandExecution { id, command, .. } => {
@@ -325,7 +332,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{
-        self, Done, FakeRun, answer, app, ended, ends_as_recorded, is_asked, is_finished,
+        self, Done, FakeRun, answer, app, delta, ended, ends_as_recorded, is_asked, is_finished,
         is_started, next, started, text, tool_call, tool_done, until,
     };
     use crate::wire::Wire as RunWire;
@@ -373,9 +380,76 @@ mod tests {
         assert_eq!(
             until(&mut run, is_finished).await,
             [
+                delta("All 12"),
                 tool_done("item-1", false),
                 text("All 12 tests pass."),
                 ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn text_comes_in_pieces_before_each_whole_message_with_a_command_between() {
+        let (mut run, done) = fake(include_str!("../../replays/codex/partial.replay"), None);
+
+        run.send("Run the parser tests").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(THREAD),
+                delta("I'll run"),
+                delta(" them."),
+                text("I'll run them."),
+                tool_call(
+                    "item-2",
+                    "command",
+                    json!({ "command": "cargo test -p parser" })
+                ),
+                tool_done("item-2", false),
+                delta("All 12"),
+                delta(" tests"),
+                delta(" pass."),
+                text("All 12 tests pass."),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn partial_output_the_driver_doesnt_know_is_skipped_and_the_turn_goes_on() {
+        let recording = include_str!("../../replays/codex/partial_unknown.replay");
+        let (mut run, done) = fake(recording, None);
+
+        run.send("Explain the build").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(THREAD),
+                delta("Cargo"),
+                delta(" builds it."),
+                text("Cargo builds it."),
+                ended(Outcome::Completed),
+            ]
+        );
+        ends_as_recorded(run, done).await;
+    }
+
+    // Pieces are shown but never kept, so a turn cut off before its whole message has no text.
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_cut_off_mid_message_gave_only_its_pieces() {
+        let recording = include_str!("../../replays/codex/partial_cut_off.replay");
+        let (mut run, done) = fake(recording, None);
+
+        run.send("Bump the version").await.unwrap();
+        assert_eq!(
+            until(&mut run, is_finished).await,
+            [
+                started(THREAD),
+                delta("Bumping"),
+                delta(" it"),
+                ended(Outcome::Unknown),
             ]
         );
         ends_as_recorded(run, done).await;

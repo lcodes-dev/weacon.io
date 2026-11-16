@@ -107,7 +107,7 @@ const PROBLEMS: Record<Ask["kind"], string> = {
   remove: "The worktree wasn't removed.",
   restore: "The worktree wasn't restored.",
   open_pull_request: "The pull request wasn't opened.",
-  open_terminal: "The terminal didn't open.",
+  open_terminal: "The terminal didn't open. On a machine without a desktop terminal, run the line below there.",
 };
 
 /** The command that carries the chat on by hand in a terminal on its machine. */

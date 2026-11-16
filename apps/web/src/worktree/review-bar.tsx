@@ -4,11 +4,11 @@ import "./worktree.css";
 
 /**
  * Where the chat's worktree stands, with what its owner can do with it: open a pull request,
- * remove it to the Trash after saying what goes, restore it, and open a terminal where the core can,
- * or else carry the chat on by hand with the line it shows.
+ * remove it to the Trash after saying what goes, restore it, and open a terminal on its machine,
+ * or carry the chat on by hand with the line it shows.
  */
 export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>; title: string }) {
-  const { worktree, terminals, draft } = bar;
+  const { worktree, draft } = bar;
   const drafting = draft !== undefined;
   const { standing, confirming, outcome } = worktree;
   const waiting = busy(worktree);
@@ -40,7 +40,7 @@ export function ReviewBar({ bar, title }: { bar: ReturnType<typeof useWorktree>;
               Try again
             </button>
           )}
-          {terminals && standing.kind !== "unknown" && (
+          {standing.kind !== "unknown" && (
               <button type="button" disabled={waiting} onClick={bar.openTerminal}>
                 Open terminal
               </button>

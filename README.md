@@ -57,7 +57,7 @@ Weacon is in early development. This is what works on `main` today:
 | Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Sending invitations by email: the server prints each one to its log |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
-| Chats | **New chat** picks a machine, a repository, an agent and, if you want, an open task; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it, with its task | Changing a chat's task after it starts |
+| Chats | **New chat** picks a machine, a repository, an agent and, if you want, an open task; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it, with its task | Changing a chat's task after it starts; the agent's text as it is written, proven with a real agent |
 | Agents | Claude Code and Codex | |
 | Terminals | **Open terminal** in a chat, once the machine's owner allows it there; `weacon resume` to carry on a chat's agent in a terminal | |
 | Tasks and docs | Adding, editing, statuses, doc revisions | |
@@ -185,7 +185,7 @@ Sign the agent in first, as in step 6, and give the workspace a repository.
 2. Pick the **Machine**, the **Repository** and the **Agent**. To work on a task, type part of its title under **Task** and pick it, or choose **Start a chat** next to the task under **Tasks**.
 3. Type what you want done and choose **Send**.
 
-The chat opens with your prompt at the top, and its task's title under the heading, linked to the task. A chat keeps the task it started with. When Claude Code starts in a chat that has a task, it is first given the flows pinned by the repository's Markdown docs whose words best match the task's title, then the map of its folder. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. Each of the agent's messages appears under **Agent** once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
+The chat opens with your prompt at the top, and its task's title under the heading, linked to the task. A chat keeps the task it started with. When Claude Code starts in a chat that has a task, it is first given the flows pinned by the repository's Markdown docs whose words best match the task's title, then the map of its folder. The server passes the prompt to your machine, and the core starts the agent in a folder of its own for this chat. The agent's text appears under **Agent** as it is written, and each message replaces its pieces once it is complete. Live text is not yet proven with a real agent: if the pieces don't come, each message still appears once it is complete. In the left column, the chat shows who started it, the machine and what it's doing, such as **Waiting for a person**.
 
 When the agent asks to use a tool, the chat names the tool, such as "Asks to use Bash", with **Allow** and **Deny**; with the access level at ask first, it waits for you. After a reload, a prompt still waiting says "Asks to use a tool" until the agent's next prompt, because the tool's name is passed on as it happens and never kept. It never shows the command or the file's contents, because a tool's input doesn't leave your machine, so you can't see them before you answer. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 
@@ -203,11 +203,7 @@ Codex works differently from Claude Code: it asks you before every file change a
 - **Docs**: **New doc**, then a title and text, then **Save**. Each edit is a new revision.
 - **Proposals**: changes to docs and tasks wait here until someone accepts or rejects them. Agents propose them from their chats. While an agent works in a repository, the core also proposes what a new commit in the repository's folder did to docs that pin its code.
 - **Resume**: once a chat's agent has stopped running, `target/debug/weacon resume --workspace <workspace id> --chat <chat id>` carries it on in your terminal, on the chat's machine. There you answer the agent's own prompts yourself, whatever the workspace's access level. End that session before you send the chat another prompt from the web app, because the resumed agent holds the chat until then.
-- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. On Linux the terminal runs the resume itself, so you see the agent there and answer its prompts there. It's off until you allow it, on that machine:
-
-```bash
-target/debug/weacon terminals on
-```
+- **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. On Linux the terminal runs the resume itself, so you see the agent there and answer its prompts there.
 
 - **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message.
 - **Teammates**: open a workspace you own, then **Settings**. Under **Members**, type an address and choose **Invite**. The invitation lasts 7 days, and you can revoke it until it's taken up. Once that person signs in with the address, they see the invitation at the foot of the sidebar, or on the page they land on, and choose **Accept**. The owner can remove members, and members can **Leave**. Someone removed loses the workspace, and their chats stay in it. Each person signs in with their own email and pairs their own machine.

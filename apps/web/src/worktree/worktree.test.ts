@@ -104,7 +104,7 @@ test("a chat with no worktree says so, and an action refused or unsent says what
   assert.equal(stateLine(none.standing), "This chat has no worktree yet.");
   assert.deepEqual(hear(asked(none, 4, { kind: "open_terminal" }), refused(4, "request.unknown")).outcome, {
     kind: "problem",
-    text: "The terminal didn't open.",
+    text: "The terminal didn't open. On a machine without a desktop terminal, run the line below there.",
   });
   assert.deepEqual(unsent(none, "remove").outcome, { kind: "problem", text: "The worktree wasn't removed. The connection is down." });
   assert.equal(waiting(unsent(none, "remove"), { id: 5, request: "q-5", ask: "restore", confirm: false }).outcome, undefined);
