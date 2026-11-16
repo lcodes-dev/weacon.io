@@ -277,6 +277,9 @@ mod tests {
         }
         let (_bench, mut engine) = parts();
         engine.rest(&key()).await.unwrap();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        let starting = engine.rest(&key()).await.unwrap_err();
+        assert_eq!(starting.code().as_str(), "worktree.busy");
     }
 
     #[tokio::test(start_paused = true)]
