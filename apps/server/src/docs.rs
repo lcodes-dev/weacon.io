@@ -58,11 +58,7 @@ pub(crate) async fn create(
     let id = DocId::try_from(new_id()).map_err(|_| invalid())?;
     let doc = Doc::new(id, text);
     let attribution = Attribution::by(member.id.clone(), shared.now());
-    member
-        .workspace
-        .add_doc(&doc, &attribution)
-        .await
-        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+    member.workspace.add_doc(&doc, &attribution).await?;
     shared.wake_feeds(member.workspace.id());
     Ok((StatusCode::CREATED, Json(record(doc))))
 }
@@ -92,8 +88,7 @@ pub(crate) async fn revise(
     let doc = member
         .workspace
         .revise_doc(&id, read_at, text, &attribution)
-        .await
-        .inspect_err(|fault| warn_if_full(&shared, &member, fault))?;
+        .await?;
     shared.wake_feeds(member.workspace.id());
     Ok(Json(record(doc)))
 }
@@ -143,17 +138,6 @@ pub(crate) fn record(doc: Doc) -> DocRecord {
     }
 }
 
-/// Logs a refused write that found the workspace full: it stays full, since nothing is
-/// pruned, so the operator needs to know.
-fn warn_if_full(shared: &Shared, member: &Member, fault: &Fault) {
-    if *fault.code() == code!("doc.quota_full") {
-        let workspace = member.workspace.id().as_str().to_owned();
-        shared
-            .log
-            .warn("doc quota full", &[("workspace_id", workspace.into())]);
-    }
-}
-
 fn too_large() -> Fault {
     Fault::new(code!("doc.too_large"), "The doc is larger than the limit")
 }
@@ -172,11 +156,6 @@ impl Refusals for Docs {
         (code!("doc.unlinked"), StatusCode::BAD_REQUEST, false),
         (code!("doc.unknown_value"), StatusCode::BAD_REQUEST, false),
         (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
-        (
-            code!("doc.quota_full"),
-            StatusCode::PAYLOAD_TOO_LARGE,
-            false,
-        ),
         (code!("doc.not_found"), StatusCode::NOT_FOUND, false),
         (code!("doc.stale"), StatusCode::CONFLICT, false),
         (code!("doc.last_version"), StatusCode::CONFLICT, false),
@@ -510,44 +489,5 @@ mod tests {
         let answer = Refused::from(broken).into_response();
 
         assert_eq!(answer.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    }
-
-    #[tokio::test]
-    async fn a_full_workspace_takes_no_more_docs_and_the_operator_hears_of_it() {
-        let fixture = Fixture::new().await;
-        let (_server, ada) = fixture.client("ada@example.com").await;
-        let doc = ada.create_doc(&linked()).await;
-        let w1 = fixture
-            .shared
-            .db
-            .workspace(&workspace_id("w1"))
-            .await
-            .unwrap();
-        w1.fill_doc_quota().await;
-        let body = serde_json::to_string(&linked()).unwrap();
-
-        let (made, made_body) = ada.send("POST /api/workspaces/w1/docs", &body).await;
-        let (revised, revised_body) = ada.revise(&doc, &linked()).await;
-
-        let full = (
-            "http/1.1 413 payload too large".to_owned(),
-            "doc.quota_full".to_owned(),
-        );
-        let got = [
-            (made, error_code(&made_body)),
-            (revised, error_code(&revised_body)),
-        ];
-        assert_eq!(got, [full.clone(), full]);
-        assert_eq!(
-            ada.get::<DocRecord>(&format!("/{}", doc.id.as_str())).await,
-            doc
-        );
-        let records = fixture.records.lock().unwrap().clone();
-        let warned: Vec<_> = records
-            .iter()
-            .filter(|record| record.msg == "doc quota full")
-            .map(|record| record.fields["workspace_id"].clone())
-            .collect();
-        assert_eq!(warned, ["w1", "w1"]);
     }
 }

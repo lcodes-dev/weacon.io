@@ -524,7 +524,7 @@
       ]
     },
     "AccountSignInStart": {
-      "description": "Asks the server to send a one-time code to `email`, if that person may sign in. The\nanswer, a [`SignInStarted`], is the same either way.",
+      "description": "Asks the server to send a one-time code to `email`, an account's address. The answer is a\n[`SignInStarted`], or a refusal when no account has that address.",
       "type": "object",
       "properties": {
         "email": {
@@ -4580,7 +4580,7 @@
       ]
     },
     "SignInStarted": {
-      "description": "The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish\nit with.",
+      "description": "The answer to an [`AccountSignInStart`]: the challenge to finish it with.",
       "type": "object",
       "properties": {
         "challenge": {

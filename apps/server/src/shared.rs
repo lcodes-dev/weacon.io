@@ -1,19 +1,15 @@
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::broadcast;
 use weacon_observability::{Clock, Logger, Reporter};
 use weacon_protocol::{App, MachineId, WorkspaceId};
 
 use crate::chats;
-use crate::client::Net;
 use crate::db::Db;
 use crate::links::Links;
-use crate::pairing;
 use crate::relay::Relay;
 use crate::secret::Secret;
-use crate::sign_in;
-use crate::sign_up::SignUp;
 use crate::socket;
 use crate::terminals::Terminals;
 use crate::web::WebFile;
@@ -28,10 +24,6 @@ pub(crate) struct Shared {
     pub(crate) clock: Arc<Clock>,
     /// How long a connection may take to send a request's head, or sit idle between requests.
     pub(crate) head_within: Duration,
-    /// Proxies whose `X-Forwarded-For` is believed.
-    pub(crate) proxies: Arc<[Net]>,
-    /// Room for open connections, feeds included; when it's full, more wait to be accepted.
-    pub(crate) connections: Arc<Semaphore>,
     pub(crate) sockets: socket::Timing,
     /// The machines whose connections are open.
     pub(crate) links: Arc<Links>,
@@ -44,14 +36,6 @@ pub(crate) struct Shared {
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
     pub(crate) chats: chats::Hub,
-    /// Room for sign-ins being worked on after their answer; when it's full, more are dropped.
-    pub(crate) sign_ins: Arc<Semaphore>,
-    /// How long finishing a sign-in takes at least, so its timing gives nothing away.
-    pub(crate) finish_takes: Duration,
-    /// Who may make an account by signing in.
-    pub(crate) sign_up: Arc<[SignUp]>,
-    pub(crate) sign_in_limits: Arc<sign_in::Limits>,
-    pub(crate) pairing_limits: Arc<pairing::Limits>,
     /// The web app's built files it serves.
     pub(crate) web: &'static [WebFile],
 }

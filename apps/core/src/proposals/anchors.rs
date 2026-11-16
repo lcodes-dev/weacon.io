@@ -606,7 +606,7 @@ mod tests {
             .lock()
             .unwrap()
             .push(doc("d-1", &before, &["sym:a_b::m::go"]));
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let proposals = fake.connect();
 
         checked(&proposals, &[&before], &after, &commit('b'))
@@ -741,12 +741,12 @@ mod tests {
             doc("d-2", &before, &["sym:a_b::m::go"]),
         ];
         fake.docs.lock().unwrap().extend(docs);
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let proposals = fake.connect();
 
         let refused = checked(&proposals, &[&before], &after, &commit('b')).await;
 
-        assert_eq!(refused.unwrap_err().code(), &code!("proposal.too_many"));
+        assert_eq!(refused.unwrap_err().code(), &code!("proposal.invalid"));
         assert_eq!(fake.commands().len(), 2);
     }
 

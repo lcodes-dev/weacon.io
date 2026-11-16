@@ -29,11 +29,6 @@ pub(crate) fn cross_site() -> Response {
     error(StatusCode::FORBIDDEN, code!("request.cross_site"), false)
 }
 
-/// Answers that this client has asked too often for now.
-pub(crate) fn too_many(code: Code) -> Response {
-    error(StatusCode::TOO_MANY_REQUESTS, code, true)
-}
-
 /// Answers that the server failed with `fault`, which the request's log record logs and
 /// reports, with its id.
 pub(crate) fn failure(fault: Fault) -> Response {

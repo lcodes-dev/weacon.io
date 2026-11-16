@@ -8,7 +8,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
-use tokio::time::Instant;
 use weacon_observability::Fault;
 use weacon_protocol::{
     MachineId, MachineList, MachineOs, MachineSummary, PairClaim, PairClaimed, PairConfirm,
@@ -18,11 +17,9 @@ use weacon_protocol::{
 use crate::app::{fresh, new_id};
 use crate::auth::Session;
 use crate::auth::token_hash;
-use crate::client::Client;
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Claim, Claiming, Confirmation, NewPairing};
-use crate::http::{Body, error, failure, not_found, too_many};
-use crate::limit::{HOUR, Limit};
+use crate::http::{Body, error, failure, not_found};
 use crate::secret::random_token;
 use crate::shared::Shared;
 use crate::uplink;
@@ -31,24 +28,6 @@ use crate::uplink;
 const PAIRING_LIFETIME: i64 = 600;
 /// How long a core has to claim its machine once the person confirms, in seconds.
 const CLAIM_WITHIN: i64 = 120;
-
-/// How often each client may ask each pairing step.
-pub(crate) struct Limits {
-    /// How many pairings each client may start.
-    pub(crate) starts: Limit,
-    /// How many codes each client may look up or confirm.
-    pub(crate) tries: Limit,
-    /// How many claims each client may make; a core claims every few seconds while it waits.
-    pub(crate) claims: Limit,
-}
-
-pub(crate) fn limits() -> Limits {
-    Limits {
-        starts: Limit::new(5, HOUR),
-        tries: Limit::new(60, HOUR),
-        claims: Limit::new(1200, HOUR),
-    }
-}
 
 pub(crate) fn routes() -> Router<Shared> {
     Router::new()
@@ -62,14 +41,7 @@ pub(crate) fn routes() -> Router<Shared> {
 
 /// `POST /api/machines/pair`: records a machine waiting to be paired, and answers with the
 /// code for its person and the secret its core claims it with.
-pub(crate) async fn start(
-    State(shared): State<Shared>,
-    Client(from): Client,
-    Body(body): Body<PairStart>,
-) -> Response {
-    if !shared.pairing_limits.starts.allow(from, Instant::now()) {
-        return too_many(code!("pairing.too_many"));
-    }
+pub(crate) async fn start(State(shared): State<Shared>, Body(body): Body<PairStart>) -> Response {
     if body.os == MachineOs::Newer {
         return error(StatusCode::BAD_REQUEST, code!("pairing.invalid"), false);
     }
@@ -78,13 +50,12 @@ pub(crate) async fn start(
         return error(StatusCode::BAD_REQUEST, code!("request.invalid"), false);
     }
     match started(&shared, &body).await {
-        Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
-        Ok(None) => too_many(code!("pairing.too_many")),
+        Ok(started) => (StatusCode::CREATED, Json(started)).into_response(),
         Err(fault) => failure(fault),
     }
 }
 
-async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted>, Fault> {
+async fn started(shared: &Shared, body: &PairStart) -> Result<PairStarted, Fault> {
     let (code, secret) = (new_code()?, random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
@@ -98,26 +69,22 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
         key: &body.key,
         expires_at,
     };
-    let recorded = shared.db.start_pairing(&new, now).await?;
-    Ok(recorded.then(|| PairStarted {
+    shared.db.start_pairing(&new, now).await?;
+    Ok(PairStarted {
         pairing,
         code: shown(&code).into(),
         secret: secret.into(),
         expires_at,
-    }))
+    })
 }
 
 /// `POST /api/machines/pair/lookup`: the machine waiting under a code, for the signed-in
 /// person to check.
 pub(crate) async fn lookup(
     State(shared): State<Shared>,
-    Client(from): Client,
     _: Session,
     Body(body): Body<PairLookup>,
 ) -> Response {
-    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
-        return too_many(code!("pairing.too_many"));
-    }
     let code_hash = shared
         .secret
         .pairing_code_hash(&normalised(body.code.expose()));
@@ -132,13 +99,9 @@ pub(crate) async fn lookup(
 /// signed-in account.
 pub(crate) async fn confirm(
     State(shared): State<Shared>,
-    Client(from): Client,
     session: Session,
     Body(body): Body<PairConfirm>,
 ) -> Response {
-    if !shared.pairing_limits.tries.allow(from, Instant::now()) {
-        return too_many(code!("pairing.too_many"));
-    }
     match confirmed(&shared, &session, &body).await {
         Ok(Some(machine)) => (StatusCode::CREATED, Json(machine)).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -167,14 +130,7 @@ async fn confirmed(
 /// `POST /api/machines/pair/claim`: whether the person has confirmed the pairing yet, and
 /// once they have, the machine's token, the same for every claim until the pairing expires or
 /// the machine is unpaired.
-pub(crate) async fn claim(
-    State(shared): State<Shared>,
-    Client(from): Client,
-    Body(body): Body<PairClaim>,
-) -> Response {
-    if !shared.pairing_limits.claims.allow(from, Instant::now()) {
-        return too_many(code!("pairing.too_many"));
-    }
+pub(crate) async fn claim(State(shared): State<Shared>, Body(body): Body<PairClaim>) -> Response {
     match claimed(&shared, &body).await {
         Ok(Some(claimed)) => Json(claimed).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
@@ -245,12 +201,10 @@ mod tests {
 
     use serde_json::{Value, json};
 
-    use std::sync::Arc;
-
     use super::*;
     use crate::test_support::{
-        Fixture, ask, bearer, claim_body, confirm_body, lookup_body, pair_machine, pairing_start,
-        sign_in, start_pairing,
+        Fixture, ask, bearer, claim_body, confirm_body, lookup_body, pair_machine, sign_in,
+        start_pairing,
     };
 
     async fn post(address: SocketAddr, path: &str, headers: &str, body: &str) -> (String, Value) {
@@ -450,62 +404,6 @@ mod tests {
             assert_eq!(status, "http/1.1 400 bad request", "{name:?}");
             assert_eq!(refusal["code"], "request.invalid", "{name:?}");
         }
-    }
-
-    #[tokio::test]
-    async fn each_client_starts_only_so_many_pairings() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        for _ in 0..5 {
-            let (status, _) = start_pairing(server.address, MachineOs::Linux).await;
-            assert_eq!(status, "http/1.1 201 created");
-        }
-
-        let start = pairing_start(MachineOs::Linux);
-        let (status, refusal) = ask(server.address, "POST /api/machines/pair", "", &start).await;
-
-        assert_eq!(status, "http/1.1 429 too many requests");
-        assert_eq!(refusal["code"], "pairing.too_many");
-    }
-
-    #[tokio::test]
-    async fn each_client_tries_and_claims_only_so_many_times() {
-        let mut fixture = Fixture::new().await;
-        fixture.shared.pairing_limits = Arc::new(Limits {
-            tries: Limit::new(2, HOUR),
-            claims: Limit::new(1, HOUR),
-            ..limits()
-        });
-        let server = fixture.run().await;
-        let (_, ada) = sign_in(&fixture, server.address, "ada@example.com").await;
-        let (_, pairing) = start_pairing(server.address, MachineOs::Linux).await;
-        let lookup = lookup_body(pairing.code.expose());
-        let confirm = confirm_body(&pairing);
-        let claim = claim_body(&pairing);
-        let mut answers = Vec::new();
-        for (path, body) in [
-            ("/api/machines/pair/lookup", &lookup),
-            ("/api/machines/pair/confirm", &confirm),
-            ("/api/machines/pair/lookup", &lookup),
-            ("/api/machines/pair/claim", &claim),
-            ("/api/machines/pair/claim", &claim),
-        ] {
-            answers.push(post(server.address, path, &bearer(&ada), body).await);
-        }
-        let statuses: Vec<_> = answers.iter().map(|(status, _)| status.as_str()).collect();
-
-        assert_eq!(
-            statuses,
-            [
-                "http/1.1 200 ok",
-                "http/1.1 201 created",
-                "http/1.1 429 too many requests",
-                "http/1.1 200 ok",
-                "http/1.1 429 too many requests",
-            ]
-        );
-        assert_eq!(answers[2].1["code"], "pairing.too_many");
-        assert_eq!(answers[4].1["code"], "pairing.too_many");
     }
 
     #[tokio::test]

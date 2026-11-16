@@ -90,12 +90,6 @@ impl Refusals for Proposals {
         // The doc was revised while the edit merged; accepting again merges with that.
         (code!("doc.stale"), StatusCode::CONFLICT, true),
         (code!("doc.too_large"), StatusCode::PAYLOAD_TOO_LARGE, false),
-        (
-            code!("doc.quota_full"),
-            StatusCode::PAYLOAD_TOO_LARGE,
-            false,
-        ),
-        (code!("task.too_many"), StatusCode::CONFLICT, false),
         (code!("task.no_room"), StatusCode::CONFLICT, false),
     ];
 }
@@ -258,8 +252,6 @@ mod tests {
             ("proposal.closed", 409),
             ("doc.stale", 409),
             ("doc.too_large", 413),
-            ("doc.quota_full", 413),
-            ("task.too_many", 409),
             ("task.no_room", 409),
             ("db.failed", 500),
         ];

@@ -5,7 +5,6 @@ mod app;
 mod auth;
 mod chats;
 mod cli;
-mod client;
 mod client_log;
 mod codes;
 mod connections;
@@ -14,7 +13,6 @@ mod docs;
 mod email;
 mod feed;
 mod http;
-mod limit;
 mod links;
 mod pairing;
 mod proposals;
@@ -23,7 +21,6 @@ mod search;
 mod secret;
 mod shared;
 mod sign_in;
-mod sign_up;
 mod socket;
 mod tasks;
 mod team;
@@ -42,7 +39,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::broadcast;
 use weacon_appkit::{App, Ending};
 use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
@@ -95,14 +92,7 @@ fn main() -> ExitCode {
 
 /// Serves until Ctrl-C or the system asks the server to stop.
 async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
-    let Serve {
-        listen,
-        db,
-        secret,
-        max_connections,
-        trusted_proxy,
-        sign_up,
-    } = args;
+    let Serve { listen, db, secret } = args;
     let signals = signals()?;
     let listener = bind(listen).await?;
     let secret = open_secret(secret, app.log.clone()).await?;
@@ -115,9 +105,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
-        proxies: trusted_proxy.into(),
-        sign_up: sign_up.into(),
-        connections: Arc::new(Semaphore::new(max_connections)),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         chats: chats::Hub::default(),
@@ -125,10 +112,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         links: Arc::default(),
         relay: Arc::default(),
         terminals: Arc::default(),
-        sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-        finish_takes: sign_in::FINISH_TAKES,
-        sign_in_limits: Arc::new(sign_in::limits()),
-        pairing_limits: Arc::new(pairing::limits()),
         web: web::FILES,
     };
     tokio::spawn(chats::follow_machines(shared.clone()));

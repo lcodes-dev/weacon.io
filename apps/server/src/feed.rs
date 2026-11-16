@@ -18,7 +18,6 @@ use weacon_protocol::{
 use crate::auth::{Member, Session};
 use crate::chats::{self, Asking, Watch};
 use crate::client_log::{ClientLogs, LOG_FORWARD};
-use crate::connections::Place;
 use crate::http::{RequestTag, failure};
 use crate::proposals::PROPOSALS;
 use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
@@ -80,7 +79,7 @@ pub(crate) fn routes() -> Router<Shared> {
 pub(crate) async fn feed(
     State(shared): State<Shared>,
     Query(Since { since }): Query<Since>,
-    (Extension(place), Extension(request)): (Extension<Place>, Extension<RequestTag>),
+    Extension(request): Extension<RequestTag>,
     (member, session): (Member, Session),
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -98,7 +97,6 @@ pub(crate) async fn feed(
     };
     let (answer_to, answers) = mpsc::channel(ANSWERS);
     let feed = Feed {
-        _place: place,
         logs: ClientLogs::new(&shared, &member, &request),
         member,
         asker,
@@ -116,8 +114,6 @@ pub(crate) async fn feed(
 }
 
 struct Feed {
-    /// The feed's place among the open connections.
-    _place: Place,
     /// The logs the client forwards, if it offered to.
     logs: ClientLogs,
     member: Member,
@@ -362,7 +358,6 @@ mod tests {
 
     use futures_util::SinkExt;
     use tokio::io::AsyncReadExt;
-    use tokio::sync::Semaphore;
     use tokio_tungstenite::tungstenite::Message as Wire;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::{MaybeTlsStream, connect_async};
@@ -419,24 +414,6 @@ mod tests {
                 member: MemberId::try_from(member.to_owned()).unwrap(),
             },
         })
-    }
-
-    #[tokio::test]
-    async fn a_feed_keeps_its_place_among_the_connections() {
-        let mut fixture = Fixture::new().await;
-        let room = Arc::new(Semaphore::new(2));
-        fixture.shared.connections = Arc::clone(&room);
-        let (server, ada) = fixture.client("ada@example.com").await;
-        let client = greeted(server.address, &ada.token, 0).await;
-
-        // One place is the feed's, the other is kept for the next connection.
-        assert_eq!(room.available_permits(), 0);
-        drop(client);
-        drop(
-            timeout(PATIENCE, room.acquire())
-                .await
-                .expect("the feed kept its place after it closed"),
-        );
     }
 
     #[tokio::test]
