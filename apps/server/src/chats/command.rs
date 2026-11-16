@@ -71,8 +71,8 @@ pub(crate) async fn take(
 
 // The leg an answer or a stop is for. An answer is for the run it names, under its machine's
 // name for it, and only from the owner of the machine that runs it. A stop is for the leg at
-// work, from the member it works for or its machine's owner, and else for a leg the asker
-// called last.
+// work, and else for the leg the asker just called or one of theirs; always only from the
+// member that leg works for or its machine's owner.
 async fn acted_on(
     Sender {
         shared,
@@ -103,8 +103,9 @@ async fn acted_on(
         let may = theirs(&working) || owns.await?;
         return may.then(|| working.clone()).ok_or_else(not_owner);
     }
-    // Before its run reports, a call in flight says which leg is meant, even one whose machine
-    // has sent nothing up yet: the asker's own call, and never a leg someone else just called.
+    // Before its run reports, the asker's own call in flight says which leg is meant, even one
+    // whose machine has sent nothing up yet, and a leg someone else just called is never
+    // meant. The call gives no right: the leg must work for them, or be on their machine.
     let called = workspace.calling(&command.chat, shared.now()).await?;
     let (on, by) = called.unzip();
     let held = |leg: &&Leg| !leg.detached && Some(&leg.machine) == on.as_ref();
@@ -113,7 +114,10 @@ async fn acted_on(
     } else {
         legs.iter().find(|leg| theirs(leg) && !held(leg))
     };
-    leg.cloned().ok_or_else(not_owner)
+    let leg = leg.ok_or_else(not_owner)?;
+    let owns = shared.db.has_machine(&asker.account, &leg.machine);
+    let may = theirs(&leg) || owns.await?;
+    may.then(|| leg.clone()).ok_or_else(not_owner)
 }
 
 // Stores a person's message, in a chat it makes when there is none.
@@ -1355,7 +1359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_before_a_run_reports_is_for_the_leg_the_asker_just_called() {
+    async fn a_stop_of_an_agent_just_called_waits_until_it_works_for_its_caller() {
         let mut two = Two::new().await;
         share(&two, &["w1"]).await;
         let (ada, grace) = (&two.ada, &two.grace);
@@ -1371,14 +1375,52 @@ mod tests {
         sent(&mut two.adas);
         sent(&mut two.graces);
 
-        two.ask(grace, act("r-6", ChatAction::Interrupt))
+        // It still works for Ada, so Grace's stop is refused, and goes to no agent of hers.
+        let early = two.ask(grace, act("r-6", ChatAction::Interrupt)).await;
+        assert_eq!(early.unwrap_err().code().as_str(), "chat.not_owner");
+        assert!(sent(&mut two.adas).is_empty());
+        assert!(sent(&mut two.graces).is_empty());
+        // Her prompt stored, it works for her, and her stop reaches it.
+        two.up(ada, 3, sent_up("r-5")).await;
+        two.ask(grace, act("r-7", ChatAction::Interrupt))
             .await
             .unwrap();
-
         let stopped = commands(sent(&mut two.adas));
         assert_eq!(stopped.len(), 1);
         assert_eq!(stopped[0].0, ChatAction::Interrupt);
-        assert!(sent(&mut two.graces).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_gives_no_right_to_stop_a_run_whose_first_word_is_late() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        two.ask(ada, go("r-3", ada)).await.unwrap();
+        two.up(ada, 1, status(RunState::Running)).await;
+        two.up(ada, 2, status(RunState::Idle)).await;
+        // Ada's next run reports nothing for as long as her call holds the turn.
+        two.ask(ada, go("r-4", ada)).await.unwrap();
+        two.fixture.advance(30);
+        two.ask(grace, go("r-5", ada)).await.unwrap();
+        sent(&mut two.adas);
+
+        let stop = two.ask(grace, act("r-6", ChatAction::Interrupt)).await;
+
+        assert_eq!(stop.unwrap_err().code().as_str(), "chat.not_owner");
+        assert!(sent(&mut two.adas).is_empty());
+    }
+
+    // The prompt `request` as a core sends it up.
+    fn sent_up(request: &str) -> ChatEvent {
+        ChatEvent::Prompt {
+            request: id(request),
+            text: "Go".to_owned(),
+            author: None,
+            pick: None,
+            repo: None,
+            agent: None,
+            task: None,
+        }
     }
 
     #[tokio::test]
@@ -1427,16 +1469,7 @@ mod tests {
         two.up(ada, 2, status(RunState::Idle)).await;
         // Grace's call holds the turn, but the machine runs a prompt its owner wrote there.
         two.ask(grace, go("r-4", ada)).await.unwrap();
-        let local = ChatEvent::Prompt {
-            request: id("r-local"),
-            text: "Local".to_owned(),
-            author: None,
-            pick: None,
-            repo: None,
-            agent: None,
-            task: None,
-        };
-        two.up(ada, 3, local).await;
+        two.up(ada, 3, sent_up("r-local")).await;
         two.up(ada, 4, status(RunState::Running)).await;
         sent(&mut two.adas);
 
