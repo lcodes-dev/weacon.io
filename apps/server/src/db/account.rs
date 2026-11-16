@@ -2,10 +2,9 @@ use sqlx::SqliteConnection;
 use weacon_observability::Fault;
 use weacon_protocol::{AccountId, MemberId, WorkspaceId, WorkspaceRole, WorkspaceSummary, code};
 
+use super::workspace::{OWNER, stored_role};
 use super::{Db, failed, stored, unreadable};
 
-const OWNER: &str = "owner";
-const MEMBER: &str = "member";
 /// How many workspaces one account may own: enough for anyone, too few to fill the disk.
 const MAX_OWNED: i64 = 100;
 
@@ -119,16 +118,10 @@ pub(super) fn summary(
     role: &str,
     member: MemberId,
 ) -> Result<WorkspaceSummary, Fault> {
-    let role = match role {
-        OWNER => WorkspaceRole::Owner,
-        MEMBER => WorkspaceRole::Member,
-        // This server writes every role it stores, so another is damage, not news.
-        _ => return Err(unreadable()),
-    };
     Ok(WorkspaceSummary {
         id,
         name,
-        role,
+        role: stored_role(role)?,
         member: Some(member),
     })
 }

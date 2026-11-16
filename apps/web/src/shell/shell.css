@@ -5,7 +5,8 @@
 }
 
 .sign-in form,
-.workspaces form {
+.workspaces form,
+.members form {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -14,7 +15,8 @@
 }
 
 .sign-in label,
-.workspaces label {
+.workspaces label,
+.members label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -23,7 +25,8 @@
 
 .sign-in input,
 .workspaces input,
-.selector select {
+.members input,
+.members select {
   font: inherit;
   color: inherit;
   background: none;
@@ -44,16 +47,10 @@
   gap: 8px;
 }
 
-.workspaces li,
-.selector {
+.workspaces li {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.selector select {
-  background: var(--bg);
-  padding: 4px 8px;
 }
 
 .workspace {
@@ -67,6 +64,49 @@
   box-sizing: border-box;
   border-right: 1px solid var(--border);
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-menu {
+  margin-top: auto;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.workspace-menu .current {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+}
+
+.workspace-menu .menu ul {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workspace-menu .menu h2 {
+  font-size: inherit;
+  margin: 8px 0 4px;
+}
+
+.workspace-menu .badge {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 6px;
+}
+
+.workspace-menu p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .chats {

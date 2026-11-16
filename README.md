@@ -54,7 +54,7 @@ Weacon is in early development. This is what works on `main` today:
 | Area | Works today | Not yet |
 | --- | --- | --- |
 | Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: nothing sends mail yet, so the server prints each one to its log |
-| Workspaces | A personal workspace for each account; new workspaces; members the operator adds with `weacon-server add-member` | Inviting people from the web app |
+| Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Sending invitations by email: the server prints each one to its log |
 | Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; error report choice; a note when a machine's core is too old for the server | |
 | Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
 | Chats | **New chat** picks a machine, a repository, an agent and, if you want, an open task; the server passes the prompt to that machine and keeps what the agent does; the chat screen shows it, with its task | Changing a chat's task after it starts; the agent's text as it is written, proven with a real agent |
@@ -206,7 +206,9 @@ Codex works differently from Claude Code: it asks you before every file change a
 - **Open terminal**: a chat's **Open terminal** opens its folder in your own terminal on that machine. It needs a desktop terminal on that machine; on a machine without one, such as a server, use **Resume** there instead. On Linux the terminal runs the resume itself, so you see the agent there and answer its prompts there.
 
 - **Search**: press ⌘K (Ctrl+K on Linux and Windows), then type. It finds docs, tasks and chats by their words, and the code's symbols on your machine. A chat comes up once, and a message opens its chat at that message.
-- **Teammates**: the operator adds them from the command line. Each signs in with their own email and pairs their own machine. With the server running:
+- **Teammates**: open a workspace you own, then **Settings**. Under **Members**, type an address and choose **Invite**. The invitation lasts 7 days, and you can revoke it until it's taken up. Once that person signs in with the address, they see the invitation at the foot of the sidebar, or on the page they land on, and choose **Accept**. The owner can remove members, and members can **Leave**. Someone removed loses the workspace, and their chats stay in it. Each person signs in with their own email and pairs their own machine.
+
+The operator can still add a member from the command line, with the server running:
 
 ```bash
 target/debug/weacon-server create-workspace --db .dev/server/weacon.db --name "Team"

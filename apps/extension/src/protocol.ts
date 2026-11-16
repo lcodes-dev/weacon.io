@@ -753,6 +753,25 @@ export type InstallCommand = {
   request: RequestId;
 };
 
+/**
+ * A live invitation as the workspace's owner sees it: its address, and when it ends, in seconds
+ * since the Unix epoch.
+ */
+export type Invitation = {
+  email: string;
+  expires_at: number;
+};
+
+/**
+ * A live invitation as the person it is addressed to sees it once signed in, which they take up
+ * with `POST /api/workspaces/{workspace}/accept`.
+ */
+export type InvitationOffer = {
+  expires_at: number;
+  name: string;
+  workspace: WorkspaceId;
+};
+
 export type Level = (
   | "trace"
   | "debug"
@@ -983,6 +1002,32 @@ export type Mark = {
   start: number;
 };
 
+export type MemberAction = (
+  | {
+    email: string;
+    kind: "invite";
+  }
+  | {
+    email: string;
+    kind: "revoke";
+  }
+  | {
+    kind: "remove";
+    member: MemberId;
+  }
+  | {
+    kind: "leave";
+  }
+);
+
+/**
+ * Asks the server, as `POST /api/workspaces/{workspace}/members`, to change who is in the
+ * workspace.
+ */
+export type MemberCommand = {
+  action: MemberAction;
+};
+
 /**
  * A member of a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
@@ -990,9 +1035,11 @@ export type MemberId = string;
 
 /**
  * A workspace's members, past ones included, in the order they were added, from the server to
- * clients that have the capability `workspace.members`.
+ * clients that have the capability `workspace.members`. Only its owner gets the live
+ * invitations.
  */
 export type MemberList = {
+  invitations?: Array<Invitation>;
   members: Array<MemberSummary>;
 };
 
@@ -1003,6 +1050,10 @@ export type MemberList = {
 export type MemberSummary = {
   id: MemberId;
   name: string;
+  /**
+   * Their role; left out for a past member.
+   */
+  role?: WorkspaceRole;
 };
 
 /**
@@ -1989,6 +2040,9 @@ export type WorkspaceChange = (
     member: MemberId;
   }
   | {
+    kind: "members_changed";
+  }
+  | {
     kind: "task_changed";
     task: TaskId;
     version: number;
@@ -2022,9 +2076,10 @@ export type WorkspaceCreate = {
 export type WorkspaceId = string;
 
 /**
- * The workspaces the signed-in account is a member of.
+ * The workspaces the signed-in account is a member of, and the live invitations to its address.
  */
 export type WorkspaceList = {
+  invitations: Array<InvitationOffer>;
   workspaces: Array<WorkspaceSummary>;
 };
 

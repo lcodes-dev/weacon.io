@@ -439,7 +439,10 @@ mod tests {
         let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
         // Past what the feed sends first, which ends it once the membership has.
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
-        workspace.unlink(&test_support::member_id("m1")).await;
+        workspace
+            .leave(&test_support::member_id("m1"))
+            .await
+            .unwrap();
 
         ask(&mut client, 2, query("w1", ChatQueryKind::Snapshot)).await;
 
@@ -467,7 +470,10 @@ mod tests {
         .await;
         // Past what the feed sends first, which ends it once the membership has.
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
-        workspace.unlink(&test_support::member_id("m1")).await;
+        workspace
+            .leave(&test_support::member_id("m1"))
+            .await
+            .unwrap();
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
 
