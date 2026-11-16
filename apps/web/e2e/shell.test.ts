@@ -793,6 +793,8 @@ test("the palette keeps focus on its input and the chosen hit in view", { timeou
   await serveFeed(page, { also: ["workspace.search"] });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
+  // The palette opens only in an open workspace.
+  await page.getByRole("heading", { name: "Personal" }).waitFor();
 
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search" });
@@ -833,6 +835,8 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
+  // The palette opens only in an open workspace.
+  await page.getByRole("heading", { name: "Personal" }).waitFor();
 
   await page.keyboard.press("ControlOrMeta+k");
   const search = page.getByRole("dialog", { name: "Search" });

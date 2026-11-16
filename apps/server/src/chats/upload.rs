@@ -98,9 +98,7 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
                 run: leg.chat_run(&status.run)?,
                 agent: Some(AgentRef {
                     kind: leg.agent,
-                    owner: AgentOwner::Member {
-                        member: leg.member.clone(),
-                    },
+                    owner: owner_of(leg),
                     machine: Some(leg.machine_name.clone()),
                 }),
                 ..status
@@ -110,6 +108,16 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
         // Only the server writes a person's message, and what a newer core sends may hold
         // anything.
         ChatEvent::Message { .. } | ChatEvent::Newer => None,
+    }
+}
+
+// Whose agent `leg`'s is: its member's own, or the shared one of a machine shared with the
+// workspace, whoever of its members called it.
+fn owner_of(leg: &Leg) -> AgentOwner {
+    let member = leg.member.clone();
+    match leg.shared_by.clone() {
+        Some(owner) => AgentOwner::Shared { member, owner },
+        None => AgentOwner::Member { member },
     }
 }
 
@@ -471,6 +479,7 @@ mod tests {
             detached: false,
             quoted_seq: 0,
             number: 1,
+            shared_by: None,
         }
     }
 

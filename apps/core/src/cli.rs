@@ -47,6 +47,15 @@ pub(crate) enum Command {
         #[arg(long)]
         team: Option<bool>,
     },
+    /// Share this machine with a workspace: every member can call agents on it, and you
+    /// answer their prompts.
+    Share {
+        /// The workspace's id.
+        workspace: WorkspaceId,
+        /// on or off.
+        #[arg(value_parser = on_or_off, action = clap::ArgAction::Set)]
+        shared: bool,
+    },
     /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
     Pair {
         /// The server's address, an https URL with no path.
@@ -103,6 +112,14 @@ fn agent(name: &str) -> Result<AgentKind, &'static str> {
         .ok()
         .filter(|agent| *agent != AgentKind::Newer)
         .ok_or("not an agent this core runs")
+}
+
+fn on_or_off(word: &str) -> Result<bool, &'static str> {
+    match word {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("say on or off"),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Subcommand)]
@@ -180,6 +197,7 @@ impl Command {
             | Self::Service(_)
             | Self::Login { .. }
             | Self::Access { .. }
+            | Self::Share { .. }
             | Self::Pair { .. }
             | Self::Repo(_)
             | Self::Reports { .. }
@@ -199,6 +217,7 @@ impl Command {
             Self::Service(_) => "service",
             Self::Login { .. } => "login",
             Self::Access { .. } => "access",
+            Self::Share { .. } => "share",
             Self::Pair { .. } => "pair",
             Self::Repo(_) => "repo",
             Self::Reports { .. } => "reports",
@@ -415,6 +434,26 @@ mod tests {
         ])
         .unwrap_err();
         run(&["weacon", "repo", "add", "--workspace", "w-1", "a/b", "/src"]).unwrap_err();
+    }
+
+    #[test]
+    fn share_takes_a_workspace_and_on_or_off() {
+        let on = run(&["weacon", "share", "w-1", "on"]).unwrap().command;
+        let off = run(&["weacon", "share", "w-1", "off"]).unwrap().command;
+
+        assert!(matches!(
+            &on,
+            Command::Share { workspace, shared: true } if workspace.as_str() == "w-1"
+        ));
+        assert!(matches!(off, Command::Share { shared: false, .. }));
+        assert_eq!((on.name(), on.log_name()), ("share", "cli.log"));
+        for bad in [
+            &["weacon", "share", "w-1", "yes"][..],
+            &["weacon", "share", "a b", "on"],
+            &["weacon", "share", "w-1"],
+        ] {
+            run(bad).unwrap_err();
+        }
     }
 
     #[test]

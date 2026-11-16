@@ -61,10 +61,11 @@ impl FakeChat {
         let (mine, shared) = (run("r-1")?, run("r-2")?);
         let member = fake.member.clone();
         fake.prompt("q-0", FIRST)?;
-        fake.start(
-            &shared,
-            agent(AgentKind::Codex, AgentOwner::Shared, "team VPS")?,
-        );
+        let by_member = AgentOwner::Shared {
+            member: member.clone(),
+            owner: member.clone(),
+        };
+        fake.start(&shared, agent(AgentKind::Codex, by_member, "team VPS")?);
         for step in 1..=EARLIER {
             fake.commit(said(
                 &shared,
@@ -559,8 +560,12 @@ mod tests {
         let mut fake = fake();
         let (seq, runs, waiting) = snapshot(&mut fake);
         let member = MemberId::try_from("m-1".to_owned()).unwrap();
+        let shared = AgentOwner::Shared {
+            member: member.clone(),
+            owner: member.clone(),
+        };
         let claude = agent(AgentKind::Claude, AgentOwner::Member { member }, "laptop").unwrap();
-        let codex = agent(AgentKind::Codex, AgentOwner::Shared, "team VPS").unwrap();
+        let codex = agent(AgentKind::Codex, shared, "team VPS").unwrap();
         let log: Vec<_> = fake
             .entries
             .iter()

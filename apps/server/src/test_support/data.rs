@@ -57,6 +57,14 @@ pub(crate) fn new_task(id: &str, title: &str, order: &str) -> weacon_model::Task
     )
 }
 
+/// The owner of a workspace's shared agent that `m1` called on their own shared machine.
+pub(crate) fn shared_owner() -> weacon_protocol::AgentOwner {
+    weacon_protocol::AgentOwner::Shared {
+        member: member_id("m1"),
+        owner: member_id("m1"),
+    }
+}
+
 /// An agent of `kind`, whose owner is `owner`, on the machine called `machine` when known.
 pub(crate) fn agent(
     kind: weacon_protocol::AgentKind,
