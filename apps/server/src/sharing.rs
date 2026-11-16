@@ -25,9 +25,9 @@ pub(crate) async fn keep(
         Ok(changed) => {
             shared.log.info("machine shares kept", &[machine_id]);
             // A chat whose member's agent was just detached shows so at once.
-            changed
-                .iter()
-                .for_each(|workspace| shared.wake_feeds(workspace));
+            for workspace in &changed {
+                shared.wake_feeds(workspace);
+            }
             return Ok(());
         }
         Err(fault) => fault,
