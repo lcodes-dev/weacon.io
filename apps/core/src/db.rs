@@ -31,8 +31,7 @@ pub(crate) struct Workspace {
 }
 
 impl Db {
-    /// Opens the database in `state_dir`, creating it if it's missing, and brings its schema
-    /// up to date.
+    /// Opens the database in `state_dir`, making it with its schema if it's missing.
     pub(crate) async fn open(state_dir: &Path) -> Result<Self, Fault> {
         let path = std::path::absolute(state_dir.join("core.db")).map_err(|error| {
             Fault::new(code!("db.path_unusable"), "The path can't be used").because(error)
@@ -72,12 +71,12 @@ impl Db {
     }
 }
 
-/// A pool of `pool`'s connections with `options`, its schema brought up to date.
+/// A pool of `pool`'s connections with `options`, its schema made if the database is new.
 async fn connect(pool: SqlitePoolOptions, options: SqliteConnectOptions) -> Result<Db, Fault> {
     let pool = pool.connect_with(options).await.map_err(|error| {
         Fault::new(code!("db.open_failed"), "The database can't be opened").because(error)
     })?;
-    schema::migrate(&pool).await?;
+    schema::prepare(&pool).await?;
     Ok(Db { pool })
 }
 

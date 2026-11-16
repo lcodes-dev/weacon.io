@@ -263,10 +263,12 @@ Ctrl-C in the first terminal stops the server and the core. `scripts/dev.sh` sta
 | Folder | What it holds |
 | --- | --- |
 | `.dev/server/` | The server's database |
-| `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
+| `.dev/state/` | The core's state: its pairing, settings, sign-in folders, map of your code and logs |
 | `.dev/work/` | The folders agents work in |
 
 The server opens only a database made with its own tables. After you pull a change to them, `scripts/dev.sh` says the server didn't start and `.dev/server.log` says the database was made by another build: stop Weacon, remove `.dev/server`, run `scripts/dev.sh you@example.com`, then pair the core, and the second one if you paired one for the Chrome extension, sign your agents in and register your repositories again, as on the first run. That removes the workspaces with their tasks, docs and chats. The core's state and the agents' folders can stay; what they hold for the old workspaces is left on disk, unused.
+
+The core keeps its map of your code in `core.db` in its state folder, a cache it also opens only with its own tables. After a change to them the core still runs, but agents get no code map and the core's log says `mcp maps off`: stop Weacon, remove `.dev/state/core.db` with `core.db-wal` and `core.db-shm` beside it, and start it again. The core reads the code again as agents run.
 
 To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect. If you paired a second core for the Chrome extension, pair it again afterwards, as in that section. If you set `WEACON_STATE_DIR` to a folder of its own, such as `~/.weacon-dev/state`, remove that folder too. The core keeps agents' work in a `work` folder beside it, such as `~/.weacon-dev/work`: check that it holds only Weacon's folders before you remove it.
 
