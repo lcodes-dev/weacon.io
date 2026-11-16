@@ -1,4 +1,4 @@
-import type { ChatEntry, PickNote, RunId, RunState } from "./protocol.ts";
+import type { ChatEntry, PickNote, RunId, RunState, Wants } from "./protocol.ts";
 
 /**
  * A chat's log from `first` to `seq` with no gaps, and its runs' states. A permission prompt at or
@@ -26,7 +26,7 @@ export type Line =
   | { key: string; kind: "prompt"; text: string; pick?: PickNote | undefined }
   | { key: string; kind: "text"; text: string }
   | { key: string; kind: "tool"; tool: string; state: "running" | "done" | "failed" }
-  | { key: string; kind: "ask"; run: RunId; prompt: number; tool: string; state: AskState }
+  | { key: string; kind: "ask"; run: RunId; prompt: number; tool: string; wants?: Wants; state: AskState }
   | { key: string; kind: "ended"; code: string };
 
 export type AskState = "open" | "allowed" | "denied" | "closed";
@@ -130,7 +130,7 @@ function run(shown: Line[], seq: number, id: RunId, event: RunEvent, waiting: bo
       return;
     }
     case "permission_asked":
-      shown.push({ key: `a${seq}`, kind: "ask", run: id, prompt: event.prompt, tool: event.tool, state: waiting ? "open" : "closed" });
+      shown.push({ key: `a${seq}`, kind: "ask", run: id, prompt: event.prompt, tool: event.tool, ...(event.wants === undefined ? {} : { wants: event.wants }), state: waiting ? "open" : "closed" });
       return;
     case "permission_withdrawn":
       return closeAsks(shown, id, (prompt) => prompt === event.prompt);

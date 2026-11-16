@@ -87,6 +87,13 @@ code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.transcript .wants {
+  margin: 4px 0;
+  max-height: 12em;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .transcript .prompt {
   padding: 6px 8px;
   border-radius: 6px;

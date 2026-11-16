@@ -402,9 +402,9 @@ export type ChatList = {
 };
 
 /**
- * A run's update that a viewer of its chat needs and no one stores: text as it is written, and
- * the tool a permission prompt names, never its input. From a core to the server, and from the
- * server to the feeds that follow the chat, each under `chat.live`.
+ * A run's update that a viewer of its chat needs and no one stores: text as it is written.
+ * From a core to the server, and from the server to the feeds that follow the chat, each
+ * under `chat.live`.
  */
 export type ChatLive = {
   /**
@@ -1615,10 +1615,14 @@ export type RunEvent = (
   }
   | {
     event: "permission_asked";
+    /**
+     * Stays on the machine: the core sends `wants` up in its place.
+     */
     input: unknown;
     prompt: number;
     run: RunId;
     tool: string;
+    wants?: Wants;
   }
   | {
     event: "permission_withdrawn";
@@ -2093,6 +2097,15 @@ export type UpdateSchedule = (
   | "daily"
   | "weekly"
 );
+
+/**
+ * What a permission prompt's tool would do, as text the core makes of its input and every
+ * reader of the chat sees: at most [`WANTS_MAX`] bytes, `cut` when some was left out.
+ */
+export type Wants = {
+  cut?: boolean;
+  text: string;
+};
 
 /**
  * The answer to a [`Hello`] that speaks the same protocol.

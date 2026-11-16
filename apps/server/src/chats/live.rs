@@ -9,20 +9,12 @@ use crate::shared::Shared;
 /// What a core offers, and the server offers, to pass a chat's live updates on.
 pub(crate) const LIVE: Code = code!("chat.live");
 
-/// Passes `live` from `machine` to its chat's followers, when the chat runs there. Text from
-/// before the chat's last stored event is dropped; the rest is told the chat's own seq.
+/// Passes `live`, text being written, from `machine` to its chat's followers, when the chat
+/// runs there. Text from before the chat's last stored event is dropped; the rest is told the
+/// chat's own seq.
 pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLive) {
-    match &mut live.update.event {
-        RunEvent::TextDelta { .. } => {}
-        RunEvent::PermissionAsked { input, .. } => *input = serde_json::Value::Null,
-        RunEvent::Started { .. }
-        | RunEvent::Text { .. }
-        | RunEvent::ToolCall { .. }
-        | RunEvent::ToolDone { .. }
-        | RunEvent::PermissionWithdrawn { .. }
-        | RunEvent::PermissionAnswered { .. }
-        | RunEvent::Finished { .. }
-        | RunEvent::Newer => return,
+    if !matches!(live.update.event, RunEvent::TextDelta { .. }) {
+        return;
     }
     match placed(shared, machine, &live).await {
         Ok(Some(seq)) => {
@@ -55,8 +47,7 @@ async fn placed(
     let Some(chat) = place.chat(&live.chat).await? else {
         return Ok(None);
     };
-    let text = matches!(live.update.event, RunEvent::TextDelta { .. });
-    if text && live.after.is_some_and(|after| after < chat.core_seq) {
+    if live.after.is_some_and(|after| after < chat.core_seq) {
         return Ok(None);
     }
     Ok(place

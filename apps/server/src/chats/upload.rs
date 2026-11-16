@@ -3,8 +3,8 @@
 use serde_json::Value;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, RunEvent, RunUpdate, WorkspaceId,
-    code,
+    ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, RunEvent, RunUpdate, Wants,
+    WorkspaceId, code,
 };
 
 use crate::db::{Incoming, turns};
@@ -85,18 +85,31 @@ fn kept(event: ChatEvent) -> Option<ChatEvent> {
     }
 }
 
+// The most bytes of a prompt's tool's name that are kept.
+const TOOL_MAX: usize = 128;
+
 fn kept_run(event: RunEvent) -> Option<RunEvent> {
     match event {
         RunEvent::Text { .. }
         | RunEvent::PermissionWithdrawn { .. }
         | RunEvent::PermissionAnswered { .. }
         | RunEvent::Finished { .. } => Some(event),
-        // Kept so it can be answered, without what the tool would do.
-        RunEvent::PermissionAsked { run, prompt, .. } => Some(RunEvent::PermissionAsked {
+        // Kept with what it says the tool wants, never the tool's input.
+        RunEvent::PermissionAsked {
             run,
             prompt,
-            tool: String::new(),
+            mut tool,
+            wants,
+            ..
+        } => Some(RunEvent::PermissionAsked {
+            run,
+            prompt,
+            tool: {
+                tool.truncate(tool.floor_char_boundary(TOOL_MAX));
+                tool
+            },
             input: Value::Null,
+            wants: wants.map(Wants::bounded),
         }),
         RunEvent::Started { .. }
         | RunEvent::TextDelta { .. }
@@ -125,7 +138,7 @@ async fn append(
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatEntry, ChatEvent, Outcome, Receipt, WorkspaceId};
+    use weacon_protocol::{ChatEntry, ChatEvent, Outcome, Receipt, WANTS_MAX, WorkspaceId};
 
     use super::*;
     use crate::chats::test_support::{Ada, ada};
@@ -290,7 +303,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_messages_are_stored_and_no_tools_name_or_input() {
+    async fn messages_are_stored_and_a_prompts_tool_with_what_it_wants_but_no_tools_input() {
         let fixture = Fixture::new().await;
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
         let workspace = &ada.member.workspace;
@@ -306,12 +319,18 @@ mod tests {
             tool: "MARKER-TOOL".to_owned(),
             input: marked(),
         };
-        let asked = RunEvent::PermissionAsked {
+        let long = format!("MARKER{}", "é".repeat(WANTS_MAX));
+        let asks = |tool: &str, input, text: &str| RunEvent::PermissionAsked {
             run: id("run-1"),
             prompt: 1,
-            tool: "MARKER-TOOL".to_owned(),
-            input: marked(),
+            tool: tool.to_owned(),
+            input,
+            wants: Some(Wants {
+                text: text.to_owned(),
+                cut: false,
+            }),
         };
+        let asked = asks(&"é".repeat(TOOL_MAX), marked(), &long);
 
         for (seq, event) in [(1, run(call)), (2, run(asked)), (3, said("MARKER-TEXT"))] {
             store(shared, &ada.machine, update("w1", "c-1", seq, event))
@@ -325,15 +344,16 @@ mod tests {
             .into_iter()
             .map(|entry| entry.event)
             .collect();
-        let blank = RunEvent::PermissionAsked {
-            run: id("run-1"),
-            prompt: 1,
-            tool: String::new(),
-            input: Value::Null,
-        };
-        assert_eq!(stored, [run(blank), said("MARKER-TEXT")]);
+        // A core that sent more than a prompt may say has it cut here.
+        let fits = format!("MARKER{}", "é".repeat(WANTS_MAX / 2 - 3));
+        let mut kept = asks(&"é".repeat(TOOL_MAX / 2), Value::Null, &fits);
+        if let RunEvent::PermissionAsked { wants, .. } = &mut kept {
+            *wants = wants.take().map(|wants| Wants { cut: true, ..wants });
+        }
+        assert_eq!(stored, [run(kept), said("MARKER-TEXT")]);
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("chat upload refused"), "{logged}");
+        assert!(!logged.contains("MARKER"), "{logged}");
     }
 
     #[test]
