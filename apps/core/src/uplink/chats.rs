@@ -16,7 +16,7 @@ mod live;
 pub(super) use live::LIVE;
 
 use self::live::Live;
-use super::{QUEUE, Step, failure, for_now, refusal, reply};
+use super::{QUEUE, Step, failure, refusal, reply};
 use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
 use crate::runs::ChatKey;
@@ -46,8 +46,7 @@ pub(super) struct ChatLink {
     /// The answers to commands taken up, under their envelopes' ids.
     answers: mpsc::Receiver<Envelope>,
     uploads: bool,
-    /// Asks waiting for room in `asks`, in the order asked; a follow is never dropped, so a
-    /// chat is never left unfollowed.
+    /// Asks waiting for room in `asks`, in the order asked.
     waiting: VecDeque<Ask>,
     /// The seq of the last event of each followed chat that came, to follow again after.
     came: HashMap<ChatKey, u64>,
@@ -84,9 +83,6 @@ impl ChatLink {
             // Only a client on the core's own socket may hold a chat.
             if matches!(command.action, ChatAction::Hold | ChatAction::Release) {
                 return reply(refusal(id, &command, code!("message.unsupported")));
-            }
-            if self.waiting.len() >= QUEUE {
-                return reply(for_now(id, code!("chat.unavailable")));
             }
             self.queue(Ask::Command(id, Box::new(command)));
             return Step::Nothing;
@@ -611,36 +607,17 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_no_room_left_is_refused_as_unavailable_for_now() {
+    fn commands_with_no_room_yet_all_wait_for_it() {
         let (mut link, _asked, _push) = link(true, 1);
-        let interrupt = |request: &str| command(request, "c-1", ChatAction::Interrupt);
+        let interrupt = |at: usize| command(&format!("r-{at}"), "c-1", ChatAction::Interrupt);
 
-        // One fills the queue, and as many again as it holds wait for room.
-        let taken: Vec<_> = (0..=QUEUE)
-            .map(|at| {
-                link.take(envelope(Message::ChatCommand(interrupt(&format!(
-                    "r-w{at}"
-                )))))
-            })
+        let taken: Vec<_> = (0..QUEUE + 2)
+            .map(|at| link.take(envelope(Message::ChatCommand(interrupt(at)))))
             .collect();
-        let refused = link.take(envelope(Message::ChatCommand(interrupt("r-2"))));
 
         assert!(taken.iter().all(|step| matches!(step, Step::Nothing)));
-        assert_eq!(link.waiting.len(), QUEUE);
-        let Step::Reply(reply) = refused else {
-            panic!("not refused");
-        };
-        let busy = weacon_protocol::ErrorBody {
-            code: code!("chat.unavailable"),
-            retryable: true,
-        };
-        assert_eq!(
-            *reply,
-            Envelope {
-                id: 9,
-                message: Message::Error(busy)
-            }
-        );
+        // One went to the engine's queue of one; the rest wait.
+        assert_eq!(link.waiting.len(), QUEUE + 1);
     }
 
     // Events the server keeps, as they are.
