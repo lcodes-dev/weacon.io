@@ -2,10 +2,10 @@ use weacon_model::Attribution;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatId, MachineId, MachineName,
-    PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    PermissionAnswer, RepoId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::{Incoming, NewChat, NewRequest, Workspace};
+use super::{Incoming, NewChat, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -99,7 +99,6 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         at,
         ..
     } = *making;
-    let request = id::<RequestId>(&format!("r-{chat}"));
     let (chat, owner) = (id::<ChatId>(chat), member_id(owner));
     let (machine_id, machine) = (id::<MachineId>(machine), id::<MachineName>("Ada's laptop"));
     let repo = id::<RepoId>("site");
@@ -113,15 +112,9 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         at,
         task: making.task,
     };
-    let asked = command(request.as_str(), chat.as_str(), title);
-    let first = NewRequest {
-        command: &asked,
-        member: &owner,
-        at,
-    };
     // Made on its owner's machine, unpaired again unless it was paired before.
     let paired = pair(workspace, &machine_id, &owner).await?;
-    let added = workspace.add_chat(&new, &first).await;
+    let added = workspace.add_chat(&new).await;
     if paired {
         sqlx::query("DELETE FROM machines WHERE machine_id = ?")
             .bind(machine_id.as_str())
@@ -160,11 +153,6 @@ pub(crate) fn status(state: RunState) -> ChatEvent {
         agent: None,
     };
     ChatEvent::RunStatus { status }
-}
-
-/// The prompt `text` to `chat` under `request`, as a member of w1 sent it.
-pub(crate) fn command(request: &str, chat: &str, text: &str) -> ChatCommand {
-    prompt(request, chat, text, None)
 }
 
 /// The prompt `text` to `chat` in w1 under `request`, naming `machine` as a first prompt does.
@@ -250,15 +238,6 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 }
 
 impl Workspace {
-    /// Ends `request` to `chat`, as its receipt would.
-    pub(crate) async fn close_request(&self, chat: &str, request: &str) {
-        let mut writer = self.db.writer.acquire().await.unwrap();
-        let request = id::<RequestId>(request);
-        self.end_request(&mut writer, &id(chat), &request)
-            .await
-            .unwrap();
-    }
-
     /// Puts every chat of the workspace on `machine`.
     pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
         sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")
@@ -285,6 +264,16 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Makes every change this workspace records fail in the database, as a full disk would.
+    pub(crate) async fn break_changes(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken_changes BEFORE INSERT ON changes BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
     /// Makes every chat event this workspace stores fail in the database, as a full disk would.
     pub(crate) async fn break_chat_events(&self) {
         sqlx::query(
@@ -293,14 +282,6 @@ impl Workspace {
         .execute(&self.db.writer)
         .await
         .unwrap();
-    }
-
-    /// Makes reading the workspace's commands fail in the database.
-    pub(crate) async fn break_chat_requests(&self) {
-        sqlx::query("ALTER TABLE chat_requests RENAME TO broken_requests")
-            .execute(&self.db.writer)
-            .await
-            .unwrap();
     }
 
     /// Leaves the workspace no room for more chat events.

@@ -1,5 +1,6 @@
 //! A chat's log: its committed events as JSON lines, in the order they were committed.
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -7,7 +8,7 @@ use std::path::{Path, PathBuf};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatEntry, ChatEvent, ChatId, ChatTask, MAX_FRAME, RepoId, RequestId,
+    AgentKind, ChatEntry, ChatEvent, ChatId, ChatTask, MAX_FRAME, Outcome, RepoId, RequestId,
     RunEvent, RunUpdate, code,
 };
 
@@ -15,12 +16,9 @@ use crate::app::blocking;
 use crate::platform;
 
 mod line;
-mod requests;
 mod title;
 
 use line::entry_line;
-use requests::Requests;
-pub(crate) use requests::{Seen, digest};
 pub(crate) use title::title;
 
 // An entry, and a window of entries, each fit one frame with room for what travels with them.
@@ -40,9 +38,13 @@ pub(crate) struct ChatLog {
     /// Where each entry starts in the file; the entry `seq` starts at `starts[seq - 1]`.
     starts: Vec<u64>,
     end: u64,
-    requests: Requests,
+    /// Each request a receipt is in for, and whether one other than `accepted` ended it.
+    receipts: HashMap<RequestId, bool>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
+    /// How many more writes succeed before the log behaves as after a failed one.
+    #[cfg(test)]
+    writes_left: Option<u32>,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
     /// The repository the chat's first prompt named, if it named one.
@@ -90,8 +92,10 @@ impl ChatLog {
                 workspace_root,
                 starts: Vec::new(),
                 end: 0,
-                requests: Requests::default(),
+                receipts: HashMap::new(),
                 broken: false,
+                #[cfg(test)]
+                writes_left: None,
                 agent: None,
                 repo: None,
                 task: None,
@@ -141,13 +145,8 @@ impl ChatLog {
         self.runs.apply(entry);
         match &entry.event {
             ChatEvent::Prompt {
-                request,
-                agent,
-                repo,
-                task,
-                ..
+                agent, repo, task, ..
             } => {
-                self.requests.prompted(request, entry.seq);
                 // The first prompt names the chat's agent, repository and task; later ones can't.
                 if self.agent.is_none() {
                     self.agent = Some(agent.unwrap_or(AgentKind::Claude));
@@ -155,7 +154,10 @@ impl ChatLog {
                     self.task.clone_from(task);
                 }
             }
-            ChatEvent::Receipt { receipt } => self.requests.receipted(receipt),
+            ChatEvent::Receipt { receipt } => {
+                let ended = receipt.outcome != Outcome::Accepted;
+                *self.receipts.entry(receipt.request.clone()).or_default() |= ended;
+            }
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
             | ChatEvent::OutsidePrompt { .. }
@@ -224,6 +226,8 @@ impl ChatLog {
         };
         let line = entry_line(&entry)?;
         let len = line.len();
+        #[cfg(test)]
+        self.count_write();
         self.ensure_file()
             .await
             .map_err(|error| not_written().because(error))?;
@@ -263,46 +267,14 @@ impl ChatLog {
         self.read(after + 1, self.seq()).await.map(Some)
     }
 
-    /// Whether a command under `request` was committed before, and with the same content. Only
-    /// a prompt's content is kept, in the prompt entry its owner commits before any receipt, so
-    /// any other command counts as the same, and so does anything under a refused request.
-    pub(crate) async fn seen(
-        &self,
-        request: &RequestId,
-        action: &ChatAction,
-    ) -> Result<Seen, Fault> {
-        let Some(commanded) = self.requests.get(request) else {
-            return Ok(Seen::Never);
-        };
-        let Some(seq) = commanded.prompt else {
-            return Ok(commanded.seen_unprompted(action));
-        };
-        let earlier = self.read(seq, seq).await?.pop().map(|entry| entry.event);
-        let same = matches!(
-            (earlier, action),
-            (
-                Some(ChatEvent::Prompt {
-                    text: was_text,
-                    repo: was_repo,
-                    agent: was_agent,
-                    ..
-                }),
-                ChatAction::Prompt {
-                    text, repo, agent, ..
-                },
-            ) if was_text == *text && was_repo == *repo && was_agent == *agent
-        );
-        Ok(commanded.seen_prompt(same))
-    }
-
-    /// Keeps the digest of the command refused for good under `request`, its receipt in.
-    pub(crate) fn refused(&mut self, request: &RequestId, digest: u64) {
-        self.requests.refused(request, digest);
-    }
-
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
-        self.requests.has_ended(request)
+        self.receipts.get(request) == Some(&true)
+    }
+
+    /// Whether any receipt for the command under `request` is in the log.
+    pub(crate) fn has_receipt(&self, request: &RequestId) -> bool {
+        self.receipts.contains_key(request)
     }
 
     async fn read(&self, first: u64, last: u64) -> Result<Vec<ChatEntry>, Fault> {
@@ -329,6 +301,21 @@ impl ChatLog {
     #[cfg(test)]
     pub(crate) const fn jam(&mut self) {
         self.broken = true;
+    }
+
+    /// Lets `writes` more writes through, then behaves as [`jam`](Self::jam) does.
+    #[cfg(test)]
+    pub(crate) const fn jam_after(&mut self, writes: u32) {
+        self.writes_left = Some(writes);
+    }
+
+    #[cfg(test)]
+    fn count_write(&mut self) {
+        match self.writes_left {
+            Some(0) => self.broken = true,
+            Some(left) => self.writes_left = Some(left - 1),
+            None => {}
+        }
     }
 
     // Creates the log file on the first entry of a chat that had none.
@@ -373,8 +360,8 @@ mod tests {
     use std::path::PathBuf;
 
     use weacon_protocol::{
-        ChatAnswer, ChatAnswerKind, ChatUpdate, Envelope, Message, Outcome, PermissionAnswer,
-        Receipt, RepoId, WorkspaceId, encode_line,
+        ChatAnswer, ChatAnswerKind, ChatUpdate, Envelope, Message, Outcome, Receipt, RepoId,
+        WorkspaceId, encode_line,
     };
     use weacon_testing::TempDir;
 
@@ -413,17 +400,6 @@ mod tests {
         said("a".repeat(len - overhead))
     }
 
-    fn asks(text: &str) -> ChatAction {
-        ChatAction::Prompt {
-            pick: None,
-            text: text.to_owned(),
-            repo: None,
-            machine: None,
-            agent: None,
-            task: None,
-        }
-    }
-
     fn file_of(root: &Path) -> PathBuf {
         root.join("chats/c-c-1.jsonl")
     }
@@ -435,10 +411,6 @@ mod tests {
     async fn since(log: &ChatLog, after: u64) -> Option<Vec<u64>> {
         let found = log.since(after).await.unwrap();
         found.map(|found| seqs(&found))
-    }
-
-    async fn seen(log: &ChatLog, id: &str, action: ChatAction) -> Seen {
-        log.seen(&request(id), &action).await.unwrap()
     }
 
     async fn window(log: &ChatLog, before: u64, limit: u32) -> Vec<u64> {
@@ -677,56 +649,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_repeated_request_is_the_same_or_another_command() {
-        let dir = TempDir::new().unwrap();
-        let mut log = open(&dir).await;
-        let allow = ChatAction::Permission {
-            answer: PermissionAnswer {
-                run: run("run-1"),
-                prompt: 1,
-                allow: true,
-            },
-        };
-        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Never);
-        log.append(said("Hello.".to_owned())).await.unwrap();
-        log.append(logged_prompt("r-1", "Hi")).await.unwrap();
-        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Pending);
-        assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
-        log.append(accepted("r-1")).await.unwrap();
-        log.append(accepted("r-2")).await.unwrap();
-        log.append(logged_prompt("r-4", "Hi")).await.unwrap();
-        drop(log);
-
-        let log = open(&dir).await;
-        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
-        assert_eq!(seen(&log, "r-1", asks("Bye")).await, Seen::Other);
-        let elsewhere = ChatAction::Prompt {
-            pick: None,
-            text: "Hi".to_owned(),
-            repo: Some(RepoId::try_from("site".to_owned()).unwrap()),
-            machine: None,
-            agent: None,
-            task: None,
-        };
-        assert_eq!(seen(&log, "r-1", elsewhere).await, Seen::Other);
-        let another_agent = ChatAction::Prompt {
-            pick: None,
-            text: "Hi".to_owned(),
-            repo: None,
-            machine: None,
-            agent: Some(AgentKind::Codex),
-            task: None,
-        };
-        assert_eq!(seen(&log, "r-1", another_agent).await, Seen::Other);
-        assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
-        assert_eq!(seen(&log, "r-2", ChatAction::Interrupt).await, Seen::Same);
-        assert_eq!(seen(&log, "r-2", allow).await, Seen::Same);
-        assert_eq!(seen(&log, "r-2", asks("Hi")).await, Seen::Other);
-        assert_eq!(seen(&log, "r-3", ChatAction::Interrupt).await, Seen::Never);
-        assert_eq!(seen(&log, "r-4", asks("Hi")).await, Seen::Pending);
-    }
-
-    #[tokio::test]
     async fn a_command_ends_with_its_first_receipt_that_isnt_accepted() {
         let dir = TempDir::new().unwrap();
         let mut log = open(&dir).await;
@@ -751,30 +673,5 @@ mod tests {
         let log = open(&dir).await;
         assert!(log.has_ended(&request("r-1")) && log.has_ended(&request("r-2")));
         assert!(!log.has_ended(&request("r-3")));
-        assert_eq!(seen(&log, "r-1", asks("Hi")).await, Seen::Same);
-    }
-
-    #[tokio::test]
-    async fn a_refused_request_is_the_same_command_again_only_while_the_log_is_open() {
-        let dir = TempDir::new().unwrap();
-        let mut log = open(&dir).await;
-        let failed = Outcome::Failed {
-            code: code!("chat.empty_prompt"),
-        };
-        let receipt = Receipt {
-            request: request("r-1"),
-            outcome: failed,
-        };
-        log.append(ChatEvent::Receipt { receipt }).await.unwrap();
-        log.refused(&request("r-1"), digest(&asks(" ")));
-
-        assert_eq!(seen(&log, "r-1", asks(" ")).await, Seen::Same);
-        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
-        drop(log);
-
-        // Opened again, the digest is gone: nothing more is taken under a refused request.
-        let log = open(&dir).await;
-        assert_eq!(seen(&log, "r-1", asks("Deploy")).await, Seen::Other);
-        assert_eq!(seen(&log, "r-1", ChatAction::Interrupt).await, Seen::Other);
     }
 }

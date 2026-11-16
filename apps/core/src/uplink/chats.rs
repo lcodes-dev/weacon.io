@@ -7,7 +7,8 @@ use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatQueryKind, ChatUpdate, Code, Envelope, Message, RunEvent, code,
+    ChatQueryKind, ChatUpdate, Code, Envelope, Message, Outcome, Receipt, RequestId, RunEvent,
+    code,
 };
 
 mod live;
@@ -31,7 +32,8 @@ const FOLLOWS_MAX: usize = 512;
 /// What the server asked of the chats, taken up in order.
 #[derive(Debug, PartialEq)]
 enum Ask {
-    Command(Box<ChatCommand>),
+    /// A command, under the envelope id it came in.
+    Command(u32, Box<ChatCommand>),
     /// Follow the chat after the seq given.
     Follow(ChatKey, u64),
 }
@@ -41,6 +43,8 @@ enum Ask {
 pub(super) struct ChatLink {
     asks: mpsc::Sender<Ask>,
     pushes: mpsc::Receiver<Message>,
+    /// The answers to commands taken up, under their envelopes' ids.
+    answers: mpsc::Receiver<Envelope>,
     uploads: bool,
     /// Asks waiting for room in `asks`, in the order asked; a follow is never dropped, so a
     /// chat is never left unfollowed.
@@ -58,10 +62,12 @@ impl ChatLink {
     pub(super) fn new(chats: Chats, uploads: bool, live: bool, log: Logger) -> Self {
         let (asks, asked) = mpsc::channel(QUEUE);
         let (push, pushes) = mpsc::channel(feed::QUEUE + FOLLOWS_MAX);
-        tokio::spawn(take_up(chats, Client { push }, asked, log));
+        let (answer, answers) = mpsc::channel(QUEUE);
+        tokio::spawn(take_up(chats, Client { push }, asked, answer, log));
         Self {
             asks,
             pushes,
+            answers,
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
@@ -85,7 +91,7 @@ impl ChatLink {
             if self.waiting.len() >= QUEUE {
                 return reply(for_now(id, code!("chat.unavailable")));
             }
-            self.queue(Ask::Command(Box::new(command)));
+            self.queue(Ask::Command(id, Box::new(command)));
             return Step::Nothing;
         }
         if let Message::ChatQuery(ChatQuery {
@@ -142,6 +148,7 @@ impl ChatLink {
                         return Some(up);
                     }
                 }
+                Some(answer) = self.answers.recv() => return Some(answer),
                 room = self.asks.clone().reserve_owned(), if !self.waiting.is_empty() => {
                     let Ok(room) = room else {
                         // Nothing takes asks any more, so none can wait for room.
@@ -212,18 +219,26 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
     Some(update)
 }
 
-// Takes up the server's asks in the order they came, until the connection is gone; the server
-// sends again what was left when it connects again.
-async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, log: Logger) {
+// Takes up the server's asks in the order they came, until the connection is gone, and answers
+// each command, taken or refused.
+async fn take_up(
+    chats: Chats,
+    client: Client,
+    mut asked: mpsc::Receiver<Ask>,
+    answer: mpsc::Sender<Envelope>,
+    log: Logger,
+) {
     let mut jumps = Jumps::new();
     while let Some(ask) = asked.recv().await
         && !client.is_gone()
     {
         let (key, request, taken) = match ask {
-            Ask::Command(command) => {
+            Ask::Command(id, command) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
-                let request = Some(command.request.clone());
-                (key, request, chats.command(*command, &client).await)
+                let request = command.request.clone();
+                let taken = chats.command(*command, &client).await;
+                drop(answer.send(answered(id, request.clone(), &taken)).await);
+                (key, Some(request), taken)
             }
             Ask::Follow(key, after) => {
                 let followed = follow(&chats, &client, &key, after, &mut jumps).await;
@@ -239,6 +254,20 @@ async fn take_up(chats: Chats, client: Client, mut asked: mpsc::Receiver<Ask>, l
             fields.extend(request.map(|request| ("request_id", request.as_str().into())));
             log.warn("chat ask refused", &fields);
         }
+    }
+}
+
+// The answer to `request`'s command under the envelope `id`: taken, or the error that refused it.
+fn answered(id: u32, request: RequestId, taken: &Result<(), Fault>) -> Envelope {
+    match taken {
+        Ok(()) => Envelope {
+            id,
+            message: Message::Receipt(Receipt {
+                request,
+                outcome: Outcome::Accepted,
+            }),
+        },
+        Err(fault) => failure(id, fault.code().clone()),
     }
 }
 
@@ -345,8 +374,8 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{
-        bench, chat, command, key, logged_prompt, parts, prompt, query, request, run, session,
-        someone, soon, text, workspace,
+        bench, chat, command, key, logged_prompt, parts, prompt, prompt_in, query, request, run,
+        session, someone, soon, text, workspace,
     };
 
     // A link with no worker, whose asks wait in a queue with room for `room` for the test to
@@ -357,6 +386,7 @@ mod tests {
         let link = ChatLink {
             asks,
             pushes,
+            answers: mpsc::channel(1).1,
             uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
@@ -475,7 +505,7 @@ mod tests {
         assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 7));
         assert_eq!(
             asked.try_recv().unwrap(),
-            Ask::Command(Box::new(prompt("r-1", "Hi")))
+            Ask::Command(9, Box::new(prompt("r-1", "Hi")))
         );
         assert_eq!(link.came.get(&key()), Some(&7));
     }
@@ -500,9 +530,9 @@ mod tests {
         }
 
         let expected = [
-            Ask::Command(Box::new(prompt("r-1", "Hi"))),
+            Ask::Command(9, Box::new(prompt("r-1", "Hi"))),
             Ask::Follow(key(), 3),
-            Ask::Command(Box::new(prompt("r-2", "Hi"))),
+            Ask::Command(9, Box::new(prompt("r-2", "Hi"))),
         ];
         assert_eq!(asks, expected);
         assert!(link.waiting.is_empty());
@@ -540,7 +570,7 @@ mod tests {
         let once_room = next_up(&mut link).await;
 
         assert_eq!((while_full, once_room), (None, None));
-        assert!(matches!(first, Ask::Command(_)));
+        assert!(matches!(first, Ask::Command(..)));
         assert_eq!(asked.try_recv().unwrap(), Ask::Follow(key(), 3));
         assert!(link.waiting.is_empty());
     }
@@ -763,6 +793,40 @@ mod tests {
         assert!(seqs.windows(2).all(|pair| pair[0] < pair[1]), "{seqs:?}");
         assert_eq!(seqs.first(), Some(&1));
         assert_eq!(newer, "r-new");
+    }
+
+    #[tokio::test]
+    async fn a_command_the_chats_refuse_is_answered_under_its_envelope() {
+        let bench = bench();
+        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
+        let unknown = weacon_protocol::RepoId::try_from("typo".to_owned()).unwrap();
+        let asked = prompt_in("r-1", "Hi", &unknown);
+
+        drop(link.take(envelope(Message::ChatCommand(asked))));
+
+        let refused = failure(9, code!("repo.unknown"));
+        assert_eq!(next_up(&mut link).await, Some(refused));
+    }
+
+    #[test]
+    fn a_command_taken_is_answered_accepted_and_one_refused_with_its_code() {
+        let taken = answered(3, request("r-1"), &Ok(()));
+        let accepted = Message::Receipt(Receipt {
+            request: request("r-1"),
+            outcome: Outcome::Accepted,
+        });
+        assert_eq!(
+            taken,
+            Envelope {
+                id: 3,
+                message: accepted
+            }
+        );
+        let busy = Err(Fault::new(code!("chat.busy"), "Busy"));
+        assert_eq!(
+            answered(3, request("r-1"), &busy),
+            failure(3, code!("chat.busy"))
+        );
     }
 
     #[tokio::test(start_paused = true)]
