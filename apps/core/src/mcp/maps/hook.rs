@@ -1,7 +1,6 @@
 //! The code map a run's hooks ask its core for over the core's socket.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use weacon_codemap::fit;
 use weacon_model::Title;
@@ -37,7 +36,6 @@ impl Maps {
             MapQueryKind::SessionStart(args) => (args, run.task.clone()),
             MapQueryKind::Newer => return None,
         };
-        let permit = Arc::clone(&run.calls).try_acquire_owned().ok()?;
         let log = log.child(&[
             ("workspace_id", run.workspace.as_str().into()),
             ("run_id", run.run.as_str().into()),
@@ -64,12 +62,7 @@ impl Maps {
                 None => stores.answer(&McpCall::Map(args), workspace, folder).await,
             }
         };
-        let text = self
-            .stored(read, permit, &log)
-            .await
-            .ok()
-            .flatten()
-            .map(or_empty);
+        let text = self.stored(read, &log).await.ok().flatten().map(or_empty);
         let fields = [("stored", text.is_some().into()), ("task", for_task.into())];
         log.info("hook map answered", &fields);
         text

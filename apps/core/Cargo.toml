@@ -25,7 +25,6 @@ serde_json.workspace = true
 sha2.workspace = true
 snow.workspace = true
 sqlx.workspace = true
-subtle.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true

@@ -1,7 +1,6 @@
 //! Search through the items of each repository a workspace registered, at its base.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{RepoId, WorkspaceId, code};
@@ -22,14 +21,8 @@ impl Maps {
         log: &Logger,
     ) -> Result<Vec<(RepoId, Vec<Hit>)>, Fault> {
         let stores = self.stores(log).await.ok_or_else(failed)?;
-        // One of the reads at once for the whole search, taken here so searches never pile up.
-        let read = Arc::clone(&stores.reads).try_acquire_owned();
-        let read = read.map_err(|_| still_reading())?;
         let (workspace, words, log) = (workspace.clone(), words.to_owned(), log.clone());
-        let reading = tokio::spawn(async move {
-            let _read = read;
-            stores.symbols(workspace, &words, &log).await
-        });
+        let reading = tokio::spawn(async move { stores.symbols(workspace, &words, &log).await });
         match tokio::time::timeout(self.limit, reading).await {
             Err(_) => Err(still_reading()),
             Ok(Ok(found)) => found,
