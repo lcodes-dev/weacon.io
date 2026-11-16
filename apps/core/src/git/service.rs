@@ -148,14 +148,17 @@ impl Inner {
             worktree,
             ..
         } = self.chat(&query.workspace, &query.chat)?;
-        let base = git.base(&worktree, &record.start)?;
-        let files = git.changes(&worktree, &base)?;
         let answer = |answer| DiffAnswer {
             request: query.request.clone(),
             workspace: query.workspace.clone(),
             chat: query.chat.clone(),
             answer,
         };
+        if !there(&worktree) {
+            return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
+        }
+        let base = git.base(&worktree, &record.start)?;
+        let files = git.changes(&worktree, &base)?;
         if files.is_empty() {
             return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
         }
@@ -174,7 +177,7 @@ impl Inner {
             worktree,
             ..
         } = self.chat(workspace, chat)?;
-        if !worktree.is_dir() {
+        if !there(&worktree) {
             return Ok(WorktreeAnswerKind::State {
                 removed: true,
                 uncommitted: false,
@@ -207,7 +210,7 @@ impl Inner {
                 let common_dir = found.git.common_dir(&found.repo_folder)?;
                 // Git can fail at changing a repository's worktrees while one is added.
                 let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
-                if found.worktree.is_dir() {
+                if there(&found.worktree) {
                     found
                         .git
                         .remove_worktree(&found.repo_folder, &found.worktree)?;
@@ -290,6 +293,12 @@ fn fitted(mut answer: DiffAnswer) -> DiffAnswer {
         file.content = DiffContent::TooLarge;
     }
     answer
+}
+
+// Whether a worktree is at `folder`: one removed leaves none, or a folder without git's file
+// where an agent still running wrote since.
+fn there(folder: &Path) -> bool {
+    folder.join(".git").exists()
 }
 
 fn unknown() -> Fault {
@@ -583,6 +592,17 @@ mod tests {
             &bench.dir.join("repo"),
             &["rev-parse", "--verify", "refs/heads/weacon/c-1"],
         );
+        // An agent still running writes where its worktree was.
+        fs::create_dir_all(&bench.worktree).unwrap();
+        fs::write(bench.worktree.join("late.txt"), "late\n").unwrap();
+
+        assert_eq!(bench.state().await.unwrap(), state(true, false, false));
+        assert_eq!(
+            bench.act(Action::Remove).await.unwrap(),
+            state(true, false, false)
+        );
+        let changed = bench.changes().await.unwrap();
+        assert!(matches!(changed.as_slice(), [DiffAnswerKind::Unchanged]));
     }
 
     #[tokio::test]

@@ -27,7 +27,7 @@ const GH_OVERRIDES: [&str; 6] = [
     "GITHUB_TOKEN",
 ];
 
-/// What removing a worktree would set aside.
+/// What removing a worktree would delete.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Unsaved {
     /// Changes not committed, untracked files included.

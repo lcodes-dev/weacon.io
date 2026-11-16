@@ -221,9 +221,7 @@ impl Git {
             "--porcelain",
             "-z",
         ]))?)?;
-        Ok(records(&listed)
-            .map(|Listed { tree, prunable }| (tree, prunable))
-            .collect())
+        Ok(listed.split("\0\0").filter_map(parse_worktree).collect())
     }
 
     fn has_branch(&self, repo: &Path, full: &str) -> Result<bool, Fault> {
@@ -333,21 +331,9 @@ fn text(out: Vec<u8>) -> Result<String, Fault> {
     })
 }
 
-/// One working tree as `git worktree list` lists it.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct Listed {
-    pub(super) tree: Worktree,
-    /// Whether git calls it prunable.
-    pub(super) prunable: bool,
-}
-
-// Every working tree in the output of `git worktree list --porcelain -z`.
-pub(super) fn records(listing: &str) -> impl Iterator<Item = Listed> + '_ {
-    listing.split("\0\0").filter_map(parse_worktree)
-}
-
-// One record of `git worktree list --porcelain -z`; none for a bare repository.
-fn parse_worktree(record: &str) -> Option<Listed> {
+// One record of `git worktree list --porcelain -z`, and whether git calls it prunable; none
+// for a bare repository.
+fn parse_worktree(record: &str) -> Option<(Worktree, bool)> {
     let (mut path, mut branch, mut prunable) = (None, None, false);
     for field in record.split('\0') {
         match field.split_once(' ').unwrap_or((field, "")) {
@@ -363,7 +349,7 @@ fn parse_worktree(record: &str) -> Option<Listed> {
         branch,
         start: None,
     };
-    Some(Listed { tree, prunable })
+    Some((tree, prunable))
 }
 
 // Refuses a path git would read relative to wherever it runs.
@@ -511,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_or_folder_with_the_chats_name_is_never_taken_over() {
+    fn a_folder_or_a_checked_out_branch_with_the_chats_name_is_never_taken_over() {
         let dir = TempDir::new().unwrap();
         let (git, repo) = (git(&dir), repo(&dir));
         let first = dir.join("trees/c-c");
@@ -613,13 +599,13 @@ mod tests {
 
     #[test]
     fn listed_worktrees_skip_bare_ones_and_mark_missing_ones() {
-        let listed = |path: &str, branch: Option<&str>, prunable| Listed {
-            tree: Worktree {
+        let listed = |path: &str, branch: Option<&str>, prunable: bool| {
+            let tree = Worktree {
                 path: PathBuf::from(path),
                 branch: branch.map(str::to_owned),
                 start: None,
-            },
-            prunable,
+            };
+            (tree, prunable)
         };
 
         assert_eq!(
