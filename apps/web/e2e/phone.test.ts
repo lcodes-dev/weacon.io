@@ -3,8 +3,9 @@ import { test } from "node:test";
 
 import type { Locator, Page } from "playwright-core";
 
-import type { ChatAction, DocRecord, Envelope, ProposalList, ProposalOutcome, ProposalRecord, WorkspaceList } from "../src/protocol.ts";
+import type { ChatAction, ChatList, DocRecord, Envelope, ProposalList, ProposalOutcome, ProposalRecord, WorkspaceList } from "../src/protocol.ts";
 import { machine } from "./core.ts";
+import { serveFeed } from "./feed.ts";
 import { FAKE_CHAT, PHONE, fakeServer, start, waitFor } from "./harness.ts";
 import { type Served, serve, signIn, signInAs } from "./server.ts";
 
@@ -331,4 +332,74 @@ test("on a phone members, an invitation and proposals fit, and their answers are
     ["p-1", "accept"],
     ["p-2", "reject"],
   ]);
+});
+
+const ONE_LINE = `cargo test --locked -p parser -- ${"--skip slow_case_with_a_long_name ".repeat(12)}--nocapture`;
+const MANY_LINES = Array.from({ length: 30 }, (_, at) => `echo "step ${at + 1} of the pantry sort"`).join(" && \\\n");
+const WRITE = `notes/${"deeply-nested-folder/".repeat(8)}pantry.md\n${"A first line of the new text that runs on well past the edge of a phone. ".repeat(4)}\n${"More of the new text.\n".repeat(160)}`.slice(0, 4096);
+const WANTED: Record<string, { tool: string; text: string }> = { "c-1": { tool: "Bash", text: ONE_LINE }, "c-2": { tool: "Bash", text: MANY_LINES }, "c-3": { tool: "Write", text: WRITE } };
+
+// A chat's snapshot waiting on a prompt whose tool wants what `WANTED` holds for the chat; every command is taken.
+function waitingChat(asked: Envelope): Envelope[] {
+  if (asked.type === "chat_command") {
+    return [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }];
+  }
+  const wanted = asked.type === "chat_query" && asked.query.kind === "snapshot" ? WANTED[asked.chat] : undefined;
+  if (asked.type !== "chat_query" || wanted === undefined) {
+    return [];
+  }
+  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const asks = { event: "permission_asked" as const, run: "r-1", prompt: 1, tool: wanted.tool, input: {}, wants: { text: wanted.text, cut: asked.chat === "c-3" } };
+  const events = [
+    { seq: 1, event: { kind: "prompt" as const, request: "q-1", text: "Sort the pantry." } },
+    { seq: 2, event: { kind: "run" as const, update: { run: "r-1", event: asks } } },
+  ];
+  return [{ id: asked.id, type: "chat_answer", workspace: asked.workspace, chat: asked.chat, answer: { kind: "snapshot", seq: 2, runs: [{ run: "r-1", state: "waiting", agent }], waiting: [2], events } }];
+}
+
+test("on a phone a prompt with a long command or a whole file keeps its text in its box and its answers in reach", { timeout: 600_000 }, async (t) => {
+  const served = await serve(PHONE);
+  t.after(() => served.close());
+  const { page } = served;
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: waitingChat });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as WorkspaceList).workspaces[0]?.member ?? "");
+  const chats = Object.keys(WANTED).map((id) => ({ id, title: `Pantry ${id}`, owner: member, machine: "laptop", machine_id: "mc-1", state: "open" as const, updated_at: 1 }));
+  const list: ChatList = { chats };
+  await page.route("**/api/workspaces/*/chats", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) }));
+  await page.getByRole("button", { name: "Personal" }).tap();
+  const nav = page.getByRole("navigation", { name: "Chats" });
+
+  for (const [id, { tool, text }] of Object.entries(WANTED)) {
+    await nav.getByRole("button", { name: `Pantry ${id}` }).tap();
+    const card = page.getByRole("group", { name: `Use ${tool}?` });
+    const wants = card.locator(".wants");
+    await wants.waitFor();
+    assert.equal(await wants.innerText(), text);
+    for (const width of [360, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      // The text wraps, and what is too tall scrolls inside its own box, so the card and its answers stay whole on screen.
+      assert.equal(await wants.evaluate((part) => part.scrollWidth > part.clientWidth), false, `${id}'s text is cut off sideways at ${width}px`);
+      const whole = await shown(page, card, `${id}'s prompt`);
+      const composer = await shown(page, page.locator(".composer"), "the message box");
+      assert.ok(whole.y + whole.height <= composer.y, `${id}'s prompt is under the message box`);
+      const allow = await thumbSized(page, card.getByRole("button", { name: "Allow" }), "Allow");
+      const deny = await thumbSized(page, card.getByRole("button", { name: "Deny" }), "Deny");
+      assert.ok(deny.x - (allow.x + allow.width) >= 8, "Allow and Deny touch");
+    }
+    await fits(page, `${id}'s prompt`);
+    await page.getByRole("button", { name: "Back to chats" }).tap();
+  }
+
+  await nav.getByRole("button", { name: "Pantry c-3" }).tap();
+  const card = page.getByRole("group", { name: "Use Write?" });
+  assert.ok(await card.locator(".wants").evaluate((part) => part.scrollHeight > part.clientHeight), "the whole file's text fits, so nothing is checked");
+  await card.getByText("The rest is too long to show.").waitFor();
+  await card.getByRole("button", { name: "Deny" }).tap();
+  await waitFor(() => sent.some((envelope) => envelope.type === "chat_command" && envelope.action.kind === "permission"));
+  assert.deepEqual(
+    sent.flatMap((envelope) => (envelope.type === "chat_command" && envelope.action.kind === "permission" ? [[envelope.chat, envelope.action.answer]] : [])),
+    [["c-3", { run: "r-1", prompt: 1, allow: false }]],
+  );
 });
