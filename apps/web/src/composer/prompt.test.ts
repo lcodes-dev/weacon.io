@@ -45,9 +45,9 @@ test("only a taken message that calls no agent is noted as plain", async () => {
   const noted: string[] = [];
   const ends = new Map<string, Sent>([["taken", "accepted"], ["kept", "refused"]]);
   const send = notingPlain(async (text) => ends.get(text) ?? "unsure", () => noted.push("plain"));
-  assert.equal(await send("taken", "r1" as never, true), "accepted");
-  assert.equal(await send("kept", "r2" as never, false), "refused");
+  assert.equal(await send("taken", "r1" as never, "mc-1"), "accepted");
+  assert.equal(await send("kept", "r2" as never, undefined), "refused");
   assert.deepEqual(noted, []);
-  assert.equal(await send("taken", "r3" as never, false), "accepted");
+  assert.equal(await send("taken", "r3" as never, undefined), "accepted");
   assert.deepEqual(noted, ["plain"]);
 });

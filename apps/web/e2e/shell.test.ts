@@ -474,7 +474,7 @@ test("a chat where a person has their agent shows its transcript and prompts, an
   // A message that mentions their agent calls it.
   await box.focus();
   await page.keyboard.type("@cl");
-  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
+  await page.getByRole("listbox", { name: "Agents" }).getByRole("option", { name: "Claude Code" }).waitFor();
   await page.keyboard.press("Enter");
   await page.keyboard.type("go on");
   await page.keyboard.press("Enter");

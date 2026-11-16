@@ -4,9 +4,10 @@ import type { ChatRef } from "../chat-ref.ts";
 import { Composer } from "../composer/composer.tsx";
 import { agentItem } from "../composer/mentionables.ts";
 import { type Send, blocked, notingPlain } from "../composer/prompt.ts";
-import { MyAgentFields, useMyAgent } from "../new-chat/my-agent.tsx";
+import { MyAgentFields, picked, useMyAgent } from "../new-chat/my-agent.tsx";
 import type { Callable, Choice } from "../new-chat/start.ts";
-import type { ChatLeg, MachineId, MemberId } from "../protocol.ts";
+import type { MachineId, MemberId } from "../protocol.ts";
+import type { Reached } from "../shell/chat-list.ts";
 import { ChatChanges } from "../diff/chat-changes.tsx";
 import { useChanges } from "../diff/use-changes.ts";
 import { ReviewBar } from "../worktree/review-bar.tsx";
@@ -24,18 +25,18 @@ import "./chat.css";
 
 /**
  * The chat at `chatRef` over its workspace's `link`: its transcript and the message box, for every
- * member, kept in place while `away` under another page such as Settings. `me`, with `leg`, the
- * agent they call in it, also gets its changes, Stop and its permission prompts' answers, where the
- * server takes commands; without one, they pick theirs from `machines`, or read what is `missing`.
+ * member, kept in place while `away` under another page such as Settings. `me` calls any of
+ * `agents`, those the chat has on machines they may call, and for the first of them also gets its
+ * changes, Stop and its permission prompts' answers, where the server takes commands. With none
+ * of their own there, they pick theirs from `machines`, or read what is `missing`.
  */
 export function ChatScreen({
   link,
   live,
   chatRef,
   me,
-  leg,
+  agents,
   machines,
-  guest = false,
   missing,
   openSettings,
   away,
@@ -48,11 +49,9 @@ export function ChatScreen({
   live: boolean;
   chatRef: ChatRef | undefined;
   me: MemberId | undefined;
-  leg: ChatLeg | undefined;
+  agents: Reached[];
   /** The machines the reader may call an agent on. */
   machines: Callable[];
-  /** Whether the reader's agent here runs on a machine someone else shares, whose worktree is its owner's to change. */
-  guest?: boolean;
   missing: ReactNode;
   openSettings(machine?: MachineId): void;
   away: boolean;
@@ -67,8 +66,10 @@ export function ChatScreen({
   const access = useChatAccess(link);
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
+  const leg = agents[0]?.leg;
   const mine = leg !== undefined;
-  const called = leg && { machine: leg.machine_id };
+  // The worktree of an agent on a machine someone else shares is its owner's to change.
+  const guest = agents[0]?.own === false;
   const changes = useChanges(link, chatRef, leg?.machine_id, live, shown === "changes");
   const worktree = useWorktree(link, chatRef, leg?.machine_id, live, shown === "changes");
   const { chat, state } = reading.sync;
@@ -130,70 +131,86 @@ export function ChatScreen({
         <ChatChanges
           changes={changes.changes}
           hidden={shown !== "changes"}
-          mine={acts}
-          send={commands.send(called)}
+          machine={acts ? leg.machine_id : undefined}
+          send={commands.send()}
           blocked={why}
           bar={worktree.usable && !guest && <ReviewBar bar={worktree} title={title ?? ""} />}
         />
       </div>
-      {mine || shown !== "run" ? (
-        <Composer
-          send={commands.send(called)}
-          blocked={why}
-          hidden={shown !== "run"}
-          agent={leg?.detached === false ? agentItem(leg.agent) : undefined}
-          calling={calling(chat, me)}
-        />
-      ) : (
-        <FirstCall link={link} machines={machines} missing={missing} openSettings={openSettings} away={away} send={commands.send} blocked={why} />
-      )}
+      <Calls
+        link={link}
+        agents={agents}
+        machines={machines}
+        missing={missing}
+        openSettings={openSettings}
+        away={away}
+        send={commands.send}
+        blocked={why}
+        hidden={shown !== "run"}
+        calling={calling(chat, me)}
+      />
     </div>
   );
 }
 
-// The message box of a member with no agent in the chat yet, who may pick theirs: until the chat
-// has it, each call names the pick. The box stays as the fields open, so what is typed does.
-function FirstCall({
+// The message box, which calls any of the chat's `agents` the reader may call. One with none of
+// their own there may pick theirs from `machines`: until the chat has it, each call of it names
+// the pick. The box stays as the fields open and as the chat's list catches up, so what is typed
+// does.
+function Calls({
   link,
+  agents,
   machines,
   missing,
   openSettings,
   away,
   send,
   blocked: why,
+  hidden,
+  calling,
 }: {
   link: WorkspaceSocket;
+  agents: Reached[];
   machines: Callable[];
   missing: ReactNode;
   openSettings(machine?: MachineId): void;
   away: boolean;
   send(first?: Choice): Send;
   blocked: string | undefined;
+  hidden: boolean;
+  /** Whether the reader's last message here called an agent. */
+  calling: boolean;
 }) {
   const [adding, setAdding] = useState(false);
   // After a plain message the box stays plain: the next call is one the person writes.
   const [plain, setPlain] = useState(false);
+  // An agent the chat has is called, not picked again; once it has the one picked, the fields go.
+  useEffect(() => setAdding(false), [agents.length]);
+  const free = machines.filter(({ id }) => !agents.some(({ leg }) => leg.machine_id === id));
   // Nothing is asked of a machine until the person asks for their agent.
-  const pick = useMyAgent(link, adding ? machines : [], away);
-  const fields = machines.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
+  const pick = useMyAgent(link, adding ? free : [], away);
+  const fields = free.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
+  const theirs = agents.map(({ leg, shared }) => agentItem(leg.machine_id, leg.agent, shared ? leg.machine : undefined));
   return (
     <>
-      {adding ? (
-        fields
-      ) : (
-        <button type="button" className="add-agent" onClick={() => {
-            setAdding(true);
-            setPlain(false);
-          }}>
-          Add your agent
-        </button>
-      )}
+      {!hidden &&
+        !agents.some(({ own }) => own) &&
+        (adding ? (
+          fields
+        ) : (
+          <button type="button" className="add-agent" onClick={() => {
+              setAdding(true);
+              setPlain(false);
+            }}>
+            Add your agent
+          </button>
+        ))}
       <Composer
         send={notingPlain(send(pick.choice), () => setPlain(true))}
         blocked={why}
-        hidden={false}
-        agent={pick.choice && agentItem(pick.choice.agent)}
-        calling={adding && !plain}
+        hidden={hidden}
+        agents={[...picked(pick), ...theirs]}
+        calling={adding ? !plain : calling}
       />
     </>
   );

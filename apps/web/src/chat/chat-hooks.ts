@@ -110,12 +110,14 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
     };
     return through(chatCommand(link.nextId(), to, request, action), waiting, send);
   };
-  // A message to the chat's people, or, when it calls an agent, a prompt to the one `called`:
-  // the chat's own on a machine, or the one a first prompt there picks.
+  // A message to the chat's people, or, when it calls an agent, a prompt to the chat's on that
+  // machine, which `first` makes as it picks when the machine has none there yet.
   const send =
-    (called?: Choice | Pick<Choice, "machine">): Send =>
-    (text, request, calls) =>
-      command(calls ? { kind: "prompt", text, ...called } : { kind: "say", text }, request, deliverPrompt);
+    (first?: Choice): Send =>
+    (text, request, calls) => {
+      const picked = first?.machine === calls ? first : undefined;
+      return command(calls === undefined ? { kind: "say", text } : { kind: "prompt", text, machine: calls, ...picked }, request, deliverPrompt);
+    };
   // A chat's first words, which make the chat at `to`.
   const start = (to: ChatRef, action: Extract<ChatAction, { kind: "say" | "prompt" }>, request: RequestId) => command(action, request, deliverPrompt, to);
   const act = (action: ChatAction, request: RequestId) => command(action, request, deliver);

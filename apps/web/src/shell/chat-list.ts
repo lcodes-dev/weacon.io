@@ -6,9 +6,17 @@ export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
   return [...chats].sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
 }
 
-/** The agent a person calls in `chat`: the one on the first of `machines`, those they may call, that has one there. */
-export function legOf(machines: readonly MachineId[], chat: Pick<ChatSummary, "legs"> | undefined): ChatLeg | undefined {
-  return machines.flatMap((machine) => chat?.legs.filter((leg) => leg.machine_id === machine) ?? [])[0];
+/** An agent a person may call in a chat: on a machine of their `own`, or on one `shared` with the workspace, which may be both. */
+export type Reached = { leg: ChatLeg; own: boolean; shared: boolean };
+
+/**
+ * The agents a person may call in `chat`, whoever called each last: those it has on their `own`
+ * machines first, then on the others `shared` with the workspace.
+ */
+export function reached(own: readonly MachineId[], shared: readonly MachineId[], chat: Pick<ChatSummary, "legs"> | undefined): Reached[] {
+  const machines = [...own, ...shared.filter((machine) => !own.includes(machine))];
+  const on = (machine: MachineId) => chat?.legs.filter((leg) => leg.machine_id === machine && !leg.detached) ?? [];
+  return machines.flatMap((machine) => on(machine).map((leg) => ({ leg, own: own.includes(machine), shared: shared.includes(machine) })));
 }
 
 const NOTES: Partial<Record<ChatState, string>> = { full: "Full" };

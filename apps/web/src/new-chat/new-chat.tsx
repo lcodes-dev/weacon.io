@@ -3,12 +3,11 @@ import { type ReactNode, useState } from "react";
 import { Problem } from "../api/problem.tsx";
 import { useChatCommands } from "../chat/chat-hooks.ts";
 import { Composer } from "../composer/composer.tsx";
-import { agentItem } from "../composer/mentionables.ts";
 import type { Send } from "../composer/prompt.ts";
 import { newId } from "../ids.ts";
 import type { ChatId, MachineId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { MyAgentFields, useMyAgent } from "./my-agent.tsx";
+import { MyAgentFields, picked, useMyAgent } from "./my-agent.tsx";
 import { type Callable, type Readiness, missingText, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
 
@@ -54,7 +53,7 @@ export function NewChat({
     const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
     const forIt = named && { task: { id: taskId, title: forTask?.title ?? "" } };
     const chat = newId();
-    const action = calls && choice !== undefined ? { kind: "prompt" as const, text, ...choice, ...forIt } : { kind: "say" as const, text, ...forIt };
+    const action = calls !== undefined && choice !== undefined ? { kind: "prompt" as const, text, ...choice, ...forIt } : { kind: "say" as const, text, ...forIt };
     const sent = await commands.start({ workspace: socket.workspace, chat }, action, request);
     if (sent === "accepted") {
       started(chat);
@@ -70,7 +69,7 @@ export function NewChat({
         blocked={live ? undefined : "Chats start once the server is connected."}
         hidden={false}
         explain={startProblem}
-        agent={choice && agentItem(choice.agent)}
+        agents={picked(pick)}
         calling
       />
     </section>
