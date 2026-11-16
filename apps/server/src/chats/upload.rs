@@ -44,9 +44,8 @@ pub(crate) async fn store(
         Ok(Stored::Dropped) => {}
         Ok(Stored::Refused) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
-            // A chat a limit just filled is news to the list.
-            let full = [code!("chat.quota_full"), code!("chat.too_many_waiting")];
-            if full.contains(fault.code()) {
+            // A chat its waiting prompts just filled is news to the list.
+            if *fault.code() == code!("chat.too_many_waiting") {
                 shared.wake_feeds(&workspace);
             }
             let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
@@ -99,9 +98,7 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
                 run: leg.chat_run(&status.run)?,
                 agent: Some(AgentRef {
                     kind: leg.agent,
-                    owner: AgentOwner::Member {
-                        member: leg.member.clone(),
-                    },
+                    owner: owner_of(leg),
                     machine: Some(leg.machine_name.clone()),
                 }),
                 ..status
@@ -111,6 +108,16 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
         // Only the server writes a person's message, and what a newer core sends may hold
         // anything.
         ChatEvent::Message { .. } | ChatEvent::Newer => None,
+    }
+}
+
+// Whose agent `leg`'s is: its member's own, or the shared one of a machine shared with the
+// workspace, whoever of its members called it.
+fn owner_of(leg: &Leg) -> AgentOwner {
+    let member = leg.member.clone();
+    match leg.shared_by.clone() {
+        Some(owner) => AgentOwner::Shared { member, owner },
+        None => AgentOwner::Member { member },
     }
 }
 
@@ -272,22 +279,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_the_quota_fills_wakes_the_workspaces_feeds() {
-        let fixture = Fixture::new().await;
-        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
-        ada.member.workspace.fill_quota().await;
-        let mut feeds = shared.changes.subscribe();
-
-        store(shared, &ada.machine, update("w1", "c-1", 1, said("a")))
-            .await
-            .unwrap();
-
-        assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
-        let logged = crate::test_support::messages(&fixture.records);
-        assert!(logged.contains(&"chat upload failed"), "{logged:?}");
-    }
-
-    #[tokio::test]
     async fn a_failed_store_closes_the_link_and_keeps_the_chats_place() {
         let fixture = Fixture::new().await;
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
@@ -302,7 +293,7 @@ mod tests {
         failed.unwrap_err();
         assert_eq!(core_seq(workspace, "c-1").await, 1);
         // Refused for good, not failed: the link goes on.
-        workspace.fill_quota().await;
+        workspace.fill_chat("c-1").await;
         store(shared, &ada.machine, update("w1", "c-1", 3, said("c")))
             .await
             .unwrap();
@@ -488,6 +479,7 @@ mod tests {
             detached: false,
             quoted_seq: 0,
             number: 1,
+            shared_by: None,
         }
     }
 

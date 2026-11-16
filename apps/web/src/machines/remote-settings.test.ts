@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { Envelope, MachineSettings } from "../protocol.ts";
 import { NO_ANSWER, RECONNECTING } from "./ask-machine.ts";
 import { fake } from "./fake-socket.ts";
-import { change, current, repos } from "./remote-settings.ts";
+import { agents, change, current, repos } from "./remote-settings.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
@@ -66,6 +66,20 @@ test("no answer in time, a newer answer, a closed socket or a reconnecting one e
   for (const core of [silent, newer, closed, dropped]) {
     assert.equal(core.listeners(), 0);
   }
+});
+
+test("an agents query asks which agents are signed in for the workspace, and another kind of answer is malformed", async () => {
+  const core = fake();
+  const asked = agents(core.socket, "mc-1", core.later);
+  const [query] = core.sent;
+  core.deliver({ id: 2, type: "machine_settings_answer", request: request(query), ...PLACE, answer: { kind: "agents", agents: ["codex"] } });
+  const odd = fake();
+  const wrong = agents(odd.socket, "mc-1", odd.later);
+  odd.deliver({ id: 2, type: "machine_settings_answer", request: request(odd.sent[0]), ...PLACE, answer: { kind: "repos", repos: [] } });
+
+  assert.deepEqual(await asked, { ok: true, value: ["codex"] });
+  assert.deepEqual({ ...query, request: "r" }, { id: 11, type: "machine_settings_query", request: "r", ...PLACE, query: { kind: "agents" } });
+  assert.deepEqual(await wrong, { ok: false, code: "answer.malformed" });
 });
 
 test("a repositories query asks for the workspace's repositories and takes their ids, and another kind of answer is malformed", async () => {

@@ -215,6 +215,15 @@ test("machines are listed, looked up by code, confirmed and unpaired", async () 
   ]);
 });
 
+test("the machines shared with a workspace are listed to its members, and an answer of the wrong shape is refused", async () => {
+  const shared = { id: "mc-9", name: "Team VPS", owner: "m-1", connected: true };
+  const { api, sent } = serve({ status: 200, body: { machines: [shared] } }, { status: 200, body: { machines: [{ id: "mc-9", name: "Team VPS" }] } });
+
+  assert.deepEqual(await api.sharedMachines("w-1"), { ok: true, value: { machines: [shared] } });
+  assert.deepEqual(await api.sharedMachines("w-1"), { ok: false, code: MALFORMED });
+  assert.deepEqual(sent[0], { path: "/api/workspaces/w-1/machines", method: "GET" });
+});
+
 test("a machine whose id, key or date isn't one is a malformed answer, and a newer system is kept", async () => {
   const bad = [
     { ...MACHINE, id: "../x" },

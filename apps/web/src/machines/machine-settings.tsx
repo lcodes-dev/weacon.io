@@ -148,6 +148,12 @@ function Shown({ settings, busy, set, team, signIn }: ShownProps) {
       {team && access === "full" && (
         <p role="alert">Full access is on in a team workspace. Its agents change files on this machine without asking.</p>
       )}
+      <h4>Sharing</h4>
+      <label>
+        <input type="checkbox" checked={settings.shared === true} disabled={busy} onChange={(event) => set({ kind: "set_shared", shared: event.target.checked })} />{" "}
+        Share this machine with this workspace
+      </label>
+      <p className="muted">Every member can then call agents on it. Only you answer their permission prompts, and only you change these settings.</p>
       <h4>Sign-ins</h4>
       <ul aria-label="Sign-ins">
         {settings.sign_ins.map(({ agent, state }) => (

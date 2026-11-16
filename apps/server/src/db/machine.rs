@@ -12,6 +12,9 @@ use weacon_protocol::{
 use super::{Db, failed, stored, unreadable};
 
 mod list;
+mod shares;
+
+pub(super) use shares::SHARER;
 
 /// A pairing a core started, with its code and claim secret hashed.
 pub(crate) struct NewPairing<'a> {
@@ -257,6 +260,13 @@ impl Db {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
+        if done.rows_affected() > 0 {
+            sqlx::query("DELETE FROM shared_machines WHERE machine_id = ?")
+                .bind(machine.as_str())
+                .execute(&mut *transaction)
+                .await
+                .map_err(failed)?;
+        }
         transaction.commit().await.map_err(failed)?;
         Ok(done.rows_affected() > 0)
     }

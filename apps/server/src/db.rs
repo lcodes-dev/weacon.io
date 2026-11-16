@@ -17,8 +17,8 @@ pub(crate) mod test_support;
 mod workspace;
 
 pub(crate) use chats::{
-    CALL_SECS, Chat, Incoming, Leg, NewChat, NewLeg, Said, Snapshot, chat_not_found,
-    chat_quota_full, machine_fixed, machine_not_found, turns,
+    CALL_SECS, Chat, Incoming, Leg, NewChat, NewLeg, Said, Snapshot, chat_full, chat_not_found,
+    machine_fixed, machine_not_found, turns,
 };
 pub(crate) use tasks::{no_room, task_not_found};
 
@@ -214,7 +214,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
 fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
     match &agent.owner {
         AgentOwner::Member { member } => member == owner,
-        AgentOwner::Shared | AgentOwner::Newer => true,
+        AgentOwner::Shared { .. } | AgentOwner::Newer => true,
     }
 }
 

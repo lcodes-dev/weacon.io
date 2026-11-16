@@ -2,6 +2,7 @@
 //! config folder and so its sign-in.
 
 pub(crate) mod access;
+pub(crate) mod sharing;
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -15,6 +16,7 @@ use weacon_protocol::{AccessLevel, AgentKind, SignInState, WorkspaceId, code};
 pub(crate) use access::{Settings, run as access, store as store_access};
 
 use crate::app::{App, runtime};
+use crate::hold::{Hold, hold};
 use crate::{names, platform};
 
 /// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
@@ -123,7 +125,8 @@ impl Workspaces {
             match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
                     let (level, warning) = (settings.level(), settings.warning());
-                    format!("Workspace {id}: access {level}; {agents}\n{warning}")
+                    let shared = settings.sharing();
+                    format!("Workspace {id}: access {level}{shared}; {agents}\n{warning}")
                 }
                 Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
             }
@@ -162,6 +165,13 @@ impl Workspaces {
     /// What this machine's owner chose for `workspace`.
     pub(crate) fn settings(&self, workspace: &WorkspaceId) -> Result<Settings, Fault> {
         Settings::read(&self.settings_file(workspace))
+    }
+
+    /// A hold on `workspace`'s settings, for a change that reads them first: one at a time,
+    /// across the daemon and every command.
+    pub(crate) fn hold_settings(&self, workspace: &WorkspaceId) -> io::Result<Hold> {
+        platform::private_dir(&self.settings)?;
+        hold(&self.settings_file(workspace).with_extension("lock"))
     }
 
     /// Saves `settings` for `workspace`; its folder makes it one this machine knows.

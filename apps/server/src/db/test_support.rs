@@ -313,6 +313,16 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Makes every share of a machine fail in the database, as a full disk would.
+    pub(crate) async fn break_shares(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken_shares BEFORE INSERT ON shared_machines BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
     /// Makes every chat event this workspace stores fail in the database, as a full disk would.
     pub(crate) async fn break_chat_events(&self) {
         sqlx::query(
@@ -323,11 +333,9 @@ impl Workspace {
         .unwrap();
     }
 
-    /// Leaves the workspace no room for more chat events.
-    pub(crate) async fn fill_quota(&self) {
-        sqlx::query("UPDATE workspaces SET chat_bytes = 536870912 WHERE workspace_id = ?")
-            .bind(self.id.as_str())
-            .execute(&self.db.writer)
+    /// Makes `chat` full, as too many waiting prompts would.
+    pub(crate) async fn fill_chat(&self, chat: &str) {
+        self.set_chat_state(&id(chat), weacon_protocol::ChatState::Full)
             .await
             .unwrap();
     }

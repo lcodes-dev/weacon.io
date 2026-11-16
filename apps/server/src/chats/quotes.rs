@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, MemberId, Quote, QuotedAgent};
+use weacon_protocol::{ChatId, MemberId, Quote};
 
 use crate::db::{Said, Workspace};
 
@@ -36,9 +36,7 @@ fn quote(said: Said, names: &HashMap<MemberId, String>) -> Quote {
     let name = names.get(&said.member);
     Quote {
         name: name.map_or_else(|| "A member".to_owned(), Clone::clone),
-        agent: said
-            .agent
-            .map(|(kind, machine)| QuotedAgent { kind, machine }),
+        agent: said.agent,
         text: said.text,
     }
 }
@@ -139,7 +137,11 @@ mod tests {
             agent,
             text: "Done.".to_owned(),
         };
-        let laptop = || (AgentKind::Codex, "laptop".parse().unwrap());
+        let laptop = || weacon_protocol::QuotedAgent {
+            kind: AgentKind::Codex,
+            machine: "laptop".parse().unwrap(),
+            shared: false,
+        };
 
         let by_agent = super::quote(said("m1", Some(laptop())), &names);
         let by_stranger = super::quote(said("m9", None), &names);

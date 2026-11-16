@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import type { Page } from "playwright-core";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import type { App, ChatEntry, Envelope, MachineSettings, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
+import type { App, ChatEntry, Envelope, MachineSettings, MachineSettingsAnswerKind, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
 
 // The core's own test key, and the fingerprint the core prints for it.
 export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
@@ -139,6 +139,8 @@ export async function core(
           held.settings = { ...held.settings, reports: action.send };
         } else if (action.kind === "set_access") {
           held.settings = { ...held.settings, access: action.level, team: action.team ?? held.settings.team };
+        } else if (action.kind === "set_shared") {
+          held.settings = { ...held.settings, shared: action.shared };
         }
       }
       if (envelope.type === "machine_settings_query") {
@@ -146,7 +148,10 @@ export async function core(
       }
       if (envelope.type === "machine_settings_query" || envelope.type === "machine_settings_command") {
         const { request, machine, workspace } = envelope;
-        send({ id: envelope.id, type: "machine_settings_answer", request, machine, workspace, answer: { kind: "current", ...held.settings } });
+        const signedIn = held.settings.sign_ins.filter(({ state }) => state === "signed_in").map(({ agent }) => agent);
+        const asksAgents = envelope.type === "machine_settings_query" && envelope.query.kind === "agents";
+        const answer: MachineSettingsAnswerKind = asksAgents ? { kind: "agents", agents: signedIn } : { kind: "current", ...held.settings };
+        send({ id: envelope.id, type: "machine_settings_answer", request, machine, workspace, answer });
       }
     };
   });

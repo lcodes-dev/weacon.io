@@ -183,8 +183,9 @@ pub struct AgentRef {
 pub enum AgentOwner {
     /// A member's own, under their sign-in.
     Member { member: MemberId },
-    /// The workspace's shared agent, under the workspace's own credential.
-    Shared,
+    /// The workspace's shared agent, under the workspace's own credential, on a machine its
+    /// `owner` shares: `member` called it, and only `owner` answers its permission prompts.
+    Shared { member: MemberId, owner: MemberId },
     /// An owner this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
@@ -338,11 +339,14 @@ mod tests {
             (
                 status(Some(AgentRef {
                     kind: AgentKind::Codex,
-                    owner: AgentOwner::Shared,
+                    owner: AgentOwner::Shared {
+                        member: "m-2".parse().unwrap(),
+                        owner: "m-1".parse().unwrap(),
+                    },
                     machine: None,
                 })),
-                json!({ "run": "run-7", "state": "running",
-                        "agent": { "kind": "codex", "owner": { "kind": "shared" } } }),
+                json!({ "run": "run-7", "state": "running", "agent": { "kind": "codex",
+                        "owner": { "kind": "shared", "member": "m-2", "owner": "m-1" } } }),
             ),
             (status(None), json!({ "run": "run-7", "state": "running" })),
         ];
@@ -355,7 +359,8 @@ mod tests {
                 json!({ "run": "run-7", "state": "running", "agent": agent }),
             )
         };
-        let robot = newer(json!({ "kind": "robot", "owner": { "kind": "shared" } })).unwrap();
+        let mine = json!({ "kind": "member", "member": "m-1" });
+        let robot = newer(json!({ "kind": "robot", "owner": mine })).unwrap();
         let team =
             newer(json!({ "kind": "claude", "owner": { "kind": "team", "id": 1 } })).unwrap();
         serde_json::to_value(&robot).unwrap_err();
@@ -363,8 +368,8 @@ mod tests {
         assert_eq!(team.agent.map(|agent| agent.owner), Some(AgentOwner::Newer));
         newer(json!({ "kind": "claude" })).unwrap_err();
         newer(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();
-        newer(json!({ "kind": "claude", "owner": { "kind": "shared" }, "machine": "" }))
-            .unwrap_err();
+        newer(json!({ "kind": "claude", "owner": { "kind": "shared" } })).unwrap_err();
+        newer(json!({ "kind": "claude", "owner": mine, "machine": "" })).unwrap_err();
     }
 
     #[test]

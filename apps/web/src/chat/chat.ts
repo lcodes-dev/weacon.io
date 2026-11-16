@@ -146,12 +146,27 @@ export function calling(chat: Chat | undefined, me: MemberId | undefined): boole
 }
 
 /**
- * Whether a run of `me`'s own agent is on a turn in the chat, so that they can stop it; a run whose
- * owner the log doesn't name counts as theirs.
+ * Whether a run `me` can stop is on a turn in the chat: one of their own agent, or of a shared agent
+ * they called or whose machine is theirs; a run whose owner the log doesn't name counts as theirs.
  */
 export function working(chat: Chat, me: MemberId | undefined): boolean {
-  const theirs = ({ agent }: Run) => agent?.owner.kind !== "member" || agent.owner.member === me;
+  const theirs = ({ agent }: Run) => {
+    const owner = agent?.owner;
+    return owner?.kind === "member" ? owner.member === me : owner?.kind !== "shared" || owner.member === me || owner.owner === me;
+  };
   return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state) && theirs(run));
+}
+
+/**
+ * Whether a run of the chat names `me`: as its agent's owner, as who called a shared agent, or as
+ * the owner of the machine a shared agent runs on. They can stop it, and its machine's owner
+ * answers its prompts, whether or not the chat's list shows an agent of theirs yet.
+ */
+export function named(chat: Chat, me: MemberId | undefined): boolean {
+  return [...chat.runs.values()].some(({ agent }) => {
+    const owner = agent?.owner;
+    return me !== undefined && (owner?.kind === "member" ? owner.member === me : owner?.kind === "shared" && (owner.member === me || owner.owner === me));
+  });
 }
 
 // The states of a run on a turn, which streams text and can be stopped.

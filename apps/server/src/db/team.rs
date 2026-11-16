@@ -7,7 +7,7 @@ use weacon_protocol::{AccountId, MemberId, WorkspaceRole, code};
 use super::changes::Versioned;
 use super::sign_in::insert_account;
 use super::workspace::stored_role;
-use super::{Workspace, failed, unreadable};
+use super::{Workspace, failed, stored, unreadable};
 use crate::email::Email;
 
 mod offers;
@@ -172,6 +172,26 @@ impl Workspace {
         connection: &mut SqliteConnection,
         member: &MemberId,
     ) -> Result<(), Fault> {
+        // What the others ran on a machine of theirs shared here can't be called again, even if
+        // they come back.
+        let detached = sqlx::query_as::<_, (String, String)>(
+            "UPDATE chat_legs SET detached = 1
+             WHERE workspace_id = ?1 AND member_id != ?2 AND detached = 0
+                 AND machine_id IN (SELECT d.machine_id FROM machines AS d
+                     JOIN members AS m ON m.account_id = d.account_id
+                     WHERE m.workspace_id = ?1 AND m.member_id = ?2)
+             RETURNING chat_id, member_id",
+        )
+        .bind(self.id.as_str())
+        .bind(member.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(failed)?;
+        for (chat, caller) in detached {
+            let (chat, caller) = (stored(chat)?, stored(caller)?);
+            self.record_change(connection, Versioned::Chat(&chat), &caller)
+                .await?;
+        }
         sqlx::query(
             "UPDATE members SET account_id = NULL WHERE workspace_id = ? AND member_id = ?",
         )

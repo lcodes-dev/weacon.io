@@ -18,6 +18,7 @@ import type {
   InvitationOffer,
   MachineId,
   MachineList,
+  SharedMachineList,
   MachineSummary,
   Mark,
   MemberAction,
@@ -207,6 +208,11 @@ export class Api {
     return this.#ask("GET", "/api/machines", undefined, isMachineList);
   }
 
+  /** The machines their owners share with `workspace`, which every member may call agents on. */
+  sharedMachines(workspace: WorkspaceId): Promise<Answer<SharedMachineList>> {
+    return this.#ask("GET", `${base(workspace)}/machines`, undefined, isSharedMachines);
+  }
+
   /** The machine waiting to be paired under `code`, as the person typed it: the server reads it loosely. */
   lookUpPairing(code: string): Promise<Answer<PairPending>> {
     const body: PairLookup = { code };
@@ -337,6 +343,10 @@ const isMachine = (value: unknown): value is MachineSummary =>
   ["undefined", "boolean"].includes(typeof (value as { connected?: unknown }).connected);
 const isOffers = (offers: unknown): boolean => offers === undefined || (Array.isArray(offers) && offers.every((offer) => typeof offer === "string"));
 const isMachineList = listOf<MachineList>("machines", isMachine);
+const isSharedMachines = listOf<SharedMachineList>(
+  "machines",
+  (machine) => fields(machine, ["id", "name", "owner"]) && ["undefined", "boolean"].includes(typeof (machine as { connected?: unknown }).connected),
+);
 const versioned = (value: unknown, keys: string[]): boolean =>
   fields(value, ["id", ...keys]) && isId((value as { id: string }).id) && Number.isSafeInteger((value as { version: unknown }).version);
 const isInvitation = (value: unknown): boolean => fields(value, ["email"]) && Number.isSafeInteger((value as { expires_at: unknown }).expires_at);

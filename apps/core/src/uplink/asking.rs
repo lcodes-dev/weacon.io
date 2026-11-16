@@ -1,6 +1,8 @@
 //! Who asks the machine to act, as each message from the server says.
 
-use weacon_protocol::{AccountId, Asker, Message};
+use weacon_protocol::{
+    AccountId, Asker, ChatAction, MachineSettingsQueryKind, Message, WorkspaceId,
+};
 
 use crate::proposals;
 
@@ -42,4 +44,31 @@ pub(super) fn asking(message: &Message) -> Asking<'_> {
         return Asking::Unknown;
     };
     Asking::By(asker.as_ref().map(|asker: &Asker| &asker.account))
+}
+
+/// The workspace of an ask its members may make of a machine shared with it: to call or stop
+/// an agent, read a chat's changes, or learn which repositories and agents the machine has for
+/// them. Everything else is its owner's alone.
+pub(super) fn for_members(message: &Message) -> Option<&WorkspaceId> {
+    if let Message::ChatCommand(command) = message
+        && matches!(
+            command.action,
+            ChatAction::Prompt { .. } | ChatAction::Interrupt
+        )
+    {
+        Some(&command.workspace)
+    } else if let Message::DiffQuery(query) = message {
+        Some(&query.workspace)
+    } else if let Message::WorktreeQuery(query) = message {
+        Some(&query.workspace)
+    } else if let Message::MachineSettingsQuery(query) = message
+        && matches!(
+            query.query,
+            MachineSettingsQueryKind::Repos | MachineSettingsQueryKind::Agents
+        )
+    {
+        Some(&query.workspace)
+    } else {
+        None
+    }
 }

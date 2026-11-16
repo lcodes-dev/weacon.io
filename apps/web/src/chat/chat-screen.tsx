@@ -5,15 +5,15 @@ import { Composer } from "../composer/composer.tsx";
 import { agentItem } from "../composer/mentionables.ts";
 import { type Send, blocked, notingPlain } from "../composer/prompt.ts";
 import { MyAgentFields, useMyAgent } from "../new-chat/my-agent.tsx";
-import type { Choice } from "../new-chat/start.ts";
-import type { ChatLeg, MachineId, MachineSummary, MemberId } from "../protocol.ts";
+import type { Callable, Choice } from "../new-chat/start.ts";
+import type { ChatLeg, MachineId, MemberId } from "../protocol.ts";
 import { ChatChanges } from "../diff/chat-changes.tsx";
 import { useChanges } from "../diff/use-changes.ts";
 import { ReviewBar } from "../worktree/review-bar.tsx";
 import { useWorktree } from "../worktree/use-worktree.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { useChatAccess } from "./access.ts";
-import { calling, working } from "./chat.ts";
+import { calling, named, working } from "./chat.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
 import { landing } from "./landing.ts";
 import type { Names } from "../members/names.ts";
@@ -35,6 +35,7 @@ export function ChatScreen({
   me,
   leg,
   machines,
+  guest = false,
   missing,
   openSettings,
   away,
@@ -48,8 +49,10 @@ export function ChatScreen({
   chatRef: ChatRef | undefined;
   me: MemberId | undefined;
   leg: ChatLeg | undefined;
-  /** The reader's own machines that run chats. */
-  machines: MachineSummary[];
+  /** The machines the reader may call an agent on. */
+  machines: Callable[];
+  /** Whether the reader's agent here runs on a machine someone else shares, whose worktree is its owner's to change. */
+  guest?: boolean;
   missing: ReactNode;
   openSettings(machine?: MachineId): void;
   away: boolean;
@@ -83,7 +86,10 @@ export function ChatScreen({
     }
   }, [landed.kind, chat?.first, subscribed]);
   const acts = mine && access.send;
-  const stop = acts && chat !== undefined && working(chat, me) ? commands.stop : undefined;
+  // A run that names the reader is theirs to stop, and to answer where its machine is theirs,
+  // in any chat and before the list shows their agent there.
+  const answers = access.send && (mine || (chat !== undefined && named(chat, me)));
+  const stop = answers && chat !== undefined && working(chat, me) ? commands.stop : undefined;
   const why = blocked(live, chatRef, access.send);
   const askable = mine && changes.askable;
   return (
@@ -111,7 +117,7 @@ export function ChatScreen({
           <TranscriptView
             lines={chat === undefined ? [] : lines(chat, names)}
             older={chat !== undefined && state.kind === "live" && chat.first > 1 ? reading.more : undefined}
-            answering={acts ? commands.answering : undefined}
+            answering={answers ? commands.answering : undefined}
             me={me}
             // A chat is on its way while the connection is made, then only from a server that serves chats.
             loading={chatRef !== undefined && chat === undefined && state.kind !== "failed" && (!live || access.read)}
@@ -126,7 +132,7 @@ export function ChatScreen({
           mine={acts}
           send={commands.send()}
           blocked={why}
-          bar={worktree.usable && <ReviewBar bar={worktree} title={title ?? ""} />}
+          bar={worktree.usable && !guest && <ReviewBar bar={worktree} title={title ?? ""} />}
         />
       </div>
       {mine || shown !== "run" ? (
@@ -156,7 +162,7 @@ function FirstCall({
   blocked: why,
 }: {
   link: WorkspaceSocket;
-  machines: MachineSummary[];
+  machines: Callable[];
   missing: ReactNode;
   openSettings(machine?: MachineId): void;
   away: boolean;

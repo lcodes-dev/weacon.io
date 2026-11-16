@@ -15,7 +15,7 @@ const answer = (body: Extract<ChatMessage, { type: "chat_answer" }>["answer"]): 
 });
 
 test("this chat's events and answers are heard, under the envelope they answer", () => {
-  const agent = { kind: "claude" as const, owner: { kind: "shared" as const } };
+  const agent = { kind: "claude" as const, owner: { kind: "shared" as const, member: "m-2", owner: "m-1" } };
   const snapshot = answer({ kind: "snapshot", seq: 4, runs: [{ run: "r-1", state: "waiting", agent }, { run: "r-2", state: "idle" }], waiting: [3], events: [said] });
 
   assert.deepEqual(heard(update, ref), { kind: "entry", entry: said });

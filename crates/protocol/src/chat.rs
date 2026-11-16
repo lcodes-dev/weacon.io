@@ -101,6 +101,9 @@ pub struct Quote {
 pub struct QuotedAgent {
     pub kind: AgentKind,
     pub machine: MachineName,
+    /// Whether it is the workspace's shared agent, and not its caller's own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 /// The task a chat works on: its id, and its title as the chat's first prompt found it, a
@@ -297,7 +300,7 @@ pub struct ChatLeg {
 pub enum ChatState {
     /// Its workspace's members can write in it.
     Open,
-    /// Its workspace has no room for more of its events, so it takes none until it has.
+    /// It has too many prompts waiting, so it takes no more events.
     Full,
     /// A state this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
@@ -343,6 +346,7 @@ mod tests {
                 agent: Some(QuotedAgent {
                     kind: AgentKind::Claude,
                     machine: "laptop".parse().unwrap(),
+                    shared: false,
                 }),
                 text: "Done.".to_owned(),
             },
@@ -714,7 +718,8 @@ mod tests {
                                 "receipt": { "request": "r-1", "state": "queued" } })),
             entry_wire(
                 &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
-                                "agent": { "kind": "gemini", "owner": { "kind": "shared" } } } }),
+                                "agent": { "kind": "gemini",
+                                           "owner": { "kind": "member", "member": "m-1" } } } }),
             ),
             entry_wire(
                 &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
