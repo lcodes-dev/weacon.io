@@ -19,7 +19,7 @@ use weacon_protocol::{
 use super::branch::{Draft, Gh};
 use super::chats::ChatRepo;
 use super::state::{Stores, hold_worktrees};
-use super::{Git, branch, diff};
+use super::{Git, branch};
 use crate::platform::trash::Trashed;
 use crate::runs::ChatKey;
 use crate::terminals::{self, OpenTerminal};
@@ -171,7 +171,7 @@ impl Inner {
         if files.is_empty() {
             return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
         }
-        let count = u32::try_from(files.len()).map_err(|_| diff::too_many())?;
+        let count = u32::try_from(files.len()).unwrap_or(u32::MAX);
         Ok(files
             .into_iter()
             .map(|file| answer(DiffAnswerKind::File { files: count, file }))
