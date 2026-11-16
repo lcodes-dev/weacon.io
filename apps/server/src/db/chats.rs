@@ -11,7 +11,7 @@ use weacon_protocol::{ChatId, ChatState, ChatTask, MemberId, RunState, RunStatus
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_full, turns};
-pub(crate) use legs::{Asked, Leg, NewLeg, detached};
+pub(crate) use legs::{Asked, Leg, NewLeg, Standing, detached};
 pub(crate) use quotes::Said;
 pub(crate) use runs::Snapshot;
 

@@ -36,6 +36,14 @@ pub(crate) struct Asked<'a> {
     pub(crate) away: Option<&'a MachineId>,
 }
 
+/// How a chat stands: its latest run, its legs, and the machine and member of the call that
+/// holds its turn, if one does.
+pub(crate) struct Standing {
+    pub(crate) runs: weacon_model::ChatRuns,
+    pub(crate) legs: Vec<Leg>,
+    pub(crate) called: Option<(MachineId, MemberId)>,
+}
+
 /// A machine's agent in a chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Leg {
@@ -163,7 +171,7 @@ impl Workspace {
 
     // Whether another agent of `chat` is at work, so `member`'s call of the leg on `machine`
     // must wait: one working or waiting for an answer, for someone else or on another machine,
-    // which still serves the chat and isn't `away`.
+    // which still serves the chat.
     async fn busy_in(
         &self,
         connection: &mut SqliteConnection,
@@ -188,7 +196,9 @@ impl Workspace {
             return Ok(false);
         };
         let theirs = at_work.machine == *machine && at_work.member == *member;
-        if theirs || at_work.detached || Some(&at_work.machine) == away {
+        // An away machine lets others' agents be called, never its own working one.
+        let away = Some(&at_work.machine) == away && at_work.machine != *machine;
+        if theirs || at_work.detached || away {
             return Ok(false);
         }
         let served = self.leg_on_in(connection, chat, &at_work.machine).await?;
@@ -564,13 +574,11 @@ impl Workspace {
         Ok(())
     }
 
-    /// The machine of the leg a call holds `chat`'s turn for at `now`, and the member whose
-    /// call it is, if one does.
-    pub(crate) async fn calling(
-        &self,
-        chat: &ChatId,
-        now: i64,
-    ) -> Result<Option<(MachineId, MemberId)>, Fault> {
+    /// `chat`'s run, legs and the call that holds its turn at `now`, read in one transaction.
+    pub(crate) async fn standing(&self, chat: &ChatId, now: i64) -> Result<Standing, Fault> {
+        let mut reader = self.db.readers.begin().await.map_err(failed)?;
+        let runs = self.read_runs(&mut reader, chat).await?;
+        let legs = self.legs_in(&mut reader, chat).await?;
         let held = sqlx::query_as::<_, (String, String)>(
             "SELECT called_on, called_by FROM chats
              WHERE workspace_id = ? AND chat_id = ? AND called_on IS NOT NULL
@@ -580,13 +588,14 @@ impl Workspace {
         .bind(chat.as_str())
         .bind(now)
         .bind(CALL_SECS)
-        .fetch_optional(&self.db.readers)
+        .fetch_optional(&mut *reader)
         .await
         .map_err(failed)?;
-        let Some((machine, member)) = held else {
-            return Ok(None);
+        let called = match held {
+            Some((machine, member)) => Some((stored(machine)?, stored(member)?)),
+            None => None,
         };
-        Ok(Some((stored(machine)?, stored(member)?)))
+        Ok(Standing { runs, legs, called })
     }
 
     /// [`Self::uncall_in`], on a connection of its own.
@@ -925,16 +934,45 @@ mod tests {
         let more = one.call_leg(&chat, ask(&ada, &R2), &on_hers, NOW + 1).await;
         assert!(more.unwrap().is_some());
         one.uncall_leg(&chat, &hers, ask(&ada, &R2)).await.unwrap();
+        // While her machine is away his own agent is called, never hers that works for her.
+        one.pair_for("m3", "mc-3").await;
+        let (his, desk) = (id::<MachineId>("mc-3"), id("Bo's desk"));
+        let on_his = NewLeg {
+            machine_id: &his,
+            machine: &desk,
+            ..on_hers
+        };
         let past = Asked {
             away: Some(&hers),
             ..ask(&bo, &R1)
         };
-        let later = one.call_leg(&chat, past, &on_hers, NOW + 1).await;
-        assert!(later.unwrap().is_some());
-        // Once he has left the workspace, the shared machine is his to call no more.
-        one.uncall_leg(&chat, &hers, past).await.unwrap();
+        let meanwhile = one.call_leg(&chat, ask(&bo, &R1), &on_his, NOW + 1).await;
+        assert_eq!(meanwhile.unwrap(), None);
+        let onto_hers = one.call_leg(&chat, past, &on_hers, NOW + 1).await;
+        assert_eq!(onto_hers.unwrap(), None);
+        let own = one.call_leg(&chat, past, &on_his, NOW + 1).await;
+        assert!(own.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_member_who_left_the_workspace_calls_a_machine_shared_with_it_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m1", "mc-1").await;
+        one.db.set_shares(&id("mc-1"), &[id("w1")]).await.unwrap();
+        let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
+        let (hers, name) = (id::<MachineId>("mc-1"), id("Ada's laptop"));
+        let on_hers = NewLeg {
+            machine_id: &hers,
+            machine: &name,
+            agent: AgentKind::Claude,
+            repo: None,
+        };
+
         one.leave(&bo).await.unwrap();
-        let left = one.call_leg(&chat, past, &on_hers, NOW + 1).await;
+
+        let left = one.call_leg(&chat, ask(&bo, &R1), &on_hers, NOW).await;
         assert_eq!(code(&left.unwrap_err()), "machine.not_found");
     }
 
@@ -1163,10 +1201,10 @@ mod tests {
         let last = NOW + 3 + CALL_SECS;
         assert!(one.call(&chat, adas, last).await.unwrap());
         // It says which leg she means only while it holds the turn.
-        let meant = one.calling(&chat, last + CALL_SECS - 1).await;
-        assert_eq!(meant.unwrap(), Some((hers.clone(), ada.clone())));
-        let stale = one.calling(&chat, last + CALL_SECS).await;
-        assert_eq!(stale.unwrap(), None);
+        let meant = one.standing(&chat, last + CALL_SECS - 1).await;
+        assert_eq!(meant.unwrap().called, Some((hers.clone(), ada.clone())));
+        let stale = one.standing(&chat, last + CALL_SECS).await;
+        assert_eq!(stale.unwrap().called, None);
         // Her run at work ends the hold; an earlier run of hers going idle doesn't.
         let reports = [
             (said("Hi"), true),

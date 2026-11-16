@@ -11,7 +11,7 @@ use weacon_protocol::{
 use super::admit::{Admitted, admit, not_owner};
 use super::{link, quotes};
 use crate::auth::Member;
-use crate::db::{Asked, Chat, Incoming, Leg, NewChat, NewLeg, Workspace};
+use crate::db::{Asked, Chat, Incoming, Leg, NewChat, NewLeg, Standing, Workspace};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
@@ -70,51 +70,47 @@ pub(crate) async fn take(
 }
 
 // The leg an answer or a stop is for. An answer is for the run it names, under its machine's
-// name for it, and only from the owner of the machine that runs it. A stop is for the leg at
-// work, and else for the leg the asker just called or one of theirs; always only from the
-// member that leg works for or its machine's owner.
-async fn acted_on(
+// name for it, and only from the owner of the machine that runs it.
+async fn acted_on(from: Sender<'_>, chat: &Chat, command: &mut ChatCommand) -> Result<Leg, Fault> {
+    let ChatAction::Permission { answer } = &mut command.action else {
+        return stopped(from, chat, &command.chat).await;
+    };
+    let Sender { shared, member, .. } = from;
+    let legs = member.workspace.legs(&command.chat).await?;
+    let mut legs = legs.iter().filter(|leg| chat.made && leg.core_seq > 0);
+    let asked = legs.find_map(|leg| Some((leg.own_run(&answer.run)?, leg)));
+    let (run, leg) = asked.ok_or_else(not_owner)?;
+    answer.run = run;
+    let owns = shared.db.has_machine(&from.asker.account, &leg.machine);
+    owns.await?.then(|| leg.clone()).ok_or_else(not_owner)
+}
+
+// The leg a stop means: the one at work; else the one the asker's own call holds, even
+// before its machine sent anything up; else one that works for them. It goes through only
+// from the member that leg works for or its machine's owner, and its machine checks again.
+async fn stopped(
     Sender {
         shared,
         member,
         asker,
     }: Sender<'_>,
     chat: &Chat,
-    command: &mut ChatCommand,
+    id: &ChatId,
 ) -> Result<Leg, Fault> {
-    let workspace = &member.workspace;
-    // The run is read before the legs, so whom a leg works for is never older than its run.
-    let runs = workspace.chat_runs(&command.chat).await?;
-    let all = workspace.legs(&command.chat).await?;
-    let mut legs = all.iter().filter(|leg| chat.made && leg.core_seq > 0);
-    if let ChatAction::Permission { answer } = &mut command.action {
-        let asked = legs.find_map(|leg| Some((leg.own_run(&answer.run)?, leg)));
-        let (run, leg) = asked.ok_or_else(not_owner)?;
-        answer.run = run;
-        let owns = shared.db.has_machine(&asker.account, &leg.machine).await?;
-        return owns.then(|| leg.clone()).ok_or_else(not_owner);
-    }
-    let legs: Vec<Leg> = legs.cloned().collect();
+    let Standing {
+        runs,
+        legs: all,
+        called,
+    } = member.workspace.standing(id, shared.now()).await?;
+    let taken = |leg: &&Leg| chat.made && leg.core_seq > 0;
+    let legs: Vec<Leg> = all.iter().filter(taken).cloned().collect();
     let theirs = |leg: &&Leg| leg.member == member.id;
-    // A run at work is stopped by whom it works for or its machine's owner, and no one else,
-    // whatever call of theirs still holds the turn.
-    if let Some(working) = at_work(&runs, &legs) {
-        let owns = shared.db.has_machine(&asker.account, &working.machine);
-        let may = theirs(&working) || owns.await?;
-        return may.then(|| working.clone()).ok_or_else(not_owner);
-    }
-    // Before its run reports, the asker's own call in flight says which leg is meant, even one
-    // whose machine has sent nothing up yet, and a leg someone else just called is never
-    // meant. The call gives no right: the leg must work for them, or be on their machine.
-    let called = workspace.calling(&command.chat, shared.now()).await?;
-    let (on, by) = called.unzip();
-    let held = |leg: &&Leg| !leg.detached && Some(&leg.machine) == on.as_ref();
-    let leg = if by.as_ref() == Some(&member.id) {
-        all.iter().find(held)
-    } else {
-        legs.iter().find(|leg| theirs(leg) && !held(leg))
-    };
-    let leg = leg.ok_or_else(not_owner)?;
+    let own = called.filter(|(_, by)| *by == member.id);
+    let held = |leg: &&Leg| !leg.detached && Some(&leg.machine) == own.as_ref().map(|(on, _)| on);
+    let meant = at_work(&runs, &legs)
+        .or_else(|| all.iter().find(held))
+        .or_else(|| legs.iter().find(theirs));
+    let leg = meant.ok_or_else(not_owner)?;
     let owns = shared.db.has_machine(&asker.account, &leg.machine);
     let may = theirs(&leg) || owns.await?;
     may.then(|| leg.clone()).ok_or_else(not_owner)
@@ -294,15 +290,7 @@ async fn prompt(
     };
     let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
-    // A machine that was away and came back as the turn was taken is at work after all.
-    let links = &from.shared.links;
-    let back_since = away.as_ref().is_some_and(|machine| links.is_open(machine));
-    let sent = if back_since {
-        Err(agent_working())
-    } else {
-        relay_to(from, (chat, &leg), command, back).await
-    };
-    if let Err(fault) = sent {
+    if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
         workspace.uncall_leg(&id, &leg.machine, asked).await?;
         return Err(fault);
     }
@@ -367,9 +355,7 @@ async fn away(
     Sender { shared, member, .. }: Sender<'_>,
     id: &ChatId,
 ) -> Result<Option<MachineId>, Fault> {
-    let workspace = &member.workspace;
-    let runs = workspace.chat_runs(id).await?;
-    let legs = workspace.legs(id).await?;
+    let Standing { runs, legs, .. } = member.workspace.standing(id, shared.now()).await?;
     let working = at_work(&runs, &legs);
     let away = working.filter(|leg| !shared.links.is_open(&leg.machine));
     Ok(away.map(|leg| leg.machine.clone()))
@@ -1380,8 +1366,13 @@ mod tests {
         assert_eq!(early.unwrap_err().code().as_str(), "chat.not_owner");
         assert!(sent(&mut two.adas).is_empty());
         assert!(sent(&mut two.graces).is_empty());
+        // Ada, whom it works for, stops it meanwhile.
+        two.ask(ada, act("r-8", ChatAction::Interrupt))
+            .await
+            .unwrap();
+        assert_eq!(commands(sent(&mut two.adas)).len(), 1);
         // Her prompt stored, it works for her, and her stop reaches it.
-        two.up(ada, 3, sent_up("r-5")).await;
+        two.up(ada, 3, prompted("r-5", "Go")).await;
         two.ask(grace, act("r-7", ChatAction::Interrupt))
             .await
             .unwrap();
@@ -1410,19 +1401,6 @@ mod tests {
         assert!(sent(&mut two.adas).is_empty());
     }
 
-    // The prompt `request` as a core sends it up.
-    fn sent_up(request: &str) -> ChatEvent {
-        ChatEvent::Prompt {
-            request: id(request),
-            text: "Go".to_owned(),
-            author: None,
-            pick: None,
-            repo: None,
-            agent: None,
-            task: None,
-        }
-    }
-
     #[tokio::test]
     async fn a_stop_reaches_an_agent_called_for_the_first_time_before_it_sends_anything_up() {
         let mut two = Two::new().await;
@@ -1441,25 +1419,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stop_never_reaches_an_agent_someone_else_just_called() {
-        let mut two = Two::new().await;
-        share(&two, &["w1"]).await;
-        let (ada, grace) = (&two.ada, &two.grace);
-        // The shared agent last worked for Grace, and rests.
-        two.ask(grace, go("r-3", ada)).await.unwrap();
-        two.up(ada, 1, status(RunState::Running)).await;
-        two.up(ada, 2, status(RunState::Idle)).await;
-        // Ada calls it; her prompt hasn't come back up yet.
-        two.ask(ada, go("r-4", ada)).await.unwrap();
-        sent(&mut two.adas);
-
-        let stop = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
-
-        assert_eq!(stop.unwrap_err().code().as_str(), "chat.not_owner");
-        assert!(sent(&mut two.adas).is_empty());
-    }
-
-    #[tokio::test]
     async fn a_call_that_holds_the_turn_stops_no_run_that_works_for_someone_else() {
         let mut two = Two::new().await;
         share(&two, &["w1"]).await;
@@ -1469,7 +1428,7 @@ mod tests {
         two.up(ada, 2, status(RunState::Idle)).await;
         // Grace's call holds the turn, but the machine runs a prompt its owner wrote there.
         two.ask(grace, go("r-4", ada)).await.unwrap();
-        two.up(ada, 3, sent_up("r-local")).await;
+        two.up(ada, 3, prompted("r-local", "Go")).await;
         two.up(ada, 4, status(RunState::Running)).await;
         sent(&mut two.adas);
 
