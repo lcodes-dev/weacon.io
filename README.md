@@ -266,7 +266,7 @@ Ctrl-C in the first terminal stops the server and the core. `scripts/dev.sh` sta
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
 
-The server opens only a database made with its own tables. After you pull a change to them, `scripts/dev.sh` says the server didn't start and `.dev/server.log` says the database was made by another build: start over.
+The server opens only a database made with its own tables. After you pull a change to them, `scripts/dev.sh` says the server didn't start and `.dev/server.log` says the database was made by another build: stop Weacon, remove `.dev/server`, run `scripts/dev.sh you@example.com` as on the first run, then pair the core and sign your agents in again. The core's state and the agents' folders can stay; what they hold for the old workspaces is left on disk, unused.
 
 To start over, stop Weacon, then remove the server's and the core's data together, since a core paired with a server you removed can't connect. If you paired a second core for the Chrome extension, pair it again afterwards, as in that section. If you set `WEACON_STATE_DIR` to a folder of its own, such as `~/.weacon-dev/state`, remove that folder too. The core keeps agents' work in a `work` folder beside it, such as `~/.weacon-dev/work`: check that it holds only Weacon's folders before you remove it.
 
@@ -353,7 +353,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 
 - **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev/state`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node, or to install mise.** Install mise as in step 1, then run it again. Without mise, the Node on your `PATH` must be exactly the one in `.node-version`, and rustup must be installed.
-- **`scripts/dev.sh` says the server didn't start.** Read `.dev/server.log`. Something else uses port 8080: stop it, then run again. Or the database was made by another build: start over, as in "Stop, data and starting over".
+- **`scripts/dev.sh` says the server didn't start.** Read `.dev/server.log`. Something else uses port 8080: stop it, then run again. Or the database was made by another build: remove `.dev/server`, as in "Stop, data and starting over".
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
 - **The sign-in page never accepts the code.** Use the newest mail `scripts/dev.sh` shows, and request a new code if it expired.
