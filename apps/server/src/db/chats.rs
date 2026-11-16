@@ -194,7 +194,7 @@ impl Workspace {
         if held.is_none_or(|held| held.member != *leg.0) {
             return Err(chat_not_found());
         }
-        self.append(transaction, chat, Some(leg.0), events).await
+        self.append(transaction, chat, Some(leg), events).await
     }
 
     /// [`Self::append`] for events `member`'s machine sent, whoever owns it now.
@@ -205,8 +205,10 @@ impl Workspace {
         member: &MemberId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
+        let leg = self.leg(chat, member).await?.ok_or_else(chat_not_found)?;
         let transaction = self.db.write().await?;
-        self.append(transaction, chat, Some(member), events).await
+        self.append(transaction, chat, Some((member, &leg.machine)), events)
+            .await
     }
 
     #[cfg(test)]

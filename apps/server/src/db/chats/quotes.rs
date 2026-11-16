@@ -41,7 +41,7 @@ impl Workspace {
         let select = format!(
             "SELECT e.body, e.member_id, l.agent, l.machine_name, {SHARER} FROM chat_events AS e
              LEFT JOIN chat_legs AS l ON l.workspace_id = e.workspace_id
-                 AND l.chat_id = e.chat_id AND l.member_id = e.member_id
+                 AND l.chat_id = e.chat_id AND l.machine_id = e.machine_id
              WHERE e.workspace_id = ?1 AND e.chat_id = ?2 AND e.member_id IS NOT ?3
                  AND e.seq > ?4 AND e.seq <= ?5
              ORDER BY e.seq DESC"

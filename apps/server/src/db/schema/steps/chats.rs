@@ -162,3 +162,41 @@ WHERE core_seq IS NOT NULL;
 
 UPDATE chat_events SET core_seq = NULL;
 ";
+
+/// Keys a chat's legs by their machine, which runs one agent in the chat whoever calls it, each
+/// with the number it had, and notes which machine sent each event.
+pub(crate) const LEGS_BY_MACHINE: &str = "
+CREATE TABLE legs_by_machine (
+    workspace_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    machine_id TEXT NOT NULL,
+    member_id TEXT NOT NULL,
+    machine_name TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    repo TEXT,
+    core_seq INTEGER NOT NULL DEFAULT 0,
+    detached INTEGER NOT NULL DEFAULT 0,
+    quoted_seq INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (workspace_id, chat_id, machine_id),
+    FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
+    FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
+) STRICT;
+
+INSERT OR IGNORE INTO legs_by_machine (rowid, workspace_id, chat_id, machine_id, member_id,
+    machine_name, agent, repo, core_seq, detached, quoted_seq)
+SELECT rowid, workspace_id, chat_id, machine_id, member_id, machine_name, agent, repo, core_seq,
+    detached, quoted_seq
+FROM chat_legs ORDER BY rowid;
+
+ALTER TABLE chat_events ADD COLUMN machine_id TEXT;
+
+UPDATE chat_events SET machine_id = (SELECT l.machine_id FROM chat_legs AS l
+    WHERE l.workspace_id = chat_events.workspace_id AND l.chat_id = chat_events.chat_id
+        AND l.member_id = chat_events.member_id)
+WHERE member_id IS NOT NULL;
+
+DROP TABLE chat_legs;
+ALTER TABLE legs_by_machine RENAME TO chat_legs;
+
+CREATE INDEX chat_legs_machine ON chat_legs (workspace_id, machine_id);
+";

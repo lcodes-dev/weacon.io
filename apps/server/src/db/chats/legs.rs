@@ -138,6 +138,25 @@ impl Workspace {
         member: &MemberId,
         leg: &NewLeg<'_>,
     ) -> Result<(), Fault> {
+        // Checked as it is written, so a machine unpaired meanwhile gets no leg.
+        if !self.serves_in(transaction, leg.machine_id, member).await? {
+            return Err(machine_not_found());
+        }
+        // A core keeps one log for a chat, so a machine runs one member's agent in it, whether
+        // or not it still serves the member who had it first.
+        let taken: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM chat_legs
+                 WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?)",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(leg.machine_id.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        if taken {
+            return Err(machine_taken());
+        }
         let agent = leg.agent.name().ok_or_else(super::unstorable)?;
         sqlx::query(
             "INSERT INTO chat_legs (workspace_id, chat_id, member_id, machine_id, machine_name,
@@ -154,25 +173,32 @@ impl Workspace {
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        // Checked as it is written, so a machine unpaired meanwhile gets no leg.
-        let served = self.leg_on_in(transaction, chat, leg.machine_id).await?;
-        served.ok_or_else(machine_not_found)?;
-        // A core keeps one log for a chat, so a machine runs one member's agent in it, whether
-        // or not it still serves the member who had it first.
-        let legs: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM chat_legs
-             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
+        Ok(())
+    }
+
+    // Whether `machine` serves `member`: it is their own, or shared with the workspace.
+    async fn serves_in(
+        &self,
+        connection: &mut SqliteConnection,
+        machine: &MachineId,
+        member: &MemberId,
+    ) -> Result<bool, Fault> {
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM members AS m
+                 JOIN machines AS d ON d.machine_id = ?3
+                 WHERE m.workspace_id = ?1 AND m.member_id = ?2
+                     AND (d.account_id = m.account_id OR EXISTS (
+                         SELECT 1 FROM shared_machines AS s
+                         JOIN members AS o ON o.workspace_id = s.workspace_id
+                             AND o.account_id = d.account_id
+                         WHERE s.workspace_id = ?1 AND s.machine_id = d.machine_id)))",
         )
         .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(leg.machine_id.as_str())
-        .fetch_one(&mut *transaction)
+        .bind(member.as_str())
+        .bind(machine.as_str())
+        .fetch_one(connection)
         .await
-        .map_err(failed)?;
-        if legs > 1 {
-            return Err(machine_taken());
-        }
-        Ok(())
+        .map_err(failed)
     }
 
     /// `member`'s leg of `chat`, whoever owns its machine now.
@@ -609,6 +635,62 @@ mod tests {
                 Some("m1".to_owned()),
                 Some("m1".to_owned())
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn legs_from_before_machines_keyed_them_keep_their_numbers_and_events_their_machine() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.join("old.db");
+        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
+             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com'),
+                 ('a2', 'bo@example.com');
+             INSERT INTO members (workspace_id, member_id, email, account_id)
+                 VALUES ('w1', 'm1', 'ada@example.com', 'a1'), ('w1', 'm2', 'bo@example.com', 'a2');
+             INSERT INTO chats (workspace_id, chat_id, owner_member, title, state, created_at,
+                 updated_at, seq) VALUES ('w1', 'c-1', 'm1', 'Fix it', 'open', 6, 6, 3);
+             INSERT INTO chat_legs (rowid, workspace_id, chat_id, member_id, machine_id,
+                 machine_name, agent, repo, core_seq, detached, quoted_seq) VALUES
+                 (4, 'w1', 'c-1', 'm1', 'mc-1', 'Laptop', 'codex', 'site', 7, 0, 2),
+                 (9, 'w1', 'c-1', 'm2', 'mc-2', 'Desk', 'claude', NULL, 1, 1, 0);
+             INSERT INTO chat_events (workspace_id, chat_id, seq, member_id, body, at) VALUES
+                 ('w1', 'c-1', 1, 'm1', '{\"kind\":\"outside_prompt\",\"text\":\"Hi\"}', 8),
+                 ('w1', 'c-1', 2, NULL, '{\"kind\":\"message\",\"author\":\"m2\",\"text\":\"Hi\"}', 9),
+                 ('w1', 'c-1', 3, 'm2', '{\"kind\":\"outside_prompt\",\"text\":\"Hi\"}', 9);";
+        let step = crate::db::schema::steps::LEGS_BY_MACHINE;
+        crate::db::schema::database_before(&path, step, rows).await;
+
+        let db = crate::db::Db::open(&path).await.unwrap();
+
+        let one = db.workspace(&id("w1")).await.unwrap();
+        let legs = one.legs(&id("c-1")).await.unwrap();
+        let kept = Leg {
+            member: member_id("m1"),
+            machine: id("mc-1"),
+            machine_name: id("Laptop"),
+            agent: AgentKind::Codex,
+            repo: Some(id("site")),
+            core_seq: 7,
+            detached: false,
+            quoted_seq: 2,
+            number: 4,
+            shared_by: None,
+        };
+        assert_eq!(legs.first(), Some(&kept));
+        let bos = &legs[1];
+        assert_eq!(
+            (bos.member.as_str(), bos.machine.as_str(), bos.number),
+            ("m2", "mc-2", 9)
+        );
+        assert!(bos.detached);
+        let from: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT machine_id FROM chat_events ORDER BY seq")
+                .fetch_all(&db.readers)
+                .await
+                .unwrap();
+        assert_eq!(
+            from,
+            [Some("mc-1".to_owned()), None, Some("mc-2".to_owned())]
         );
     }
 
