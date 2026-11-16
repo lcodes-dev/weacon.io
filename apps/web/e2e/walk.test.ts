@@ -29,7 +29,9 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   await form.getByRole("button", { name: "Send" }).click();
   await page.getByRole("heading", { name: "Run the parser tests" }).waitFor();
   await page.getByText("I'll run them.").waitFor();
-  await page.getByText("Asks to use Bash").waitFor();
+  // A page that starts following after the prompt was asked isn't told its tool's name.
+  await page.getByText("Asks to use").waitFor();
+  await page.getByRole("button", { name: "Allow" }).waitFor();
 
   // The tool's name isn't kept, so the waiting prompt reads more plainly after a reload.
   await page.reload();

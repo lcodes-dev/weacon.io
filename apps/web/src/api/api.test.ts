@@ -195,11 +195,15 @@ test("a machine whose id, key or date isn't one is a malformed answer, and a new
 });
 
 test("a workspace's chats are listed, and an answer of the wrong shape is refused", async () => {
-  const chat = { id: "c-1", title: "Merge the lists", owner: "m-1", machine: "laptop", state: "open", updated_at: 1_800_000_000 };
+  const chat = { id: "c-1", title: "Merge the lists", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1_800_000_000 };
   const { api, sent } = serve(
     { status: 200, body: { chats: [chat] } },
     { status: 200, body: { chats: [{ ...chat, run: "waiting" }] } },
+    { status: 200, body: { chats: [{ ...chat, task: "t-1" }] } },
     { status: 200, body: { chats: [{ ...chat, run: 7 }] } },
+    { status: 200, body: { chats: [{ ...chat, task: "../t" }] } },
+    { status: 200, body: { chats: [{ ...chat, machine_id: 4 }] } },
+    { status: 200, body: { chats: [{ ...chat, machine_id: undefined }] } },
     { status: 200, body: { chats: [{ ...chat, id: "a/b" }] } },
     { status: 200, body: { chats: [{ ...chat, updated_at: "now" }] } },
     { status: 200, body: { chats: [{ ...chat, machine: undefined }] } },
@@ -209,7 +213,8 @@ test("a workspace's chats are listed, and an answer of the wrong shape is refuse
 
   assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [chat] } });
   assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [{ ...chat, run: "waiting" }] } });
-  for (let left = 5; left > 0; left -= 1) {
+  assert.deepEqual(await api.chats("ws-1"), { ok: true, value: { chats: [{ ...chat, task: "t-1" }] } });
+  for (let left = 8; left > 0; left -= 1) {
     assert.deepEqual(await api.chats("ws-1"), { ok: false, code: MALFORMED });
   }
   assert.deepEqual(await api.chats("ws-1"), { ok: false, code: "workspace.not_member" });

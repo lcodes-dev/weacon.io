@@ -1,7 +1,7 @@
 name: macos
 
 # What a developer's Mac runs, on Apple silicon: mise from Homebrew, the setup with the Node and Rust
-# it installs, then every check but the mutation tests.
+# it installs, then every check.
 on:
   workflow_dispatch:
   pull_request:
@@ -40,7 +40,7 @@ jobs:
       - run: /bin/bash scripts/setup.sh
       # The runner comes with a Node of its own; the scripts must use mise's.
       - run: /bin/bash -c '. scripts/tools.sh && use_mise && case $(command -v node) in */mise/*) ;; *) exit 1 ;; esac'
-      - run: /bin/bash scripts/check.sh --mutants none
+      - run: /bin/bash scripts/check.sh
       # The README's walk-through starts Weacon with dev.sh; check it comes up and the core answers.
       - name: scripts/dev.sh
         run: |

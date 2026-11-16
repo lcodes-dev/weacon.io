@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { ChatEntry, RunEvent } from "../protocol.ts";
 import { commit, fromSnapshot, older, stream } from "./chat.ts";
-import { lines } from "./lines.ts";
+import { lineAt, lines } from "./lines.ts";
 
 const ran = (seq: number, run: string, event: RunEvent): ChatEntry => ({ seq, event: { kind: "run", update: { run, event } } });
 const said = (seq: number, text: string): ChatEntry => ({ seq, event: { kind: "prompt", request: `q-${seq}`, text } });
@@ -53,4 +53,28 @@ test("lines keep their keys as older events load before them and as text commits
   assert.deepEqual(keys(streaming), ["p3", "t3-r-1", "t3-r-1.0"]);
   assert.deepEqual(keys(committed), keys(streaming));
   assert.deepEqual(keys(widened), ["t0-r-1", "t0-r-1.0", "t0-r-1.1", "p3", "t3-r-1", "t3-r-1.0"]);
+});
+
+test("a message's line is found by its seq, an agent's in the row it shows in", () => {
+  const chat = chatOf(
+    [
+      said(2, "Fix it"),
+      ran(3, "r-1", { event: "text", text: "Looking." }),
+      ran(4, "r-1", { event: "tool_call", call: "k-1", tool: "Bash", input: null }),
+      ran(5, "r-1", { event: "text", text: "Done." }),
+    ],
+    5,
+  );
+  const widened = older(chat, [ran(1, "r-1", { event: "text", text: "Earlier." })]);
+
+  assert.equal(lineAt(chat, 2), "p2");
+  assert.equal(lineAt(chat, 3), "t2-r-1.0");
+  assert.equal(lineAt(chat, 5), "t2-r-1.2");
+  assert.equal(lineAt(chat, 4), undefined);
+  assert.equal(lineAt(chat, 1), undefined);
+  assert.equal(lineAt(widened, 1), "t0-r-1.0");
+  const keys = lines(widened).map((line) => line.key);
+  for (const seq of [1, 2, 3, 5]) {
+    assert.ok(keys.includes(lineAt(widened, seq) ?? ""), `${seq}`);
+  }
 });

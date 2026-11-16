@@ -1,6 +1,6 @@
 import type { ChatRef } from "../chat-ref.ts";
 import { type Sent, sentProblem } from "../composer/prompt.ts";
-import type { AgentKind, ChatAction, ChatId, MachineId, MachineSummary, RepoId, RequestId, SignInState, WorkspaceId } from "../protocol.ts";
+import type { AgentKind, ChatAction, ChatId, ChatTask, MachineId, MachineSummary, RepoId, RequestId, SignInState, WorkspaceId } from "../protocol.ts";
 import { lacks } from "../machines/core.ts";
 import { type Subject, mayHaveRun, settledText } from "../receipts.ts";
 
@@ -34,8 +34,8 @@ export function missingText(kind: Exclude<Readiness["kind"], "ready">): string {
   return MISSING[kind];
 }
 
-/** What a new chat's first prompt names besides its text. */
-export type Choice = { machine: MachineId; repo: RepoId; agent: AgentKind };
+/** What a new chat's first prompt names besides its text, and the task it is for when it is for one. */
+export type Choice = { machine: MachineId; repo: RepoId; agent: AgentKind; task?: ChatTask };
 
 /** A first prompt on its way: the chat it makes and what it asks. */
 export type Start = { chatRef: ChatRef; action: Extract<ChatAction, { kind: "prompt" }> };

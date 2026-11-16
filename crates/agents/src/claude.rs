@@ -90,6 +90,7 @@ fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
         "stream-json",
         "--output-format",
         "stream-json",
+        "--include-partial-messages",
         "--permission-prompt-tool",
         "stdio",
     ]);
@@ -449,6 +450,7 @@ mod tests {
             let args = args(access);
             assert!(args.contains("--setting-sources user"), "{access:?}");
             assert!(args.contains("--permission-mode default"), "{access:?}");
+            assert!(args.contains("--include-partial-messages"), "{access:?}");
             assert_eq!(args.contains(refused), access == AccessLevel::ReadOnly);
         }
     }

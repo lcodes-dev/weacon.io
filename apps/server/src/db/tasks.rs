@@ -73,6 +73,12 @@ impl Workspace {
         .collect()
     }
 
+    /// The task `id` as it is now; `task.not_found` when this workspace has none.
+    pub(crate) async fn task(&self, id: &TaskId) -> Result<Task, Fault> {
+        let mut reader = self.db.readers.acquire().await.map_err(failed)?;
+        self.read_task(&mut reader, id).await
+    }
+
     /// Makes `edit` to the task `id` and gives the task as it then is. One changed since
     /// `read_at` is `task.stale`, one there isn't is `task.not_found`, and an order key
     /// another task has is `db.exists`.

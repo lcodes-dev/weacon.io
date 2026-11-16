@@ -214,6 +214,7 @@ impl FakeChat {
                 text: text.clone(),
                 repo: None,
                 agent: *agent,
+                task: None,
             }),
             ChatAction::Permission { answer } => self.answered(answer),
             ChatAction::Interrupt => {
@@ -285,6 +286,7 @@ impl FakeChat {
             text: text.to_owned(),
             repo: None,
             agent: None,
+            task: None,
         });
         Ok(())
     }
@@ -455,6 +457,7 @@ mod tests {
             repo: None,
             machine: None,
             agent: None,
+            task: None,
         })
     }
 
@@ -820,6 +823,7 @@ mod tests {
                 repo: None,
                 machine: None,
                 agent,
+                task: None,
             })
         };
         fake.answer(&query(4, "c-1", ChatQueryKind::Subscribe { after: SEEDED }));
@@ -1028,6 +1032,7 @@ mod tests {
             repo: None,
             machine: None,
             agent: Some(AgentKind::Newer),
+            task: None,
         });
         for newer in [command(ChatAction::Newer), unnamed] {
             assert_eq!(

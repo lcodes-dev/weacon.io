@@ -9,10 +9,8 @@ use weacon_appkit::{create_private, is_private, sync_dir};
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{code, to_hex};
 
-use crate::email::Email;
-
-/// The server's own key, which sign-in and pairing codes are hashed with and machine tokens
-/// derived from: a stolen database alone can't be searched for its codes.
+/// The server's own key, which pairing codes are hashed with and machine tokens derived from:
+/// a stolen database alone can't be searched for its pairing codes.
 pub(crate) struct Secret(Hmac<Sha256>);
 
 impl Secret {
@@ -60,15 +58,7 @@ impl Secret {
         Ok(Self(Hmac::new(&block.into())))
     }
 
-    /// What is stored for a code mailed to `email`, which is part of it so that the same code
-    /// for two addresses is stored differently; any of the address's challenges can check it.
-    pub(crate) fn sign_in_code_hash(&self, email: &Email, code: &str) -> [u8; 32] {
-        // An address never holds a zero byte, so this keeps the two apart.
-        self.mac(&[email.as_str().as_bytes(), &[0], code.as_bytes()])
-    }
-
-    /// What is stored for a pairing's `code`, which is looked up by it. No address is a word
-    /// without an `@`, so no sign-in code is stored the same.
+    /// What is stored for a pairing's `code`, which is looked up by it.
     pub(crate) fn pairing_code_hash(&self, code: &str) -> [u8; 32] {
         self.mac(&[b"pairing.code\0", code.as_bytes()])
     }
@@ -146,14 +136,13 @@ mod tests {
     use weacon_testing::{TempDir, messages, recording_logger};
 
     use super::*;
-    use crate::test_support::email;
 
     fn open(path: &Path) -> Result<Secret, Fault> {
         Secret::open(path, &recording_logger().0)
     }
 
     fn hash(secret: &Secret) -> [u8; 32] {
-        secret.sign_in_code_hash(&email("ada@example.com"), "12345678")
+        secret.pairing_code_hash("ABCD-1234")
     }
 
     // A private file holding `bytes`.
@@ -179,7 +168,6 @@ mod tests {
             open(&dir.join("one")).unwrap(),
             open(&dir.join("two")).unwrap(),
         );
-        let email = email("pairing.code@example.com");
 
         assert_eq!(one.machine_token("s"), one.machine_token("s"));
         assert_ne!(one.machine_token("s"), one.machine_token("t"));
@@ -188,13 +176,6 @@ mod tests {
         assert_ne!(one.pairing_code_hash("c"), one.pairing_code_hash("d"));
         assert_ne!(one.pairing_code_hash("c"), two.pairing_code_hash("c"));
         assert_ne!(one.pairing_code_hash("c"), one.machine_token("c"));
-        assert_ne!(
-            one.pairing_code_hash("c"),
-            one.sign_in_code_hash(&email, "c")
-        );
-        assert_ne!(one.machine_token("c"), one.sign_in_code_hash(&email, "c"));
-        Email::parse("pairing.code").unwrap_err();
-        Email::parse("machine.token").unwrap_err();
     }
 
     #[test]
@@ -273,29 +254,6 @@ mod tests {
             code_of(&dir.join("nowhere").join("secret")),
             "server.secret_unreadable"
         );
-    }
-
-    #[test]
-    fn a_code_is_hashed_with_the_key_and_its_address() {
-        let dir = TempDir::new().unwrap();
-        let key: Vec<u8> = (0..32).collect();
-        let secret = open(&stored(&dir, "secret", &key)).unwrap();
-        let other = open(&dir.join("other")).unwrap();
-
-        // HMAC-SHA256 of the address, a zero byte and the code, under the bytes 0 to 31.
-        assert_eq!(
-            hash(&secret).map(|byte| format!("{byte:02x}")).concat(),
-            "a9a3d81fa081739162c1e32f8416dc4784edca22cb7a5b756b458b6cd03815e8"
-        );
-        assert_ne!(
-            hash(&secret),
-            secret.sign_in_code_hash(&email("bo@example.com"), "12345678")
-        );
-        assert_ne!(
-            hash(&secret),
-            secret.sign_in_code_hash(&email("ada@example.com"), "12345679")
-        );
-        assert_ne!(hash(&secret), hash(&other));
     }
 
     #[test]

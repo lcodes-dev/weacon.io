@@ -32,6 +32,30 @@ enum Line {
     ControlCancelRequest {
         request_id: String,
     },
+    StreamEvent {
+        event: Partial,
+    },
+    #[serde(other)]
+    Other,
+}
+
+/// A piece of the message being written, as the model's API streams it.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Partial {
+    ContentBlockDelta {
+        delta: Delta,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Delta {
+    TextDelta {
+        text: String,
+    },
     #[serde(other)]
     Other,
 }
@@ -169,7 +193,14 @@ pub(crate) fn read(line: &[u8]) -> Vec<Effect> {
         Line::ControlCancelRequest { request_id } => vec![Effect::Withdrawn {
             request: Value::String(request_id),
         }],
-        Line::System(System::Other) | Line::Other => Vec::new(),
+        // The whole block follows in an assistant line, which replaces these.
+        Line::StreamEvent {
+            event:
+                Partial::ContentBlockDelta {
+                    delta: Delta::TextDelta { text },
+                },
+        } => vec![Effect::Event(RunEvent::TextDelta { text })],
+        Line::StreamEvent { .. } | Line::System(System::Other) | Line::Other => Vec::new(),
     }
 }
 

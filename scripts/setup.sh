@@ -7,22 +7,15 @@ cd "$(dirname "$0")/.."
 . scripts/tools.sh
 
 # The Claude Code SessionStart hook passes `--claude-session-start`: no check tools, which take minutes
-# to build, and no Node packages. CI's mutation shards pass `--rust-only`: only cargo-mutants of those.
+# to build, and no Node packages.
 mode=all
-case "${1:-}" in
-  --claude-session-start)
-    [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
-    mode=session_start
-    ;;
-  --rust-only) mode=rust_only ;;
-esac
+if [ "${1:-}" = --claude-session-start ]; then
+  [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] || exit 0
+  mode=session_start
+fi
 
 # The tools scripts/check.sh runs, at the versions CI uses.
-mutants_tool=mutants@27.1.0
-tools=(deny@0.20.2 machete@0.9.2 llvm-cov@0.9.1 "$mutants_tool")
-if [ "$mode" = rust_only ]; then
-  tools=("$mutants_tool")
-fi
+tools=(deny@0.20.2 machete@0.9.2)
 
 log() {
   printf '==> %s\n' "$*" >&2
@@ -90,13 +83,6 @@ ensure_toolchain() {
   ln -s "stable-$host" "$toolchains/$toolchain-$host"
 }
 
-# Coverage needs llvm-tools. Where it can't be downloaded, scripts/check.sh runs the tests without
-# coverage and CI enforces the floor.
-ensure_llvm_tools() {
-  rustup component add llvm-tools --toolchain "$toolchain" >>.dev/setup.log 2>&1 \
-    || log "Couldn't install llvm-tools; coverage will only be measured in CI"
-}
-
 ensure_tools() {
   local tool name version
   for tool in "${tools[@]}"; do
@@ -149,9 +135,6 @@ persist_path() {
 ensure_toolchain
 fetch_dependencies
 if [ "$mode" = all ]; then
-  ensure_llvm_tools
-fi
-if [ "$mode" != session_start ]; then
   ensure_tools
 fi
 persist_path
