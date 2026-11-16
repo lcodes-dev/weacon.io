@@ -83,16 +83,16 @@ async fn acted_on(
     command: &mut ChatCommand,
 ) -> Result<Leg, Fault> {
     let workspace = &member.workspace;
-    let legs = workspace.legs(&command.chat).await?;
-    let mut legs = legs.into_iter().filter(|leg| chat.made && leg.core_seq > 0);
+    let all = workspace.legs(&command.chat).await?;
+    let mut legs = all.iter().filter(|leg| chat.made && leg.core_seq > 0);
     if let ChatAction::Permission { answer } = &mut command.action {
         let asked = legs.find_map(|leg| Some((leg.own_run(&answer.run)?, leg)));
         let (run, leg) = asked.ok_or_else(not_owner)?;
         answer.run = run;
         let owns = shared.db.has_machine(&asker.account, &leg.machine).await?;
-        return owns.then_some(leg).ok_or_else(not_owner);
+        return owns.then(|| leg.clone()).ok_or_else(not_owner);
     }
-    let legs: Vec<Leg> = legs.collect();
+    let legs: Vec<Leg> = legs.cloned().collect();
     let theirs = |leg: &&Leg| leg.member == member.id;
     if let Some(working) = at_work(workspace, &command.chat, &legs).await? {
         let owns = shared.db.has_machine(&asker.account, &working.machine);
@@ -100,11 +100,12 @@ async fn acted_on(
             return Ok(working.clone());
         }
     }
-    // Before its run reports, a call in flight says which of their legs they mean.
+    // Before its run reports, a call in flight says which of their legs they mean, even one
+    // whose machine has sent nothing up yet.
     let called = workspace.calling(&command.chat, &member.id).await?;
-    let held = legs
+    let held = all
         .iter()
-        .find(|leg| Some(&leg.machine) == called.as_ref());
+        .find(|leg| !leg.detached && Some(&leg.machine) == called.as_ref());
     let leg = held.filter(theirs).or_else(|| legs.iter().find(theirs));
     leg.cloned().ok_or_else(not_owner)
 }
@@ -232,12 +233,15 @@ async fn first_call(
         request,
         text,
     };
-    workspace.call(id, (machine, member), at).await?;
-    if let Err(fault) = workspace.asked(id, machine, asked).await {
+    let called = workspace.call(id, (machine, member), at).await;
+    let noted = match called {
+        Ok(_) => workspace.asked(id, machine, asked).await,
+        Err(fault) => Err(fault),
+    };
+    if noted.is_err() {
         workspace.forget_chat(id).await?;
-        return Err(fault);
     }
-    Ok(())
+    noted
 }
 
 // A prompt to a chat that is there: to its agent on the machine the prompt names, which the
@@ -1357,6 +1361,23 @@ mod tests {
         assert_eq!(stopped.len(), 1);
         assert_eq!(stopped[0].0, ChatAction::Interrupt);
         assert!(sent(&mut two.graces).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stop_reaches_an_agent_called_for_the_first_time_before_it_sends_anything_up() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        two.ask(grace, go("r-3", ada)).await.unwrap();
+        sent(&mut two.adas);
+
+        two.ask(grace, act("r-4", ChatAction::Interrupt))
+            .await
+            .unwrap();
+
+        let stopped = commands(sent(&mut two.adas));
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].0, ChatAction::Interrupt);
     }
 
     fn author_of(event: &ChatEvent) -> Option<&MemberId> {

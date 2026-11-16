@@ -190,6 +190,8 @@ FROM chat_legs ORDER BY rowid;
 
 ALTER TABLE chats ADD COLUMN called_on TEXT;
 
+ALTER TABLE chats ADD COLUMN called_for TEXT;
+
 CREATE TABLE chat_calls (
     workspace_id TEXT NOT NULL,
     chat_id TEXT NOT NULL,

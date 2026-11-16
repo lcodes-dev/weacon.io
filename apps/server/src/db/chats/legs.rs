@@ -338,7 +338,7 @@ impl Workspace {
         now: i64,
     ) -> Result<bool, Fault> {
         let called = sqlx::query(
-            "UPDATE chats SET called_by = ?1, called_on = ?2, called_at = ?3
+            "UPDATE chats SET called_by = ?1, called_on = ?2, called_at = ?3, called_for = NULL
              WHERE workspace_id = ?4 AND chat_id = ?5
                  AND (called_by IS NULL OR called_at <= ?3 - ?6
                      OR (called_by = ?1 AND called_on = ?2))",
@@ -364,8 +364,18 @@ impl Workspace {
         asked: Asked<'_>,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        self.uncall_in(&mut transaction, chat, (machine, asked.member))
-            .await?;
+        // A later call of theirs that holds the turn by now keeps it.
+        sqlx::query(
+            "UPDATE chats
+             SET called_by = NULL, called_on = NULL, called_at = NULL, called_for = NULL
+             WHERE workspace_id = ? AND chat_id = ? AND called_for = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(asked.request.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
         self.take_in(&mut transaction, chat, machine, asked.request)
             .await?;
         transaction.commit().await.map_err(failed)
@@ -404,7 +414,7 @@ impl Workspace {
         .bind(machine.as_str())
         .bind(asked.member.as_str())
         .bind(asked.text)
-        .execute(connection)
+        .execute(&mut *connection)
         .await
         .map_err(failed)?;
         if noted.rows_affected() == 0 {
@@ -413,6 +423,19 @@ impl Workspace {
                 "That request is another prompt's",
             ));
         }
+        // The turn its call just took is this request's to give back.
+        sqlx::query(
+            "UPDATE chats SET called_for = ?
+             WHERE workspace_id = ? AND chat_id = ? AND called_by = ? AND called_on = ?",
+        )
+        .bind(asked.request.as_str())
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(asked.member.as_str())
+        .bind(machine.as_str())
+        .execute(connection)
+        .await
+        .map_err(failed)?;
         Ok(())
     }
 
@@ -532,7 +555,8 @@ impl Workspace {
         (machine, member): (&MachineId, &MemberId),
     ) -> Result<bool, Fault> {
         let given = sqlx::query(
-            "UPDATE chats SET called_by = NULL, called_on = NULL, called_at = NULL
+            "UPDATE chats
+             SET called_by = NULL, called_on = NULL, called_at = NULL, called_for = NULL
              WHERE workspace_id = ? AND chat_id = ? AND called_by = ? AND called_on = ?",
         )
         .bind(self.id.as_str())
@@ -841,6 +865,15 @@ mod tests {
         one.uncall_leg(&chat, &desk, his).await.unwrap();
         let held = called(&one).await;
         assert_eq!(held, Some(("m1".to_owned(), later + CALL_SECS)));
+        // So does an earlier call of her own, taken back once a later one holds the turn.
+        let (r3, last) = (id("r-3"), later + CALL_SECS + 1);
+        let again = ask(&ada, &r3);
+        one.call_leg(&chat, again, &on_desk, last).await.unwrap();
+        one.uncall_leg(&chat, &desk, hers).await.unwrap();
+        assert_eq!(called(&one).await, Some(("m1".to_owned(), last)));
+        assert!(one.asker(&chat, &desk, &r3).await.unwrap().is_some());
+        one.uncall_leg(&chat, &desk, again).await.unwrap();
+        assert_eq!(called(&one).await, None);
         // What an agent was given as quotes never moves back.
         one.quoted(&chat, &desk, 5).await.unwrap();
         one.quoted(&chat, &desk, 3).await.unwrap();
