@@ -26,12 +26,8 @@ pub(crate) struct Shared {
     pub(crate) db: Db,
     pub(crate) secret: Arc<Secret>,
     pub(crate) clock: Arc<Clock>,
-    /// How long a connection may take to send a request's head, or sit idle between requests.
-    pub(crate) head_within: Duration,
     /// Proxies whose `X-Forwarded-For` is believed.
     pub(crate) proxies: Arc<[Net]>,
-    /// Room for open connections, feeds included; when it's full, more wait to be accepted.
-    pub(crate) connections: Arc<Semaphore>,
     pub(crate) sockets: socket::Timing,
     /// The machines whose connections are open.
     pub(crate) links: Arc<Links>,

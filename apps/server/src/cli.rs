@@ -2,7 +2,6 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::builder::RangedU64ValueParser;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
@@ -39,10 +38,6 @@ pub(crate) struct Serve {
     /// stop working, and nobody is signed out.
     #[arg(long)]
     pub(crate) secret: PathBuf,
-    /// How many connections may be open at once; more wait their turn. Keep it well under the
-    /// open-file limit.
-    #[arg(long, default_value_t = 512, value_parser = RangedU64ValueParser::<usize>::new().range(1..=1_000_000))]
-    pub(crate) max_connections: usize,
     /// A reverse proxy in front of the server, as an address or a block such as 10.0.0.0/8;
     /// repeat it for more. Only these are believed about the client in X-Forwarded-For, where
     /// they must write bare addresses, without ports. Without any, every request counts as
@@ -148,7 +143,6 @@ mod tests {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
                 secret: PathBuf::from("secret"),
-                max_connections: 512,
                 trusted_proxy: Vec::new(),
                 sign_up: Vec::new(),
             }
@@ -156,8 +150,6 @@ mod tests {
         let told = [
             "--listen",
             "0.0.0.0:9000",
-            "--max-connections",
-            "2",
             "--trusted-proxy",
             "10.0.0.0/8",
             "--trusted-proxy",
@@ -169,14 +161,12 @@ mod tests {
         ];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
-        assert_eq!(told.max_connections, 2);
         let proxies = ["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
         assert_eq!(told.trusted_proxy, proxies);
         let sign_up = [SignUp::Anyone, SignUp::Domain("example.com".to_owned())];
         assert_eq!(told.sign_up, sign_up);
         run(&[&args[..], &["--sign-up", "everyone"]].concat()).unwrap_err();
         run(&[&args[..], &["--trusted-proxy", "proxy.example"]].concat()).unwrap_err();
-        run(&[&args[..], &["--max-connections", "0"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();

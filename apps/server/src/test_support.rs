@@ -24,7 +24,6 @@ pub(crate) use requests::{
 };
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
-use crate::connections;
 use crate::db::Db;
 use crate::http;
 use crate::pairing;
@@ -88,9 +87,7 @@ impl Fixture {
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
             secret: Arc::new(secret),
-            head_within: connections::HEAD_WITHIN,
             proxies: Arc::new([]),
-            connections: Arc::new(Semaphore::new(64)),
             // A short hello; pings far apart, since a client answers them only while its test
             // reads it. Tests about pings ask for them with `pinging`.
             sockets: crate::socket::Timing {

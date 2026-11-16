@@ -99,7 +99,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         listen,
         db,
         secret,
-        max_connections,
         trusted_proxy,
         sign_up,
     } = args;
@@ -114,10 +113,8 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         db: db.clone(),
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
-        head_within: connections::HEAD_WITHIN,
         proxies: trusted_proxy.into(),
         sign_up: sign_up.into(),
-        connections: Arc::new(Semaphore::new(max_connections)),
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         chats: chats::Hub::default(),
