@@ -272,10 +272,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_the_quota_fills_wakes_the_workspaces_feeds() {
+    async fn a_full_chats_refusal_wakes_the_workspaces_feeds() {
         let fixture = Fixture::new().await;
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
-        ada.member.workspace.fill_quota().await;
+        ada.member.workspace.fill_chat("c-1").await;
         let mut feeds = shared.changes.subscribe();
 
         store(shared, &ada.machine, update("w1", "c-1", 1, said("a")))
@@ -302,7 +302,7 @@ mod tests {
         failed.unwrap_err();
         assert_eq!(core_seq(workspace, "c-1").await, 1);
         // Refused for good, not failed: the link goes on.
-        workspace.fill_quota().await;
+        workspace.fill_chat("c-1").await;
         store(shared, &ada.machine, update("w1", "c-1", 3, said("c")))
             .await
             .unwrap();
