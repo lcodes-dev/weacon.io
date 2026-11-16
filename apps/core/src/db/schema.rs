@@ -4,9 +4,9 @@ use weacon_protocol::code;
 
 use super::failed;
 
-/// Each step brings the schema from its index to the next version; steps are only appended.
-const STEPS: &[&str] = &[
-    "
+/// The database's whole schema. Until the first release nothing is carried from one schema
+/// to another: a change is made here, and a database made before it is deleted.
+const SCHEMA: &str = "
 CREATE TABLE map_repos (
     workspace_id TEXT NOT NULL,
     repo TEXT NOT NULL,
@@ -43,22 +43,10 @@ CREATE TABLE map_facts (
     path TEXT NOT NULL,
     blob TEXT NOT NULL,
     facts TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, repo, path, blob),
     FOREIGN KEY (workspace_id, repo) REFERENCES map_repos (workspace_id, repo) ON DELETE CASCADE
 ) STRICT;
-
-CREATE VIRTUAL TABLE map_search USING fts5(
-    workspace_id UNINDEXED,
-    repo UNINDEXED,
-    layer UNINDEXED,
-    path UNINDEXED,
-    kind UNINDEXED,
-    name,
-    body
-);
-",
-    "
-DROP TABLE map_search;
 
 CREATE VIRTUAL TABLE map_search USING fts5(
     workspace_id UNINDEXED,
@@ -70,46 +58,48 @@ CREATE VIRTUAL TABLE map_search USING fts5(
     name,
     body
 );
+";
 
--- Each layer is read again, so what search finds is stored with its line.
-DELETE FROM map_layers;
-",
-    "
--- Facts kept before versions count as older than every reader's.
-ALTER TABLE map_facts ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
-",
-];
-
-pub(super) async fn migrate(pool: &SqlitePool) -> Result<(), Fault> {
-    loop {
-        let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await.map_err(failed)?;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        let done = usize::try_from(version).map_err(|_| too_new())?;
-        let Some(step) = STEPS.get(done) else {
-            return if done == STEPS.len() {
-                Ok(())
-            } else {
-                Err(too_new())
-            };
-        };
-        sqlx::raw_sql(*step)
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        // A number from this file, never input.
-        sqlx::raw_sql(AssertSqlSafe(format!("PRAGMA user_version = {}", done + 1)))
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        transaction.commit().await.map_err(failed)?;
-    }
+/// What `PRAGMA user_version` holds beside this schema: a hash of [`SCHEMA`] (FNV-1a), so it
+/// changes when the schema does. It fits the pragma and is never 0, which a new file has.
+fn version() -> u32 {
+    let hash = SCHEMA.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    (hash >> 1) | 1
 }
 
-fn too_new() -> Fault {
-    Fault::new(code!("db.too_new"), "The database is from a newer Weacon")
+/// Makes the schema in a new database, in a transaction that holds the write lock from the
+/// start, so that two processes opening a new file don't both make it.
+///
+/// # Errors
+/// `db.other_schema` for a database made with another schema.
+pub(super) async fn prepare(pool: &SqlitePool) -> Result<(), Fault> {
+    let mut transaction = pool.begin_with("BEGIN IMMEDIATE").await.map_err(failed)?;
+    let version = version();
+    let found: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+    if found == i64::from(version) {
+        return Ok(());
+    }
+    if found != 0 {
+        return Err(Fault::new(
+            code!("db.other_schema"),
+            "The code map's database was made by another build of the core; delete it to start again",
+        ));
+    }
+    sqlx::raw_sql(SCHEMA)
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
+    // A number from this file, never input.
+    sqlx::raw_sql(AssertSqlSafe(format!("PRAGMA user_version = {version}")))
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
+    transaction.commit().await.map_err(failed)
 }
 
 #[cfg(test)]
@@ -119,33 +109,30 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn a_map_stored_before_lines_and_versions_is_read_again() {
+    async fn a_database_with_this_schema_opens_again_and_one_with_another_is_refused() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        sqlx::raw_sql(STEPS[0]).execute(&pool).await.unwrap();
-        sqlx::raw_sql(
-            "PRAGMA user_version = 1;
-             INSERT INTO map_repos (workspace_id, repo) VALUES ('w', 'r');
-             INSERT INTO map_layers VALUES ('w', 'r', 'base', 'c0ffee', 1);
-             INSERT INTO map_facts VALUES ('w', 'r', 'src/lib.rs', 'b1', 'null');",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
 
-        migrate(&pool).await.unwrap();
-        migrate(&pool).await.unwrap();
+        prepare(&pool).await.unwrap();
+        sqlx::raw_sql("INSERT INTO map_repos (workspace_id, repo) VALUES ('w', 'r')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        prepare(&pool).await.unwrap();
+        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM map_repos")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        sqlx::raw_sql("PRAGMA user_version = 3")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let other = prepare(&pool).await.unwrap_err();
 
-        let count = |sql| sqlx::query_scalar::<_, i64>(sql).fetch_one(&pool);
-        assert_eq!(count("SELECT count(*) FROM map_layers").await.unwrap(), 0);
-        assert_eq!(count("SELECT count(*) FROM map_repos").await.unwrap(), 1);
-        assert_eq!(count("PRAGMA user_version").await.unwrap(), 3);
-        let older = count("SELECT count(*) FROM map_facts WHERE version = 0").await;
-        assert_eq!(older.unwrap(), 1);
-        let lines = count("SELECT count(line) FROM map_search").await;
-        assert_eq!(lines.unwrap(), 0);
+        assert_eq!(kept, 1);
+        assert_eq!(other.code().as_str(), "db.other_schema");
     }
 }
