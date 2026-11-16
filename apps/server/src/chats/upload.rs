@@ -3,8 +3,8 @@
 use serde_json::Value;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, RunEvent,
-    RunStatus, RunUpdate, WorkspaceId, code,
+    AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId,
+    PermissionAnswer, RunEvent, RunStatus, RunUpdate, WorkspaceId, code,
 };
 
 use crate::db::{Incoming, Leg, turns};
@@ -73,11 +73,8 @@ enum Stored {
 fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
     match event {
         ChatEvent::Run { update } => {
-            let RunUpdate { run, event } = update;
-            let event = kept_run(event)?;
-            Some(ChatEvent::Run {
-                update: RunUpdate { run, event },
-            })
+            let update = kept_run(update, leg)?;
+            Some(ChatEvent::Run { update })
         }
         ChatEvent::Prompt {
             request,
@@ -96,6 +93,7 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
         }),
         ChatEvent::RunStatus { status } => Some(ChatEvent::RunStatus {
             status: RunStatus {
+                run: leg.chat_run(&status.run)?,
                 agent: Some(AgentRef {
                     kind: leg.agent,
                     owner: AgentOwner::Member {
@@ -113,25 +111,35 @@ fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
     }
 }
 
-fn kept_run(event: RunEvent) -> Option<RunEvent> {
-    match event {
-        RunEvent::Text { .. }
-        | RunEvent::PermissionWithdrawn { .. }
-        | RunEvent::PermissionAnswered { .. }
-        | RunEvent::Finished { .. } => Some(event),
+// What is kept of a run's update, its run under the name the chat knows it by.
+fn kept_run(RunUpdate { run, event }: RunUpdate, leg: &Leg) -> Option<RunUpdate> {
+    let event = match event {
+        RunEvent::Text { .. } | RunEvent::Finished { .. } => event,
         // Kept so it can be answered, without what the tool would do.
-        RunEvent::PermissionAsked { run, prompt, .. } => Some(RunEvent::PermissionAsked {
-            run,
+        RunEvent::PermissionAsked { run, prompt, .. } => RunEvent::PermissionAsked {
+            run: leg.chat_run(&run)?,
             prompt,
             tool: String::new(),
             input: Value::Null,
-        }),
+        },
+        RunEvent::PermissionWithdrawn { run, prompt } => RunEvent::PermissionWithdrawn {
+            run: leg.chat_run(&run)?,
+            prompt,
+        },
+        RunEvent::PermissionAnswered { answer } => RunEvent::PermissionAnswered {
+            answer: PermissionAnswer {
+                run: leg.chat_run(&answer.run)?,
+                ..answer
+            },
+        },
         RunEvent::Started { .. }
         | RunEvent::TextDelta { .. }
         | RunEvent::ToolCall { .. }
         | RunEvent::ToolDone { .. }
-        | RunEvent::Newer => None,
-    }
+        | RunEvent::Newer => return None,
+    };
+    let run = leg.chat_run(&run)?;
+    Some(RunUpdate { run, event })
 }
 
 async fn append(
@@ -166,7 +174,7 @@ mod tests {
     use weacon_protocol::{ChatEntry, ChatEvent, Outcome, Receipt, WorkspaceId};
 
     use super::*;
-    use crate::chats::test_support::{Ada, ada};
+    use crate::chats::test_support::{Ada, ada, core_named};
     use crate::db::test_support::{NOW, append, asks, core_seq, id, make, said};
     use crate::test_support::{Fixture, member_id};
 
@@ -368,6 +376,7 @@ mod tests {
             tool: String::new(),
             input: Value::Null,
         };
+        let stored = crate::chats::test_support::core_named(&stored);
         assert_eq!(stored, [run(blank), said("MARKER-TEXT")]);
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("chat upload refused"), "{logged}");
@@ -392,11 +401,54 @@ mod tests {
         assert_eq!(kept(ChatEvent::Newer, &leg), None);
         assert_eq!(kept(run(RunEvent::Newer), &leg), None);
         assert_eq!(kept(run(done), &leg), None);
-        assert_eq!(kept(run(finished.clone()), &leg), Some(run(finished)));
+        let ended = kept(run(finished.clone()), &leg).map(|kept| core_named(&kept));
+        assert_eq!(ended, Some(run(finished)));
         let outside = ChatEvent::OutsidePrompt {
             text: "Go".to_owned(),
         };
         assert_eq!(kept(outside.clone(), &leg), Some(outside));
+    }
+
+    #[test]
+    fn a_legs_runs_get_a_name_of_their_own_in_the_chat_which_only_that_leg_turns_back() {
+        let other = Leg { number: 2, ..leg() };
+        let (leg, run) = (leg(), id::<weacon_protocol::RunId>("run-1"));
+        let named = id::<weacon_protocol::RunId>("run-1-l1");
+        let answer = |run: &weacon_protocol::RunId| PermissionAnswer {
+            run: run.clone(),
+            prompt: 1,
+            allow: true,
+        };
+        let events = |run: &weacon_protocol::RunId| {
+            let (asked, prompt) = (run.clone(), 1);
+            [
+                RunEvent::PermissionAsked {
+                    run: asked.clone(),
+                    prompt,
+                    tool: String::new(),
+                    input: Value::Null,
+                },
+                RunEvent::PermissionWithdrawn { run: asked, prompt },
+                RunEvent::PermissionAnswered {
+                    answer: answer(run),
+                },
+            ]
+        };
+        let updates = |run: &weacon_protocol::RunId| {
+            events(run).map(|event| RunUpdate {
+                run: run.clone(),
+                event,
+            })
+        };
+
+        let kept = updates(&run).map(|update| kept_run(update, &leg));
+
+        assert_eq!(kept, updates(&named).map(Some));
+        assert_eq!(leg.chat_run(&run), Some(named.clone()));
+        assert_eq!(leg.own_run(&named), Some(run));
+        assert_eq!(other.own_run(&named), None);
+        assert_eq!(leg.own_run(&id("run-1")), None);
+        assert_eq!(leg.chat_run(&id(&"r".repeat(64))), None);
     }
 
     fn leg() -> Leg {
@@ -408,6 +460,7 @@ mod tests {
             repo: None,
             core_seq: 0,
             detached: false,
+            number: 1,
         }
     }
 
@@ -449,7 +502,8 @@ mod tests {
             assert_eq!(kept(prompt(author), &leg), Some(prompt(Some("m5"))));
         }
         for agent in [None, Some(forged("m1"))] {
-            assert_eq!(kept(status(agent), &leg), Some(status(Some(named.clone()))));
+            let stored = kept(status(agent), &leg).map(|kept| core_named(&kept));
+            assert_eq!(stored, Some(status(Some(named.clone()))));
         }
         let message = ChatEvent::Message {
             author: member_id("m1"),

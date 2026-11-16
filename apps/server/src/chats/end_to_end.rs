@@ -174,7 +174,7 @@ async fn ada_chats(machine: &MachineId, core: &mut Socket, ada: &mut Socket) {
 async fn chat_event(client: &mut Socket) -> ChatEntry {
     loop {
         if let Message::Chat(update) = heard(client).await {
-            return update.entry;
+            return crate::chats::test_support::core_named(&update.entry);
         }
     }
 }

@@ -3,7 +3,7 @@
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId};
+use weacon_protocol::{AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId, RunId};
 
 use super::super::changes::Versioned;
 use super::{count, machine_not_found};
@@ -30,12 +30,41 @@ pub(crate) struct Leg {
     /// The last of its machine's events the chat has; none until its first prompt was taken.
     pub(crate) core_seq: u64,
     pub(crate) detached: bool,
+    /// Which of the workspace's legs it is, which tells its machine's runs from any other's.
+    pub(crate) number: i64,
 }
 
-type LegRow = (String, String, String, String, Option<String>, i64, bool);
+impl Leg {
+    /// What the chat calls its machine's run `run`: every core numbers its own runs, so two
+    /// legs' would share ids. None when the name wouldn't be a run id.
+    pub(crate) fn chat_run(&self, run: &RunId) -> Option<RunId> {
+        RunId::try_from(format!("{}{}", run.as_str(), self.suffix())).ok()
+    }
+
+    /// What its machine calls the chat's run `run`; none for a run of another leg.
+    pub(crate) fn own_run(&self, run: &RunId) -> Option<RunId> {
+        let own = run.as_str().strip_suffix(&self.suffix())?;
+        RunId::try_from(own.to_owned()).ok()
+    }
+
+    fn suffix(&self) -> String {
+        format!("-l{}", self.number)
+    }
+}
+
+type LegRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    bool,
+    i64,
+);
 
 const COLUMNS: &str = "l.member_id, l.machine_id, l.machine_name, l.agent, l.repo, l.core_seq,
-    l.detached";
+    l.detached, l.rowid";
 
 // A leg whose machine its member's account still owns.
 const OWNED: &str = "FROM chat_legs AS l
@@ -208,7 +237,7 @@ impl Workspace {
 }
 
 pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
-    let (member, machine, machine_name, agent, repo, core_seq, detached) = row;
+    let (member, machine, machine_name, agent, repo, core_seq, detached, number) = row;
     Ok(Leg {
         member: stored(member)?,
         machine: stored(machine)?,
@@ -217,6 +246,7 @@ pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
         repo: repo.map(stored).transpose()?,
         core_seq: count(core_seq)?,
         detached,
+        number,
     })
 }
 
@@ -328,6 +358,7 @@ mod tests {
             repo: Some(id("site")),
             core_seq: 7,
             detached: false,
+            number: leg.number,
         };
         assert_eq!(leg, kept);
         let gone = one.leg(&id("c-2"), &ada).await.unwrap().unwrap();

@@ -67,6 +67,13 @@ pub(crate) async fn grace(fixture: &Fixture) -> Ada {
     }
 }
 
+/// `heard` with the first leg's run `run-1` under the name its own machine gives it, for
+/// comparing with what that machine sent.
+pub(crate) fn core_named<T: serde::Serialize + serde::de::DeserializeOwned>(heard: &T) -> T {
+    let json = serde_json::to_string(heard).unwrap();
+    serde_json::from_str(&json.replace("run-1-l1", "run-1")).unwrap()
+}
+
 pub(crate) fn attach(shared: &Shared, ada: &Ada, offers: &[&str]) -> Attached {
     let connected = Connected {
         machine: ada.machine.clone(),

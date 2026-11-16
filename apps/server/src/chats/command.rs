@@ -60,11 +60,15 @@ pub(crate) async fn take(
             machine,
             command,
         } => prompt(from, &chat, machine, command, back).await?,
-        Admitted::Act { chat, command } => {
+        Admitted::Act { chat, mut command } => {
             let made = Some(chat.made).filter(|made| *made);
             let leg = member.workspace.leg(&id, &member.id).await?;
             let leg = made.and(leg).filter(|leg| leg.core_seq > 0);
             let leg = leg.ok_or_else(not_owner)?;
+            // Only a run of the asker's own leg is theirs to answer, under its machine's name.
+            if let ChatAction::Permission { answer } = &mut command.action {
+                answer.run = leg.own_run(&answer.run).ok_or_else(not_owner)?;
+            }
             serve(from, &leg, command, back).await?;
         }
     }
