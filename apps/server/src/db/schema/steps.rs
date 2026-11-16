@@ -279,8 +279,7 @@ CREATE TABLE pairings (
 ) STRICT;
 ";
 
-/// The bytes of doc revisions each workspace holds, which its quota bounds. Each revision
-/// also counts 256 bytes for its rows, as `db::docs` counts them.
+/// `doc_bytes` is no longer read or written.
 pub(crate) const DOC_BYTES: &str = "
 ALTER TABLE workspaces ADD COLUMN doc_bytes INTEGER NOT NULL DEFAULT 0;
 
@@ -303,8 +302,8 @@ ALTER TABLE task_versions ADD COLUMN agent TEXT;
 ALTER TABLE doc_versions ADD COLUMN agent TEXT;
 ";
 
-/// Agents' proposals to docs and tasks. Only an open one holds its `change`, whose bytes count
-/// toward the doc quota; `change_hash` stays, so that one sent again answers as it first did.
+/// Agents' proposals to docs and tasks. Only an open one holds its `change`;
+/// `bytes` is no longer read, and `change_hash` stays, so that one sent again answers as it first did.
 /// The proposing machine is plain text, as it outlives the machine's pairing.
 pub(crate) const PROPOSALS: &str = "
 CREATE TABLE proposals (

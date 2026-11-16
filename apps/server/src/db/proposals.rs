@@ -16,11 +16,6 @@ use super::{Workspace, author_columns, failed, parsed, stored};
 use machines::kept_findings;
 use target::Target;
 
-/// The most proposals one machine may have open in a workspace.
-const MAX_OPEN: u32 = 100;
-/// What each proposal counts toward the doc quota besides its change: its row and its feed
-/// entries.
-const OVERHEAD: usize = 256;
 /// The most proposals a list holds, newest first.
 const PAGE: u32 = 500;
 
@@ -90,11 +85,6 @@ impl Workspace {
         if change.len() > MAX_PROPOSAL {
             return Err(too_large());
         }
-        self.room_for_proposal(transaction, &proposed.machine)
-            .await?;
-        // At least what its revision will count, so that accepting it fits in what it frees.
-        let bytes = i64::try_from(OVERHEAD + change.len() + agent.len()).map_err(|_| invalid())?;
-        self.charge(transaction, bytes).await?;
         sqlx::query(
             "INSERT INTO proposals (workspace_id, proposal_id, kind, doc_id, task_id, new_id, base,
                  change, change_hash, snapshot, bytes, author_member, agent, machine_id, state,
@@ -111,7 +101,7 @@ impl Workspace {
         .bind(&change)
         .bind(hash.as_slice())
         .bind(&target.snapshot)
-        .bind(bytes)
+        .bind(0_i64)
         .bind(proposed.owner.as_str())
         .bind(agent)
         .bind(proposed.machine.as_str())
@@ -173,31 +163,6 @@ impl Workspace {
         }
     }
 
-    /// Refuses a proposal from a machine that has [`MAX_OPEN`] open here already.
-    async fn room_for_proposal(
-        &self,
-        transaction: &mut SqliteConnection,
-        machine: &MachineId,
-    ) -> Result<(), Fault> {
-        let open: u32 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM proposals
-             WHERE workspace_id = ? AND machine_id = ? AND state = ?",
-        )
-        .bind(self.id.as_str())
-        .bind(machine.as_str())
-        .bind(OPEN)
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(failed)?;
-        if open >= MAX_OPEN {
-            return Err(Fault::new(
-                code!("proposal.too_many"),
-                "The machine has as many proposals open as it may",
-            ));
-        }
-        Ok(())
-    }
-
     /// Supersedes the open edits of the doc or task `target` is to that the same machine made
     /// for the same `agent`, or of its own, and gives what they changed; one of `doc_id` and
     /// `task_id` is bound to null, which matches nothing.
@@ -233,15 +198,15 @@ impl Workspace {
         Ok(changes)
     }
 
-    /// What the open proposal `id` counts toward the quota; `proposal.not_found` when there's
-    /// no such proposal, and `proposal.closed` when it isn't open.
-    async fn open_bytes(
+    /// `proposal.not_found` when there's no proposal `id`, and `proposal.closed` when it isn't
+    /// open.
+    async fn still_open(
         &self,
         transaction: &mut SqliteConnection,
         id: &ProposalId,
-    ) -> Result<i64, Fault> {
-        let (state, bytes): (String, i64) = sqlx::query_as(
-            "SELECT state, bytes FROM proposals WHERE workspace_id = ? AND proposal_id = ?",
+    ) -> Result<(), Fault> {
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM proposals WHERE workspace_id = ? AND proposal_id = ?",
         )
         .bind(self.id.as_str())
         .bind(id.as_str())
@@ -252,27 +217,11 @@ impl Workspace {
         if state != OPEN {
             return Err(closed());
         }
-        Ok(bytes)
+        Ok(())
     }
 
-    /// Takes the open proposal `id`'s bytes off the quota.
-    async fn release_charge(
-        &self,
-        transaction: &mut SqliteConnection,
-        id: &ProposalId,
-    ) -> Result<(), Fault> {
-        let bytes = self.open_bytes(transaction, id).await?;
-        sqlx::query("UPDATE proposals SET bytes = 0 WHERE workspace_id = ? AND proposal_id = ?")
-            .bind(self.id.as_str())
-            .bind(id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(failed)?;
-        self.charge(transaction, -bytes).await
-    }
-
-    /// Closes the open proposal `id` as `closing` says: its bytes leave the quota, its change
-    /// goes, and the feed hears of it through `member`.
+    /// Closes the open proposal `id` as `closing` says: its change goes, and the feed hears
+    /// of it through `member`.
     async fn close_proposal(
         &self,
         transaction: &mut SqliteConnection,
@@ -280,7 +229,7 @@ impl Workspace {
         closing: Closing<'_>,
         member: &MemberId,
     ) -> Result<(), Fault> {
-        self.release_charge(transaction, id).await?;
+        self.still_open(transaction, id).await?;
         let (state, by, version) = closing.columns();
         sqlx::query(
             "UPDATE proposals SET state = ?, decided_by = ?, version = ?, change = NULL,
@@ -649,75 +598,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_machine_holds_only_so_many_open_proposals_in_a_workspace() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = workspaces(&dir).await;
-        let task = || ProposalChange::NewTask {
-            title: "Ship".to_owned(),
-        };
-        for n in 0..MAX_OPEN {
-            one.propose(&proposed(&format!("p{n}"), "mc1", task()))
-                .await
-                .unwrap();
-        }
-
-        let past = one
-            .propose(&proposed("over", "mc1", task()))
-            .await
-            .unwrap_err();
-        assert_eq!(code(&past), "proposal.too_many");
-        one.propose(&proposed("elsewhere", "mc2", task()))
-            .await
-            .unwrap();
-        let mut bo = proposed("bo", "mc3", task());
-        bo.owner = member_id("m3");
-        bo.agent.as_mut().unwrap().owner = AgentOwner::Member {
-            member: member_id("m3"),
-        };
-        one.propose(&bo).await.unwrap();
-        one.reject(&id("p0"), &member_id("m3")).await.unwrap();
-        one.propose(&proposed("again", "mc1", task()))
-            .await
-            .unwrap();
-    }
-
-    async fn doc_bytes(workspace: &Workspace) -> i64 {
-        sqlx::query_scalar("SELECT doc_bytes FROM workspaces WHERE workspace_id = ?")
-            .bind(workspace.id.as_str())
-            .fetch_one(&workspace.db.readers)
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn an_open_proposal_counts_toward_the_doc_quota_until_it_closes() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = workspaces(&dir).await;
-        let before = doc_bytes(&one).await;
-        let change = revise("d1", 1, "One\n");
-        let json = serde_json::to_string(&change).unwrap();
-        let agent =
-            serde_json::to_string(&proposed("p1", "mc1", ProposalChange::Newer).agent).unwrap();
-
-        one.propose(&proposed("p1", "mc1", change)).await.unwrap();
-        assert_eq!(
-            doc_bytes(&one).await,
-            before + i64::try_from(OVERHEAD + json.len() + agent.len()).unwrap()
-        );
-        one.propose(&proposed("p2", "mc1", revise("d1", 1, "Two\n")))
-            .await
-            .unwrap();
-        one.reject(&id("p2"), &member_id("m1")).await.unwrap();
-        assert_eq!(doc_bytes(&one).await, before);
-        one.fill_doc_quota().await;
-        let full = one
-            .propose(&proposed("p3", "mc1", revise("d1", 1, "A\n")))
-            .await
-            .unwrap_err();
-        assert_eq!(code(&full), "doc.quota_full");
-    }
-
-    #[tokio::test]
     async fn only_an_open_proposal_is_rejected() {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
@@ -811,29 +691,6 @@ mod tests {
                 .unwrap_err();
             assert_eq!(code(&fault), "proposal.invalid");
         }
-    }
-
-    #[tokio::test]
-    async fn a_machine_at_the_most_open_may_still_replace_an_edit() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = workspaces(&dir).await;
-        one.propose(&proposed("edit", "mc1", revise("d1", 1, "A\n")))
-            .await
-            .unwrap();
-        for n in 1..MAX_OPEN {
-            let task = ProposalChange::NewTask {
-                title: "Ship".to_owned(),
-            };
-            one.propose(&proposed(&format!("p{n}"), "mc1", task))
-                .await
-                .unwrap();
-        }
-
-        one.propose(&proposed("newer", "mc1", revise("d1", 1, "B\n")))
-            .await
-            .unwrap();
-        let older = one.proposal(&id("edit")).await.unwrap();
-        assert_eq!(older.state, ProposalState::Superseded);
     }
 
     #[tokio::test]

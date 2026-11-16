@@ -782,7 +782,7 @@ mod tests {
     async fn a_move_whose_check_failed_is_checked_again_from_its_base_with_the_next() {
         let dir = TempDir::new().unwrap();
         let fake = Fake::default();
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let path = std::env::var_os("PATH");
         let stores = open(&dir, path, Some(fake.connect())).await.unwrap();
         let manifest = ("Cargo.toml", "[package]\nname = \"a\"\n");

@@ -297,7 +297,7 @@ mod tests {
             doc: "d-9".parse().unwrap(),
         };
         let missing = proposals.query(&workspace(), missing).await.unwrap_err();
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let refused = proposals
             .command(&workspace(), propose())
             .await
@@ -305,7 +305,7 @@ mod tests {
 
         assert_eq!(read, ProposalAnswerKind::Doc { doc });
         assert_eq!(missing.code(), &code!("doc.not_found"));
-        assert_eq!(refused.code(), &code!("proposal.too_many"));
+        assert_eq!(refused.code(), &code!("proposal.invalid"));
         let commands = fake.commands();
         assert_eq!(commands.len(), 2);
         assert_eq!(

@@ -117,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn a_refusal_or_no_server_says_why_and_a_large_change_never_leaves() {
         let fake = Fake::default();
-        *fake.refuse.lock().unwrap() = Some(code!("proposal.too_many"));
+        *fake.refuse.lock().unwrap() = Some(code!("proposal.invalid"));
         let proposals = fake.connect();
         let (log, records) = recording_logger();
 
@@ -133,10 +133,7 @@ mod tests {
         let too_large = propose(Some(&proposals), &grant(), large, None, &log).await;
         let alone = propose(None, &grant(), args("Ship".to_owned()), None, &log).await;
 
-        assert_eq!(
-            refused,
-            Err("Not proposed: proposal.too_many.\n".to_owned())
-        );
+        assert_eq!(refused, Err("Not proposed: proposal.invalid.\n".to_owned()));
         assert_eq!(
             too_large,
             Err("Not proposed: proposal.too_large.\n".to_owned())
