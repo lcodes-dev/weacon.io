@@ -81,6 +81,10 @@ function Panel() {
   return (
     <main>
       <header>
+        <span className="brand">
+          <img src="icon.svg" alt="" width="22" height="22" />
+          weacon
+        </span>
         {ref === undefined ? <h1>Chats</h1> : <button type="button" onClick={() => void open(undefined)}>All chats</button>}
         {live.status.kind === "connecting" ? <span className="quiet">Connecting…</span> : null}
       </header>

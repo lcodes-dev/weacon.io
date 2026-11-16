@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img" aria-labelledby="title desc">
+  <title id="title">Weacon — Interlock</title>
+  <desc id="desc">Two rounded ribbon loops weave around a shared center to suggest connection.</desc>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Vertical loop sits behind the horizontal loop. -->
+    <path
+      d="M320 136C226 136 156 216 156 320s70 184 164 184 164-80 164-184-70-184-164-184Z"
+      stroke="#5C477D"
+      stroke-width="64" />
+    <path
+      d="M136 320c0-94 80-164 184-164s184 70 184 164-80 164-184 164-184-70-184-164Z"
+      stroke="#B33D1A"
+      stroke-width="64" />
+
+  </g>
+</svg>

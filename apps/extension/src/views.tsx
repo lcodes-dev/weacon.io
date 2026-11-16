@@ -88,7 +88,7 @@ function Row({ line, answer }: { line: Line; answer: (line: Extract<Line, { kind
           {line.state === "open" && line.wants?.cut === true && <p className="quiet">The rest is too long to show.</p>}
           {line.state === "open" ? (
             <p className="actions">
-              <button type="button" onClick={() => answer(line, true)}>
+              <button type="button" className="primary" onClick={() => answer(line, true)}>
                 Allow
               </button>
               <button type="button" onClick={() => answer(line, false)}>
