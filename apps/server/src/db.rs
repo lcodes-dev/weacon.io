@@ -216,7 +216,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
 fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
     match &agent.owner {
         AgentOwner::Member { member } => member == owner,
-        AgentOwner::Shared | AgentOwner::Newer => true,
+        AgentOwner::Shared { .. } | AgentOwner::Newer => true,
     }
 }
 

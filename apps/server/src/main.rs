@@ -22,6 +22,7 @@ mod relay;
 mod search;
 mod secret;
 mod shared;
+mod sharing;
 mod sign_in;
 mod sign_up;
 mod socket;

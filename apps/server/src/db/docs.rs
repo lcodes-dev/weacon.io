@@ -348,7 +348,7 @@ fn last_version() -> Fault {
 #[cfg(test)]
 mod tests {
     use weacon_model::Title;
-    use weacon_protocol::{AgentKind, AgentOwner, Author, CommitId, DocPin, WorkspaceChange};
+    use weacon_protocol::{AgentKind, Author, CommitId, DocPin, WorkspaceChange};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -428,7 +428,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         let first = new_doc("d1", "Framing");
         one.add_doc(&first, &by("m1")).await.unwrap();
-        let codex = agent(AgentKind::Codex, AgentOwner::Shared, Some("Build box"));
+        let codex = agent(AgentKind::Codex, crate::test_support::data::shared_owner(), Some("Build box"));
         let agents = Attribution::accepted(member_id("m1"), Some(codex), member_id("m3"), NOW + 1);
 
         let second = one
@@ -640,7 +640,7 @@ mod tests {
         database_before(&path, steps::VERSION_AGENTS, rows).await;
         let db = Db::open(&path).await.unwrap();
         let one = db.workspace(&workspace_id("w1")).await.unwrap();
-        let newer = agent(AgentKind::Newer, AgentOwner::Shared, None);
+        let newer = agent(AgentKind::Newer, crate::test_support::data::shared_owner(), None);
         let agents = Attribution::accepted(member_id("m1"), Some(newer), member_id("m1"), NOW);
 
         let refused = one
@@ -679,7 +679,7 @@ mod tests {
             .await
             .unwrap();
         one.add_doc(&new_doc("d2", "Two"), &by("m1")).await.unwrap();
-        let codex = agent(AgentKind::Codex, AgentOwner::Shared, None);
+        let codex = agent(AgentKind::Codex, crate::test_support::data::shared_owner(), None);
         let agents = Attribution::accepted(member_id("m1"), Some(codex), member_id("m1"), NOW);
         one.add_doc(&new_doc("d3", "Three"), &agents).await.unwrap();
 
@@ -691,7 +691,7 @@ mod tests {
             + "sym:a#0123456789abcdef".len()
             + "area:b#0123456789abcdef".len();
         let plain = 256 + "Two".len() + "Plain.".len();
-        let agent = r#"{"kind":"codex","owner":{"kind":"shared"}}"#;
+        let agent = r#"{"kind":"codex","owner":{"kind":"shared","member":"m1","owner":"m1"}}"#;
         let by_agent = 256 + "Three".len() + "Plain.".len() + agent.len();
         assert_eq!(
             doc_bytes(&one).await,

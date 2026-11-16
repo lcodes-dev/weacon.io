@@ -16,7 +16,7 @@ use crate::auth::{Member, Session};
 use crate::db::{MemberRow, NewWorkspace};
 use crate::http::{Body, failure, invalid, unauthorized};
 use crate::shared::Shared;
-use crate::team;
+use crate::{sharing, team};
 
 pub(crate) const MAX_NAME: usize = 100;
 /// What the server offers to clients that read a workspace's members.
@@ -31,6 +31,10 @@ pub(crate) fn routes() -> Router<Shared> {
         .route(
             "/api/workspaces/{workspace}/members",
             get(members).post(team::command),
+        )
+        .route(
+            "/api/workspaces/{workspace}/machines",
+            get(sharing::machines),
         )
 }
 

@@ -7,6 +7,7 @@ use weacon_protocol::{AgentKind, ChatId, MachineId, MachineName, MemberId, RepoI
 
 use super::super::changes::Versioned;
 use super::{count, machine_not_found};
+use crate::db::machine::SHARER;
 use crate::db::{Workspace, failed, stored, unreadable};
 
 /// How long a call holds a chat's turn before its agent's run has reported: as long as the
@@ -38,6 +39,9 @@ pub(crate) struct Leg {
     pub(crate) quoted_seq: u64,
     /// Which of the workspace's legs it is, which tells its machine's runs from any other's.
     pub(crate) number: i64,
+    /// The member who owns its machine and shares it with the workspace; none for a machine
+    /// that is its member's alone.
+    pub(crate) shared_by: Option<MemberId>,
 }
 
 impl Leg {
@@ -68,20 +72,32 @@ type LegRow = (
     bool,
     i64,
     i64,
+    Option<String>,
 );
 
-const COLUMNS: &str = "l.member_id, l.machine_id, l.machine_name, l.agent, l.repo, l.core_seq,
-    l.detached, l.quoted_seq, l.rowid";
+fn columns() -> String {
+    format!(
+        "l.member_id, l.machine_id, l.machine_name, l.agent, l.repo, l.core_seq, l.detached,
+         l.quoted_seq, l.rowid, {SHARER}"
+    )
+}
 
-// A leg whose machine its member's account still owns.
-const OWNED: &str = "FROM chat_legs AS l
-    JOIN members AS m ON m.workspace_id = l.workspace_id AND m.member_id = l.member_id
-    JOIN machines AS d ON d.machine_id = l.machine_id AND d.account_id = m.account_id";
+// A leg whose machine still serves its member: their account owns it, or its owner shares it
+// with the workspace.
+fn served() -> String {
+    format!(
+        "FROM chat_legs AS l
+         JOIN members AS m ON m.workspace_id = l.workspace_id AND m.member_id = l.member_id
+         JOIN machines AS d ON d.machine_id = l.machine_id
+             AND (d.account_id = m.account_id OR {SHARER} IS NOT NULL)"
+    )
+}
 
 impl Workspace {
     /// Fixes `member`'s leg of `chat`, in place of one whose machine never sent an event. One
-    /// whose machine did stays, as `chat.machine_fixed`, and a machine `member` doesn't own is
-    /// `machine.not_found`.
+    /// whose machine did stays, as `chat.machine_fixed`; a machine that neither is `member`'s
+    /// nor is shared with the workspace is `machine.not_found`, and one that already holds
+    /// another member's leg of the chat `chat.machine_taken`.
     pub(crate) async fn set_leg(
         &self,
         chat: &ChatId,
@@ -106,7 +122,7 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
-    /// Writes `member`'s leg of `chat`, on a machine their account owns.
+    /// Writes `member`'s leg of `chat`, on a machine that serves them.
     pub(super) async fn put_leg(
         &self,
         transaction: &mut SqliteConnection,
@@ -131,8 +147,13 @@ impl Workspace {
         .await
         .map_err(failed)?;
         // Checked as it is written, so a machine unpaired meanwhile gets no leg.
-        let held = self.leg_on_in(transaction, chat, leg.machine_id).await?;
-        held.map(drop).ok_or_else(machine_not_found)
+        let served = self.served(transaction, chat, leg.machine_id).await?;
+        match served.as_slice() {
+            [] => Err(machine_not_found()),
+            [_] => Ok(()),
+            // A core keeps one log for a chat, so a machine runs one member's agent in it.
+            _ => Err(machine_taken()),
+        }
     }
 
     /// `member`'s leg of `chat`, whoever owns its machine now.
@@ -148,8 +169,9 @@ impl Workspace {
         member: &MemberId,
     ) -> Result<Option<Leg>, Fault> {
         let select = format!(
-            "SELECT {COLUMNS} FROM chat_legs AS l
-             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.member_id = ?"
+            "SELECT {} FROM chat_legs AS l
+             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.member_id = ?",
+            columns()
         );
         sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
@@ -162,7 +184,25 @@ impl Workspace {
             .transpose()
     }
 
-    /// The leg of `chat` that `machine` holds, while the leg's member still owns the machine.
+    /// Every member's leg of `chat`, in the order they were made.
+    pub(crate) async fn legs(&self, chat: &ChatId) -> Result<Vec<Leg>, Fault> {
+        let select = format!(
+            "SELECT {} FROM chat_legs AS l WHERE l.workspace_id = ? AND l.chat_id = ?
+             ORDER BY l.rowid",
+            columns()
+        );
+        sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .fetch_all(&self.db.readers)
+            .await
+            .map_err(failed)?
+            .into_iter()
+            .map(stored_leg)
+            .collect()
+    }
+
+    /// The leg of `chat` that `machine` holds, while the machine still serves the leg's member.
     pub(crate) async fn leg_on(
         &self,
         chat: &ChatId,
@@ -179,19 +219,33 @@ impl Workspace {
         chat: &ChatId,
         machine: &MachineId,
     ) -> Result<Option<Leg>, Fault> {
+        Ok(self.served(connection, chat, machine).await?.pop())
+    }
+
+    // The legs of `chat` on `machine`, while it serves their members: one, but for a second
+    // being written.
+    async fn served(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        machine: &MachineId,
+    ) -> Result<Vec<Leg>, Fault> {
         let select = format!(
-            "SELECT {COLUMNS} {OWNED}
-             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.machine_id = ?"
+            "SELECT {} {}
+             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.machine_id = ?",
+            columns(),
+            served()
         );
         sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
             .bind(chat.as_str())
             .bind(machine.as_str())
-            .fetch_optional(connection)
+            .fetch_all(connection)
             .await
             .map_err(failed)?
+            .into_iter()
             .map(stored_leg)
-            .transpose()
+            .collect()
     }
 
     /// Notes that `member`'s agent in `chat` was given the chat up to `seq` as quotes.
@@ -284,7 +338,7 @@ impl Workspace {
         transaction.commit().await.map_err(failed)
     }
 
-    /// The legs `machine` holds in made, open chats, whose members still own it, each with its
+    /// The legs `machine` holds in made, open chats, whose members it still serves, each with its
     /// chat and the last of the machine's events the chat has: those of chats with a run at
     /// work, then of the latest used, `most` of them at most.
     pub(crate) async fn legs_on(
@@ -293,14 +347,15 @@ impl Workspace {
         most: u32,
     ) -> Result<Vec<(ChatId, u64)>, Fault> {
         let select = format!(
-            "SELECT c.chat_id, l.core_seq {OWNED}
+            "SELECT c.chat_id, l.core_seq {}
              JOIN chats AS c ON c.workspace_id = l.workspace_id AND c.chat_id = l.chat_id
              WHERE l.workspace_id = ? AND l.machine_id = ? AND l.detached = 0 AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
              ORDER BY COALESCE(json_extract(c.run_status, '$.state')
                      IN ('starting', 'running', 'waiting'), 0) DESC, c.updated_at DESC, c.chat_id
-             LIMIT ?"
+             LIMIT ?",
+            served()
         );
         sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
@@ -316,7 +371,8 @@ impl Workspace {
 }
 
 pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
-    let (member, machine, machine_name, agent, repo, core_seq, detached, quoted_seq, number) = row;
+    let (member, machine, machine_name, agent, repo, core_seq, detached, quoted_seq, number, by) =
+        row;
     Ok(Leg {
         member: stored(member)?,
         machine: stored(machine)?,
@@ -327,6 +383,7 @@ pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
         detached,
         quoted_seq: count(quoted_seq)?,
         number,
+        shared_by: by.map(stored).transpose()?,
     })
 }
 
@@ -335,6 +392,13 @@ pub(super) fn stored_agent(name: &str) -> Result<AgentKind, Fault> {
         .into_iter()
         .find(|kind| kind.name() == Some(name))
         .ok_or_else(unreadable)
+}
+
+fn machine_taken() -> Fault {
+    Fault::new(
+        weacon_protocol::code!("chat.machine_taken"),
+        "Another member's agent already runs on this machine in this chat",
+    )
 }
 
 pub(crate) fn machine_fixed() -> Fault {
@@ -440,6 +504,7 @@ mod tests {
             detached: false,
             quoted_seq: 2,
             number: leg.number,
+            shared_by: None,
         };
         assert_eq!(leg, kept);
         let gone = one.leg(&id("c-2"), &ada).await.unwrap().unwrap();

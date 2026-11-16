@@ -2,9 +2,10 @@
 
 use futures_util::TryStreamExt as _;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, ChatEvent, ChatId, MachineName, MemberId, RunEvent, RunUpdate};
+use weacon_protocol::{ChatEvent, ChatId, MemberId, QuotedAgent, RunEvent, RunUpdate};
 
 use super::legs::stored_agent;
+use crate::db::machine::SHARER;
 use crate::db::{Workspace, failed, stored, unreadable};
 
 /// Something a person or an agent said in a chat.
@@ -12,12 +13,18 @@ use crate::db::{Workspace, failed, stored, unreadable};
 pub(crate) struct Said {
     /// Who wrote it, or whose agent did.
     pub(crate) member: MemberId,
-    /// The agent that wrote it and its machine's name, when one did.
-    pub(crate) agent: Option<(AgentKind, MachineName)>,
+    /// The agent that wrote it, when one did.
+    pub(crate) agent: Option<QuotedAgent>,
     pub(crate) text: String,
 }
 
-type SaidRow = (String, Option<String>, Option<String>, Option<String>);
+type SaidRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 impl Workspace {
     /// What `chat`'s people and the agents of its other members said after its event `after`
@@ -31,14 +38,15 @@ impl Workspace {
         mut enough: impl FnMut(&Said) -> bool,
     ) -> Result<Vec<Said>, Fault> {
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
-        let mut rows = sqlx::query_as::<_, SaidRow>(
-            "SELECT e.body, e.member_id, l.agent, l.machine_name FROM chat_events AS e
+        let select = format!(
+            "SELECT e.body, e.member_id, l.agent, l.machine_name, {SHARER} FROM chat_events AS e
              LEFT JOIN chat_legs AS l ON l.workspace_id = e.workspace_id
                  AND l.chat_id = e.chat_id AND l.member_id = e.member_id
              WHERE e.workspace_id = ?1 AND e.chat_id = ?2 AND e.member_id IS NOT ?3
                  AND e.seq > ?4 AND e.seq <= ?5
-             ORDER BY e.seq DESC",
-        )
+             ORDER BY e.seq DESC"
+        );
+        let mut rows = sqlx::query_as::<_, SaidRow>(sqlx::AssertSqlSafe(select))
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(member.as_str())
@@ -61,7 +69,7 @@ impl Workspace {
 }
 
 // What the stored event `row` holds says, if it is a message: a person's, or an agent's text.
-fn said_in((body, from, agent, machine): SaidRow) -> Result<Option<Said>, Fault> {
+fn said_in((body, from, agent, machine, sharer): SaidRow) -> Result<Option<Said>, Fault> {
     let event = serde_json::from_str(&body).map_err(|_| unreadable())?;
     let from = from.map(stored::<MemberId>).transpose()?;
     Ok(match (event, from) {
@@ -85,11 +93,14 @@ fn said_in((body, from, agent, machine): SaidRow) -> Result<Option<Said>, Fault>
             },
             Some(member),
         ) => {
-            let agent = stored_agent(&agent.ok_or_else(unreadable)?)?;
-            let machine = stored(machine.ok_or_else(unreadable)?)?;
+            let agent = QuotedAgent {
+                kind: stored_agent(&agent.ok_or_else(unreadable)?)?,
+                machine: stored(machine.ok_or_else(unreadable)?)?,
+                shared: sharer.is_some(),
+            };
             Some(Said {
                 member,
-                agent: Some((agent, machine)),
+                agent: Some(agent),
                 text,
             })
         }
@@ -168,7 +179,11 @@ mod tests {
             ["Sure", "Thanks", "Fixed.", "Fix it", "Before"]
         );
         let by_agent = for_bo.iter().find(|one| one.text == "Fixed.").unwrap();
-        let agent = (AgentKind::Claude, id::<MachineName>("Ada's laptop"));
+        let agent = QuotedAgent {
+            kind: weacon_protocol::AgentKind::Claude,
+            machine: id("Ada's laptop"),
+            shared: false,
+        };
         assert_eq!((&by_agent.member, &by_agent.agent), (&ada, &Some(agent)));
         let asked = for_bo.iter().find(|one| one.text == "Fix it").unwrap();
         assert_eq!((&asked.member, &asked.agent), (&ada, &None));

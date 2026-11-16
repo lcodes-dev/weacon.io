@@ -431,7 +431,7 @@ mod tests {
         };
         let attributions = [
             Some(agent(AgentKind::Codex, own, Some("Ada's laptop"))),
-            Some(agent(AgentKind::Claude, AgentOwner::Shared, None)),
+            Some(agent(AgentKind::Claude, crate::test_support::data::shared_owner(), None)),
             None,
         ]
         .map(|agent| Attribution::accepted(member_id("m1"), agent, member_id("m3"), NOW));
@@ -444,7 +444,7 @@ mod tests {
             member: member_id("m3"),
         };
         let refused = [
-            agent(AgentKind::Newer, AgentOwner::Shared, None),
+            agent(AgentKind::Newer, crate::test_support::data::shared_owner(), None),
             agent(AgentKind::Codex, AgentOwner::Newer, None),
             agent(AgentKind::Codex, someone_elses, None),
         ]

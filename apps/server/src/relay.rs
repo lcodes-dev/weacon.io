@@ -22,7 +22,7 @@ use crate::socket::refusal;
 mod kinds;
 
 pub(crate) use kinds::needs;
-use kinds::{About, Asked, answering, machine_needs, stamped};
+use kinds::{About, Asked, answering, for_members, machine_needs, stamped};
 
 /// How many asks may wait for their answers at once, server-wide.
 const MOST_WAITING: usize = 4096;
@@ -141,7 +141,7 @@ pub(crate) async fn forward(
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
     let needs = machine_needs(&message).ok_or_else(unknown)?;
     let message = crate::socket::sendable(message).ok_or_else(unknown)?;
-    let machine = machine_for(shared, ask, &asked).await?;
+    let machine = machine_for(shared, ask, &asked, for_members(&message)).await?;
     let relayed = shared.links.next_id();
     let sent_to = Sent {
         asked,
@@ -203,8 +203,14 @@ pub(crate) fn command(
     sent
 }
 
-/// The asker's machine that `asked` goes to.
-async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<MachineId, Refusal> {
+/// The machine that `asked` goes to: the asker's own, or for what is `for_members` one shared
+/// with their workspace.
+async fn machine_for(
+    shared: &Shared,
+    ask: &Ask<'_>,
+    asked: &Asked,
+    for_members: bool,
+) -> Result<MachineId, Refusal> {
     let elsewhere = asked
         .workspace
         .as_ref()
@@ -229,7 +235,13 @@ async fn machine_for(shared: &Shared, ask: &Ask<'_>, asked: &Asked) -> Result<Ma
             leg.machine
         }
     };
-    theirs(shared, ask, &machine).await?;
+    if for_members {
+        let callable = ask.workspace.callable(&ask.asker.account, &machine).await;
+        let callable = callable.map_err(Refusal::Failed)?;
+        callable.ok_or_else(|| refused(code!("machine.not_found"), false))?;
+    } else {
+        theirs(shared, ask, &machine).await?;
+    }
     Ok(machine)
 }
 
@@ -460,6 +472,7 @@ mod tests {
                 reports: None,
                 access: AccessLevel::AskFirst,
                 team: false,
+                shared: false,
                 sign_ins: Vec::new(),
             }),
         };
@@ -523,6 +536,69 @@ mod tests {
             panic!("{envelope:?}");
         };
         (envelope.id, code.as_str(), *retryable)
+    }
+
+    #[tokio::test]
+    async fn a_member_asks_a_machine_shared_with_their_workspace_for_its_repos_and_agents_alone() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let offers = ["workspace.feed", "machine.settings"];
+        let (paired, mut core, _adas) = both(&fixture, server.address, &offers).await;
+        let machine = paired.machine_id();
+        let db = &fixture.shared.db;
+        let address = crate::test_support::email("grace@example.com");
+        let account = crate::test_support::fresh_account();
+        db.add_account(&account, &address).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+        w1.add_member(&member_id("m5"), &account, &address)
+            .await
+            .unwrap();
+        let grace = fixture.sign_in_client(server.address, "grace@example.com");
+        let token = grace.await.token;
+        let mut browser = open(server.address, "/api/workspaces/w1/feed", &token)
+            .await
+            .unwrap();
+        say(&mut browser, &offers).await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        let of_kind = |kind| {
+            let Message::MachineSettingsQuery(mut asked) = query(&machine, "w1") else {
+                panic!();
+            };
+            asked.query = kind;
+            Message::MachineSettingsQuery(asked)
+        };
+        let repos = || of_kind(MachineSettingsQueryKind::Repos);
+        // Past what her feed tells her of the workspace.
+        async fn refused(browser: &mut Socket, id: u32, message: Message) -> Envelope {
+            send(browser, envelope(id, message)).await;
+            loop {
+                let heard = next_envelope(browser).await;
+                if heard.id == id {
+                    return heard;
+                }
+            }
+        }
+
+        let unshared = refused(&mut browser, 40, repos()).await;
+        db.set_shares(&machine, &[workspace_id("w1")]).await.unwrap();
+        send(&mut browser, envelope(41, repos())).await;
+        let relayed = next_envelope(&mut core).await;
+        let all = refused(&mut browser, 42, query(&machine, "w1")).await;
+        let change = refused(&mut browser, 43, command(&machine)).await;
+        send(&mut browser, envelope(44, of_kind(MachineSettingsQueryKind::Agents))).await;
+        let agents = next_envelope(&mut core).await;
+
+        assert_eq!(error_of(&unshared), (40, "machine.not_found", false));
+        // Stamped as hers, whatever her browser claimed.
+        let asker = |message: Message| match message {
+            Message::MachineSettingsQuery(asked) => asked.by.map(|by| (by.account, asked.query)),
+            _ => None,
+        };
+        let hers = |kind| Some((account.clone(), kind));
+        assert_eq!(asker(relayed.message), hers(MachineSettingsQueryKind::Repos));
+        assert_eq!(asker(agents.message), hers(MachineSettingsQueryKind::Agents));
+        assert_eq!(error_of(&all), (42, "machine.not_found", false));
+        assert_eq!(error_of(&change), (43, "machine.not_found", false));
     }
 
     #[tokio::test]

@@ -22,6 +22,7 @@ use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
 use crate::relay::{DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
 use crate::shared::Shared;
+use crate::sharing::{self, SHARE};
 use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
 
@@ -113,6 +114,7 @@ pub(crate) fn offers() -> Vec<Capability> {
         PROPOSALS,
         chats::SERVE,
         chats::LIVE,
+        SHARE,
     ]
     .map(Capability::new)
     .into()
@@ -208,6 +210,7 @@ async fn hand_off(
         Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
         Message::ChatLive(live) => chats::live::pass(shared, &machine.id, live).await,
+        Message::MachineShares(shares) => sharing::keep(shared, machine, shares).await,
         Message::ProposalCommand(command) => {
             let receipt = proposals::command(shared, machine, command).await;
             return Ok(Some(Message::Receipt(receipt)));
@@ -267,6 +270,7 @@ mod tests {
                     PROPOSALS,
                     code!("chat.serve"),
                     code!("chat.live"),
+                    SHARE,
                     code!("chat.upload"),
                 ].map(Capability::new)),
             "{welcome:?}"
@@ -323,6 +327,7 @@ mod tests {
             "workspace.proposals",
             "chat.serve",
             "chat.live",
+            "machine.share",
         ];
         assert_eq!(machine["missing"], serde_json::json!(missing));
     }

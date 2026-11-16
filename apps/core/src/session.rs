@@ -20,6 +20,7 @@ pub(crate) const CAPABILITIES: &[Capability] = &[
     Capability::new(code!("map.read")),
     Capability::new(code!("symbols.search")),
     Capability::new(code!("workspace.proposals")),
+    Capability::new(code!("machine.share")),
     crate::update::LEAVE,
 ];
 
