@@ -99,8 +99,8 @@ impl AsyncWrite for Pipe {
 /// process's pipe is labelled high integrity, so only elevated programs can open it.
 ///
 /// # Errors
-/// When the pipe can't be made; with `first`, also when the name is taken.
-pub fn create_pipe(name: &str, first: bool) -> io::Result<NamedPipeServer> {
+/// When the pipe can't be made.
+pub fn create_pipe(name: &str) -> io::Result<NamedPipeServer> {
     let user = current_user()?;
     let label = if elevated()? { "S:(ML;;NWNR;;;HI)" } else { "" };
     let access = Descriptor::new(&format!("O:{user}D:P(A;;GA;;;{user}){label}"))?;
@@ -111,10 +111,7 @@ pub fn create_pipe(name: &str, first: bool) -> io::Result<NamedPipeServer> {
     };
     // SAFETY: `attributes` and the descriptor it points to outlive the call.
     unsafe {
-        ServerOptions::new()
-            .first_pipe_instance(first)
-            .reject_remote_clients(true)
-            .create_with_security_attributes_raw(name, (&raw mut attributes).cast())
+        ServerOptions::new().create_with_security_attributes_raw(name, (&raw mut attributes).cast())
     }
 }
 
@@ -129,7 +126,7 @@ impl Server {
 
         let id = RandomState::new().hash_one(socket);
         let name = super::pipe_name(u128::from(id));
-        let server = create_pipe(&name, true)?;
+        let server = create_pipe(&name)?;
         std::fs::write(socket, name)?;
         Ok(Self(server))
     }
@@ -152,12 +149,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pipe_name_has_one_owner_and_strangers_pipes_are_refused() {
+    async fn a_strangers_pipe_is_refused() {
         let name = name();
-        let ours = create_pipe(&name, true).unwrap();
-
-        create_pipe(&name, true).unwrap_err();
-        drop(ours);
         // Only an administrator can make a pipe another owner holds, as CI's runner can.
         let sddl = "O:BAD:P(A;;GA;;;WD)";
         let Ok(stranger) = Descriptor::new(sddl) else {

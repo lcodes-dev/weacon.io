@@ -40,25 +40,12 @@ test("a sign-in opens at its size, shows what the login prints, sends what is ty
   receive({ kind: "opened" });
   receive({ kind: "output", data: text("Paste the code") });
   session.input(new TextEncoder().encode("abc\r"));
-  receive({ kind: "ended", sign_in: "signed_in" });
   receive({ kind: "closed" });
 
   assert.deepEqual(sent[0], { terminal: "t-1", machine: "m-1", workspace: "w-1", action: { kind: "open", agent: "claude", cols: 80, rows: 24 } });
   assert.deepEqual(actions(sent).slice(1), [{ kind: "input", data: text("abc\r") }]);
   assert.deepEqual(written, ["Paste the code"]);
-  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "open" }, { kind: "ended", signIn: "signed_in" }, { kind: "closed" }]);
-});
-
-test("a long paste goes in pieces, in order", () => {
-  const { session, sent } = terminal();
-  session.start();
-
-  session.input(new Uint8Array(40_000).fill(0x61));
-
-  const pieces = actions(sent)
-    .slice(1)
-    .map((action) => (action.kind === "input" ? action.data.length / 2 : -1));
-  assert.deepEqual(pieces, [16_384, 16_384, 7_232]);
+  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "open" }, { kind: "closed" }]);
 });
 
 test("updates for another terminal or workspace, and anything after the close, change nothing", () => {

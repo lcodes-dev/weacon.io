@@ -1,7 +1,6 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use weacon_agents::Launch;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
@@ -24,7 +23,7 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     if let Some(dir) = &app.state_dir {
         print(pairing(&app.log, machine::read(dir)))?;
         let runtime = runtime()?;
-        let all = |launches: &[Launch]| runtime.block_on(sign_ins(&app.log, launches));
+        let all = |places| runtime.block_on(sign_ins(&app.log, places));
         print(or_unavailable(
             &app.log,
             Workspaces::new(dir, app.path.clone()).describe(all),

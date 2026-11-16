@@ -174,7 +174,7 @@ mod tests {
     use std::time::Duration;
 
     use tokio::time::timeout;
-    use weacon_protocol::{Asker, MemberId, SignInState};
+    use weacon_protocol::{Asker, MemberId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -259,7 +259,7 @@ mod tests {
 
     fn typed(text: &[u8]) -> TerminalAction {
         TerminalAction::Input {
-            data: Bytes::new(text.to_vec()).unwrap(),
+            data: Bytes::new(text.to_vec()),
         }
     }
 
@@ -286,15 +286,15 @@ mod tests {
         update.event
     }
 
-    // What the terminal showed until its login ended, and the sign-in it ended with.
-    async fn shown_until_ended(machine: &mut Machine) -> (String, SignInState) {
+    // What the terminal showed until it closed, its login having ended.
+    async fn shown_until_closed(machine: &mut Machine) -> String {
         let mut shown = String::new();
         loop {
             match event(machine).await {
                 TerminalEvent::Output { data } => {
                     shown.push_str(&String::from_utf8_lossy(data.as_slice()));
                 }
-                TerminalEvent::Ended { sign_in } => return (shown, sign_in),
+                TerminalEvent::Closed { code: None } => return shown,
                 event @ (TerminalEvent::Opened
                 | TerminalEvent::Closed { .. }
                 | TerminalEvent::Newer) => panic!("{event:?} after {shown:?}"),
@@ -316,12 +316,7 @@ mod tests {
         let input = command("t-1", typed(format!("{TYPED}\r").as_bytes()));
         machine.terminals.handle(input).await;
 
-        let (shown, sign_in) = shown_until_ended(&mut machine).await;
-        assert_eq!(sign_in, SignInState::SignedIn);
-        assert_eq!(
-            next(&mut machine).await,
-            TerminalEvent::Closed { code: None }
-        );
+        let shown = shown_until_closed(&mut machine).await;
         assert!(
             shown.contains(PRINTED) && shown.contains(&format!("Got {TYPED}")),
             "{shown}"

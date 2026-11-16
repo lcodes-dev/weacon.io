@@ -53,6 +53,17 @@ test("on a phone a waiting prompt shows whole above the message box, and a tap o
   const { page } = harness;
   const card = page.getByRole("group", { name: "Use Bash?" });
   await card.getByText("Asks to use Bash").waitFor();
+  // Rows reach their height after they arrive, and only then does the chat scroll to its end. If it never does, the checks below say where the prompt is.
+  await page
+    .waitForFunction(
+      (prompt) => {
+        const [at, box] = [prompt?.getBoundingClientRect(), document.querySelector(".composer")?.getBoundingClientRect()];
+        return at !== undefined && box !== undefined && at.top >= 0 && at.bottom <= box.top;
+      },
+      await card.elementHandle(),
+      { timeout: 10_000 },
+    )
+    .catch(() => undefined);
 
   const whole = await shown(page, card, "the prompt");
   const composer = await shown(page, page.locator(".composer"), "the message box");

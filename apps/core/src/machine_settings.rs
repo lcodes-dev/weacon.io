@@ -3,7 +3,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use weacon_agents::{Launch, SignIn};
+use weacon_agents::Launch;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
     AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
@@ -15,7 +15,7 @@ use weacon_protocol::{
 use crate::app;
 use crate::git::state::Stores;
 use crate::outside::Outside;
-use crate::workspaces::{Settings, Workspaces, sharing, sign_ins, states, store_access};
+use crate::workspaces::{Settings, Workspaces, sharing, sign_ins, store_access};
 
 /// Who this core is, as pairing made it: the machine and its owner's account.
 pub(crate) struct Identity {
@@ -158,14 +158,15 @@ async fn answer(
     })
     .await?;
     let (agents, launches): (Vec<AgentKind>, Vec<Option<Launch>>) = places.into_iter().unzip();
-    let asked: Vec<Launch> = launches.iter().flatten().cloned().collect();
     // A workspace this machine has no folder for has no sign-in, and no vendor is run to make one.
-    let answers = if known {
-        sign_ins(&host.log, &asked).await
+    let states = if known {
+        sign_ins(&host.log, launches).await
     } else {
-        vec![Some(SignIn::SignedOut); asked.len()]
+        let installed = |launch: Option<Launch>| {
+            launch.map_or(SignInState::NotInstalled, |_| SignInState::SignedOut)
+        };
+        launches.into_iter().map(installed).collect()
     };
-    let states = states(&launches, answers);
     let sign_ins = agents
         .into_iter()
         .zip(states)

@@ -1,16 +1,13 @@
 //! One sign-in terminal, from its login's start to its close.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
-use weacon_agents::{Event, Launch, SignIn, Size, Terminal};
+use weacon_agents::{Event, Launch, Size, Terminal};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    Bytes, Envelope, Message, SignInState, TerminalEvent, TerminalId, TerminalUpdate, WorkspaceId,
-    code,
+    Bytes, Envelope, Message, TerminalEvent, TerminalId, TerminalUpdate, WorkspaceId, code,
 };
 
 /// A terminal the core took, before its login starts.
@@ -21,11 +18,8 @@ pub(super) struct Session {
     pub(super) size: Size,
 }
 
-// A sign-in left open doesn't hold its workspace's slot for good.
-const SIGN_IN_LIMIT: Duration = Duration::from_mins(15);
-
-/// Runs the terminal until its login ends, `inputs` closes, anything fails or time runs out,
-/// then says it is closed. It holds `alive` until then.
+/// Runs the terminal until its login ends, `inputs` closes or anything fails, then says it is
+/// closed. It holds `alive` until then.
 pub(super) async fn run(
     session: Session,
     mut inputs: mpsc::Receiver<Bytes>,
@@ -33,8 +27,7 @@ pub(super) async fn run(
     updates: mpsc::Sender<Envelope>,
     log: Logger,
 ) {
-    let served = timeout(SIGN_IN_LIMIT, serve(&session, &mut inputs, &updates, &log)).await;
-    let served = served.unwrap_or_else(|_| Err(timed_out()));
+    let served = serve(&session, &mut inputs, &updates).await;
     // Frees the workspace's slot before the browser hears the terminal is closed.
     drop((inputs, alive));
     let code = served.err().map(|fault| {
@@ -49,7 +42,6 @@ async fn serve(
     session: &Session,
     inputs: &mut mpsc::Receiver<Bytes>,
     updates: &mpsc::Sender<Envelope>,
-    log: &Logger,
 ) -> Result<(), Fault> {
     let (launch, size) = (session.launch.clone(), session.size);
     let (terminal, mut events) = off_runtime(move || launch.open_login(size)).await?;
@@ -63,10 +55,9 @@ async fn serve(
         tokio::select! {
             event = events.next() => {
                 let Some(Event::Output(data)) = event else {
-                    let sign_in = signed_in(&session.launch, log).await;
-                    return send(updates, update(session, TerminalEvent::Ended { sign_in })).await;
+                    return Ok(());
                 };
-                let data = Bytes::new(data).ok_or_else(output_failed)?;
+                let data = Bytes::new(data);
                 send(updates, update(session, TerminalEvent::Output { data })).await?;
             }
             input = inputs.recv() => {
@@ -125,31 +116,6 @@ fn input_failed() -> Fault {
     Fault::new(
         code!("terminal.input_failed"),
         "The terminal's input failed",
-    )
-}
-
-fn output_failed() -> Fault {
-    Fault::new(
-        code!("terminal.output_failed"),
-        "The terminal's output couldn't be sent",
-    )
-}
-
-async fn signed_in(launch: &Launch, log: &Logger) -> SignInState {
-    match launch.sign_in_status().await {
-        Ok(SignIn::SignedIn) => SignInState::SignedIn,
-        Ok(SignIn::SignedOut) => SignInState::SignedOut,
-        Err(fault) => {
-            log.warn("sign-in unknown", &[("err", Field::error(&fault))]);
-            SignInState::Unknown
-        }
-    }
-}
-
-fn timed_out() -> Fault {
-    Fault::new(
-        code!("terminal.timed_out"),
-        "The terminal was open too long",
     )
 }
 

@@ -771,9 +771,8 @@
       ]
     },
     "Bytes": {
-      "description": "Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only\nhow many, since they are terminal content.",
+      "description": "Bytes that travel as lowercase hex. Its `Debug` shows only how many, since they are\nterminal content.",
       "type": "string",
-      "maxLength": 131070,
       "pattern": "^([0-9a-f]{2})*$"
     },
     "Capability": {
@@ -4946,23 +4945,6 @@
           "required": [
             "kind",
             "data"
-          ]
-        },
-        {
-          "description": "The login ended, and then the vendor's status command said this.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "ended"
-            },
-            "sign_in": {
-              "$ref": "#/$defs/SignInState"
-            }
-          },
-          "required": [
-            "kind",
-            "sign_in"
           ]
         },
         {

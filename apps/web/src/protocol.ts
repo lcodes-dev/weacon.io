@@ -262,8 +262,8 @@ export type Batched = {
 };
 
 /**
- * Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
- * how many, since they are terminal content.
+ * Bytes that travel as lowercase hex. Its `Debug` shows only how many, since they are
+ * terminal content.
  */
 export type Bytes = string;
 
@@ -2016,10 +2016,6 @@ export type TerminalEvent = (
   | {
     data: Bytes;
     kind: "output";
-  }
-  | {
-    kind: "ended";
-    sign_in: SignInState;
   }
   | {
     code?: Code;
