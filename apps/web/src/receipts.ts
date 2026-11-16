@@ -1,6 +1,6 @@
 import type { Later } from "./connection.ts";
 import type { Incoming } from "./incoming.ts";
-import type { RequestId } from "./protocol.ts";
+import type { Outcome, RequestId } from "./protocol.ts";
 
 /**
  * How a command ended for its sender; `lost` and `unsure` may or may not have run. `offline` and
@@ -37,14 +37,13 @@ export function settledText(settled: Settled, about: Subject): string | undefine
 // How long a command waits for its machine's word on it, longer than the server waits.
 const WAIT_MS = 40_000;
 
-// A state a newer server adds is `unsure`.
-const SETTLED = new Map<string, Settled>([
-  ["accepted", "accepted"],
-  ["completed", "accepted"],
-  ["interrupted", "refused"],
-  ["failed", "refused"],
-  ["unknown", "unsure"],
-]);
+const SETTLED: Record<Outcome["state"], Settled> = {
+  accepted: "accepted",
+  completed: "accepted",
+  interrupted: "refused",
+  failed: "refused",
+  unknown: "unsure",
+};
 
 // The refusals a sender words on their own; any other code is `refused`.
 const REFUSALS = new Map<string, Settled>([
@@ -83,7 +82,7 @@ export class Receipts {
   take(envelope: Incoming): void {
     if (envelope.type === "receipt") {
       const failed = envelope.state === "failed" ? REFUSALS.get(envelope.code) : undefined;
-      this.settle(envelope.request, failed ?? SETTLED.get(envelope.state) ?? "unsure");
+      this.settle(envelope.request, failed ?? SETTLED[envelope.state]);
       return;
     }
     if (envelope.type !== "error") {

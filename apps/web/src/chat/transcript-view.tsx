@@ -225,5 +225,5 @@ const ENDINGS: Record<Outcome["state"], string> = {
 };
 
 function finishedText(state: Outcome["state"]): string {
-  return ENDINGS[state] ?? "Ended";
+  return ENDINGS[state];
 }

@@ -43,7 +43,7 @@ impl Outside {
     /// The answer to `query`, for the machine's owner, whoever checked that.
     ///
     /// # Errors
-    /// `message.unsupported` for a query this build doesn't know.
+    /// When the sessions can't be read.
     pub(crate) async fn answer(
         &self,
         query: SessionsQuery,
@@ -60,12 +60,6 @@ impl Outside {
                         "The sessions couldn't be read",
                     )
                     .because(error)
-                })?
-                .ok_or_else(|| {
-                    Fault::new(
-                        code!("message.unsupported"),
-                        "This core doesn't know that query",
-                    )
                 })?;
         let request = query.request.as_str().into();
         log.info("sessions answered", &[("request_id", request)]);
@@ -209,18 +203,5 @@ mod tests {
             "{logged}"
         );
         assert!(!logged.contains("MARKER"), "{logged}");
-    }
-
-    #[tokio::test]
-    async fn a_query_this_build_doesnt_know_is_refused_unlogged() {
-        let (log, records) = recording_logger();
-
-        let refused = Outside::default()
-            .answer(query(SessionsQueryKind::Newer), &log)
-            .await
-            .unwrap_err();
-
-        assert_eq!(refused.code().as_str(), "message.unsupported");
-        assert!(records.lock().unwrap().is_empty());
     }
 }

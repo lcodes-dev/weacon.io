@@ -77,9 +77,9 @@ test("a session is read page by page, and a refresh reads only what came after",
   assert.equal(refreshed.value.chat.seq, 4);
 });
 
-test("a missing session, a newer answer, an error and an empty page each end the read", async () => {
+test("a missing session, another kind of answer, an error and an empty page each end the read", async () => {
   const missing = core([{ kind: "missing" }]);
-  const newer = core([{ kind: "list", sessions: [] }]);
+  const other = core([{ kind: "list", sessions: [] }]);
   const empty = core([{ kind: "opened", events: [], more: true }]);
   const stale = core([
     { kind: "opened", events: [said(1, "Hi")], more: true },
@@ -88,7 +88,7 @@ test("a missing session, a newer answer, an error and an empty page each end the
   const refused = fake();
 
   assert.deepEqual(await readOn(missing.socket, "mc-1", SESSION, undefined, missing.later, always), { ok: false, code: MISSING });
-  assert.deepEqual(await readOn(newer.socket, "mc-1", SESSION, undefined, newer.later, always), { ok: false, code: "answer.malformed" });
+  assert.deepEqual(await readOn(other.socket, "mc-1", SESSION, undefined, other.later, always), { ok: false, code: "answer.malformed" });
   const read = await readOn(empty.socket, "mc-1", SESSION, undefined, empty.later, always);
   assert.ok(read.ok);
   assert.equal(read.value.after, 0);

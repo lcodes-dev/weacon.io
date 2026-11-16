@@ -92,14 +92,15 @@ test("workspaces are listed and made, and an answer of the wrong shape is refuse
     { status: 200, body: { workspaces: [{ id: "ws-1", name: "Personal" }] } },
     { status: 200, body: { workspaces: "none" } },
     { status: 200, body: { workspaces: [{ ...personal, id: "a/b" }] } },
+    { status: 200, body: { workspaces: [{ ...personal, role: "auditor" }] } },
   );
 
   assert.deepEqual(await api.workspaces(), { ok: true, value: { workspaces: [personal], invitations: [] } });
   assert.deepEqual(await api.createWorkspace("Made up"), { ok: true, value: { id: "ws-2", name: "Made up", role: "owner" } });
   assert.deepEqual(await api.createWorkspace(" "), { ok: false, code: "workspace.name_invalid" });
-  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
-  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
-  assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  for (const _ of ["no role", "no list", "an odd id", "an odd role"]) {
+    assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
+  }
   assert.deepEqual(sent.slice(0, 2), [
     { path: "/api/workspaces", method: "GET" },
     { path: "/api/workspaces", method: "POST", headers: { "content-type": "application/json" }, body: '{"name":"Made up"}' },
@@ -149,6 +150,7 @@ test("members are changed, invitations taken up, and lists with invitations of t
     { status: 200, body: { workspaces: [], invitations: [{ ...offer, expires_at: "soon" }] } },
     { status: 200, body: { members: [{ id: "m-1", name: "ada", role: "owner" }], invitations: [invitation] } },
     { status: 200, body: { members: [], invitations: [{ ...invitation, expires_at: undefined }] } },
+    { status: 200, body: { members: [{ id: "m-1", name: "ada", role: "auditor" }] } },
   );
 
   assert.deepEqual(await api.changeMembers("w-1", { kind: "invite", email: "bo@example.com" }), { ok: true, value: undefined });
@@ -157,6 +159,7 @@ test("members are changed, invitations taken up, and lists with invitations of t
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.workspaces(), { ok: false, code: MALFORMED });
   assert.equal((await api.members("w-1")).ok, true);
+  assert.deepEqual(await api.members("w-1"), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.members("w-1"), { ok: false, code: MALFORMED });
   const json = { "content-type": "application/json" };
   assert.deepEqual(sent.slice(0, 2), [
@@ -223,18 +226,19 @@ test("the machines shared with a workspace are listed to its members, and an ans
   assert.deepEqual(sent[0], { path: "/api/workspaces/w-1/machines", method: "GET" });
 });
 
-test("a machine whose id or date isn't one is a malformed answer, and a newer system is kept", async () => {
+test("a machine whose id, date or system isn't one is a malformed answer", async () => {
   const bad = [
     { ...MACHINE, id: "../x" },
     { ...MACHINE, paired_at: "today" },
     { ...MACHINE, missing: "symbols.search" },
     { ...MACHINE, missing: [7] },
     { ...MACHINE, connected: "yes" },
+    { ...MACHINE, os: "plan9" },
   ];
   const { api } = serve(
     ...bad.map((machine) => ({ status: 200, body: { machines: [machine] } })),
     { status: 200, body: { ...PENDING, pairing: "../x" } },
-    { status: 200, body: { machines: [{ ...MACHINE, os: "plan9" }] } },
+    { status: 200, body: { ...PENDING, os: "plan9" } },
     { status: 200, body: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } },
     { status: 404, body: { code: "pairing.not_found", retryable: false } },
   );
@@ -243,7 +247,7 @@ test("a machine whose id or date isn't one is a malformed answer, and a newer sy
     assert.deepEqual(await api.machines(), { ok: false, code: MALFORMED });
   }
   assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
-  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, os: "plan9" }] } });
+  assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } });
   assert.deepEqual(await api.confirmPairing({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
 });

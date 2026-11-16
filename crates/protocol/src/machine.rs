@@ -46,14 +46,10 @@ pub enum MachineOs {
     Macos,
     Linux,
     Windows,
-    /// A system this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From a core to the server, unauthenticated: starts pairing the machine. The answer is a
-/// [`PairStarted`]; the server refuses an `os` it doesn't know.
+/// [`PairStarted`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairStart {
     pub name: MachineName,
@@ -116,10 +112,6 @@ pub enum PairClaimed {
         owner: AccountId,
         token: Secret,
     },
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A machine paired with the signed-in account, at `paired_at`, in seconds since the Unix
@@ -291,14 +283,6 @@ mod tests {
             serde_json::to_value(PairClaimed::Waiting).unwrap(),
             json!({ "state": "waiting" })
         );
-        assert_eq!(
-            serde_json::from_value::<PairClaimed>(json!({ "state": "refused" })).unwrap(),
-            PairClaimed::Newer
-        );
-        assert_eq!(
-            serde_json::from_value::<MachineOs>(json!("plan9")).unwrap(),
-            MachineOs::Newer
-        );
     }
 
     #[test]
@@ -363,7 +347,6 @@ mod tests {
                 r#"Paired { machine: MachineId("mc-1"), owner: AccountId("a-1"), token: Secret(..) }"#,
             ),
             (format!("{:?}", PairClaimed::Waiting), "Waiting"),
-            (format!("{:?}", PairClaimed::Newer), "Newer"),
         ];
 
         for (shown, expected) in cases {

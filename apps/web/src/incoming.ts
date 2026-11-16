@@ -1,5 +1,5 @@
 import { record } from "./fields.ts";
-import type { AccessLevel, App, ChatEntry, Envelope, RunEvent, SignInState, SymbolKind } from "./protocol.ts";
+import type { AccessLevel, App, ChatEntry, Envelope, Outcome, RunEvent, SignInState, SymbolKind, WorkspaceChange } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<
@@ -85,7 +85,7 @@ const text = (fields: Fields, key: string) => typeof fields[key] === "string";
 const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
   error: (fields) => text(fields, "code"),
-  receipt: (fields) => text(fields, "request") && text(fields, "state"),
+  receipt: (fields) => text(fields, "request") && isOutcome(fields),
   run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),
   diff_answer: (fields) =>
     text(fields, "request") && text(fields, "workspace") && text(fields, "chat") && isDiffAnswer(fields["answer"]),
@@ -164,7 +164,7 @@ function isRunEvent(event: unknown): event is RunEvent {
       return answer !== undefined && text(answer, "run") && isSeq(answer["prompt"], 0) && typeof answer["allow"] === "boolean";
     }
     case "finished":
-      return typeof record(fields["outcome"])?.["state"] === "string";
+      return isOutcome(record(fields["outcome"]));
     default:
       return typeof fields["event"] === "string";
   }
@@ -223,8 +223,10 @@ function isEntry(value: unknown): value is ChatEntry {
       return typeof event["author"] === "string" && typeof event["text"] === "string";
     case "outside_prompt":
       return typeof event["text"] === "string";
-    case "receipt":
-      return typeof record(event["receipt"])?.["state"] === "string";
+    case "receipt": {
+      const receipt = record(event["receipt"]);
+      return receipt !== undefined && text(receipt, "request") && isOutcome(receipt);
+    }
     case "run":
       return isRunUpdate(event["update"]);
     case "run_status":
@@ -261,10 +263,29 @@ function isAgent(value: unknown): boolean {
   return typeof agent?.["kind"] === "string" && known && (agent["machine"] === undefined || typeof agent["machine"] === "string");
 }
 
-// A change of a kind this app reads has its fields; one of a newer kind passes, to be skipped.
+const CHANGES: readonly string[] = [
+  "member_joined",
+  "members_changed",
+  "machines_changed",
+  "task_changed",
+  "doc_changed",
+  "chat_changed",
+  "proposal_changed",
+] satisfies WorkspaceChange["kind"][];
+
+// A change of a kind the protocol names; a chat's has the field this app reads.
 function isChange(value: unknown): boolean {
   const fields = record(value);
-  return fields?.["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields?.["kind"] === "string";
+  const kind = fields?.["kind"];
+  return typeof kind === "string" && CHANGES.includes(kind) && (kind !== "chat_changed" || typeof fields?.["chat"] === "string");
+}
+
+const STATES: readonly string[] = ["accepted", "completed", "interrupted", "failed", "unknown"] satisfies Outcome["state"][];
+
+// What came of a command, in a state the protocol names; a failure says why.
+function isOutcome(fields: Record<string, unknown> | undefined): boolean {
+  const state = fields?.["state"];
+  return fields !== undefined && typeof state === "string" && STATES.includes(state) && (state !== "failed" || text(fields, "code"));
 }
 
 const ACCESS_LEVELS: readonly string[] = ["off", "read_only", "ask_first", "full"] satisfies AccessLevel[];
@@ -390,8 +411,10 @@ function isSessionsAnswer(answer: unknown): boolean {
       const events = fields["events"];
       return Array.isArray(events) && events.every(isEntry) && typeof fields["more"] === "boolean";
     }
+    case "missing":
+      return true;
     default:
-      return typeof fields["kind"] === "string";
+      return false;
   }
 }
 

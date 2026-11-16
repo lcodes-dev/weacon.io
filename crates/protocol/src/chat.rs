@@ -716,8 +716,6 @@ mod tests {
                                 "status": { "run": "run-7", "state": "paused" } })),
             entry_wire(&json!({ "kind": "run", "update": { "run": "run-7",
                                 "event": { "event": "thinking" } } })),
-            entry_wire(&json!({ "kind": "receipt",
-                                "receipt": { "request": "r-1", "state": "queued" } })),
             entry_wire(
                 &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
                                 "agent": { "kind": "gemini",

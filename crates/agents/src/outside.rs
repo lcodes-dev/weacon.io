@@ -23,15 +23,15 @@ const LISTED: usize = 200;
 /// What an answer's envelope adds to what it carries.
 const ENVELOPE: usize = 4096;
 
-/// The answer to `query` about the sessions in each agent's config folder in `dirs`; `None`
-/// for a query this build doesn't know. A file that can't be read counts as missing.
+/// The answer to `query` about the sessions in each agent's config folder in `dirs`. A file
+/// that can't be read counts as missing.
 pub fn answer(
     files: &impl Files,
     dirs: &[(AgentKind, PathBuf)],
     query: &SessionsQueryKind,
-) -> Option<SessionsAnswerKind> {
+) -> SessionsAnswerKind {
     let budget = MAX_FRAME - ENVELOPE;
-    Some(match query {
+    match query {
         SessionsQueryKind::List => SessionsAnswerKind::List {
             sessions: list(files, dirs, LISTED, budget),
         },
@@ -46,8 +46,7 @@ pub fn answer(
             .map_or(SessionsAnswerKind::Missing, |(events, more)| {
                 SessionsAnswerKind::Opened { events, more }
             }),
-        SessionsQueryKind::Newer => return None,
-    })
+    }
 }
 
 // The sessions in each agent's config folder, newest first: at most `limit`, in `budget` bytes.
@@ -353,22 +352,18 @@ mod tests {
             after: 0,
         };
 
-        let listed = answer(&Disk, &dirs, &SessionsQueryKind::List).unwrap();
+        let listed = answer(&Disk, &dirs, &SessionsQueryKind::List);
         let SessionsAnswerKind::List { sessions } = listed else {
             panic!("{listed:?}");
         };
         assert_eq!(sessions.len(), 2);
-        let opened = answer(&Disk, &dirs, &open(AgentKind::Claude, ONE)).unwrap();
+        let opened = answer(&Disk, &dirs, &open(AgentKind::Claude, ONE));
         assert!(
             matches!(opened, SessionsAnswerKind::Opened { ref events, more: false } if events.len() == 1)
         );
         for missing in [open(AgentKind::Claude, TWO), open(AgentKind::Codex, ONE)] {
-            assert_eq!(
-                answer(&Disk, &dirs, &missing),
-                Some(SessionsAnswerKind::Missing)
-            );
+            assert_eq!(answer(&Disk, &dirs, &missing), SessionsAnswerKind::Missing);
         }
-        assert_eq!(answer(&Disk, &dirs, &SessionsQueryKind::Newer), None);
     }
 
     #[test]
@@ -382,7 +377,7 @@ mod tests {
             after: 0,
         };
 
-        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query).unwrap();
+        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query);
 
         assert!(
             matches!(&opened, SessionsAnswerKind::Opened { events, more: true } if events.len() > 900)
@@ -421,7 +416,7 @@ mod tests {
             after: 0,
         };
 
-        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query).unwrap();
+        let opened = answer(&Disk, &[(AgentKind::Claude, dir.to_path_buf())], &query);
 
         assert!(matches!(
             &opened,
@@ -445,8 +440,7 @@ mod tests {
             &Disk,
             &[(AgentKind::Claude, dir.to_path_buf())],
             &SessionsQueryKind::List,
-        )
-        .unwrap();
+        );
 
         let SessionsAnswerKind::List { sessions } = &listed else {
             panic!("{listed:?}");

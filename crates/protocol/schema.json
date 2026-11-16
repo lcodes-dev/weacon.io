@@ -2117,15 +2117,11 @@
     },
     "MachineOs": {
       "description": "The operating system a machine runs.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "macos",
-            "linux",
-            "windows"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "macos",
+        "linux",
+        "windows"
       ]
     },
     "MachineSettings": {
@@ -2896,7 +2892,7 @@
       ]
     },
     "PairStart": {
-      "description": "From a core to the server, unauthenticated: starts pairing the machine. The answer is a\n[`PairStarted`]; the server refuses an `os` it doesn't know.",
+      "description": "From a core to the server, unauthenticated: starts pairing the machine. The answer is a\n[`PairStarted`].",
       "type": "object",
       "properties": {
         "name": {

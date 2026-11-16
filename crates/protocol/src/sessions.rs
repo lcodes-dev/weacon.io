@@ -28,10 +28,6 @@ pub enum SessionsQueryKind {
         session: AgentSession,
         after: u64,
     },
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has
@@ -57,10 +53,6 @@ pub enum SessionsAnswerKind {
     },
     /// No such session in the person's own config folders.
     Missing,
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A session a person ran with their own agent outside Weacon, last changed at `modified_at`,
@@ -190,16 +182,14 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_peers_queries_and_answers_parse_and_are_never_sent() {
+    fn a_newer_peers_agents_and_events_parse_and_are_never_sent() {
         let newer_session = json!({ "agent": "amp", "session": SESSION, "modified_at": 0 });
         let newer = [
-            wire("sessions_query", "query", json!({ "kind": "search" })),
             wire(
                 "sessions_query",
                 "query",
                 json!({ "kind": "open", "agent": "amp", "session": SESSION, "after": 0 }),
             ),
-            wire("sessions_answer", "answer", json!({ "kind": "found" })),
             wire(
                 "sessions_answer",
                 "answer",

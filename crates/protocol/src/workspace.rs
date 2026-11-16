@@ -32,11 +32,6 @@ pub enum WorkspaceRole {
     Owner,
     /// Was added to it.
     Member,
-    /// A role this build doesn't know, from a newer peer; only ever received, and it allows
-    /// nothing.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// Asks the server for a new workspace, which the asker owns. The answer is its
@@ -112,10 +107,6 @@ pub enum WorkspaceChange {
     /// A proposal was made or its state changed. Only for clients that have the capability
     /// `workspace.proposals`, which read the proposals again.
     ProposalChanged { proposal: ProposalId },
-    /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
@@ -174,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_are_tagged_and_a_newer_one_still_parses() {
+    fn changes_are_tagged() {
         let changes = [
             (
                 WorkspaceChange::MemberJoined {
@@ -218,10 +209,6 @@ mod tests {
         for (change, wire) in changes {
             round_trips(&change, wire);
         }
-        assert_eq!(
-            serde_json::from_value::<WorkspaceChange>(json!({ "kind": "renamed" })).unwrap(),
-            WorkspaceChange::Newer
-        );
     }
 
     #[test]
@@ -246,9 +233,5 @@ mod tests {
         round_trips(&create, json!({ "name": "Team" }));
         round_trips(&WorkspaceRole::Owner, json!("owner"));
         round_trips(&WorkspaceRole::Member, json!("member"));
-        assert_eq!(
-            serde_json::from_value::<WorkspaceRole>(json!("auditor")).unwrap(),
-            WorkspaceRole::Newer
-        );
     }
 }

@@ -401,6 +401,5 @@ fn outcome(outcome: &Outcome) -> String {
         Outcome::Interrupted => "interrupted".to_owned(),
         Outcome::Failed { code } => format!("failed {}", code.as_str()),
         Outcome::Unknown => "unknown".to_owned(),
-        Outcome::Newer => "newer".to_owned(),
     }
 }
