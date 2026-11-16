@@ -156,9 +156,9 @@ impl Watch {
                     return Ok(None);
                 }
             }
-            kind @ (ChatQueryKind::Snapshot
-            | ChatQueryKind::Window { .. }
-            | ChatQueryKind::Newer) => read::answer(workspace, &query.chat, &kind).await?,
+            kind @ (ChatQueryKind::Snapshot | ChatQueryKind::Window { .. }) => {
+                read::answer(workspace, &query.chat, &kind).await?
+            }
         };
         Ok(Some(Message::ChatAnswer(ChatAnswer {
             workspace: query.workspace,

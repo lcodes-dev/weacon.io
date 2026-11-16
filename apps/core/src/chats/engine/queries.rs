@@ -6,7 +6,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{AgentKind, ChatAnswerKind, ChatQueryKind, RunState};
 
 use super::agent::Agent;
-use super::{ChatKey, Engine, unsupported, update};
+use super::{ChatKey, Engine, update};
 use crate::chats::feed::{Client, Subscriber};
 
 const SNAPSHOT_EVENTS: u32 = 50;
@@ -75,7 +75,6 @@ impl<A: Agent> Engine<A> {
             ChatQueryKind::Window { before, limit } => Ok(Some(ChatAnswerKind::Window {
                 events: chat.log.window(before, limit).await?,
             })),
-            ChatQueryKind::Newer => Err(unsupported()),
         }
     }
 }

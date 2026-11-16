@@ -74,7 +74,7 @@ mod tests {
 
     use super::*;
     use crate::test_support::{envelope, request};
-    use crate::{ChatEvent, Envelope, FrameError, Message};
+    use crate::{ChatEvent, Envelope, Message};
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
 
@@ -182,15 +182,14 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_peers_chat_event_parses_and_is_never_sent() {
+    fn a_chat_event_the_protocol_doesnt_name_is_refused() {
         let newer = wire(
             "sessions_answer",
             "answer",
             json!({ "kind": "opened", "more": false,
                 "events": [{ "seq": 1, "event": { "kind": "thought" } }] }),
         );
-        let envelope: Envelope = serde_json::from_value(newer).unwrap();
-        assert_eq!(envelope.to_json(), Err(FrameError::Invalid));
+        serde_json::from_value::<Envelope>(newer).unwrap_err();
 
         let missing = wire("sessions_answer", "answer", json!({ "kind": "missing" }));
         let known: Envelope = serde_json::from_value(missing).unwrap();

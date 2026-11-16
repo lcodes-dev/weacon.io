@@ -244,7 +244,7 @@ impl Workspace {
     #[cfg(test)]
     pub(crate) async fn set_chat_state(&self, id: &ChatId, state: ChatState) -> Result<(), Fault> {
         sqlx::query("UPDATE chats SET state = ? WHERE workspace_id = ? AND chat_id = ?")
-            .bind(state_text(state)?)
+            .bind(state_text(state))
             .bind(self.id.as_str())
             .bind(id.as_str())
             .execute(&self.db.writer)
@@ -282,11 +282,10 @@ fn number(seq: u64) -> Result<i64, Fault> {
 }
 
 #[cfg(test)]
-fn state_text(state: ChatState) -> Result<&'static str, Fault> {
+const fn state_text(state: ChatState) -> &'static str {
     match state {
-        ChatState::Open => Ok("open"),
-        ChatState::Full => Ok("full"),
-        ChatState::Newer => Err(unstorable()),
+        ChatState::Open => "open",
+        ChatState::Full => "full",
     }
 }
 
@@ -359,8 +358,6 @@ mod tests {
             two.chat(&id("c-1")).await.unwrap().unwrap().state,
             ChatState::Open
         );
-        let newer = one.set_chat_state(&id("c-1"), ChatState::Newer).await;
-        assert_eq!(code(&newer.unwrap_err()), "chat.unstorable");
     }
 
     #[tokio::test]

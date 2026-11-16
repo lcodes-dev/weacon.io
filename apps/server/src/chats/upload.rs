@@ -106,9 +106,8 @@ fn kept(event: ChatEvent, leg: &Leg, by: &MemberId) -> Option<ChatEvent> {
             },
         }),
         ChatEvent::OutsidePrompt { .. } | ChatEvent::Receipt { .. } => Some(event),
-        // Only the server writes a person's message, and what a newer core sends may hold
-        // anything.
-        ChatEvent::Message { .. } | ChatEvent::Newer => None,
+        // Only the server writes a person's message.
+        ChatEvent::Message { .. } => None,
     }
 }
 
@@ -516,8 +515,7 @@ mod tests {
             ChatEvent::Message { .. }
             | ChatEvent::Receipt { .. }
             | ChatEvent::Run { .. }
-            | ChatEvent::OutsidePrompt { .. }
-            | ChatEvent::Newer => None,
+            | ChatEvent::OutsidePrompt { .. } => None,
         };
         events.unwrap().into_iter().filter_map(told).collect()
     }
@@ -681,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn what_a_newer_core_sends_or_a_tool_does_is_not_kept() {
+    fn what_a_tool_does_is_not_kept() {
         let run = |event| ChatEvent::Run {
             update: RunUpdate {
                 run: id("run-1"),
@@ -696,7 +694,6 @@ mod tests {
             outcome: Outcome::Completed,
         };
         let leg = leg();
-        assert_eq!(kept(ChatEvent::Newer, &leg, &leg.member), None);
         assert_eq!(kept(run(done), &leg, &leg.member), None);
         let ended = kept(run(finished.clone()), &leg, &leg.member).map(|kept| core_named(&kept));
         assert_eq!(ended, Some(run(finished)));

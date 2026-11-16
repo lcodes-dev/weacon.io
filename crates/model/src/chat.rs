@@ -50,8 +50,7 @@ impl ChatRuns {
             ChatEvent::Message { .. }
             | ChatEvent::Prompt { .. }
             | ChatEvent::Receipt { .. }
-            | ChatEvent::OutsidePrompt { .. }
-            | ChatEvent::Newer => {}
+            | ChatEvent::OutsidePrompt { .. } => {}
         }
     }
 

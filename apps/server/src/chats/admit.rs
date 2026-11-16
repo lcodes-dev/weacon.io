@@ -2,12 +2,9 @@
 //! it passes on to the member's own machine.
 
 use weacon_observability::Fault;
-use weacon_protocol::{
-    Asker, ChatAction, ChatCommand, ChatState, ChatTask, MachineId, Message, code,
-};
+use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatState, ChatTask, MachineId, code};
 
 use crate::db::Chat;
-use crate::socket::sendable;
 
 /// A command the server takes, of a chat that is there or, for its first words, isn't yet.
 #[derive(Debug, PartialEq, Eq)]
@@ -33,11 +30,8 @@ pub(crate) enum Admitted {
 pub(crate) fn admit(
     chat: Option<Chat>,
     by: Asker,
-    command: ChatCommand,
+    mut command: ChatCommand,
 ) -> Result<Admitted, Fault> {
-    let Some(Message::ChatCommand(mut command)) = sendable(Message::ChatCommand(command)) else {
-        return Err(super::unsupported());
-    };
     if let Some(chat) = &chat {
         takes_words(chat.state)?;
     }
@@ -75,7 +69,7 @@ pub(crate) fn admit(
             Ok(Admitted::Act { chat, command })
         }
         // A person's own terminal holds and releases a chat; no one else's command does.
-        ChatAction::Hold | ChatAction::Release | ChatAction::Newer => Err(super::unsupported()),
+        ChatAction::Hold | ChatAction::Release => Err(super::unsupported()),
     }
 }
 
@@ -92,7 +86,7 @@ fn written(text: &str) -> Result<(), Fault> {
 fn takes_words(state: ChatState) -> Result<(), Fault> {
     match state {
         ChatState::Open => Ok(()),
-        ChatState::Full | ChatState::Newer => Err(crate::db::chat_full()),
+        ChatState::Full => Err(crate::db::chat_full()),
     }
 }
 
@@ -295,7 +289,7 @@ mod tests {
             refused(None, "m1", prompt(" \n ", Some("mc-1"))),
             "chat.empty_prompt"
         );
-        for action in [ChatAction::Newer, ChatAction::Hold, ChatAction::Release] {
+        for action in [ChatAction::Hold, ChatAction::Release] {
             assert_eq!(refused(None, "m1", action), "message.unsupported");
         }
     }

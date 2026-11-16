@@ -453,17 +453,13 @@ mod tests {
         let sent = [
             known(2, query),
             known(3, command),
-            json!({ "id": 4, "type": "chat_query", "workspace": "w-1", "chat": "c-1",
-                    "query": { "kind": "search" } }),
-            json!({ "id": 5, "type": "chat_command", "request": "q-1", "workspace": "w-1",
-                    "chat": "c-1", "action": { "kind": "rewind" } }),
-            json!({ "id": 6, "type": "chat.later" }),
+            json!({ "id": 4, "type": "chat.later" }),
         ];
         for text in sent {
             client.send(Frame::text(text.to_string())).await.unwrap();
         }
         // A deadline, so a server that never answers fails the test instead of hanging it.
-        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 5))
+        let answers = tokio::time::timeout(Duration::from_secs(30), texts(&mut client, 3))
             .await
             .unwrap();
         client.close(None).await.unwrap();
@@ -479,8 +475,6 @@ mod tests {
                 (json!(2), json!("chat.not_found")),
                 (json!(3), json!("chat.not_found")),
                 (json!(4), json!("message.unsupported")),
-                (json!(5), json!("message.unsupported")),
-                (json!(6), json!("message.unsupported")),
             ]
         );
     }
