@@ -1,0 +1,54 @@
+.settings {
+  max-width: 880px;
+  padding: 24px 28px;
+}
+
+.settings h1 {
+  margin: 0 0 4px;
+}
+
+/* Each part of Settings under a small monospace label. */
+.settings h2 {
+  margin: 28px 0 10px;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.settings h3 {
+  margin: 16px 0 8px;
+}
+
+/* Lists as one raised panel, a row each. */
+.page.settings ul {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.page.settings li {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.page.settings li:last-child {
+  border-bottom: none;
+}
+
+.settings dl {
+  margin: 0 0 12px;
+}
+
+@media (max-width: 720px) {
+  .settings {
+    padding: 12px;
+  }
+
+  .page.settings ul {
+    padding: 0;
+  }
+}

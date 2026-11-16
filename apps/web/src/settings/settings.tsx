@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { App as Build } from "../protocol.ts";
+import "./settings.css";
 
 /** The signed-in account, and signing it out. */
 export type Account = { email: string; signOut(): void; signingOut: boolean };
@@ -18,7 +19,7 @@ export function Settings({
   children?: ReactNode;
 }) {
   return (
-    <section className="page">
+    <section className="page settings">
       <h1>Settings</h1>
       {account !== undefined && (
         <>

@@ -71,7 +71,7 @@ function Card({ api, workspace, names, proposal, tasks, proposals }: CardProps) 
         {conflict !== undefined && <Conflict outcome={conflict} />}
         {proposal.state === "open" && (
           <div className="actions">
-            <button type="button" disabled={deciding.busy} onClick={() => decide("accept")}>
+            <button type="button" className="primary" disabled={deciding.busy} onClick={() => decide("accept")}>
               Accept
             </button>
             <button type="button" disabled={deciding.busy} onClick={() => decide("reject")}>

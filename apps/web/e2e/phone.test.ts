@@ -128,6 +128,7 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   const toChats = page.getByRole("button", { name: "Back to chats" });
   await page.getByLabel("Email").waitFor();
   await fits(page, "sign-in");
+  await thumbSized(page, page.getByRole("button", { name: "Send code" }), "Send code");
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   await fits(page, "the workspaces");
@@ -236,6 +237,8 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
     await page.getByRole("button", { name: `Edit ${title}` }).waitFor();
   }
   await fits(page, "the tasks");
+  await thumbSized(page, page.getByLabel("Status of Buy flour"), "a task's status");
+  await thumbSized(page, page.getByRole("button", { name: "Edit Buy flour" }), "a task's title");
   await page.getByRole("button", { name: `Edit ${long}` }).tap();
   await thumbSized(page, page.getByRole("button", { name: "Save" }), "a task's Save");
   await shown(page, page.getByRole("button", { name: "Cancel" }), "a task's Cancel");
@@ -256,6 +259,7 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   await shown(page, toChats, "Back to chats");
   await page.getByRole("button", { name: "All docs" }).tap();
   await page.getByRole("list", { name: "Docs" }).getByRole("button", { name: "Recipes" }).waitFor();
+  await thumbSized(page, page.getByRole("list", { name: "Docs" }).getByRole("button", { name: "Recipes" }), "a doc in the list");
   await fits(page, "the docs");
   await toChats.tap();
   await nav.getByText("Run the parser tests").waitFor();

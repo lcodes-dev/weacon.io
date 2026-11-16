@@ -74,6 +74,21 @@
   gap: 8px;
 }
 
+/* Sign-in as a card in the middle of the page. */
+.page.sign-in {
+  max-width: 400px;
+  margin: 0 auto;
+  padding-top: 12vh;
+}
+
+.page.sign-in form {
+  max-width: none;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
 .sign-in form,
 .workspaces form,
 .members form {
@@ -261,6 +276,62 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* New chat: the agent's fields and the message box in one column in the middle. */
+.new-chat {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 24px 18px;
+}
+
+.new-chat .composer {
+  width: 100%;
+  margin: 0;
+}
+
+.my-agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.my-agent legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.my-agent label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.my-agent > p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.new-chat > p {
+  margin: 0;
 }
 
 .heading {
@@ -483,9 +554,15 @@
   }
 
   .new-chat {
-    flex: 1;
-    min-height: 0;
+    justify-content: flex-start;
+    gap: 0;
+    max-width: none;
+    padding: 0;
     overflow-y: auto;
+  }
+
+  .page.sign-in {
+    padding-top: 12px;
   }
 
   .my-agent label,

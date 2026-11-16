@@ -8,9 +8,14 @@
 }
 
 .docs ul button {
+  font-size: 13px;
   background: transparent;
   border-color: transparent;
   text-align: left;
+}
+
+.docs ul button:hover {
+  background: var(--hover);
 }
 
 .docs article,
@@ -21,10 +26,14 @@
 
 .docs article h2 {
   margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .docs article .text {
   margin: 16px 0;
+  line-height: 1.6;
 }
 
 .doc-editor {
@@ -48,4 +57,9 @@
 .proposals .actions {
   display: flex;
   gap: 8px;
+}
+
+.proposals .actions button + button {
+  color: var(--ink-2);
+  background: transparent;
 }
