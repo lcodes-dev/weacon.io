@@ -58,7 +58,6 @@ impl Workspace {
     }
 
     /// The chat's latest run and the prompts that wait for its owner.
-    #[cfg(test)]
     pub(crate) async fn chat_runs(&self, chat: &ChatId) -> Result<ChatRuns, Fault> {
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
         self.read_runs(&mut reader, chat).await

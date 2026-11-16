@@ -281,16 +281,27 @@
     overflow-y: auto;
   }
 
-  .new-chat > label,
+  .my-agent label,
   .new-chat .task-field label {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    margin-bottom: 8px;
   }
 
-  .new-chat > label,
+  .my-agent,
   .new-chat > p,
   .new-chat > .task-field {
+    min-width: 0;
     margin: 8px 12px;
+  }
+
+  .chat-screen > .add-agent {
+    align-self: flex-start;
+    margin: 8px 12px 0;
+  }
+
+  .chat-screen > p {
+    margin: 8px 12px 0;
   }
 }

@@ -11,11 +11,12 @@ const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, key: "ab".rep
 const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [{ agent: "claude", state: "signed_in" }] };
 
 // The workspace's chats are `chats`, its owner's, on Studio, the person's one machine.
-async function standIn(page: Page, chats: () => Omit<ChatSummary, "owner">[]): Promise<void> {
+async function standIn(page: Page, chats: () => Omit<ChatSummary, "owner" | "legs">[]): Promise<void> {
   await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [STUDIO] }) }));
   await page.route("**/api/workspaces/*/chats", async (route) => {
     const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> }).workspaces[0]?.member ?? "");
-    const list: ChatList = { chats: chats().map((chat) => ({ ...chat, owner: member })) };
+    const legs = [{ member, machine: STUDIO.name, machine_id: STUDIO.id, agent: "claude" as const, detached: false }];
+    const list: ChatList = { chats: chats().map((chat) => ({ ...chat, owner: member, legs })) };
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) });
   });
 }
@@ -33,13 +34,13 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   t.after(() => served.close());
   const { page } = served;
   const made: { chat: string; task: string; text: string }[] = [];
-  await standIn(page, () => made.map(({ chat, task, text }) => ({ id: chat, title: text, machine: STUDIO.name, machine_id: STUDIO.id, task, state: "open", updated_at: 1 })));
+  await standIn(page, () => made.map(({ chat, task, text }) => ({ id: chat, title: text, task, state: "open", updated_at: 1 })));
   const answer = (asked: Envelope): Envelope[] => {
     if (asked.type === "machine_settings_query") {
       const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["garden"] } : { kind: "current" as const, ...SETTINGS };
       return [{ id: 0, type: "machine_settings_answer", request: asked.request, machine: asked.machine, workspace: asked.workspace, answer }];
     }
-    if (asked.type === "chat_command" && asked.action.kind === "prompt" && asked.action.task !== undefined) {
+    if (asked.type === "chat_command" && asked.action.kind === "say" && asked.action.task !== undefined) {
       made.push({ chat: asked.chat, task: asked.action.task.id, text: asked.action.text });
       return [
         { id: asked.id, type: "receipt", request: asked.request, state: "accepted" },
@@ -53,7 +54,7 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "Tasks" }).click();
   await page.getByRole("textbox", { name: "New task" }).fill("Turn the compost");
   await page.getByRole("button", { name: "Add" }).click();
-  // The tasks are held back from the chats' view, so the prompt goes before it knows the title.
+  // The tasks are held back from the chats' view, so the message goes before it knows the title.
   let release = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -72,8 +73,9 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await page.getByRole("heading", { name: "Plan it." }).waitFor();
   release();
   await link.waitFor();
+  // A first message needs no agent to start the task's chat.
   const prompt = sent.find((envelope) => envelope.type === "chat_command");
-  assert.ok(prompt?.type === "chat_command" && prompt.action.kind === "prompt");
+  assert.ok(prompt?.type === "chat_command" && prompt.action.kind === "say");
   // The server gives it the task's title.
   assert.equal(prompt.action.task?.title, "");
   await page.unroute("**/api/workspaces/*/tasks");
@@ -102,7 +104,7 @@ test("a message found with ⌘K opens its chat at it, however far back it is", {
   t.after(() => served.close());
   const { page } = served;
   const last = 600;
-  await standIn(page, () => [{ id: "c-1", title: "Garden notes", machine: STUDIO.name, machine_id: "mc-1", state: "open", updated_at: 1 }]);
+  await standIn(page, () => [{ id: "c-1", title: "Garden notes", state: "open", updated_at: 1 }]);
   await page.route("**/api/workspaces/*/search", (route) => {
     const hits = [{ kind: "chat", chat: "c-1", title: "Garden notes", seq: 5, snippet: { text: "Where the compost goes", marks: [] } }];
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });

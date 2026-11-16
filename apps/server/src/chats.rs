@@ -6,6 +6,7 @@ mod command;
 mod end_to_end;
 mod link;
 pub(crate) mod live;
+mod quotes;
 mod read;
 mod reconnect;
 #[cfg(test)]

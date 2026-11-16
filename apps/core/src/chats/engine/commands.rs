@@ -2,13 +2,14 @@
 
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunEvent, RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, MemberId, Outcome, PermissionAnswer, RepoId,
+    RequestId, RunEvent, RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
 use super::launch::not_started;
 use super::{ChatKey, Engine, PendingInterrupt, chat_about, unsupported};
+use crate::chats::quoted;
 use crate::git::state::Stores;
 use crate::runs::Queued;
 
@@ -24,7 +25,9 @@ impl<A: Agent> Engine<A> {
             return Err(super::picked::local_only());
         }
         let request = command.request;
-        let acted = self.act(key, request.clone(), command.action).await;
+        let author = command.by.map(|by| by.member);
+        let asked = (request.clone(), author);
+        let acted = self.act(key, asked, command.action).await;
         let Err(fault) = acted else {
             return Ok(());
         };
@@ -40,7 +43,7 @@ impl<A: Agent> Engine<A> {
     async fn act(
         &mut self,
         key: &ChatKey,
-        request: RequestId,
+        (request, author): (RequestId, Option<MemberId>),
         action: ChatAction,
     ) -> Result<(), Fault> {
         // Before the log, so a chat a newer core runs gets nothing from this one.
@@ -48,6 +51,7 @@ impl<A: Agent> Engine<A> {
         match action {
             ChatAction::Prompt {
                 text,
+                quotes,
                 repo,
                 agent: named,
                 pick,
@@ -63,30 +67,32 @@ impl<A: Agent> Engine<A> {
                     ));
                 }
                 self.has_room(key)?;
+                // The log keeps the person's own words; the agent also gets the quotes.
+                let told = quoted::prompt(&text, &quotes);
                 let prompt = ChatEvent::Prompt {
                     pick: self.pick_note(pick.as_ref()).await?,
                     request: request.clone(),
-                    text: text.clone(),
+                    text,
+                    author,
                     repo,
                     agent: named,
                     task,
                 };
                 self.commit(key, prompt).await?;
-                self.prompt(
-                    key,
-                    Queued {
-                        request,
-                        text,
-                        pick,
-                    },
-                    agent,
-                )
-                .await
+                let queued = Queued {
+                    request,
+                    text: told,
+                    pick,
+                };
+                self.prompt(key, queued, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
-            // Taken before the log, by `command_from`.
-            ChatAction::Hold | ChatAction::Release | ChatAction::Newer => Err(unsupported()),
+            // A hold is taken before the log, by `command_from`, and only the server takes a
+            // message to a chat's people.
+            ChatAction::Say { .. } | ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {
+                Err(unsupported())
+            }
         }
     }
 
@@ -331,6 +337,87 @@ mod tests {
         assert_eq!(started.run_as.task, Some(task("t-1")));
         let log = &engine.open(&key()).await.unwrap().log;
         assert_eq!(log.task(), Some(&task("t-1")));
+    }
+
+    #[tokio::test]
+    async fn an_agent_gets_the_others_words_as_quotes_and_the_log_keeps_its_owners_alone_under_their_name()
+     {
+        let (mut bench, mut engine) = parts();
+        let mut asked = prompt("r-1", "MARKER-OWN");
+        if let ChatAction::Prompt { quotes, .. } = &mut asked.action {
+            quotes.push(weacon_protocol::Quote {
+                name: "Grace".to_owned(),
+                agent: None,
+                text: "MARKER-QUOTE".to_owned(),
+            });
+        }
+        let ada: MemberId = "m-1".parse().unwrap();
+        asked.by = Some(weacon_protocol::Asker {
+            account: "a-1".parse().unwrap(),
+            member: ada.clone(),
+        });
+
+        engine.command(&key(), asked).await.unwrap();
+        launched(&mut engine).await;
+
+        let mut agent = soon(bench.started.recv()).await.unwrap();
+        let told = quoted::prompt("MARKER-OWN", &[quote("Grace", "MARKER-QUOTE")]);
+        assert!(told.contains("Grace wrote:\nMARKER-QUOTE"), "{told}");
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Send(told)));
+        let log = &engine.open(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 9).await.unwrap();
+        let events: Vec<_> = entries.into_iter().map(|entry| entry.event).collect();
+        let kept = ChatEvent::Prompt {
+            request: "r-1".parse().unwrap(),
+            text: "MARKER-OWN".to_owned(),
+            pick: None,
+            author: Some(ada.clone()),
+            repo: None,
+            agent: None,
+            task: None,
+        };
+        assert_eq!(events.first(), Some(&kept));
+        // Every status of the run names whose agent it is.
+        let named = weacon_protocol::AgentRef {
+            kind: AgentKind::Claude,
+            owner: weacon_protocol::AgentOwner::Member { member: ada },
+            machine: None,
+        };
+        let statuses: Vec<_> = events.iter().filter_map(status_of).collect();
+        assert!(!statuses.is_empty());
+        let named = Some(named);
+        assert!(statuses.iter().all(|status| status.agent == named));
+        let logged = serde_json::to_string(&*bench.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    fn status_of(event: &ChatEvent) -> Option<&weacon_protocol::RunStatus> {
+        let ChatEvent::RunStatus { status } = event else {
+            return None;
+        };
+        Some(status)
+    }
+
+    fn quote(name: &str, text: &str) -> weacon_protocol::Quote {
+        weacon_protocol::Quote {
+            name: name.to_owned(),
+            agent: None,
+            text: text.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_chats_people_is_never_a_cores_to_take() {
+        let (_bench, mut engine) = parts();
+        let say = ChatAction::Say {
+            text: "Morning".to_owned(),
+            task: None,
+        };
+
+        let refused = engine.command(&key(), command("r-1", "c-1", say)).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 0);
     }
 
     #[tokio::test]

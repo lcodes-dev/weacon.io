@@ -5,6 +5,7 @@ import type {
   AccountSignedIn,
   AccountSignInFinish,
   AccountSignInStart,
+  ChatLeg,
   ChatList,
   ChatSummary,
   Code,
@@ -285,13 +286,16 @@ function listOf<T>(key: string, item: (value: unknown) => boolean): (value: unkn
 const isOffer = (value: unknown): value is InvitationOffer =>
   fields(value, ["workspace", "name"]) && isId((value as InvitationOffer).workspace) && Number.isSafeInteger((value as InvitationOffer).expires_at);
 const isList = (value: unknown): value is WorkspaceList => listOf("workspaces", isWorkspace)(value) && listOf("invitations", isOffer)(value);
+// Its machine goes into a machine's query, so it must be an id.
+const isLeg = (value: unknown): value is ChatLeg =>
+  fields(value, ["member", "machine", "agent"]) && isIdText((value as ChatLeg).machine_id) && typeof (value as ChatLeg).detached === "boolean";
 const isChat = (value: unknown): value is ChatSummary =>
-  fields(value, ["id", "machine", "owner", "state", "title"]) &&
+  fields(value, ["id", "owner", "state", "title"]) &&
   isId((value as ChatSummary).id) &&
   Number.isSafeInteger((value as ChatSummary).updated_at) &&
   ["undefined", "string"].includes(typeof (value as ChatSummary).run) &&
-  // Each goes into the address or a machine's query, so each must be an id.
-  isIdText((value as ChatSummary).machine_id) &&
+  listOf("legs", isLeg)(value) &&
+  // It goes into the address, so it must be an id.
   ((value as ChatSummary).task === undefined || isIdText((value as ChatSummary).task));
 const isIdText = (value: unknown): boolean => typeof value === "string" && isId(value);
 const isChats = listOf<ChatList>("chats", isChat);

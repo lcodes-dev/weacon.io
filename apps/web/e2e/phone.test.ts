@@ -146,8 +146,6 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   await settings.getByRole("button", { name: "Close the sign-in" }).waitFor();
   await fits(page, "the sign-in terminal");
   await page.getByRole("button", { name: "Back", exact: true }).tap();
-  // The machines were listed before the core paired.
-  await nav.getByRole("button", { name: "Check again" }).tap();
 
   // New chat fills the screen, and the one control back shows the list again.
   await nav.getByRole("button", { name: "New chat" }).tap();
@@ -163,7 +161,11 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   await nav.getByRole("button", { name: "New chat" }).tap();
   await form.getByLabel("Repository").selectOption("demo");
   await form.getByLabel("Agent").selectOption("claude");
-  await form.getByRole("combobox", { name: "Message" }).fill("Run the parser tests");
+  // The box opens on the agent's mention, which the message follows.
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await form.getByRole("combobox", { name: "Message" }).press("End");
+  await page.keyboard.type("Run the parser tests");
+  await fits(page, "New chat with a call");
   await thumbSized(page, form.getByRole("button", { name: "Send" }), "Send");
   await form.getByRole("button", { name: "Send" }).tap();
 
@@ -339,6 +341,9 @@ const MANY_LINES = Array.from({ length: 30 }, (_, at) => `echo "step ${at + 1} o
 const WRITE = `notes/${"deeply-nested-folder/".repeat(8)}pantry.md\n${"A first line of the new text that runs on well past the edge of a phone. ".repeat(4)}\n${"More of the new text.\n".repeat(160)}`.slice(0, 4096);
 const WANTED: Record<string, { tool: string; text: string }> = { "c-1": { tool: "Bash", text: ONE_LINE }, "c-2": { tool: "Bash", text: MANY_LINES }, "c-3": { tool: "Write", text: WRITE } };
 
+// The member whose agent asks in `waitingChat`: the signed-in person, once known.
+let asker = "";
+
 // A chat's snapshot waiting on a prompt whose tool wants what `WANTED` holds for the chat; every command is taken.
 function waitingChat(asked: Envelope): Envelope[] {
   if (asked.type === "chat_command") {
@@ -348,7 +353,7 @@ function waitingChat(asked: Envelope): Envelope[] {
   if (asked.type !== "chat_query" || wanted === undefined) {
     return [];
   }
-  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: asker }, machine: "laptop" };
   const asks = { event: "permission_asked" as const, run: "r-1", prompt: 1, tool: wanted.tool, input: {}, wants: { text: wanted.text, cut: asked.chat === "c-3" } };
   const events = [
     { seq: 1, event: { kind: "prompt" as const, request: "q-1", text: "Sort the pantry." } },
@@ -365,7 +370,9 @@ test("on a phone a prompt with a long command or a whole file keeps its text in 
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as WorkspaceList).workspaces[0]?.member ?? "");
-  const chats = Object.keys(WANTED).map((id) => ({ id, title: `Pantry ${id}`, owner: member, machine: "laptop", machine_id: "mc-1", state: "open" as const, updated_at: 1 }));
+  asker = member;
+  const legs = [{ member, machine: "laptop", machine_id: "mc-1", agent: "claude" as const, detached: false }];
+  const chats = Object.keys(WANTED).map((id) => ({ id, title: `Pantry ${id}`, owner: member, legs, state: "open" as const, updated_at: 1 }));
   const list: ChatList = { chats };
   await page.route("**/api/workspaces/*/chats", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) }));
   await page.getByRole("button", { name: "Personal" }).tap();
@@ -403,4 +410,101 @@ test("on a phone a prompt with a long command or a whole file keeps its text in 
     sent.flatMap((envelope) => (envelope.type === "chat_command" && envelope.action.kind === "permission" ? [[envelope.chat, envelope.action.answer]] : [])),
     [["c-3", { run: "r-1", prompt: 1, allow: false }]],
   );
+});
+
+test("on a phone two people's chat fits: their names, the agent's fields, whose answer it waits for, and a worktree that can't go yet", { timeout: 900_000 }, async (t) => {
+  const served = await serve(PHONE);
+  t.after(() => served.close());
+  const ada = served.page;
+  const box = (page: Page) => page.getByRole("combobox", { name: "Message" });
+  const chats = (page: Page) => page.getByRole("navigation", { name: "Chats" });
+  await signIn(served);
+  await ada.getByLabel("Name").fill("Crew");
+  await ada.getByRole("button", { name: "Create" }).tap();
+  await chats(ada).waitFor();
+  const workspace = new URL(ada.url()).searchParams.get("workspace");
+  assert.ok(workspace !== null);
+  await ada.getByRole("button", { name: "Settings", exact: true }).tap();
+  const members = ada.getByRole("region", { name: "Members" });
+  await members.getByLabel("Email").fill("grace@example.com");
+  await members.getByRole("button", { name: "Invite" }).tap();
+  await members.getByText("Invited grace@example.com.", { exact: false }).waitFor();
+  const laptop = await machine(served, workspace, "Laptop");
+  t.after(() => laptop.close());
+  await ada.getByRole("button", { name: "Back", exact: true }).tap();
+  const grace = await anotherPhone(served, "grace@example.com");
+  await grace.getByRole("list", { name: "Invitations" }).getByRole("button", { name: "Accept" }).tap();
+  await chats(grace).waitFor();
+
+  // Ada starts with a plain message, written over the mention the box opens on.
+  await chats(ada).getByRole("button", { name: "New chat" }).tap();
+  const form = ada.getByRole("region", { name: "New chat" });
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await shown(ada, form.getByRole("group", { name: "Your agent in this chat" }), "the agent's fields");
+  await fits(ada, "New chat with the agent's fields");
+  await box(ada).fill("Shall we fix the parser?");
+  await form.getByRole("button", { name: "Send" }).tap();
+  await ada.getByRole("heading", { name: "Shall we fix the parser?" }).waitFor();
+
+  // Grace, who has no machine, answers under her own name.
+  await chats(grace).getByRole("button", { name: "Shall we fix the parser?" }).tap();
+  await grace.locator(".row.prompt", { hasText: "Shall we fix the parser?" }).getByText("ada", { exact: true }).waitFor();
+  await thumbSized(grace, grace.getByRole("button", { name: "Add your agent" }), "Add your agent");
+  await box(grace).fill("Try the cache first, and tell me how long the whole suite takes once it is warm");
+  await grace.getByRole("button", { name: "Send" }).tap();
+  await ada.locator(".row.prompt", { hasText: "Try the cache first" }).getByText("grace", { exact: true }).waitFor();
+  await fits(ada, "a chat two people write in");
+
+  // Ada adds her agent in the chat and calls it.
+  await ada.getByRole("button", { name: "Add your agent" }).tap();
+  const fields = ada.getByRole("group", { name: "Your agent in this chat" });
+  await fields.getByLabel("Repository").selectOption("demo");
+  await fields.getByLabel("Agent").selectOption("claude");
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value.startsWith("@Claude Code ") === true);
+  await fits(ada, "a chat with the agent's fields");
+  await shown(ada, ada.locator(".composer"), "the message box");
+  await box(ada).press("End");
+  await ada.keyboard.type("Run the parser tests");
+  await thumbSized(ada, ada.getByRole("button", { name: "Send" }), "Send");
+  await ada.getByRole("button", { name: "Send" }).tap();
+  await ada.getByText("ada's Claude Code · Laptop").waitFor();
+  await thumbSized(ada, ada.getByRole("button", { name: "Allow" }), "Allow");
+  await fits(ada, "a chat waiting on its owner");
+
+  // Grace sees whose answer it waits for, whole on her screen, and writes into the turn.
+  await shown(grace, grace.getByText("Waiting for ada"), "whose answer it waits for");
+  assert.equal(await grace.getByRole("button", { name: "Allow" }).count(), 0);
+  await fits(grace, "a chat waiting on someone else");
+  await box(grace).fill("Any luck?");
+  await grace.getByRole("button", { name: "Send" }).tap();
+  await ada.locator(".row.prompt", { hasText: "Any luck?" }).getByText("grace", { exact: true }).waitFor();
+
+  // While the agent works its worktree stays, and the bar says why.
+  await ada.getByRole("button", { name: "Changes" }).tap();
+  const bar = ada.getByRole("region", { name: "Worktree" });
+  await bar.getByRole("button", { name: "Remove" }).tap();
+  const confirm = bar.getByRole("group", { name: "Remove the worktree" });
+  await thumbSized(ada, confirm.getByRole("button", { name: "Remove" }), "Remove");
+  await fits(ada, "removing a worktree");
+  await confirm.getByRole("button", { name: "Remove" }).tap();
+  await shown(ada, bar.getByText("Stop the agent first, then remove the worktree."), "why the worktree stays");
+  assert.equal(await bar.getByRole("button", { name: "Restore" }).count(), 0);
+  await fits(ada, "a worktree that can't go yet");
+  await ada.getByRole("button", { name: "Back", exact: true }).tap();
+
+  // The turn carries on after Grace's message, in two parts under the agent's label.
+  await ada.getByRole("button", { name: "Allow" }).tap();
+  await ada.getByText("All 12 tests pass.").waitFor();
+  await ada.getByText("Done", { exact: true }).waitFor();
+  await grace.getByText("All 12 tests pass.").waitFor();
+  await fits(ada, "a finished turn someone wrote into");
+  await fits(grace, "a finished turn, for the one who wrote into it");
+
+  // Grace has no machine to add an agent from, and is told what to do.
+  await grace.getByRole("button", { name: "Add your agent" }).tap();
+  await grace.getByRole("button", { name: "Open Settings" }).waitFor();
+  const note = await shown(grace, grace.getByText("Pair a machine in Settings to call your own agent."), "what is missing");
+  assert.ok(note.x >= 8, "what is missing touches the screen's edge");
+  await shown(grace, grace.locator(".composer"), "the message box");
+  await fits(grace, "a chat with no machine to add an agent from");
 });

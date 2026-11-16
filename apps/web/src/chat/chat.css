@@ -3,6 +3,13 @@
   padding-left: 10px;
 }
 
+.row.prompt .author {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .row.landed {
   background: var(--border);
   border-radius: 6px;

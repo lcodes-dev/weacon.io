@@ -4,6 +4,7 @@
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{ChatLive, Code, MachineId, RunEvent, code};
 
+use crate::db::Leg;
 use crate::shared::Shared;
 
 /// What a core offers, and the server offers, to pass a chat's live updates on.
@@ -17,7 +18,12 @@ pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLiv
         return;
     }
     match placed(shared, machine, &live).await {
-        Ok(Some(seq)) => {
+        Ok(Some((seq, leg))) => {
+            // Under the name the chat's stored events know the run by.
+            let Some(run) = leg.chat_run(&live.update.run) else {
+                return;
+            };
+            live.update.run = run;
             live.after = Some(seq);
             shared.chats.live(live);
         }
@@ -34,24 +40,22 @@ pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLiv
     }
 }
 
-// The chat's seq when `live` goes on: it runs on `machine`, whose owner still owns it there,
-// and holds no event stored after the one `live` came after.
+// The chat's seq when `live` goes on, and the leg of it `machine` holds, whose member still
+// owns it: the chat holds no event of that leg stored after the one `live` came after.
 async fn placed(
     shared: &Shared,
     machine: &MachineId,
     live: &ChatLive,
-) -> Result<Option<u64>, Fault> {
+) -> Result<Option<(u64, Leg)>, Fault> {
     let Some(place) = shared.db.find_workspace(&live.workspace).await? else {
         return Ok(None);
     };
     let Some(chat) = place.chat(&live.chat).await? else {
         return Ok(None);
     };
-    if live.after.is_some_and(|after| after < chat.core_seq) {
+    let Some(leg) = place.leg_on(&live.chat, machine).await? else {
         return Ok(None);
-    }
-    Ok(place
-        .runs_on(&live.chat, machine)
-        .await?
-        .then_some(chat.seq))
+    };
+    let late = live.after.is_some_and(|after| after < leg.core_seq);
+    Ok((!late).then_some((chat.seq, leg)))
 }

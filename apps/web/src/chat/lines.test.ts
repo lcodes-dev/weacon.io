@@ -36,7 +36,32 @@ test("a chat's lines are its prompts and its turns under their labels, with prom
   );
   assert.deepEqual(lines(chat).at(1), { key: "t2-r-1", kind: "agent", label: "Claude Code · laptop" });
   assert.deepEqual(lines(chat, new Map([["m-1", "ada"]])).at(1), { key: "t2-r-1", kind: "agent", label: "ada's Claude Code · laptop" });
-  assert.deepEqual(lines(chat).at(-1), { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", wants: undefined, at: 1, state: "open" } });
+  const ask = { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", wants: undefined, at: 1, state: "open" }, owner: "m-1" };
+  assert.deepEqual(lines(chat).at(-1), { ...ask, waitsFor: undefined });
+  // Whoever can't answer it reads whose answer it waits for.
+  assert.deepEqual(lines(chat, new Map([["m-1", "ada"]])).at(-1), { ...ask, waitsFor: "ada" });
+});
+
+test("what a person wrote, to the chat or to their agent, shows under their name", () => {
+  const chat = chatOf(
+    [
+      { seq: 2, event: { kind: "message", author: "m-2", text: "Morning" } },
+      { seq: 3, event: { kind: "prompt", request: "q-3", text: "@Claude Code fix it", author: "m-1" } },
+      { seq: 4, event: { kind: "outside_prompt", text: "From a terminal" } },
+    ],
+    4,
+  );
+  const names = new Map([
+    ["m-1", "ada"],
+    ["m-2", "grace"],
+  ]);
+
+  assert.deepEqual(lines(chat, names), [
+    { key: "p2", kind: "prompt", text: "Morning", author: "grace" },
+    { key: "p3", kind: "prompt", text: "@Claude Code fix it", author: "ada" },
+    { key: "p4", kind: "prompt", text: "From a terminal", author: undefined },
+  ]);
+  assert.equal(lineAt(chat, 2), "p2");
 });
 
 test("lines keep their keys as older events load before them and as text commits", () => {
@@ -83,5 +108,5 @@ test("a prompt that carried a picked element shows the note of it", () => {
   const pick = { url: "http://localhost:3000/", title: "Home", selector: "main > button" };
   const chat = fromSnapshot({ seq: 1, runs: new Map(), waiting: [], events: [{ seq: 1, event: { kind: "prompt", request: "q-1", text: "Make it blue", pick } }] });
 
-  assert.deepEqual(lines(chat), [{ key: "p1", kind: "prompt", text: "Make it blue", pick }]);
+  assert.deepEqual(lines(chat), [{ key: "p1", kind: "prompt", text: "Make it blue", author: undefined, pick }]);
 });

@@ -800,7 +800,27 @@
     "ChatAction": {
       "oneOf": [
         {
-          "description": "Starts or queues a turn. Only a chat's first prompt has `repo` and `machine`, one of the\nsender's; the server drops `machine` before relaying. `agent` fixes the chat's agent on\nits first prompt, Claude when missing; a later prompt naming another agent is refused as\n`chat.agent_conflict`, and an agent the core doesn't know as `message.unsupported`.\n`task` links a new chat to a task of its workspace; the server relays it with the\ntask's title as it is then, and a later prompt naming a task with the chat's own, or none.\n`pick` names a [`Pick`](crate::Pick) the core keeps, from a local client only; the agent\ngets it as quoted page content.",
+          "description": "A message to the chat's people, which starts no agent: the server stores it and relays it\nto no machine. One to a chat that isn't there makes it, for the task `task` if it names one.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "say"
+            },
+            "task": {
+              "$ref": "#/$defs/ChatTask"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "text"
+          ]
+        },
+        {
+          "description": "Starts or queues a turn of the sender's own agent. Only the sender's first prompt in a\nchat has `repo` and `machine`, one of the sender's; the server drops `machine` before\nrelaying. `agent` fixes their agent there on that prompt, Claude when missing; a later\nprompt naming another agent is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince the sender's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
           "type": "object",
           "properties": {
             "agent": {
@@ -815,6 +835,12 @@
             },
             "pick": {
               "$ref": "#/$defs/RequestId"
+            },
+            "quotes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Quote"
+              }
             },
             "repo": {
               "$ref": "#/$defs/RepoId"
@@ -988,7 +1014,7 @@
       ]
     },
     "ChatCommand": {
-      "description": "What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The\ncore answers with receipts under `request`.",
+      "description": "What a person says in a chat or asks of their agent there, from a client to the server or to\na core that offers `chat.send`. A receipt under `request` answers it.",
       "type": "object",
       "properties": {
         "action": {
@@ -1036,11 +1062,35 @@
     "ChatEvent": {
       "oneOf": [
         {
-          "description": "A person's prompt, accepted under `request`, with the repository, the agent and the\ntask it named, and a note of the element it carried, if any.",
+          "description": "A person's message to the chat's people, which the server writes.",
+          "type": "object",
+          "properties": {
+            "author": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "kind": {
+              "type": "string",
+              "const": "message"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "author",
+            "text"
+          ]
+        },
+        {
+          "description": "A person's prompt to their own agent, accepted under `request`, with the repository, the\nagent and the task it named, and a note of the element it carried, if any. `author` is\nwho wrote it, which the server stamps from its own record of the machine that sent it;\nleft out when not known.",
           "type": "object",
           "properties": {
             "agent": {
               "$ref": "#/$defs/AgentKind"
+            },
+            "author": {
+              "$ref": "#/$defs/MemberId"
             },
             "kind": {
               "type": "string",
@@ -1141,6 +1191,38 @@
       "type": "string",
       "maxLength": 64,
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
+    },
+    "ChatLeg": {
+      "description": "A member's own agent in a chat, fixed by their first prompt there: its machine's id and\nname, and the repository it works in, if any.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "detached": {
+          "description": "Its machine was unpaired, or no longer has its log: it can never be prompted again.",
+          "type": "boolean"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "machine_id": {
+          "$ref": "#/$defs/MachineId"
+        },
+        "member": {
+          "$ref": "#/$defs/MemberId"
+        },
+        "repo": {
+          "$ref": "#/$defs/RepoId"
+        }
+      },
+      "required": [
+        "member",
+        "machine_id",
+        "machine",
+        "agent",
+        "detached"
+      ]
     },
     "ChatList": {
       "description": "A workspace's chats, from the server, to clients that have the capability\n`workspace.chats`.",
@@ -1267,34 +1349,30 @@
       "description": "What can still happen to a chat.",
       "oneOf": [
         {
-          "description": "Its owner can prompt it.",
+          "description": "Its workspace's members can write in it.",
           "type": "string",
           "const": "open"
         },
         {
-          "description": "Its workspace has no room for more of its events, so it takes no prompts until it has.",
+          "description": "Its workspace has no room for more of its events, so it takes none until it has.",
           "type": "string",
           "const": "full"
-        },
-        {
-          "description": "Its machine was unpaired, or no longer has its log: it can be read, never prompted.",
-          "type": "string",
-          "const": "detached"
         }
       ]
     },
     "ChatSummary": {
-      "description": "A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and\n`updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.",
+      "description": "A chat in a [`ChatList`]: `owner` is who started it, and `updated_at` is when someone last\nwrote in it or a turn ended, in seconds since the Unix epoch.",
       "type": "object",
       "properties": {
         "id": {
           "$ref": "#/$defs/ChatId"
         },
-        "machine": {
-          "$ref": "#/$defs/MachineName"
-        },
-        "machine_id": {
-          "$ref": "#/$defs/MachineId"
+        "legs": {
+          "description": "Each member's own agent in it, in the order they first called theirs.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ChatLeg"
+          }
         },
         "owner": {
           "$ref": "#/$defs/MemberId"
@@ -1322,10 +1400,9 @@
         "id",
         "title",
         "owner",
-        "machine",
+        "legs",
         "state",
-        "updated_at",
-        "machine_id"
+        "updated_at"
       ]
     },
     "ChatTask": {
@@ -3736,6 +3813,43 @@
         }
       ]
     },
+    "Quote": {
+      "description": "What someone else said in a chat, for an agent to read as a quote and never as an instruction.",
+      "type": "object",
+      "properties": {
+        "agent": {
+          "description": "The agent that wrote it, when one did.",
+          "$ref": "#/$defs/QuotedAgent"
+        },
+        "name": {
+          "description": "The person who wrote it, or whose agent did, as the server names them.",
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "text"
+      ]
+    },
+    "QuotedAgent": {
+      "description": "The agent a [`Quote`] is from, and the name of the machine it runs on.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/AgentKind"
+        },
+        "machine": {
+          "$ref": "#/$defs/MachineName"
+        }
+      },
+      "required": [
+        "kind",
+        "machine"
+      ]
+    },
     "Receipt": {
       "description": "The core's or server's word on a command, sent when it accepts it and again when it ends.",
       "type": "object",
@@ -5377,25 +5491,12 @@
     "WorktreeAction": {
       "oneOf": [
         {
-          "description": "Moves the worktree to the Trash; its branch stays.",
+          "description": "Deletes the worktree with what isn't committed; its branch stays, and the chat's next\nrun checks it out again.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "remove"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "description": "Brings the worktree back from the Trash to where it was.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "restore"
             }
           },
           "required": [
@@ -5465,7 +5566,7 @@
     "WorktreeAnswerKind": {
       "oneOf": [
         {
-          "description": "Where the worktree stands, in the Trash or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
+          "description": "Where the worktree stands, removed or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
           "type": "object",
           "properties": {
             "kind": {
@@ -5473,7 +5574,6 @@
               "const": "state"
             },
             "removed": {
-              "description": "In the Trash.",
               "type": "boolean"
             },
             "uncommitted": {
@@ -5540,7 +5640,7 @@
       ]
     },
     "WorktreeCommand": {
-      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove` or `restore`, which a repeated one\nanswers too.",
+      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove`, which a repeated one answers too.",
       "type": "object",
       "properties": {
         "action": {
@@ -5598,7 +5698,7 @@
     "WorktreeQueryKind": {
       "oneOf": [
         {
-          "description": "Whether the worktree is in the Trash, and what removing it would set aside.",
+          "description": "Whether the worktree is there, and what removing it would delete.",
           "type": "object",
           "properties": {
             "kind": {

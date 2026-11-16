@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AgentKind, ChatEntry, ChatEvent, ChatId, ChatTask, MAX_FRAME, Outcome, RepoId, RequestId,
-    RunEvent, RunUpdate, code,
+    AgentKind, AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatTask, MAX_FRAME, MemberId,
+    Outcome, RepoId, RequestId, RunEvent, RunUpdate, code,
 };
 
 use crate::app::blocking;
@@ -47,6 +47,8 @@ pub(crate) struct ChatLog {
     writes_left: Option<u32>,
     /// The agent the chat's first prompt named, Claude when it named none.
     agent: Option<AgentKind>,
+    /// Who wrote the chat's first prompt, when it says: the member whose agent this is.
+    owner: Option<MemberId>,
     /// The repository the chat's first prompt named, if it named one.
     repo: Option<RepoId>,
     /// The task the chat's first prompt named, if it named one.
@@ -97,6 +99,7 @@ impl ChatLog {
                 #[cfg(test)]
                 writes_left: None,
                 agent: None,
+                owner: None,
                 repo: None,
                 task: None,
                 runs: ChatRuns::default(),
@@ -145,11 +148,16 @@ impl ChatLog {
         self.runs.apply(entry);
         match &entry.event {
             ChatEvent::Prompt {
-                agent, repo, task, ..
+                agent,
+                author,
+                repo,
+                task,
+                ..
             } => {
                 // The first prompt names the chat's agent, repository and task; later ones can't.
                 if self.agent.is_none() {
                     self.agent = Some(agent.unwrap_or(AgentKind::Claude));
+                    self.owner.clone_from(author);
                     self.repo.clone_from(repo);
                     self.task.clone_from(task);
                 }
@@ -161,6 +169,7 @@ impl ChatLog {
             ChatEvent::Run { .. }
             | ChatEvent::RunStatus { .. }
             | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Message { .. }
             | ChatEvent::Newer => {}
         }
         self.starts.push(self.end);
@@ -170,6 +179,16 @@ impl ChatLog {
     /// The chat's agent, once a prompt is in the log.
     pub(crate) const fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// The chat's agent as people know it, once the log's first prompt says whose it is.
+    pub(crate) fn agent_ref(&self) -> Option<AgentRef> {
+        let member = self.owner.clone()?;
+        Some(AgentRef {
+            kind: self.agent?,
+            owner: AgentOwner::Member { member },
+            machine: None,
+        })
     }
 
     /// The repository the chat works in, once a prompt naming one is first in the log.
@@ -457,6 +476,7 @@ mod tests {
             title: "Speed up the build".to_owned(),
         };
         let prompt = |id: &str, repo: &str| ChatEvent::Prompt {
+            author: None,
             pick: None,
             request: request(id),
             text: "Go".to_owned(),

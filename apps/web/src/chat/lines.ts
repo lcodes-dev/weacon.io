@@ -1,4 +1,4 @@
-import type { PickNote, RunId } from "../protocol.ts";
+import type { MemberId, PickNote, RunId } from "../protocol.ts";
 import type { TranscriptRow } from "../transcript/transcript.ts";
 import type { Ask, Chat } from "./chat.ts";
 import type { Names } from "../members/names.ts";
@@ -6,23 +6,27 @@ import { label } from "./label.ts";
 
 /** One line of a chat's transcript, under a key that names it as long as the chat is shown. */
 export type Line =
-  | { key: string; kind: "prompt"; text: string; pick?: PickNote }
+  | { key: string; kind: "prompt"; text: string; author: string | undefined; pick?: PickNote }
   | { key: string; kind: "agent"; label: string }
   | { key: string; kind: "row"; row: TranscriptRow; writing: boolean }
-  | { key: string; kind: "ask"; run: RunId; ask: Ask };
+  | { key: string; kind: "ask"; run: RunId; ask: Ask; owner: MemberId | undefined; waitsFor: string | undefined };
 
 /**
- * The lines `chat` shows: each prompt, and each turn under its agent's label, which names its owner
- * by `names`, with its prompts in place.
+ * The lines `chat` shows: what each person wrote under their name, and each turn under its agent's
+ * label, which names its owner, both by `names`, with its prompts in place, each with the member
+ * whose agent asks and their name, for those who can't answer it.
  */
 export function lines(chat: Chat, names?: Names): Line[] {
   return chat.items.flatMap((item): Line[] => {
     if (item.kind === "prompt") {
-      return [{ key: `p${item.seq}`, kind: "prompt", text: item.text, ...(item.pick === undefined ? {} : { pick: item.pick }) }];
+      return [{ key: `p${item.seq}`, kind: "prompt", text: item.text, author: names?.get(item.author ?? ""), ...(item.pick === undefined ? {} : { pick: item.pick }) }];
     }
     const { key, run, transcript, asks } = item.turn;
-    const shown: Line[] = [{ key, kind: "agent", label: label(chat.runs.get(run)?.agent, names) }];
-    const asksAt = (at: number) => asks.filter((ask) => ask.at === at).map((ask): Line => ({ key: `${key}.a${ask.prompt}`, kind: "ask", run, ask }));
+    const agent = chat.runs.get(run)?.agent;
+    const owner = agent?.owner.kind === "member" ? agent.owner.member : undefined;
+    const shown: Line[] = [{ key, kind: "agent", label: label(agent, names) }];
+    const asksAt = (at: number) =>
+      asks.filter((ask) => ask.at === at).map((ask): Line => ({ key: `${key}.a${ask.prompt}`, kind: "ask", run, ask, owner, waitsFor: names?.get(owner ?? "") }));
     transcript.rows.forEach((row, at) => {
       shown.push(...asksAt(at), { key: `${key}.${at}`, kind: "row", row, writing: transcript.writing && at === transcript.rows.length - 1 });
     });

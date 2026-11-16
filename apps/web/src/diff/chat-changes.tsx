@@ -29,7 +29,8 @@ export function ChatChanges({
 }) {
   const [comments, setComments] = useState<readonly Comment[]>([]);
   const { sending, problem, submit } = useSend<readonly Comment[]>(send, (sent) => setComments((now) => unsent(now, sent)));
-  const sendReview = () => submit(reviewPrompt(comments), comments);
+  // A review goes to the reviewer's own agent.
+  const sendReview = () => submit(reviewPrompt(comments), comments, true);
   if (hidden) {
     return null;
   }

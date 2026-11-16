@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChatRef } from "../chat-ref.ts";
 import { type Send, deliverPrompt } from "../composer/prompt.ts";
 import { later } from "../connection.ts";
+import type { Choice } from "../new-chat/start.ts";
 import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { ChatAction, Envelope, RequestId, RunId } from "../protocol.ts";
@@ -70,9 +71,9 @@ export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined,
 type Through<T> = (command: Command, receipts: Receipts, send: (envelope: Envelope) => void) => Promise<T>;
 
 /**
- * Prompts, permission answers and Stop for the chat at `chatRef` over `link`, and first prompts that
- * make a chat, each waiting for its receipt while the link is `live`; an accepted answer tells
- * `answered` its prompt.
+ * Messages, prompts, permission answers and Stop for the chat at `chatRef` over `link`, and the
+ * first words that make a chat, each waiting for its receipt while the link is `live`; an accepted
+ * answer tells `answered` its prompt.
  */
 export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, answered: (run: RunId, prompt: number) => void) {
   const [answers, setAnswers] = useState<Answers>(new Map());
@@ -109,9 +110,14 @@ export function useChatCommands(link: WorkspaceSocket, chatRef: ChatRef | undefi
     };
     return through(chatCommand(link.nextId(), to, request, action), waiting, send);
   };
-  const send: Send = (text, request) => command({ kind: "prompt", text }, request, deliverPrompt);
-  // A chat's first prompt, which makes the chat at `to`.
-  const start = (to: ChatRef, action: Extract<ChatAction, { kind: "prompt" }>, request: RequestId) => command(action, request, deliverPrompt, to);
+  // A message to the chat's people, or, when it calls the sender's agent, a prompt to it, which
+  // names the agent `first` picks until the chat has it.
+  const send =
+    (first?: Choice): Send =>
+    (text, request, calls) =>
+      command(calls ? { kind: "prompt", text, ...first } : { kind: "say", text }, request, deliverPrompt);
+  // A chat's first words, which make the chat at `to`.
+  const start = (to: ChatRef, action: Extract<ChatAction, { kind: "say" | "prompt" }>, request: RequestId) => command(action, request, deliverPrompt, to);
   const act = (action: ChatAction, request: RequestId) => command(action, request, deliver);
   const answering = {
     answers,

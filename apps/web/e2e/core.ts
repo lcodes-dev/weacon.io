@@ -20,6 +20,8 @@ export type Machine = {
   start(): Promise<void>;
   /** Stops the daemon and waits for it to exit. */
   stop(): Promise<void>;
+  /** The prompts its stand-in agent was given, in order, as the agent read them. */
+  heard(): string[];
   /** Stops everything this started and removes its folder. */
   close(): Promise<void>;
 };
@@ -77,7 +79,8 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
   symlinkSync(programs.agent, join(bin, "claude"));
   const home = join(dir, "home");
   mkdirSync(home);
-  const env = { ...process.env, HOME: home, WEACON_STATE_DIR: join(dir, "state"), PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
+  const heard = join(dir, "heard.jsonl");
+  const env = { ...process.env, HOME: home, WEACON_STATE_DIR: join(dir, "state"), FAKE_AGENT_HEARD: heard, PATH: `${bin}${delimiter}${process.env.PATH ?? ""}` };
   const started = (child: ChildProcess) => {
     children.push(child);
     return child;
@@ -106,6 +109,11 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
   const log = join(dir, "state", "logs", "daemon.log");
   const connections = () => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((line) => line.includes('"msg":"uplink connected"')).length : 0);
   const machine = {
+    heard: () =>
+      (existsSync(heard) ? readFileSync(heard, "utf8") : "")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line) as string),
     start: async () => {
       const before = connections();
       const child = started(spawn(programs.core, ["daemon"], { env, stdio: "ignore" }));

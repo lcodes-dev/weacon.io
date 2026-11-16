@@ -348,14 +348,14 @@ mod tests {
             .unwrap();
         let machine: weacon_protocol::MachineId = id("mc-1");
         let chat: weacon_protocol::ChatId = id("c-1");
-        assert!(one.runs_on(&chat, &machine).await.unwrap());
-        assert_eq!(one.open_on(&machine, 9).await.unwrap().len(), 1);
+        assert!(one.leg_on(&chat, &machine).await.unwrap().is_some());
+        assert_eq!(one.legs_on(&machine, 9).await.unwrap().len(), 1);
         assert!(one.machine_member(&ada, &machine).await.unwrap().is_some());
 
         one.leave(&member_id("m1")).await.unwrap();
 
-        assert!(!one.runs_on(&chat, &machine).await.unwrap());
-        assert!(one.open_on(&machine, 9).await.unwrap().is_empty());
+        assert_eq!(one.leg_on(&chat, &machine).await.unwrap(), None);
+        assert!(one.legs_on(&machine, 9).await.unwrap().is_empty());
         assert_eq!(one.machine_member(&ada, &machine).await.unwrap(), None);
         let theirs = two.machine_member(&ada, &machine).await.unwrap();
         assert_eq!(theirs.map(|(member, _)| member), Some(member_id("m2")));

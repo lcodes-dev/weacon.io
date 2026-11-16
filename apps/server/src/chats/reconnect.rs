@@ -58,7 +58,7 @@ async fn follow_again(shared: &Shared, connected: &Connected) -> Result<usize, F
     let mut unsent = 0_usize;
     for summary in shared.db.account(owner.clone()).workspaces().await? {
         let workspace = shared.db.workspace(&summary.id).await?;
-        for (chat, core_seq) in workspace.open_on(machine, FOLLOWED_AGAIN).await? {
+        for (chat, core_seq) in workspace.legs_on(machine, FOLLOWED_AGAIN).await? {
             let follow = link::follow(workspace.id(), &chat, core_seq);
             // What can't be followed now is the next time the machine connects.
             let sent = vec![(shared.links.next_id(), follow)];

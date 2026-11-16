@@ -5,7 +5,7 @@ use weacon_protocol::{
     PermissionAnswer, RepoId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::{Incoming, NewChat, Workspace};
+use super::{Incoming, NewChat, NewLeg, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -106,9 +106,12 @@ pub(crate) async fn begin_as(workspace: &Workspace, making: &Making<'_>) -> Resu
         id: &chat,
         owner: &owner,
         title,
-        repo: Some(&repo),
-        machine_id: &machine_id,
-        machine: &machine,
+        leg: Some(NewLeg {
+            machine_id: &machine_id,
+            machine: &machine,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: Some(&repo),
+        }),
         at,
         task: making.task,
     };
@@ -167,6 +170,7 @@ pub(crate) fn prompt(
         workspace: id("w1"),
         chat: id(chat),
         action: ChatAction::Prompt {
+            quotes: Vec::new(),
             pick: None,
             text: text.to_owned(),
             repo: None,
@@ -202,7 +206,20 @@ pub(crate) async fn append(
             at: NOW,
         })
         .collect();
-    workspace.append_events(&id(chat), &incoming).await
+    let chat = id::<ChatId>(chat);
+    // From its owner's machine, when it is there.
+    match workspace.chat(&chat).await? {
+        Some(found) => workspace.append_as(&chat, &found.owner, &incoming).await,
+        None => workspace.append_events(&chat, &incoming).await,
+    }
+}
+
+/// The last of its owner's machine's events `chat` has.
+pub(crate) async fn core_seq(workspace: &Workspace, chat: &str) -> u64 {
+    let chat = id::<ChatId>(chat);
+    let owner = workspace.chat(&chat).await.unwrap().unwrap().owner;
+    let leg = workspace.leg(&chat, &owner).await.unwrap().unwrap();
+    leg.core_seq
 }
 
 pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
@@ -239,10 +256,30 @@ pub(crate) fn answers(prompt: u32) -> ChatEvent {
 }
 
 impl Workspace {
-    /// Puts every chat of the workspace on `machine`.
+    /// Puts every leg of the workspace's chats on `machine`.
     pub(crate) async fn move_chats_to(&self, machine: &MachineId) {
-        sqlx::query("UPDATE chats SET machine_id = ? WHERE workspace_id = ?")
+        sqlx::query("UPDATE chat_legs SET machine_id = ? WHERE workspace_id = ?")
             .bind(machine.as_str())
+            .bind(self.id.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
+    /// Keeps `status`, a run's status as JSON, as `chat`'s latest.
+    pub(crate) async fn set_run_status(&self, chat: &ChatId, status: &str) {
+        sqlx::query("UPDATE chats SET run_status = ? WHERE workspace_id = ? AND chat_id = ?")
+            .bind(status)
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
+    /// Has every leg's machine have sent its log's first entry, as one that took a prompt has.
+    pub(crate) async fn legs_took_prompts(&self) {
+        sqlx::query("UPDATE chat_legs SET core_seq = max(core_seq, 1) WHERE workspace_id = ?")
             .bind(self.id.as_str())
             .execute(&self.db.writer)
             .await
@@ -254,7 +291,8 @@ impl Workspace {
         sqlx::query(
             "INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash,
                  paired_at)
-             SELECT ?, account_id, 'Made-up machine', 'linux', 'key', randomblob(16), 0
+             SELECT ?, account_id, 'Made-up machine', 'linux', lower(hex(randomblob(32))),
+                 randomblob(16), 0
              FROM members WHERE workspace_id = ? AND member_id = ?",
         )
         .bind(machine)

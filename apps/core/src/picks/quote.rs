@@ -61,11 +61,18 @@ pub(crate) fn prompt(text: &str, pick: &Pick, shown: Shown<'_>) -> String {
 // The page can't end the quote early: its copies of either marker go, however they nest.
 fn quote(text: &str, max: usize) -> String {
     // Cut first, so a page's nested markers cost no more than `max` characters each pass.
-    let mut text = cut(text, max);
-    while text.contains(START) || text.contains(END) {
-        text = text.replace(START, "").replace(END, "");
+    cut(&unmarked(cut(text, max), [START, END]), max)
+}
+
+/// `text` without any copy of the `markers` a quote sits between, however they nest, so what is
+/// quoted can't end the quote early.
+pub(crate) fn unmarked(mut text: String, markers: [&str; 2]) -> String {
+    while markers.iter().any(|marker| text.contains(marker)) {
+        text = markers
+            .iter()
+            .fold(text, |text, marker| text.replace(marker, ""));
     }
-    cut(&text, max)
+    text
 }
 
 fn cut(text: &str, max: usize) -> String {

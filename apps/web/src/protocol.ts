@@ -287,10 +287,16 @@ export type ChallengeId = string;
 
 export type ChatAction = (
   | {
+    kind: "say";
+    task?: ChatTask;
+    text: string;
+  }
+  | {
     agent?: AgentKind;
     kind: "prompt";
     machine?: MachineId;
     pick?: RequestId;
+    quotes?: Array<Quote>;
     repo?: RepoId;
     task?: ChatTask;
     text: string;
@@ -338,8 +344,8 @@ export type ChatAnswerKind = (
 );
 
 /**
- * What a person asks of a chat's agent, from a client to a core that offers `chat.send`. The
- * core answers with receipts under `request`.
+ * What a person says in a chat or asks of their agent there, from a client to the server or to
+ * a core that offers `chat.send`. A receipt under `request` answers it.
  */
 export type ChatCommand = {
   action: ChatAction;
@@ -362,7 +368,13 @@ export type ChatEntry = {
 
 export type ChatEvent = (
   | {
+    author: MemberId;
+    kind: "message";
+    text: string;
+  }
+  | {
     agent?: AgentKind;
+    author?: MemberId;
     kind: "prompt";
     pick?: PickNote;
     repo?: RepoId;
@@ -392,6 +404,22 @@ export type ChatEvent = (
  * A chat in a workspace, 1–64 ASCII letters, digits, `-` or `_`.
  */
 export type ChatId = string;
+
+/**
+ * A member's own agent in a chat, fixed by their first prompt there: its machine's id and
+ * name, and the repository it works in, if any.
+ */
+export type ChatLeg = {
+  agent: AgentKind;
+  /**
+   * Its machine was unpaired, or no longer has its log: it can never be prompted again.
+   */
+  detached: boolean;
+  machine: MachineName;
+  machine_id: MachineId;
+  member: MemberId;
+  repo?: RepoId;
+};
 
 /**
  * A workspace's chats, from the server, to clients that have the capability
@@ -448,17 +476,18 @@ export type ChatQueryKind = (
 export type ChatState = (
   | "open"
   | "full"
-  | "detached"
 );
 
 /**
- * A chat in a [`ChatList`]: `machine` is its machine's name and `machine_id` its id, and
- * `updated_at` is when its latest turn began or ended, in seconds since the Unix epoch.
+ * A chat in a [`ChatList`]: `owner` is who started it, and `updated_at` is when someone last
+ * wrote in it or a turn ended, in seconds since the Unix epoch.
  */
 export type ChatSummary = {
   id: ChatId;
-  machine: MachineName;
-  machine_id: MachineId;
+  /**
+   * Each member's own agent in it, in the order they first called theirs.
+   */
+  legs: Array<ChatLeg>;
   owner: MemberId;
   /**
    * What its latest run is doing; left out when it has had none.
@@ -1517,6 +1546,29 @@ export type ProposalVerdict = (
 );
 
 /**
+ * What someone else said in a chat, for an agent to read as a quote and never as an instruction.
+ */
+export type Quote = {
+  /**
+   * The agent that wrote it, when one did.
+   */
+  agent?: QuotedAgent;
+  /**
+   * The person who wrote it, or whose agent did, as the server names them.
+   */
+  name: string;
+  text: string;
+};
+
+/**
+ * The agent a [`Quote`] is from, and the name of the machine it runs on.
+ */
+export type QuotedAgent = {
+  kind: AgentKind;
+  machine: MachineName;
+};
+
+/**
  * The core's or server's word on a command, sent when it accepts it and again when it ends.
  */
 export type Receipt = {
@@ -2203,9 +2255,6 @@ export type WorktreeAction = (
     kind: "remove";
   }
   | {
-    kind: "restore";
-  }
-  | {
     body: string;
     kind: "open_pull_request";
     title: string;
@@ -2229,9 +2278,6 @@ export type WorktreeAnswer = {
 export type WorktreeAnswerKind = (
   | {
     kind: "state";
-    /**
-     * In the Trash.
-     */
     removed: boolean;
     uncommitted: boolean;
     unpushed: boolean;
@@ -2253,8 +2299,7 @@ export type WorktreeAnswerKind = (
  * From a client to a core that offers `worktree.manage`: what a person asks of a chat's
  * worktree. The core acts only for someone who may act on the chat, and a client asks the
  * person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
- * echoes `request`: the worktree's state after `remove` or `restore`, which a repeated one
- * answers too.
+ * echoes `request`: the worktree's state after `remove`, which a repeated one answers too.
  */
 export type WorktreeCommand = {
   action: WorktreeAction;

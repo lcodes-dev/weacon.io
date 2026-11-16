@@ -4,14 +4,15 @@ import type { RequestId } from "./protocol.ts";
 
 /**
  * How a command ended for its sender; `lost` and `unsure` may or may not have run. `offline` and
- * `detached` are refusals because its machine is away or the chat has none, `full` because the
- * workspace has no room, and `unsupported` because the machine's core can't do it.
+ * `detached` are refusals because the sender's machine is away or no longer has the chat, `full`
+ * because the workspace has no room, `unsupported` because the machine's core can't do it, and
+ * `working` because another person's agent is on a turn in the chat.
  */
-export type Settled = "accepted" | "refused" | "offline" | "detached" | "full" | "unsupported" | "lost" | "unsure";
+export type Settled = "accepted" | "refused" | "offline" | "detached" | "full" | "unsupported" | "working" | "lost" | "unsure";
 
 /**
  * What a command was about, for saying how it ended: its subject, what didn't happen when it was
- * refused or never left, what may not have, and what a chat whose machine is gone no longer does.
+ * refused or never left, what may not have, and what no longer happens once the sender's machine has lost the chat.
  */
 export type Subject = { subject: string; refused: string; unsent: string; unsure: string; gone: string };
 
@@ -20,9 +21,10 @@ const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slic
 const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => string> = {
   refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
   offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
-  detached: ({ gone }) => `This chat's machine is gone, so ${gone}.`,
+  detached: ({ gone }) => `Your machine no longer has this chat, so ${gone}.`,
   full: ({ subject, unsent }) => `This workspace is full, so ${subject} ${unsent}.`,
   unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
+  working: ({ subject, unsent }) => `Another person's agent is working in this chat, so ${subject} ${unsent}. Try again once it's done.`,
   lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
   unsure: ({ subject, unsure }) => `No answer came. ${capital(subject)} ${unsure}.`,
 };
@@ -51,6 +53,7 @@ const REFUSALS = new Map<string, Settled>([
   ["chat.quota_full", "full"],
   ["store.full", "full"],
   ["message.unsupported", "unsupported"],
+  ["chat.agent_working", "working"],
   ["machine.no_answer", "unsure"],
 ]);
 

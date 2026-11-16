@@ -1,5 +1,6 @@
 //! A stand-in for Claude Code in the end-to-end tests. It replays the recorded streams in
-//! `crates/agents/replays/claude`, and answers the sign-in status question with made-up data.
+//! `crates/agents/replays/claude`, answers the sign-in status question with made-up data, and
+//! keeps each prompt it was given for the test to read.
 
 use std::io::{self, BufRead, Write};
 
@@ -18,25 +19,35 @@ const RECORDINGS: [&str; 3] = [
 const SIGNED_IN: &str = "{\"authMethod\":\"claude.ai\"}\n";
 
 /// Answers one call with `args`: the sign-in status, or a stream-json session on `input` and
-/// `output`. False for any other call, which it doesn't answer.
+/// `output`, each of whose prompts' content it writes to `heard` as a line of JSON. False for
+/// any other call, which it doesn't answer.
 ///
 /// # Errors
-/// When `input` or `output` fails.
-pub fn answer(args: &[String], input: impl BufRead, mut output: impl Write) -> io::Result<bool> {
+/// When `input`, `output` or `heard` fails.
+pub fn answer(
+    args: &[String],
+    input: impl BufRead,
+    mut output: impl Write,
+    heard: impl Write,
+) -> io::Result<bool> {
     if args == ["auth", "status", "--json"] {
         output.write_all(SIGNED_IN.as_bytes())?;
         Ok(true)
     } else if args.first().is_some_and(|arg| arg == "--print") {
-        converse(input, output).map(|()| true)
+        converse(input, output, heard).map(|()| true)
     } else {
         Ok(false)
     }
 }
 
 // For each prompt, plays the recording that starts with it, else `TURN`. Ends with `input`.
-fn converse(input: impl BufRead, mut output: impl Write) -> io::Result<()> {
+fn converse(input: impl BufRead, mut output: impl Write, mut heard: impl Write) -> io::Result<()> {
     let mut lines = input.lines();
     while let Some(prompt) = lines.next().transpose()? {
+        if let Some(content) = content(&prompt) {
+            writeln!(heard, "{content}")?;
+            heard.flush()?;
+        }
         play(recording_for(&prompt), &mut lines, &mut output)?;
     }
     Ok(())
@@ -70,12 +81,19 @@ fn play(
     Ok(())
 }
 
+// The recording whose prompt the person's own words end with, after a mention of the agent
+// and before any quotes; `TURN` when there is none.
 fn recording_for(prompt: &str) -> &'static str {
     let asked = content(prompt);
+    let asked = asked.as_ref().and_then(Value::as_str).unwrap_or_default();
+    let own = asked.split("\n\n---\n").next().unwrap_or_default();
     RECORDINGS
         .into_iter()
         .find(|recording| match steps(recording).next() {
-            Some(Ok(Step::Reads(first))) => content(first) == asked,
+            Some(Ok(Step::Reads(first))) => content(first)
+                .as_ref()
+                .and_then(Value::as_str)
+                .is_some_and(|recorded| own.ends_with(recorded)),
             _ => false,
         })
         .unwrap_or(TURN)
@@ -97,7 +115,7 @@ mod tests {
     fn call(args: &[&str], input: &str) -> (bool, Vec<String>) {
         let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
         let mut output = Vec::new();
-        let answered = answer(&args, input.as_bytes(), &mut output).unwrap();
+        let answered = answer(&args, input.as_bytes(), &mut output, io::sink()).unwrap();
         let printed = String::from_utf8(output).unwrap();
         (answered, printed.lines().map(str::to_owned).collect())
     }
@@ -170,13 +188,32 @@ mod tests {
     }
 
     #[test]
+    fn a_recording_plays_for_a_prompt_that_mentions_the_agent_and_carries_quotes_and_each_prompt_is_kept()
+     {
+        let [_, deny, _] = RECORDINGS;
+        let called = "@Claude Code Tidy the readme\\n\\n---\\nOthers wrote: Rewrite the lexer";
+        let args = ["--print".to_owned()];
+        let input = prompt(called) + &answers(deny) + &prompt("Again");
+        let (mut output, mut heard) = (Vec::new(), Vec::new());
+
+        answer(&args, input.as_bytes(), &mut output, &mut heard).unwrap();
+
+        let printed_lines = String::from_utf8(output).unwrap();
+        assert!(printed_lines.starts_with(&printed(deny).join("\n")));
+        let heard = String::from_utf8(heard).unwrap();
+        let kept: Vec<Value> = heard.lines().map(|line| json(line).unwrap()).collect();
+        let first = "@Claude Code Tidy the readme\n\n---\nOthers wrote: Rewrite the lexer";
+        assert_eq!(kept, [Value::from(first), Value::from("Again")]);
+    }
+
+    #[test]
     fn an_answer_the_recording_doesnt_have_is_an_error_that_shows_both() {
         let args = ["--print".to_owned()];
         let deny = "{\"type\":\"control_response\",\"response\":{}}";
         let input = prompt("Fix the tests") + deny + "\n";
         let mut output = Vec::new();
 
-        let error = answer(&args, input.as_bytes(), &mut output).unwrap_err();
+        let error = answer(&args, input.as_bytes(), &mut output, io::sink()).unwrap_err();
 
         assert!(error.to_string().ends_with(&format!("\nbut got {deny}")));
         assert!(

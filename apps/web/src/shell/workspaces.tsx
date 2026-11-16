@@ -19,9 +19,10 @@ import { ProposalsPage } from "../proposals/proposals-page.tsx";
 import { TasksPage } from "../tasks/tasks-page.tsx";
 import { useTasks } from "../tasks/use-tasks.ts";
 import { ChatTaskLink } from "./chat-task-link.tsx";
-import { owns } from "./chat-list.ts";
+import { legOf } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
+import { Departures } from "./departures.ts";
 import { Frame } from "./frame.tsx";
 import { Landing } from "./landing.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
@@ -78,27 +79,21 @@ export function Workspaces({
     setNotice(text);
     void loaded.load();
   };
-  // The one the person chose to leave or was told they are out of, whose refusals that follow are
-  // no news: the list, reloaded since, no longer names it.
-  const departed = useRef<WorkspaceId>(undefined);
+  const [departures] = useState(() => new Departures());
+  useEffect(() => departures.listed(list?.map(({ id }) => id) ?? []), [list]);
   useEffect(() => {
-    if (left !== undefined && left.workspace !== departed.current) {
+    if (left !== undefined && departures.leave(left.workspace)) {
       const name = list?.find(({ id }) => id === left.workspace)?.name;
       leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
-      departed.current = left.workspace;
     }
   }, [left]);
-  // A workspace opened again is one the person is back in, so leaving it is news once more.
   const pick = (id: WorkspaceId | undefined) => {
-    if (id === departed.current) {
-      departed.current = undefined;
-    }
     setNotice(undefined);
     choose(id);
   };
   const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={pick} />;
   const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
-          departed.current = workspace.id;
+          departures.leave(workspace.id);
           leave(text);
         },
       } : undefined;
@@ -253,8 +248,7 @@ function Heading({ title, status, back }: { title: string; status: Status; back(
 
 /**
  * The workspace's chats, where the server serves them (`read`), kept fresh by its feed, beside the
- * chosen one or a new one. Only its owner sends to a chat; a person whose member the server didn't
- * say owns none.
+ * chosen one or a new one. Every member writes in every chat, and calls only their own agent.
  */
 function WorkspaceChats({
   api,
@@ -275,6 +269,14 @@ function WorkspaceChats({
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
+  // Back from Settings, where a machine may have been paired, they are read again.
+  const wasAway = useRef(away);
+  useEffect(() => {
+    if (wasAway.current && !away) {
+      void machines.load();
+    }
+    wasAway.current = away;
+  }, [away]);
   // Until the feed is welcomed, whether it takes commands isn't known yet.
   const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
   const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);
@@ -286,47 +288,48 @@ function WorkspaceChats({
   const [started, setStarted] = useState<ChatId>();
   const live = status.state === "live";
   const listedChat = chats.value?.chats.find(({ id }) => id === place.chat);
-  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, owner: workspace.member ?? "" } : undefined);
+  const open = listedChat ?? (place.chat !== undefined && place.chat === started ? { id: started, title: undefined, legs: [] } : undefined);
   // The view stays while the feed reconnects; it sends only once the feed is back.
   const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines);
-  const newChat = starting && own?.kind === "ready" ? own.machines : undefined;
+  const mine = own?.kind === "ready" ? own.machines : [];
+  const missing = <StartMissing ready={ready} problem={machines.problem} check={() => void machines.load()} openSettings={openSettings} />;
+  const leg = legOf(workspace.member, open);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
-    <div className={newChat !== undefined || place.chat !== undefined ? "workspace detail" : "workspace"}>
-      {palette(listedChat?.machine_id)}
+    <div className={starting || place.chat !== undefined ? "workspace detail" : "workspace"}>
+      {palette(leg?.machine_id)}
       <div className="side">
         <Sections socket={socket} place={place} go={go} />
         <ChatsNav
           loaded={listed}
           names={names}
-          chosen={newChat === undefined ? place.chat : undefined}
+          chosen={starting ? undefined : place.chat}
           choose={(chat) => {
             setStarting(false);
             go({ view: "chats", chat });
           }}
           start={
-            ready?.kind === "ready"
+            send && status.state !== "connecting"
               ? () => {
                   setStarting(true);
                   void machines.load();
                 }
               : undefined
           }
-          missing={<StartMissing ready={ready} problem={machines.problem} check={() => void machines.load()} openSettings={openSettings} />}
         />
         {menu}
       </div>
       <section>
         <Heading
-          title={newChat !== undefined ? "New chat" : (open?.title ?? workspace.name)}
+          title={starting ? "New chat" : (open?.title ?? workspace.name)}
           status={status}
           back={() => {
             setStarting(false);
             go({ view: "chats" });
           }}
         />
-        {newChat !== undefined && tasks === undefined && loadedTasks.problem !== undefined && <Problem text={loadedTasks.problem} retry={() => void loadedTasks.load()} />}
-        {newChat !== undefined ? (
+        {starting && tasks === undefined && loadedTasks.problem !== undefined && <Problem text={loadedTasks.problem} retry={() => void loadedTasks.load()} />}
+        {starting ? (
           <NewChat
             key={place.task}
             socket={socket}
@@ -334,7 +337,8 @@ function WorkspaceChats({
             task={place.task}
             live={live && send}
             away={away}
-            machines={newChat}
+            machines={mine}
+            missing={missing}
             openSettings={openSettings}
             started={(chat) => {
               setStarted(chat);
@@ -352,7 +356,11 @@ function WorkspaceChats({
                 link={socket}
                 live={live}
                 chatRef={{ workspace: workspace.id, chat: open.id }}
-                mine={owns(workspace.member, open)}
+                me={workspace.member}
+                leg={leg}
+                machines={mine}
+                missing={missing}
+                openSettings={openSettings}
                 away={away}
                 title={open.title}
                 names={names}

@@ -257,7 +257,8 @@ fn message_item(chat: &ChatId, seq: i64) -> String {
 /// The message `event` carries, if it carries one.
 fn message_text(event: &ChatEvent) -> Option<&str> {
     match event {
-        ChatEvent::Prompt { text, .. }
+        ChatEvent::Message { text, .. }
+        | ChatEvent::Prompt { text, .. }
         | ChatEvent::OutsidePrompt { text }
         | ChatEvent::Run {
             update:
@@ -610,6 +611,7 @@ mod tests {
             .await
             .unwrap();
         let prompt = ChatEvent::Prompt {
+            author: None,
             pick: None,
             request: "r-2".parse().unwrap(),
             text: "Why is the deploy flaky".to_owned(),
