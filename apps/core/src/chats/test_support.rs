@@ -361,6 +361,7 @@ fn event(event: &ChatEvent) -> String {
             format!("{} is {:?}", status.run.as_str(), status.state)
         }
         ChatEvent::OutsidePrompt { text } => format!("outside prompt {text}"),
+        ChatEvent::Message { text, .. } => format!("message {text}"),
         ChatEvent::Newer => "newer".to_owned(),
     }
 }

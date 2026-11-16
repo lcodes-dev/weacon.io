@@ -324,6 +324,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_agent_gets_the_others_words_as_quotes_and_the_log_keeps_its_owners_alone_under_their_name()
+     {
+        let (mut bench, mut engine) = parts();
+        let mut asked = prompt("r-1", "MARKER-OWN");
+        if let ChatAction::Prompt { quotes, .. } = &mut asked.action {
+            quotes.push(weacon_protocol::Quote {
+                name: "Grace".to_owned(),
+                agent: None,
+                text: "MARKER-QUOTE".to_owned(),
+            });
+        }
+        let ada: MemberId = "m-1".parse().unwrap();
+        asked.by = Some(weacon_protocol::Asker {
+            account: "a-1".parse().unwrap(),
+            member: ada.clone(),
+        });
+
+        engine.command(&key(), asked).await.unwrap();
+        launched(&mut engine).await;
+
+        let mut agent = soon(bench.started.recv()).await.unwrap();
+        let told = quoted::prompt("MARKER-OWN", &[quote("Grace", "MARKER-QUOTE")]);
+        assert!(told.contains("Grace wrote:\nMARKER-QUOTE"), "{told}");
+        assert_eq!(soon(agent.told.recv()).await, Some(Told::Send(told)));
+        let log = &engine.open(&key()).await.unwrap().log;
+        let entries = log.window(u64::MAX, 9).await.unwrap();
+        let events: Vec<_> = entries.into_iter().map(|entry| entry.event).collect();
+        let kept = ChatEvent::Prompt {
+            request: "r-1".parse().unwrap(),
+            text: "MARKER-OWN".to_owned(),
+            author: Some(ada.clone()),
+            repo: None,
+            agent: None,
+            task: None,
+        };
+        assert_eq!(events.first(), Some(&kept));
+        // Every status of the run names whose agent it is.
+        let named = weacon_protocol::AgentRef {
+            kind: AgentKind::Claude,
+            owner: weacon_protocol::AgentOwner::Member { member: ada },
+            machine: None,
+        };
+        let agents: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                ChatEvent::RunStatus { status } => Some(status.agent.as_ref()),
+                _ => None,
+            })
+            .collect();
+        assert!(!agents.is_empty());
+        assert!(agents.iter().all(|agent| *agent == Some(&named)));
+        let logged = serde_json::to_string(&*bench.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    fn quote(name: &str, text: &str) -> weacon_protocol::Quote {
+        weacon_protocol::Quote {
+            name: name.to_owned(),
+            agent: None,
+            text: text.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_chats_people_is_never_a_cores_to_take() {
+        let (_bench, mut engine) = parts();
+        let say = ChatAction::Say {
+            text: "Morning".to_owned(),
+            task: None,
+        };
+
+        let refused = engine.command(&key(), command("r-1", "c-1", say)).await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "message.unsupported");
+        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 0);
+    }
+
+    #[tokio::test]
     async fn a_first_prompt_naming_an_unregistered_repository_is_refused_unlogged() {
         let (bench, mut engine) = parts();
         let unknown = RepoId::try_from("typo".to_owned()).unwrap();
