@@ -8,7 +8,7 @@ use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     Asker, ChatsQuery, ChatsQueryKind, Envelope, FrameError, MapAnswer, Message, Outcome, Pick,
-    Receipt, SessionsQuery, SymbolsQuery, TerminalCommand, code,
+    Receipt, SessionsQuery, SymbolsQuery, TerminalCommand, WorkspaceId, code,
 };
 
 use super::Shared;
@@ -24,7 +24,7 @@ use crate::proposals::{self, Asks};
 use crate::session::{Reply, Session};
 use crate::terminal::Terminals;
 use crate::uplink::{self, failure};
-use crate::workspaces::Workspaces;
+use crate::workspaces::{Workspaces, sharing};
 use crate::{app, machine, symbols};
 
 /// How many of the server's queries are answered at once; each may run vendors' status checks.
@@ -276,7 +276,7 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
         Message::SymbolsQuery(query) => search(asked, query).await,
         Message::DiffQuery(query) => {
             let files = async {
-                owners(host, query.by.as_ref()).await?;
+                readers(host, query.by.as_ref(), &query.workspace).await?;
                 worktrees.diff(query).await
             };
             let files = files.await;
@@ -284,7 +284,7 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
             return replies(host, id, files);
         }
         Message::WorktreeQuery(query) => async {
-            owners(host, query.by.as_ref()).await?;
+            readers(host, query.by.as_ref(), &query.workspace).await?;
             worktrees.query(query).await
         }
         .await
@@ -350,6 +350,15 @@ async fn owners(host: &Host, by: Option<&Asker>) -> Result<(), Fault> {
         ));
     }
     Ok(())
+}
+
+// Who reads a chat's changes: the machine's owner, and a member of a workspace it is shared
+// with, whom the server lets reach only their own chats.
+async fn readers(host: &Host, by: Option<&Asker>, workspace: &WorkspaceId) -> Result<(), Fault> {
+    if by.is_some() && sharing::shares(&host.state_dir, workspace).await {
+        return Ok(());
+    }
+    owners(host, by).await
 }
 
 /// The machine and its owner, as the pairing kept now says.
@@ -635,9 +644,16 @@ mod tests {
 
         assert_eq!(owners, vec![Some("worktree.none".to_owned()); 3]);
         assert_eq!(former, vec![Some("machine.not_owner".to_owned()); 3]);
+        // Shared with the workspace, its members read a chat's changes and change nothing.
+        let workspaces = Workspaces::new(&dir, None);
+        sharing::store(&workspaces, &workspace, true, &asked.host.log).unwrap();
+        let members = codes(&asked, worktree_asks(&workspace)).await;
+        let read = Some("worktree.none".to_owned());
+        let refused = Some("machine.not_owner".to_owned());
+        assert_eq!(members, [read.clone(), read, refused]);
     }
 
-    fn worktree_asks(workspace: &weacon_protocol::WorkspaceId) -> [Message; 3] {
+    fn worktree_asks(workspace: &WorkspaceId) -> [Message; 3] {
         use weacon_protocol::{ChatId, RequestId, WorktreeQuery, WorktreeQueryKind};
         use weacon_protocol::{DiffQuery, DiffQueryKind, WorktreeAction, WorktreeCommand};
 

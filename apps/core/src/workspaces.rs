@@ -2,6 +2,7 @@
 //! config folder and so its sign-in.
 
 pub(crate) mod access;
+pub(crate) mod sharing;
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -123,7 +124,8 @@ impl Workspaces {
             match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
                     let (level, warning) = (settings.level(), settings.warning());
-                    format!("Workspace {id}: access {level}; {agents}\n{warning}")
+                    let shared = if settings.shared { ", shared" } else { "" };
+                    format!("Workspace {id}: access {level}{shared}; {agents}\n{warning}")
                 }
                 Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
             }

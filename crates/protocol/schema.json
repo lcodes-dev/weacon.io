@@ -465,6 +465,19 @@
       "required": [
         "type"
       ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "machine_shares"
+        }
+      },
+      "$ref": "#/$defs/MachineShares",
+      "required": [
+        "type"
+      ]
     }
   ],
   "required": [
@@ -587,16 +600,24 @@
           ]
         },
         {
-          "description": "The workspace's shared agent, under the workspace's own credential.",
+          "description": "The workspace's shared agent, under the workspace's own credential, on a machine its\n`owner` shares: `member` called it, and only `owner` answers its permission prompts.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "shared"
+            },
+            "member": {
+              "$ref": "#/$defs/MemberId"
+            },
+            "owner": {
+              "$ref": "#/$defs/MemberId"
             }
           },
           "required": [
-            "kind"
+            "kind",
+            "member",
+            "owner"
           ]
         }
       ]
@@ -2285,6 +2306,10 @@
           "description": "The owner's answer to error reports; absent until they give one, when none are sent.",
           "type": "boolean"
         },
+        "shared": {
+          "description": "Whether every member of the workspace may call agents on the machine.",
+          "type": "boolean"
+        },
         "sign_ins": {
           "description": "Each agent the core runs, signed in or not with the workspace's own config folder.",
           "type": "array",
@@ -2340,6 +2365,23 @@
           "required": [
             "kind",
             "level"
+          ]
+        },
+        {
+          "description": "Whether every member of `workspace` may call agents on the machine.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "set_shared"
+            },
+            "shared": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "shared"
           ]
         }
       ]
@@ -2402,6 +2444,26 @@
             "kind",
             "repos"
           ]
+        },
+        {
+          "description": "The agents signed in for the workspace, in the order the core lists them.",
+          "type": "object",
+          "properties": {
+            "agents": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AgentKind"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "agents"
+            }
+          },
+          "required": [
+            "kind",
+            "agents"
+          ]
         }
       ]
     },
@@ -2434,7 +2496,7 @@
       ]
     },
     "MachineSettingsQuery": {
-      "description": "From the owner of `machine` to its core, which offers `machine.settings`: what the machine\nkeeps for `workspace`. The server relays it only from the machine's owner, and the core\nanswers only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request`.",
+      "description": "From the owner of `machine` to its core, which offers `machine.settings`: what the machine\nkeeps for `workspace`. The server relays it only from the machine's owner, and the core\nanswers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered\nto, any member of a workspace the machine is shared with. The answer is a\n[`MachineSettingsAnswer`] that echoes `request`.",
       "type": "object",
       "properties": {
         "by": {
@@ -2488,7 +2550,35 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "The agents signed in on the machine for the workspace.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "agents"
+            }
+          },
+          "required": [
+            "kind"
+          ]
         }
+      ]
+    },
+    "MachineShares": {
+      "description": "The workspaces a machine's owner shares it with, all of them each time, from a core to a\nserver that offers `machine.share`: when it connects, and when the set changes.",
+      "type": "object",
+      "properties": {
+        "workspaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WorkspaceId"
+          }
+        }
+      },
+      "required": [
+        "workspaces"
       ]
     },
     "MachineSummary": {
@@ -3843,6 +3933,10 @@
         },
         "machine": {
           "$ref": "#/$defs/MachineName"
+        },
+        "shared": {
+          "description": "Whether it is the workspace's shared agent, and not its caller's own.",
+          "type": "boolean"
         }
       },
       "required": [

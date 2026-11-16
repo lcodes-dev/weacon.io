@@ -18,6 +18,9 @@ pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
     /// Whether other people are in the workspace.
     pub(crate) team: bool,
+    /// Whether every member of the workspace may call agents on this machine.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) shared: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +28,7 @@ impl Default for Settings {
         Self {
             access: AccessLevel::AskFirst,
             team: false,
+            shared: false,
         }
     }
 }
@@ -101,7 +105,11 @@ pub(crate) fn store(
 ) -> Result<Settings, Fault> {
     let current = workspaces.settings(workspace);
     let settings = match team {
-        Some(team) => Settings { access, team },
+        Some(team) => Settings {
+            access,
+            team,
+            ..current.unwrap_or_default()
+        },
         None => Settings { access, ..current? },
     };
     workspaces.save(workspace, &settings).map_err(|error| {
@@ -171,7 +179,7 @@ mod tests {
             Settings::read(&file).unwrap(),
             Settings {
                 access: AccessLevel::ReadOnly,
-                team: false,
+                ..Settings::default()
             }
         );
         assert_eq!(
@@ -207,7 +215,14 @@ mod tests {
 
     #[test]
     fn only_full_access_in_a_team_workspace_has_a_warning() {
-        let warning = |access, team| Settings { access, team }.warning();
+        let warning = |access, team| {
+            let settings = Settings {
+                access,
+                team,
+                shared: false,
+            };
+            settings.warning()
+        };
 
         assert!(warning(AccessLevel::Full, true).starts_with("Warning: full access"));
         assert_eq!(warning(AccessLevel::Full, false), "");
@@ -236,6 +251,7 @@ mod tests {
             Settings {
                 access: AccessLevel::Full,
                 team: true,
+                shared: false,
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
