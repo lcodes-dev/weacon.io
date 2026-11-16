@@ -181,11 +181,6 @@ impl ChatLog {
         self.agent
     }
 
-    /// The member whose agent the chat's is, once the log's first prompt says.
-    pub(crate) const fn owner(&self) -> Option<&MemberId> {
-        self.owner.as_ref()
-    }
-
     /// The chat's agent as people know it, once the log's first prompt says whose it is.
     pub(crate) fn agent_ref(&self) -> Option<AgentRef> {
         let member = self.owner.clone()?;

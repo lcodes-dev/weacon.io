@@ -186,8 +186,7 @@ async fn append(
         event: &event,
         at: shared.now(),
     };
-    let from = (&leg.member, machine);
-    match place.append_from(from, chat, &[incoming]).await {
+    match place.append_from(machine, chat, &[incoming]).await {
         Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
         appended => appended.map(|_| Stored::Kept {
             turned: turns(&event),
@@ -197,11 +196,13 @@ async fn append(
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{ChatEntry, ChatEvent, Outcome, Receipt, WANTS_MAX, WorkspaceId};
+    use weacon_protocol::{
+        ChatEntry, ChatEvent, Outcome, Receipt, RunState, WANTS_MAX, WorkspaceId,
+    };
 
     use super::*;
-    use crate::chats::test_support::{Ada, ada, core_named};
-    use crate::db::test_support::{NOW, append, asks, core_seq, id, make, said};
+    use crate::chats::test_support::{Ada, ada, core_named, grace};
+    use crate::db::test_support::{NOW, append, asks, core_seq, id, make, said, status};
     use crate::test_support::{Fixture, member_id};
 
     fn update(workspace: &str, chat: &str, seq: u64, event: ChatEvent) -> ChatUpdate {
@@ -327,16 +328,15 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        let owner = member_id("m1");
         let elsewhere = workspace
-            .append_from((&owner, &id("mc-2")), &chat, &[incoming()])
+            .append_from(&id("mc-2"), &chat, &[incoming()])
             .await;
         assert_eq!(elsewhere.unwrap_err().code(), &code!("chat.not_found"));
         let unpaired = shared.db.unpair(&ada.asker.account, &ada.machine).await;
         assert!(unpaired.unwrap());
 
         let stored = workspace
-            .append_from((&owner, &ada.machine), &chat, &[incoming()])
+            .append_from(&ada.machine, &chat, &[incoming()])
             .await;
 
         assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));
@@ -413,6 +413,51 @@ mod tests {
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("chat upload refused"), "{logged}");
         assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    #[tokio::test]
+    async fn what_a_shared_machine_sends_is_its_legs_callers_whatever_its_core_says() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let workspace = &ada.member.workspace;
+        let (chat, bo) = (id::<ChatId>("c-1"), grace(&fixture).await.member.id);
+        shared
+            .db
+            .set_shares(&ada.machine, &[id("w1")])
+            .await
+            .unwrap();
+        let called = workspace.call_leg(&chat, (&ada.machine, &bo), NOW);
+        assert!(called.await.unwrap());
+        let asked = ChatEvent::Prompt {
+            request: id("r-1"),
+            text: "Go".to_owned(),
+            author: Some(member_id("m1")),
+            pick: None,
+            repo: None,
+            agent: None,
+            task: None,
+        };
+
+        for (seq, event) in [(1, asked), (2, status(RunState::Running))] {
+            store(shared, &ada.machine, update("w1", "c-1", seq, event))
+                .await
+                .unwrap();
+        }
+
+        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
+        let mut events = events.unwrap().into_iter().map(|entry| entry.event);
+        let Some(ChatEvent::Prompt { author, .. }) = events.next() else {
+            panic!("no prompt stored");
+        };
+        assert_eq!(author, Some(bo.clone()));
+        let Some(ChatEvent::RunStatus { status }) = events.next() else {
+            panic!("no status stored");
+        };
+        let owner = AgentOwner::Shared {
+            member: bo,
+            owner: member_id("m1"),
+        };
+        assert_eq!(status.agent.map(|agent| agent.owner), Some(owner));
     }
 
     #[test]
@@ -523,7 +568,7 @@ mod tests {
         let status = |agent| ChatEvent::RunStatus {
             status: RunStatus {
                 run: id("run-1"),
-                state: weacon_protocol::RunState::Running,
+                state: RunState::Running,
                 agent,
             },
         };

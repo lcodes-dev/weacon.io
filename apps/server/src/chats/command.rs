@@ -233,7 +233,8 @@ async fn prompt(
     let (id, now) = (command.chat.clone(), from.shared.now());
     one_at_a_time(from.shared, workspace, chat, &id, member).await?;
     let leg = leg_for(from, chat, machine, &command).await?;
-    if !workspace.call(&id, &member.id, now).await? {
+    let called = (&leg.machine, &member.id);
+    if !workspace.call_leg(&id, called, now).await? {
         return Err(agent_working());
     }
     if let ChatAction::Prompt { quotes, .. } = &mut command.action {
@@ -241,7 +242,7 @@ async fn prompt(
         *quotes = quotes::between(workspace, &id, &member.id, stretch).await?;
     }
     if let Err(fault) = serve(from, &leg, command, back).await {
-        workspace.uncall(&id, &member.id).await?;
+        workspace.uncall_leg(&id, &leg, &member.id).await?;
         return Err(fault);
     }
     workspace.quoted(&id, &member.id, chat.seq).await

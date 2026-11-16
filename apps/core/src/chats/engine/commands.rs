@@ -59,7 +59,6 @@ impl<A: Agent> Engine<A> {
                 ..
             } => {
                 let agent = self.agent_of(key, named).await?;
-                self.check_caller(key, author.as_ref()).await?;
                 self.check_repo(key, repo.as_ref()).await?;
                 if text.trim().is_empty() {
                     return Err(Fault::new(
@@ -111,19 +110,6 @@ impl<A: Agent> Engine<A> {
                 "The chat already runs another agent",
             )),
             (named, chosen) => Ok(chosen.or(named).unwrap_or(AgentKind::Claude)),
-        }
-    }
-
-    // The chat's agent works for the member its first logged prompt named: on a machine shared
-    // with a workspace, no other member's prompt reaches it.
-    async fn check_caller(&mut self, key: &ChatKey, by: Option<&MemberId>) -> Result<(), Fault> {
-        let owner = self.open(key).await?.log.owner();
-        match (by, owner) {
-            (Some(by), Some(owner)) if by != owner => Err(Fault::new(
-                code!("chat.not_owner"),
-                "Only the member who called this agent can prompt it",
-            )),
-            _ => Ok(()),
         }
     }
 
@@ -406,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn only_the_member_who_called_a_chats_agent_prompts_it_again() {
+    async fn a_chats_agent_takes_each_members_prompt_and_logs_who_wrote_it() {
         let (_bench, mut engine) = parts();
         let from = |request: &str, member: &str| {
             let mut asked = prompt(request, "Go");
@@ -416,15 +402,22 @@ mod tests {
             });
             asked
         };
+
         engine.command(&key(), from("r-1", "m-1")).await.unwrap();
+        engine.command(&key(), from("r-2", "m-2")).await.unwrap();
 
-        let other = engine.command(&key(), from("r-2", "m-2")).await;
-        let same = engine.command(&key(), from("r-3", "m-1")).await;
-
-        assert_eq!(other.unwrap_err().code().as_str(), "chat.not_owner");
-        same.unwrap();
         let log = &engine.open(&key()).await.unwrap().log;
-        assert!(!log.has_receipt(&"r-2".parse().unwrap()));
+        let entries = log.window(u64::MAX, 9).await.unwrap();
+        let authors: Vec<_> = entries.iter().filter_map(author_of).collect();
+        let authors: Vec<_> = authors.iter().map(MemberId::as_str).collect();
+        assert_eq!(authors, ["m-1", "m-2"]);
+    }
+
+    fn author_of(entry: &weacon_protocol::ChatEntry) -> Option<MemberId> {
+        let ChatEvent::Prompt { author, .. } = &entry.event else {
+            return None;
+        };
+        author.clone()
     }
 
     fn status_of(event: &ChatEvent) -> Option<&weacon_protocol::RunStatus> {

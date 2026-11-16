@@ -337,8 +337,63 @@ impl Workspace {
         Ok(called.rows_affected() > 0)
     }
 
+    /// [`Self::call`] of the leg of `chat` on `machine`, which works for `member` from then on:
+    /// what its machine sends is theirs.
+    pub(crate) async fn call_leg(
+        &self,
+        chat: &ChatId,
+        (machine, member): (&MachineId, &MemberId),
+        now: i64,
+    ) -> Result<bool, Fault> {
+        let mut transaction = self.db.write().await?;
+        let called = self.call_in(&mut transaction, chat, member, now).await?;
+        if called {
+            self.lend_in(&mut transaction, chat, machine, member)
+                .await?;
+        }
+        transaction.commit().await.map_err(failed)?;
+        Ok(called)
+    }
+
+    /// Takes back `member`'s [`Self::call_leg`] of `leg`, which never reached its machine: the
+    /// turn is free and the leg works for whom it did.
+    pub(crate) async fn uncall_leg(
+        &self,
+        chat: &ChatId,
+        leg: &Leg,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        let mut transaction = self.db.write().await?;
+        self.uncall_in(&mut transaction, chat, member).await?;
+        self.lend_in(&mut transaction, chat, &leg.machine, &leg.member)
+            .await?;
+        transaction.commit().await.map_err(failed)
+    }
+
+    async fn lend_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        machine: &MachineId,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "UPDATE chat_legs SET member_id = ?
+             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
+        )
+        .bind(member.as_str())
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(machine.as_str())
+        .execute(connection)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
     /// Gives back the turn `member`'s call took in `chat`, as when it never reached their
     /// machine.
+    #[cfg(test)]
     pub(crate) async fn uncall(&self, chat: &ChatId, member: &MemberId) -> Result<(), Fault> {
         let mut writer = self.db.writer.acquire().await.map_err(failed)?;
         self.uncall_in(&mut writer, chat, member).await
@@ -538,7 +593,7 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        let stored = one.append_from((&bo, &desk), &chat, &[first]).await;
+        let stored = one.append_from(&desk, &chat, &[first]).await;
         assert_eq!(stored.unwrap(), 1);
         let fixed = one.set_leg(&chat, &bo, &on(&shelf), NOW).await;
         assert_eq!(code(&fixed.unwrap_err()), "chat.machine_fixed");
@@ -739,7 +794,7 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
         one.pair_for("m3", "mc-3").await;
-        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
+        let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
         let (name, hers, his) = (id("Bo's desk"), id("mc-1"), id("mc-3"));
         let leg = NewLeg {
             machine_id: &his,
@@ -756,17 +811,56 @@ mod tests {
         };
 
         let stored = [
-            one.append_from((&ada, &hers), &chat, &[at(1), at(2)]).await,
-            one.append_from((&bo, &his), &chat, &[at(1)]).await,
+            one.append_from(&hers, &chat, &[at(1), at(2)]).await,
+            one.append_from(&his, &chat, &[at(1)]).await,
             // A replay from one machine is skipped, whatever the other sent since.
-            one.append_from((&ada, &hers), &chat, &[at(2), at(3)]).await,
-            one.append_from((&bo, &his), &chat, &[at(1), at(2)]).await,
+            one.append_from(&hers, &chat, &[at(2), at(3)]).await,
+            one.append_from(&his, &chat, &[at(1), at(2)]).await,
         ];
 
         let seqs: Vec<_> = stored.into_iter().map(Result::unwrap).collect();
         assert_eq!(seqs, [2, 3, 4, 5]);
-        // Only the machine that holds a member's leg sends as them.
-        let forged = one.append_from((&ada, &his), &chat, &[at(9)]).await;
-        assert_eq!(code(&forged.unwrap_err()), "chat.not_found");
+        assert_eq!(senders(&one).await, ["m1", "m1", "m3", "m1", "m3"]);
+    }
+
+    // Whose each of the workspace's stored events is, in order.
+    async fn senders(workspace: &Workspace) -> Vec<String> {
+        sqlx::query_scalar("SELECT member_id FROM chat_events WHERE workspace_id = ? ORDER BY seq")
+            .bind(workspace.id.as_str())
+            .fetch_all(&workspace.db.readers)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_called_leg_works_for_its_caller_until_the_call_is_taken_back() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m1", "mc-1").await;
+        one.db.set_shares(&id("mc-1"), &[id("w1")]).await.unwrap();
+        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
+        let hers = id::<MachineId>("mc-1");
+        let adas = one.leg(&chat, &ada).await.unwrap().unwrap();
+        let event = status(RunState::Idle);
+        let at = |core_seq| Incoming {
+            core_seq: Some(core_seq),
+            event: &event,
+            at: NOW,
+        };
+        one.append_from(&hers, &chat, &[at(1)]).await.unwrap();
+        let later = NOW + 2 * CALL_SECS;
+
+        assert!(one.call_leg(&chat, (&hers, &bo), later).await.unwrap());
+        one.append_from(&hers, &chat, &[at(2)]).await.unwrap();
+        // Ada's call while his holds the turn leaves the leg his.
+        assert!(!one.call_leg(&chat, (&hers, &ada), later).await.unwrap());
+        let called = one.leg_on(&chat, &hers).await.unwrap().unwrap();
+        assert_eq!((called.member, called.number), (bo.clone(), adas.number));
+        one.uncall_leg(&chat, &adas, &bo).await.unwrap();
+        one.append_from(&hers, &chat, &[at(3)]).await.unwrap();
+
+        assert_eq!(senders(&one).await, ["m1", "m3", "m1"]);
+        assert_eq!(one.chat(&chat).await.unwrap().unwrap().called, None);
     }
 }

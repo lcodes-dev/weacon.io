@@ -180,21 +180,20 @@ impl Workspace {
         self.append(transaction, chat, None, events).await
     }
 
-    /// [`Self::append`] for events the machine of `member`'s leg of `chat` sent, stored only
-    /// while `machine` holds that leg and its owner still owns it, checked in the transaction
-    /// that stores them; otherwise `chat.not_found`.
+    /// [`Self::append`] for events `machine` sent, as those of whom its leg of `chat` works
+    /// for, stored only while it holds that leg and still serves them, checked in the
+    /// transaction that stores them; otherwise `chat.not_found`.
     pub(crate) async fn append_from(
         &self,
-        leg: (&MemberId, &weacon_protocol::MachineId),
+        machine: &weacon_protocol::MachineId,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
         let mut transaction = self.db.write().await?;
-        let held = self.leg_on_in(&mut transaction, chat, leg.1).await?;
-        if held.is_none_or(|held| held.member != *leg.0) {
-            return Err(chat_not_found());
-        }
-        self.append(transaction, chat, Some(leg), events).await
+        let held = self.leg_on_in(&mut transaction, chat, machine).await?;
+        let held = held.ok_or_else(chat_not_found)?;
+        let from = Some((&held.member, machine));
+        self.append(transaction, chat, from, events).await
     }
 
     /// [`Self::append`] for events `member`'s machine sent, whoever owns it now.
