@@ -247,7 +247,9 @@ async fn leg_for(
                 agent: agent.unwrap_or(AgentKind::Claude),
                 repo: repo.as_ref(),
             };
-            workspace.set_leg(&command.chat, &member.id, &leg, from.shared.now()).await?;
+            workspace
+                .set_leg(&command.chat, &member.id, &leg, from.shared.now())
+                .await?;
             let made = workspace.leg(&command.chat, &member.id).await?;
             made.ok_or_else(crate::db::machine_not_found)
         }

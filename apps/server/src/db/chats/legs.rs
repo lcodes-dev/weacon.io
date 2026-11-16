@@ -373,6 +373,39 @@ mod tests {
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
+    async fn a_call_on_its_way_keeps_its_leg_from_another_call_of_the_same_member() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m3", "mc-3").await;
+        one.pair_for("m3", "mc-4").await;
+        let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
+        let (name, desk, shelf) = (id("Bo's desk"), id("mc-3"), id("mc-4"));
+        let on = |machine_id| NewLeg {
+            machine_id,
+            machine: &name,
+            agent: AgentKind::Codex,
+            repo: None,
+        };
+
+        one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
+        let held = one.set_leg(&chat, &bo, &on(&desk), NOW + 1).await;
+
+        assert_eq!(code(&held.unwrap_err()), "chat.machine_fixed");
+        let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
+        assert_eq!(leg.machine.as_str(), "mc-4");
+        // The call took the chat's turn as it fixed the leg, so no one else's starts meanwhile.
+        assert!(!one.call(&chat, &member_id("m1"), NOW + 1).await.unwrap());
+        // Once the hold has run out with no prompt taken, the choice can change.
+        let later = NOW + CALL_SECS;
+        one.set_leg(&chat, &bo, &on(&desk), later).await.unwrap();
+        assert_eq!(
+            one.leg(&chat, &bo).await.unwrap().unwrap().machine.as_str(),
+            "mc-3"
+        );
+    }
+
+    #[tokio::test]
     async fn a_members_leg_is_read_in_its_own_workspace_only_and_stays_once_its_machine_took_a_prompt()
      {
         let dir = TempDir::new().unwrap();
@@ -392,11 +425,6 @@ mod tests {
         };
 
         one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
-        // While that call is on its way, another one of theirs can't move it.
-        let held = one.set_leg(&chat, &bo, &on(&desk), NOW).await;
-        assert_eq!(code(&held.unwrap_err()), "chat.machine_fixed");
-        let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
-        assert_eq!(leg.machine.as_str(), "mc-4");
         // Given back with no prompt taken, so another choice takes its place.
         one.uncall(&chat, &bo).await.unwrap();
         one.set_leg(&chat, &bo, &on(&desk), NOW).await.unwrap();
