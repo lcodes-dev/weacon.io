@@ -24,10 +24,13 @@ const box = (page: Page) => page.getByRole("combobox", { name: "Message" });
 // Turns sharing of the machine `name` with the open workspace on or off, from its settings.
 async function share(page: Page, name: string, shared: boolean): Promise<void> {
   const settings = page.getByRole("region", { name: `${name} settings` });
-  // They open by themselves for a machine just paired.
+  // They open by themselves once for a machine just paired, which a click at that moment would undo.
   const opener = page.getByRole("button", { name: `${name} settings` });
-  if ((await opener.getAttribute("aria-expanded")) === "false") {
-    await opener.click();
+  while ((await settings.count()) === 0) {
+    if ((await opener.getAttribute("aria-expanded")) === "false") {
+      await opener.click();
+    }
+    await settings.waitFor({ timeout: 2_000 }).catch(() => undefined);
   }
   const sharing = settings.getByLabel("Share this machine with this workspace");
   // Opened as the machine was paired, before its core was up, they are asked for again.
