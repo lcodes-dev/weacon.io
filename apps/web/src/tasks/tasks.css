@@ -64,3 +64,24 @@
   background: var(--border);
   border-radius: 6px;
 }
+
+@media (max-width: 720px) {
+  /* The title on a line of its own, above its status and its chat. */
+  .tasks li .title,
+  .tasks li form {
+    order: -1;
+    flex-basis: 100%;
+  }
+
+  .tasks li form {
+    flex-wrap: wrap;
+  }
+
+  .tasks li form input {
+    flex-basis: 100%;
+  }
+
+  .new-task input {
+    min-width: 0;
+  }
+}

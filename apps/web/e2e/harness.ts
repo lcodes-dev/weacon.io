@@ -7,10 +7,13 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { type Browser, type Page, chromium } from "playwright-core";
+import { type Browser, type BrowserContextOptions, type Page, chromium } from "playwright-core";
 
 export const REPO = fileURLToPath(new URL("../../..", import.meta.url));
 const PAGE = new URL("../dist/index.html", import.meta.url);
+
+/** A phone held upright, with touch. */
+export const PHONE: BrowserContextOptions = { viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true };
 
 /** A page open on a fake server. */
 export type Harness = {
@@ -36,10 +39,10 @@ export function fakeServer(tokens: number, paceMs: number): (dir: string) => Chi
  */
 export async function start(
   server: (dir: string) => ChildProcess,
-  { startupMs = STARTUP_MS, query = "" }: { startupMs?: number; query?: string } = {},
+  { startupMs = STARTUP_MS, query = "", device }: { startupMs?: number; query?: string; device?: BrowserContextOptions } = {},
 ): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-web-"));
-  const { page, stop } = await open(dir, server(dir), (child) => firstLine(child, startupMs), (url) => `${PAGE.href}?server=${encodeURIComponent(url)}${query}`);
+  const { page, stop } = await open(dir, server(dir), (child) => firstLine(child, startupMs), (url) => `${PAGE.href}?server=${encodeURIComponent(url)}${query}`, device);
   return {
     page,
     received: () =>
@@ -52,7 +55,7 @@ export async function start(
 }
 
 /**
- * Opens a browser on `href` of what `ready` reads from `child`, which runs in `dir`. `stop` closes
+ * Opens a browser, as `device` if one is given, on `href` of what `ready` reads from `child`, which runs in `dir`. `stop` closes
  * the browser, stops `child` and removes `dir`, as happens on any failure.
  */
 export async function open(
@@ -60,6 +63,7 @@ export async function open(
   child: ChildProcess,
   ready: (child: ChildProcess) => Promise<string>,
   href: (found: string) => string,
+  device?: BrowserContextOptions,
 ): Promise<{ page: Page; stop(): Promise<void> }> {
   let browser: Browser | undefined;
   const stop = async () => {
@@ -70,7 +74,7 @@ export async function open(
   try {
     const found = await ready(child);
     browser = await chromium.launch();
-    const page = await browser.newPage();
+    const page = await browser.newPage(device);
     await page.goto(href(found));
     return { page, stop };
   } catch (error) {

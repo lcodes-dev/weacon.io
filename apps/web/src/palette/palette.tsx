@@ -24,7 +24,7 @@ type Props = {
 
 /**
  * The search palette over `workspace`'s tasks, docs and chats, and the code on one of the person's
- * machines, opened with ⌘K while `enabled`; choosing a hit goes to its place, and a symbol copies where it is.
+ * machines, opened with ⌘K, or on a narrow screen its Search button, while `enabled`; choosing a hit goes to its place, and a symbol copies where it is.
  */
 export function Palette({ enabled, go, ...props }: Props) {
   const [open, setOpen] = useState(false);
@@ -43,7 +43,12 @@ export function Palette({ enabled, go, ...props }: Props) {
     return () => window.removeEventListener("keydown", opening);
   }, [enabled]);
   if (!open) {
-    return null;
+    // Shown only on a narrow screen, where no keyboard opens it.
+    return enabled ? (
+      <button type="button" className="palette-open" onClick={() => setOpen(true)}>
+        Search
+      </button>
+    ) : null;
   }
   const close = () => setOpen(false);
   return (
