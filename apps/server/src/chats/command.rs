@@ -628,6 +628,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_first_prompt_whose_call_cant_be_stored_is_refused_and_its_chat_taken_back() {
+        for turn in [true, false] {
+            let fixture = Fixture::new().await;
+            let shared = &fixture.shared;
+            let ada = ada(&fixture).await;
+            let workspace = &ada.member.workspace;
+            workspace.break_calls(turn).await;
+            let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+
+            let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
+            let (refused, _answers) = asked(&ada, shared, first).await;
+
+            refused.unwrap_err();
+            assert!(sent(&mut attached).is_empty(), "{turn}");
+            assert_eq!(workspace.chat(&id("c-1")).await.unwrap(), None, "{turn}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_command_to_a_machine_that_cant_take_it_is_refused_and_a_first_prompts_chat_taken_back()
      {
         let fixture = Fixture::new().await;

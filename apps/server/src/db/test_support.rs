@@ -323,6 +323,17 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Makes taking a chat's turn (`turn`) or noting a prompt fail in the database, as a full
+    /// disk would.
+    pub(crate) async fn break_calls(&self, turn: bool) {
+        let broken = if turn {
+            "CREATE TRIGGER broken_turns BEFORE UPDATE OF called_by ON chats BEGIN SELECT RAISE(ABORT, 'broken'); END"
+        } else {
+            "CREATE TRIGGER broken_calls BEFORE INSERT ON chat_calls BEGIN SELECT RAISE(ABORT, 'broken'); END"
+        };
+        sqlx::query(broken).execute(&self.db.writer).await.unwrap();
+    }
+
     /// Makes every share of a machine fail in the database, as a full disk would.
     pub(crate) async fn break_shares(&self) {
         sqlx::query(
