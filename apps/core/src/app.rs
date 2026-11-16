@@ -327,7 +327,7 @@ mod tests {
         app.reporter.set_agreed(true);
 
         assert!(app.reporter.is_on());
-        assert_eq!(app.finish(Ok(().into())), ExitCode::SUCCESS);
+        assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
         assert!(uploads.lock().unwrap().is_empty());
         assert!(messages(&stderr).is_empty());
     }

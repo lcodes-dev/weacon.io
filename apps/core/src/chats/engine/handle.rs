@@ -1,7 +1,6 @@
 //! The clients' way to the engine, and how the engine answers them.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot, watch};
 use weacon_observability::Fault;
@@ -9,7 +8,7 @@ use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
 use super::agent::Agent;
 use super::queries::Listed;
-use super::{ChatKey, Engine, LeaveId, LeaveStep};
+use super::{ChatKey, Engine};
 use crate::chats::feed::Client;
 
 /// The clients' way to the engine.
@@ -22,9 +21,6 @@ pub(crate) struct Chats {
 
 pub(super) enum Ask {
     Command(Box<ChatCommand>, Client, oneshot::Sender<Result<(), Fault>>),
-    Busy(oneshot::Sender<bool>),
-    Leave(oneshot::Sender<Option<LeaveId>>),
-    Step(LeaveId, LeaveStep, oneshot::Sender<bool>),
     Query(
         ChatQuery,
         Client,
@@ -35,53 +31,8 @@ pub(super) enum Ask {
     Left,
 }
 
-/// How long the engine has to say whether it is busy, or to give leave.
-const ENGINE_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
-
 fn stopped() -> Fault {
     Fault::new(code!("chat.engine_stopped"), "The daemon is stopping")
-}
-
-/// A way to the engine that lets it stop once every [`Chats`] is gone.
-#[derive(Clone, Debug)]
-pub(crate) struct WeakChats(mpsc::WeakSender<Ask>);
-
-impl WeakChats {
-    /// Whether an agent is on a turn, waits on a person, starts or is carried on by hand, or a
-    /// session or a turn's end the journal couldn't save yet is only in memory, which a
-    /// restart would cut off or lose.
-    pub(crate) async fn busy(&self) -> Result<bool, Fault> {
-        self.ask(Ask::Busy).await
-    }
-
-    /// Leave to install, given when nothing is busy and no other install holds it. Once given,
-    /// no new turn starts and no chat can be held until a step ends it or it runs out after
-    /// [`LEAVE_LASTS`](super::busy::LEAVE_LASTS).
-    pub(crate) async fn leave(&self) -> Result<Option<LeaveId>, Fault> {
-        self.ask(Ask::Leave).await
-    }
-
-    /// Takes `step` of `leave`; false when that leave isn't in force any more.
-    pub(crate) async fn step(&self, leave: LeaveId, step: LeaveStep) -> Result<bool, Fault> {
-        self.ask(|answer| Ask::Step(leave, step, answer)).await
-    }
-
-    async fn ask<T>(&self, ask: impl FnOnce(oneshot::Sender<T>) -> Ask) -> Result<T, Fault> {
-        let asks = self.0.upgrade().ok_or_else(stopped)?;
-        let (answer, answered) = oneshot::channel();
-        let asked = async {
-            asks.send(ask(answer)).await.map_err(|_| stopped())?;
-            answered.await.map_err(|_| stopped())
-        };
-        tokio::time::timeout(ENGINE_ANSWERS_WITHIN, asked)
-            .await
-            .unwrap_or_else(|_| {
-                Err(Fault::new(
-                    code!("chat.engine_silent"),
-                    "The engine didn't answer",
-                ))
-            })
-    }
 }
 
 impl Chats {
@@ -97,11 +48,6 @@ impl Chats {
         let ask = Ask::Command(Box::new(command), client.clone(), answer);
         self.asks.send(ask).await.map_err(|_| stopped())?;
         answered.await.map_err(|_| stopped())?
-    }
-
-    /// A way to ask whether the engine is busy that doesn't keep it running.
-    pub(crate) fn downgrade(&self) -> WeakChats {
-        WeakChats(self.asks.downgrade())
     }
 
     /// The answer to `query`, if it has one; a subscription's events go to `client`.
@@ -154,18 +100,6 @@ impl<A: Agent> Engine<A> {
                 let answered = self.query(&key, query.query, &client).await;
                 drop(answer.send(self.checked(&key, answered).await));
                 Some(key)
-            }
-            Ask::Busy(answer) => {
-                self.answer_busy(answer).await;
-                None
-            }
-            Ask::Leave(answer) => {
-                self.answer_leave(answer).await;
-                None
-            }
-            Ask::Step(leave, step, answer) => {
-                self.answer_step(leave, step, answer).await;
-                None
             }
             Ask::List(answer) => {
                 drop(answer.send(self.listed()));

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use weacon_agents::TOKEN_VARIABLE;
-use weacon_appkit::{Ending, build};
+use weacon_appkit::build;
 use weacon_client::Connection;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
@@ -44,7 +44,7 @@ struct Core {
 }
 
 /// Prints what `command`'s hook adds for the current folder, or nothing.
-pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Ending {
+pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) {
     let token = std::env::var(TOKEN_VARIABLE).ok();
     let core = app
         .state_dir()
@@ -61,7 +61,7 @@ pub(crate) fn run(app: &App, command: HookCommand, out: &mut impl Write) -> Endi
         index: map::map_or_empty,
         limit: LIMIT,
     };
-    run_in(app, command, &hook, std::env::current_dir(), out)
+    run_in(app, command, &hook, std::env::current_dir(), out);
 }
 
 /// Prints what `command`'s hook adds for `folder`, or nothing when it can't be found.
@@ -71,7 +71,7 @@ fn run_in(
     hook: &Hook,
     folder: io::Result<PathBuf>,
     out: &mut impl Write,
-) -> Ending {
+) {
     let HookCommand::SessionStart = command;
     let printed = folder
         .map_err(|error| skipped().because(error))
@@ -81,7 +81,6 @@ fn run_in(
                 .map_err(|error| skipped().because(error))
         });
     note(&app.log, printed);
-    Ending::Done
 }
 
 impl Hook {
@@ -529,26 +528,22 @@ mod tests {
         let app = app(None, None);
         let printed = |folder: io::Result<PathBuf>| {
             let mut out = Vec::new();
-            let ending = run_in(
+            run_in(
                 &app,
                 HookCommand::SessionStart,
                 &fallback(),
                 folder,
                 &mut out,
             );
-            (ending, String::from_utf8(out).unwrap())
+            String::from_utf8(out).unwrap()
         };
 
-        let (ending, map) = printed(Ok(dir.to_path_buf()));
-        assert_eq!(ending, Ending::Done);
+        let map = printed(Ok(dir.to_path_buf()));
         assert!(map.contains("marker_item_1") && map.len() <= 4000, "{map}");
         let empty = TempDir::new().unwrap();
-        assert_eq!(
-            printed(Ok(empty.to_path_buf())),
-            (Ending::Done, String::new())
-        );
+        assert_eq!(printed(Ok(empty.to_path_buf())), "");
         let unknown = Err(io::ErrorKind::NotFound.into());
-        assert_eq!(printed(unknown), (Ending::Done, String::new()));
+        assert_eq!(printed(unknown), "");
     }
 
     #[test]
