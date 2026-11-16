@@ -13,6 +13,7 @@ use weacon_protocol::{
 use super::{PAGE, PAGE_BYTES, command, read};
 use crate::auth::Member;
 use crate::db::{Workspace, chat_not_found};
+use crate::relay::Back;
 use crate::shared::Shared;
 use crate::socket::Closed;
 
@@ -29,6 +30,14 @@ pub(crate) struct Watch {
     /// Says, after each page, that the next may be waiting, so pages go out one per turn.
     pub(crate) more: mpsc::Receiver<()>,
     again: mpsc::Sender<()>,
+}
+
+/// Who sends a chat query or command over a connection, and that connection's way back.
+#[derive(Clone, Copy)]
+pub(crate) struct Asking<'a> {
+    pub(crate) member: &'a Member,
+    pub(crate) asker: &'a Asker,
+    pub(crate) back: &'a mpsc::Sender<Envelope>,
 }
 
 impl Watch {
@@ -92,15 +101,20 @@ impl Watch {
         }
     }
 
-    /// The answer to `envelope`, a chat query or command from `asker`, under the id it
-    /// answers; none for a subscription, whose events follow.
+    /// The answer to `envelope`, a chat query or command from `asking`, under the id it
+    /// answers; none for a subscription, whose events follow, or a command relayed, whose
+    /// machine's answer goes back the way `asking` gives.
     pub(crate) async fn heard(
         &mut self,
         envelope: Envelope,
-        member: &Member,
-        asker: &Asker,
+        asking: Asking<'_>,
         shared: &Shared,
     ) -> Option<(u32, Message)> {
+        let Asking {
+            member,
+            asker,
+            back,
+        } = asking;
         let Envelope { id, message } = envelope;
         let here = member.workspace.id();
         // Another workspace's chat answers as one there isn't.
@@ -112,7 +126,9 @@ impl Watch {
             }
         } else if let Message::ChatCommand(sent) = message {
             if sent.workspace == *here {
-                command::take(member, asker, shared, sent).await.map(Some)
+                let back = Back { id, to: back };
+                let relayed = command::take(member, asker, shared, sent, back).await;
+                relayed.map(|()| None)
             } else {
                 Err(chat_not_found())
             }
@@ -423,7 +439,10 @@ mod tests {
             machine: id(&machine),
             owner: owner.unwrap(),
         };
-        let offers = vec![Capability::new(code!("chat.serve"))];
+        let offers = vec![
+            Capability::new(code!("chat.serve")),
+            Capability::new(code!("chat.answers")),
+        ];
         let attached = fixture.shared.links.open(connected, offers);
         (paired.session, machine, attached)
     }
@@ -501,7 +520,6 @@ mod tests {
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
 
-        assert!(matches!(next(&mut client).await, Message::Receipt(_)));
         let Message::Workspace(update) = next(&mut client).await else {
             panic!("the feed didn't hear of the chat");
         };

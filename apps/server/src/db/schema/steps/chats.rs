@@ -105,3 +105,8 @@ CREATE TABLE chat_tasks (
     FOREIGN KEY (workspace_id, task_id) REFERENCES tasks (workspace_id, task_id)
 ) STRICT;
 ";
+
+/// Drops the commands kept to be sent again, as none is.
+pub(crate) const REQUESTS_GONE: &str = "
+DROP TABLE chat_requests;
+";

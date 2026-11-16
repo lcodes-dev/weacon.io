@@ -4,27 +4,24 @@ import "./composer.css";
 import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
-import type { Lates, Send, Sent } from "./prompt.ts";
+import type { Send, Sent } from "./prompt.ts";
 import { useSend } from "./send.ts";
 
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
- * text until the server accepts it, and says so when it doesn't, as `explain` words it; a late
- * receipt settles it. Typing `@` offers `agent`, the writer's own in this chat, and a message that
- * mentions it calls it.
+ * text until its machine accepts it, and says so when it doesn't, as `explain` words it. Typing `@`
+ * offers `agent`, the writer's own in this chat, and a message that mentions it calls it.
  */
 export function Composer({
   send,
   blocked,
   hidden,
-  lates,
   explain,
   agent,
 }: {
   send: Send;
   blocked: string | undefined;
   hidden: boolean;
-  lates: Lates;
   explain?: (sent: Sent) => string | undefined;
   agent: MentionItem | undefined;
 }) {
@@ -34,7 +31,6 @@ export function Composer({
   // A draft edited after it was sent stays in the box.
   const { sending, problem, submit: deliver, clear } = useSend<string>(
     send,
-    lates,
     (sent) => setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
     explain,
   );

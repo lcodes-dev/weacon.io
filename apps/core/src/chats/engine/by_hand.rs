@@ -3,12 +3,11 @@
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    ChatAnswerKind, ChatCommand, ChatEvent, ChatQueryKind, Message, Outcome, PermissionAnswer,
-    RunEvent,
+    ChatAnswerKind, ChatCommand, ChatEvent, ChatQueryKind, Message, PermissionAnswer, RunEvent,
 };
 
+use super::Engine;
 use super::agent::Said;
-use super::{Engine, PendingAnswer};
 use crate::chats::test_support::{
     Bench, FakeAgent, Started, Told, allow, asks, client, key, parts, prompt, run, skip, soon,
 };
@@ -77,37 +76,6 @@ pub(super) fn allow_one(request: &str) -> (ChatCommand, PermissionAnswer) {
         allow: true,
     };
     (allow(request, "c-1", "run-1", 1), answer)
-}
-
-// An answer `r-2` to run-1's prompt `prompt` whose receipt is written but which hasn't reached
-// the run, and the answer it carries.
-pub(super) async fn on_its_way(
-    engine: &mut Engine<FakeAgent>,
-    prompt: u32,
-) -> (ChatCommand, PermissionAnswer) {
-    let answer = PermissionAnswer {
-        run: run("run-1"),
-        prompt,
-        allow: true,
-    };
-    let answers = allow("r-2", "c-1", "run-1", prompt);
-    let request = answers.request.clone();
-    let answered = PendingAnswer {
-        request: request.clone(),
-        answer: answer.clone(),
-    };
-    engine
-        .open(&key())
-        .await
-        .unwrap()
-        .pending_answers
-        .push(answered);
-    let receipt = Outcome::Completed;
-    engine
-        .commit_receipt(&key(), &request, receipt)
-        .await
-        .unwrap();
-    (answers, answer)
 }
 
 // Waits until chat `c-1`'s run has stopped reading its orders.
