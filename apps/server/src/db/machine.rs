@@ -5,8 +5,7 @@ use sqlx::SqliteConnection;
 use subtle::ConstantTimeEq;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AccountId, MachineId, MachineKey, MachineName, MachineOs, MachineSummary, PairPending,
-    PairingId, code,
+    AccountId, MachineId, MachineName, MachineOs, MachineSummary, PairPending, PairingId, code,
 };
 
 use super::{Db, failed, stored, unreadable};
@@ -23,7 +22,6 @@ pub(crate) struct NewPairing<'a> {
     pub(crate) secret_hash: &'a [u8],
     pub(crate) name: &'a MachineName,
     pub(crate) os: MachineOs,
-    pub(crate) key: &'a MachineKey,
     pub(crate) expires_at: i64,
 }
 
@@ -74,17 +72,17 @@ impl Db {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
+        // Nothing reads `machine_key`.
         sqlx::query(
             "INSERT INTO pairings
                  (pairing_id, code_hash, secret_hash, name, os, machine_key, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, '', ?)",
         )
         .bind(pairing.id.as_str())
         .bind(pairing.code_hash)
         .bind(pairing.secret_hash)
         .bind(pairing.name.as_str())
         .bind(os_text(pairing.os)?)
-        .bind(pairing.key.as_str())
         .bind(pairing.expires_at)
         .execute(&mut *transaction)
         .await
@@ -98,8 +96,8 @@ impl Db {
         code_hash: &[u8],
         now: i64,
     ) -> Result<Option<PairPending>, Fault> {
-        let found = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT pairing_id, name, os, machine_key FROM pairings
+        let found = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT pairing_id, name, os FROM pairings
              WHERE code_hash = ? AND expires_at > ? AND account_id IS NULL",
         )
         .bind(code_hash)
@@ -108,12 +106,11 @@ impl Db {
         .await
         .map_err(failed)?;
         found
-            .map(|(pairing, name, os, key)| {
+            .map(|(pairing, name, os)| {
                 Ok(PairPending {
                     pairing: stored(pairing)?,
                     name: stored(name)?,
                     os: stored_os(&os)?,
-                    key: stored(key)?,
                 })
             })
             .transpose()
@@ -134,16 +131,15 @@ impl Db {
             claim_by,
         } = *confirmation;
         let mut transaction = self.write().await?;
-        let Some((stored_hash, name, os, key)) =
-            sqlx::query_as::<_, (Vec<u8>, String, String, String)>(
-                "SELECT code_hash, name, os, machine_key FROM pairings
+        let Some((stored_hash, name, os)) = sqlx::query_as::<_, (Vec<u8>, String, String)>(
+            "SELECT code_hash, name, os FROM pairings
                  WHERE pairing_id = ? AND expires_at > ? AND account_id IS NULL",
-            )
-            .bind(pairing.as_str())
-            .bind(now)
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(failed)?
+        )
+        .bind(pairing.as_str())
+        .bind(now)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(failed)?
         else {
             return Ok(None);
         };
@@ -163,7 +159,7 @@ impl Db {
         .await
         .map_err(failed)?;
         transaction.commit().await.map_err(failed)?;
-        paired(machine.as_str().to_owned(), name, &os, key, now).map(Some)
+        paired(machine.as_str().to_owned(), name, &os, now).map(Some)
     }
 
     /// A core's claim. Once the person has confirmed, the first claim pairs the machine with
@@ -304,14 +300,12 @@ pub(super) fn paired(
     id: String,
     name: String,
     os: &str,
-    key: String,
     paired_at: i64,
 ) -> Result<MachineSummary, Fault> {
     Ok(MachineSummary {
         id: stored(id)?,
         name: stored(name)?,
         os: stored_os(os)?,
-        key: stored(key)?,
         paired_at,
         core: None,
         missing: Vec::new(),
@@ -374,10 +368,6 @@ mod tests {
         }
     }
 
-    fn key() -> MachineKey {
-        MachineKey::from_bytes([7; 32])
-    }
-
     // Starts pairing `pairing`, whose code hash is its id and whose secret hash is "secret".
     pub(super) async fn start(db: &Db, pairing: &str, now: i64) {
         let new = NewPairing {
@@ -386,7 +376,6 @@ mod tests {
             secret_hash: b"secret",
             name: &id("Studio"),
             os: MachineOs::Linux,
-            key: &key(),
             expires_at: now + 600,
         };
         db.start_pairing(&new, now).await.unwrap();
@@ -435,7 +424,6 @@ mod tests {
                 pairing: id("p1"),
                 name: id("Studio"),
                 os: MachineOs::Linux,
-                key: key(),
             }
         );
         assert_eq!(before, Claim::Waiting);
@@ -457,7 +445,6 @@ mod tests {
                 id: id("mc-p1"),
                 name: id("Studio"),
                 os: MachineOs::Linux,
-                key: key(),
                 paired_at: NOW + 1,
                 core: None,
                 missing: Vec::new(),

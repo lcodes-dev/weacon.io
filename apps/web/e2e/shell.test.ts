@@ -858,7 +858,7 @@ test("the palette's symbols go once the server stops offering symbol search", { 
   t.after(() => served.close());
   const { page } = served;
   const core = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
-  const studio = { id: "mc-1", name: "Studio", os: "linux", key: "ab".repeat(32), paired_at: 1, core, connected: true };
+  const studio = { id: "mc-1", name: "Studio", os: "linux", paired_at: 1, core, connected: true };
   await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [studio] }) }));
   await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
   const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };

@@ -190,9 +190,8 @@ test("a request sent before a newer sign-in can't end it, but one before a faile
   }
 });
 
-const KEY = "ab".repeat(32);
-const MACHINE = { id: "mc-1", name: "Studio", os: "linux", key: KEY, paired_at: 1_763_000_000 };
-const PENDING = { pairing: "p-1", name: "Studio", os: "macos", key: KEY };
+const MACHINE = { id: "mc-1", name: "Studio", os: "linux", paired_at: 1_763_000_000 };
+const PENDING = { pairing: "p-1", name: "Studio", os: "macos" };
 
 test("machines are listed, looked up by code, confirmed and unpaired", async () => {
   const { api, sent } = serve(
@@ -224,10 +223,9 @@ test("the machines shared with a workspace are listed to its members, and an ans
   assert.deepEqual(sent[0], { path: "/api/workspaces/w-1/machines", method: "GET" });
 });
 
-test("a machine whose id, key or date isn't one is a malformed answer, and a newer system is kept", async () => {
+test("a machine whose id or date isn't one is a malformed answer, and a newer system is kept", async () => {
   const bad = [
     { ...MACHINE, id: "../x" },
-    { ...MACHINE, key: "AB".repeat(32) },
     { ...MACHINE, paired_at: "today" },
     { ...MACHINE, missing: "symbols.search" },
     { ...MACHINE, missing: [7] },
@@ -235,7 +233,7 @@ test("a machine whose id, key or date isn't one is a malformed answer, and a new
   ];
   const { api } = serve(
     ...bad.map((machine) => ({ status: 200, body: { machines: [machine] } })),
-    { status: 200, body: { ...PENDING, key: "short" } },
+    { status: 200, body: { ...PENDING, pairing: "../x" } },
     { status: 200, body: { machines: [{ ...MACHINE, os: "plan9" }] } },
     { status: 200, body: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } },
     { status: 404, body: { code: "pairing.not_found", retryable: false } },

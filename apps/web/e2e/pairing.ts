@@ -7,55 +7,12 @@ import type { Page } from "playwright-core";
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
 import type { App, ChatEntry, Envelope, MachineSettings, MachineSettingsAnswerKind, OutsideSession, PairClaim, PairClaimed, PairStart, PairStarted, SessionsAnswerKind, Symbol as CodeSymbol } from "../src/protocol.ts";
 
-// The core's own test key, and the fingerprint the core prints for it.
-export const KEY = "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a";
-export const FINGERPRINT = "300c 9c96 03b9 2a4b 39ed 3958 bf92 4011";
-
 /** What a core sends to start pairing, as `weacon pair` does. */
 export async function startPairing(page: Page): Promise<PairStarted> {
-  const start: PairStart = { name: "Studio", os: "linux", key: KEY };
+  const start: PairStart = { name: "Studio", os: "linux" };
   const started = await page.request.post(new URL("/api/machines/pair", page.url()).href, { data: start });
   assert.equal(started.status(), 201);
   return (await started.json()) as PairStarted;
-}
-
-/** The key this browser pinned for `machine`, read straight from its IndexedDB. */
-export function pinned(page: Page, machine: string): Promise<unknown> {
-  return page.evaluate(
-    (machine) =>
-      new Promise((resolve, reject) => {
-        const open = indexedDB.open("weacon", 1);
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const read = open.result.transaction("pins").objectStore("pins").get(machine);
-          read.onsuccess = () => {
-            open.result.close();
-            resolve(read.result);
-          };
-        };
-      }),
-    machine,
-  );
-}
-
-/** Sets the key this browser pinned for `machine`, or forgets it, straight in its IndexedDB, as another browser's store would hold it. */
-export function setPin(page: Page, machine: string, key: string | undefined): Promise<unknown> {
-  return page.evaluate(
-    ([machine, key]) =>
-      new Promise((resolve, reject) => {
-        const open = indexedDB.open("weacon", 1);
-        open.onerror = () => reject(open.error);
-        open.onsuccess = () => {
-          const pins = open.result.transaction("pins", "readwrite").objectStore("pins");
-          const set = key === undefined ? pins.delete(machine) : pins.put(key, machine);
-          set.onsuccess = () => {
-            open.result.close();
-            resolve(undefined);
-          };
-        };
-      }),
-    [machine, key] as const,
-  );
 }
 
 /** Claims a confirmed pairing as its core does, and gives the machine and its token. */

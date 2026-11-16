@@ -8,7 +8,7 @@ use tokio::sync::{Semaphore, mpsc};
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     Asker, ChatsQuery, ChatsQueryKind, Envelope, FrameError, MapAnswer, Message, Outcome, Pick,
-    Receipt, SessionsQuery, SymbolsQuery, TerminalCommand, WorkspaceId, code,
+    Receipt, SessionsQuery, SymbolsQuery, WorkspaceId, code,
 };
 
 use super::Shared;
@@ -22,7 +22,7 @@ use crate::mcp::Maps;
 use crate::picks::KeepError;
 use crate::proposals::{self, Asks};
 use crate::session::{Reply, Session};
-use crate::terminal::Terminals;
+use crate::terminal::{Terminals, Told};
 use crate::uplink::{self, failure};
 use crate::workspaces::{Workspaces, sharing};
 use crate::{app, machine, symbols};
@@ -150,11 +150,12 @@ pub(super) fn server(
         log: app.log.child(&[("component", "asks".into())]),
     };
     let for_removals = chats.clone();
-    let link = uplink::new(app, state_dir, to_daemon, chats);
+    let (to_terminals, told) = mpsc::channel(uplink::QUEUE);
+    let link = uplink::new(app, state_dir, (to_daemon, to_terminals), chats);
     async move {
         tokio::select! {
             never = Box::pin(link.run(from_daemon)) => match never {},
-            never = uplink(Asked { host, chats: for_removals, worktrees, maps }, asks, replies, answered) => match never {},
+            never = uplink(Asked { host, chats: for_removals, worktrees, maps }, (asks, told), replies, answered) => match never {},
             // Once every way to propose is gone, the rest serves on.
             () = async {
                 proposer.await;
@@ -176,29 +177,20 @@ pub(super) struct Asked {
 
 /// Answers each ask the uplink hands over, under its envelope id: queries on tasks of their
 /// own, a few at once, and commands one after another in the order they came. What answers the
-/// core's own proposals goes to `answered`.
+/// core's own proposals goes to `answered`. Its sign-in terminals do what they are `told`.
 pub(super) async fn uplink(
     asked: Asked,
-    mut asks: mpsc::Receiver<Envelope>,
+    (mut asks, told): (mpsc::Receiver<Envelope>, mpsc::Receiver<Told>),
     replies: mpsc::Sender<Envelope>,
     answered: mpsc::Sender<Envelope>,
 ) -> ! {
     let (commands, in_order) = mpsc::channel(uplink::QUEUE);
     tokio::spawn(one_by_one(asked.clone(), in_order, replies.clone()));
-    let (terminal_commands, for_terminals) = mpsc::channel(uplink::QUEUE);
-    tokio::spawn(terminals(
-        asked.host.clone(),
-        for_terminals,
-        replies.clone(),
-    ));
+    tokio::spawn(terminals(asked.host.clone(), told, replies.clone()));
     let room = Arc::new(Semaphore::new(QUERIES_AT_ONCE));
     while let Some(ask) = asks.recv().await {
         if proposals::answers(&ask.message) {
             drop(answered.send(ask).await);
-            continue;
-        }
-        if let Message::TerminalCommand(command) = ask.message {
-            drop(terminal_commands.send(command).await);
             continue;
         }
         if matches!(
@@ -238,17 +230,18 @@ async fn send_all(replies: &mpsc::Sender<Envelope>, answers: Vec<Envelope>) {
     }
 }
 
-// Hands each terminal command to this machine's terminals, in the order they came.
-async fn terminals(
-    host: Host,
-    mut commands: mpsc::Receiver<TerminalCommand>,
-    replies: mpsc::Sender<Envelope>,
-) {
+// Hands each terminal command to this machine's terminals, in the order they came, and closes
+// them all each time the connection the commands before came on ends, as their browsers
+// can't reach them after.
+async fn terminals(host: Host, mut told: mpsc::Receiver<Told>, replies: mpsc::Sender<Envelope>) {
     let workspaces = Workspaces::new(&host.state_dir, host.path.clone());
     let log = host.log.child(&[("component", "terminals".into())]);
-    let mut terminals = Terminals::new(host.state_dir, workspaces, log, replies);
-    while let Some(command) = commands.recv().await {
-        terminals.handle(command).await;
+    let mut terminals = Terminals::new(workspaces, log, replies);
+    while let Some(told) = told.recv().await {
+        match told {
+            Told::Command(command) => terminals.handle(command).await,
+            Told::Down => terminals.close_all(),
+        }
     }
 }
 
@@ -380,12 +373,12 @@ mod tests {
         AccountId, AgentKind, Asker, ErrorBody, MachineSettingsAction, MachineSettingsAnswerKind,
         MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, SessionsAnswer,
         SessionsAnswerKind, SessionsQuery, SessionsQueryKind, SymbolsAnswerKind, SymbolsQuery,
-        SymbolsQueryKind,
+        SymbolsQueryKind, TerminalAction, TerminalCommand, TerminalEvent,
     };
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::machine::{Key, Paired};
+    use crate::machine::Paired;
     use crate::outside::Outside;
     use crate::reports;
     use crate::test_support::{self, SESSION, claude_home};
@@ -449,7 +442,6 @@ mod tests {
             machine: id("mc-1"),
             owner: id(owner),
             token: "t0ken".to_owned(),
-            key: Key::from_random([7; 32]),
         };
         machine::write(dir, &paired).unwrap();
     }
@@ -819,7 +811,12 @@ mod tests {
         let (host, _) = host(&dir);
         let (to_daemon, asks) = mpsc::channel(8);
         let (replies, mut from_daemon) = mpsc::channel(8);
-        tokio::spawn(uplink(host, asks, replies, mpsc::channel(1).0));
+        tokio::spawn(uplink(
+            host,
+            (asks, mpsc::channel(1).1),
+            replies,
+            mpsc::channel(1).0,
+        ));
         for ask in [
             reports(1, true),
             settings("a-2"),
@@ -859,39 +856,82 @@ mod tests {
         assert_eq!(reports::current(&dir), Some(false));
     }
 
+    fn terminal(terminal: &str, action: TerminalAction) -> Told {
+        Told::Command(TerminalCommand {
+            terminal: id(terminal),
+            machine: id("mc-1"),
+            workspace: id("w1"),
+            action,
+            by: Some(by("a-1")),
+        })
+    }
+
+    // The event of the next terminal update the daemon sends, and the terminal it is about.
+    async fn terminal_update(
+        from_daemon: &mut mpsc::Receiver<Envelope>,
+    ) -> (String, TerminalEvent) {
+        let reply = from_daemon.recv();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), reply).await;
+        match reply.unwrap().map(|reply| (reply.id, reply.message)) {
+            Some((0, Message::Terminal(update))) => {
+                (update.terminal.as_str().to_owned(), update.event)
+            }
+            other => panic!("not an update: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn a_terminal_command_is_answered_with_an_update_for_its_terminal() {
         let dir = TempDir::new().unwrap();
         let (host, _) = host(&dir);
-        let (to_daemon, asks) = mpsc::channel(8);
+        let (to_terminals, told) = mpsc::channel(8);
         let (replies, mut from_daemon) = mpsc::channel(8);
-        tokio::spawn(uplink(host, asks, replies, mpsc::channel(1).0));
-        let close = TerminalCommand {
-            terminal: id("t-1"),
-            machine: id("mc-1"),
-            workspace: id("w1"),
-            action: weacon_protocol::TerminalAction::Close,
-            by: Some(by("a-1")),
-        };
-        let message = Message::TerminalCommand(close);
-        to_daemon.send(Envelope { id: 7, message }).await.unwrap();
+        let asks = mpsc::channel(1).1;
+        tokio::spawn(uplink(host, (asks, told), replies, mpsc::channel(1).0));
 
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), from_daemon.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let close = terminal("t-1", TerminalAction::Close);
+        to_terminals.send(close).await.unwrap();
 
-        assert_eq!(reply.id, 0);
-        let Message::Terminal(update) = reply.message else {
-            panic!("expected an update, got {:?}", reply.message);
+        let unknown = TerminalEvent::Closed {
+            code: Some(code!("terminal.unknown")),
         };
-        assert_eq!(update.terminal.as_str(), "t-1");
         assert_eq!(
-            update.event,
-            weacon_protocol::TerminalEvent::Closed {
-                code: Some(code!("terminal.unknown"))
-            }
+            terminal_update(&mut from_daemon).await,
+            ("t-1".to_owned(), unknown)
         );
+    }
+
+    // The vendor this test plants is a shell script.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_connections_end_closes_the_terminals_opened_before_it_and_no_others() {
+        let dir = TempDir::new().unwrap();
+        let (host, _) = host(&dir);
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let never_ends = "#!/bin/sh\nexec sleep 600\n";
+        weacon_testing::platform::write_program(&dir.join("bin").join("claude"), never_ends)
+            .unwrap();
+        let (to_terminals, told) = mpsc::channel(8);
+        let (replies, mut from_daemon) = mpsc::channel(8);
+        let asks = mpsc::channel(1).1;
+        tokio::spawn(uplink(host, (asks, told), replies, mpsc::channel(1).0));
+        let open = |id: &str| {
+            let (agent, cols, rows) = (AgentKind::Claude, 80, 24);
+            terminal(id, TerminalAction::Open { agent, cols, rows })
+        };
+
+        // An open still queued when its connection ends, then one on the next connection.
+        for told in [open("t-1"), Told::Down, open("t-2")] {
+            to_terminals.send(told).await.unwrap();
+        }
+        // The first is stopped, with nobody left to tell, and the second takes its slot.
+        let opened = |id: &str| (id.to_owned(), TerminalEvent::Opened);
+        let mut heard = terminal_update(&mut from_daemon).await;
+        if heard == opened("t-1") {
+            heard = terminal_update(&mut from_daemon).await;
+        }
+        assert_eq!(heard, opened("t-2"));
+        from_daemon.try_recv().unwrap_err();
     }
 
     #[tokio::test]
@@ -901,7 +941,7 @@ mod tests {
         let (to_daemon, asks) = mpsc::channel(8);
         let (replies, mut from_daemon) = mpsc::channel(8);
         let (answered, mut answers) = mpsc::channel(8);
-        tokio::spawn(uplink(host, asks, replies, answered));
+        tokio::spawn(uplink(host, (asks, mpsc::channel(1).1), replies, answered));
         let receipt = Envelope {
             id: 0,
             message: Message::Receipt(Receipt {

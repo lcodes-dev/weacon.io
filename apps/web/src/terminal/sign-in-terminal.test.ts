@@ -1,43 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { hex, unhex } from "../hex.ts";
-import { type PinStore, Pins } from "../machines/pins.ts";
+import { hex } from "../hex.ts";
 import type { MachineSummary, TerminalCommand, TerminalEvent } from "../protocol.ts";
-import { SignInTerminal, type TerminalState, prologue } from "./sign-in-terminal.ts";
-import { fixed, vectors } from "./vectors.ts";
+import { SignInTerminal, type TerminalState } from "./sign-in-terminal.ts";
 
-const vector = vectors.weacon;
-const message = (index: number) => {
-  const found = vector.messages[index];
-  assert.ok(found);
-  return found;
-};
+const machine: MachineSummary = { id: "m-1", name: "Test laptop", os: "linux", paired_at: 0 };
+const text = (shown: string) => hex(new TextEncoder().encode(shown));
 
-const machine: MachineSummary = {
-  id: "m-1",
-  name: "Test laptop",
-  os: "linux",
-  key: vector.init_remote_static,
-  paired_at: 0,
-};
-
-function store(pinned?: string, failing = false): PinStore {
-  const keys = new Map<string, string>(pinned === undefined ? [] : [["m-1", pinned]]);
-  const fail = () => Promise.reject(new Error("store unavailable"));
-  return {
-    get: async (id) => (failing ? fail() : keys.get(id)),
-    put: async (id, key) => {
-      keys.set(id, key);
-    },
-    delete: async (id) => {
-      keys.delete(id);
-    },
-  };
-}
-
-function terminal(pins: Pins, online = true) {
-  const beats = { run: undefined as (() => void) | undefined, ms: 0, stopped: false };
+function terminal(online = true) {
   const sent: TerminalCommand[] = [];
   const written: string[] = [];
   const states: TerminalState[] = [];
@@ -45,7 +16,6 @@ function terminal(pins: Pins, online = true) {
     machine,
     workspace: "w-1",
     agent: "claude",
-    pins,
     send: (command) => {
       sent.push(command);
       return online;
@@ -56,274 +26,91 @@ function terminal(pins: Pins, online = true) {
     },
     size: { cols: 80, rows: 24 },
     terminal: "t-1",
-    ephemeral: fixed(vector.init_ephemeral),
-    every: (run, ms) => {
-      Object.assign(beats, { run, ms });
-      return () => {
-        beats.stopped = true;
-      };
-    },
   });
   const receive = (event: TerminalEvent) => session.receive({ terminal: "t-1", workspace: "w-1", event });
-  return { session, sent, written, states, receive, beats };
+  return { session, sent, written, states, receive };
 }
 
-function sealed(command: TerminalCommand | undefined): string {
-  assert.ok(command && (command.action.kind === "frame" || command.action.kind === "open"));
-  return command.action.kind === "frame" ? command.action.sealed : command.action.handshake;
-}
+const actions = (sent: TerminalCommand[]) => sent.map((command) => command.action);
 
-test("the prologue is the core's", () => {
-  assert.deepEqual(prologue("m-1", "w-1", "t-1", "claude"), unhex(vector.init_prologue));
+test("a sign-in opens at its size, shows what the login prints, sends what is typed and ends", () => {
+  const { session, sent, written, states, receive } = terminal();
+
+  session.start();
+  receive({ kind: "opened" });
+  receive({ kind: "output", data: text("Paste the code") });
+  session.input(new TextEncoder().encode("abc\r"));
+  receive({ kind: "ended", sign_in: "signed_in" });
+  receive({ kind: "closed" });
+
+  assert.deepEqual(sent[0], { terminal: "t-1", machine: "m-1", workspace: "w-1", action: { kind: "open", agent: "claude", cols: 80, rows: 24 } });
+  assert.deepEqual(actions(sent).slice(1), [{ kind: "input", data: text("abc\r") }]);
+  assert.deepEqual(written, ["Paste the code"]);
+  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "open" }, { kind: "ended", signIn: "signed_in" }, { kind: "closed" }]);
 });
 
-test("a sign-in runs sealed to the pinned key, as the core's own vector has it", async () => {
-  const { session, sent, written, states, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0]?.action.kind, "open");
-  assert.equal(sent[0]?.action.kind === "open" && sent[0].action.agent, "claude");
-  assert.equal(sealed(sent[0]), message(0).ciphertext);
-  assert.equal(sent[0]?.by, undefined);
+test("a long paste goes in pieces, in order", () => {
+  const { session, sent } = terminal();
+  session.start();
 
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  assert.equal(sealed(sent[1]), message(2).ciphertext);
-  await receive({ kind: "frame", sealed: message(3).ciphertext });
-  assert.deepEqual(written, ["Paste the code: "]);
-  await session.input(new TextEncoder().encode("y\r"));
-  assert.equal(sealed(sent[2]), message(4).ciphertext);
-  await receive({ kind: "frame", sealed: message(5).ciphertext });
-  await receive({ kind: "closed" });
-  assert.deepEqual(states.map((state) => state.kind), ["checking", "connecting", "open", "ended", "closed"]);
-  assert.deepEqual(states.at(-2), { kind: "ended", signIn: "signed_in" });
-  assert.deepEqual(states.at(-1), { kind: "closed" });
+  session.input(new Uint8Array(40_000).fill(0x61));
+
+  const pieces = actions(sent)
+    .slice(1)
+    .map((action) => (action.kind === "input" ? action.data.length / 2 : -1));
+  assert.deepEqual(pieces, [16_384, 16_384, 7_232]);
 });
 
-test("a long paste goes in pieces, each sealed in a frame of its own", async () => {
-  const { session, sent, states, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const before = sent.length;
+test("updates for another terminal or workspace, and anything after the close, change nothing", () => {
+  const { session, written, states, receive } = terminal();
+  session.start();
 
-  await session.input(new Uint8Array(40_000).fill(0x61));
-  await session.input(new Uint8Array());
+  session.receive({ terminal: "t-2", workspace: "w-1", event: { kind: "output", data: text("other") } });
+  session.receive({ terminal: "t-1", workspace: "w-2", event: { kind: "closed" } });
+  receive({ kind: "closed", code: "terminal.busy" });
+  receive({ kind: "output", data: text("late") });
+  session.input(new TextEncoder().encode("late"));
 
-  assert.equal(sent.length - before, 3);
-  assert.ok(sent.slice(before).every((command) => command.action.kind === "frame"));
-  assert.equal(states.at(-1)?.kind, "open");
-});
-
-test("what is typed goes in the order it was typed, a long paste's pieces together", async () => {
-  const { session, sent, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const before = sent.length;
-
-  const paste = session.input(new Uint8Array(16_385).fill(0x61));
-  const enter = session.input(new TextEncoder().encode("\r\n"));
-  await Promise.all([paste, enter]);
-
-  const lengths = sent.slice(before).map((command) => sealed(command).length);
-  assert.equal(lengths.length, 3);
-  // The paste's last byte, then the two of Enter, each as hex.
-  assert.deepEqual([lengths[2]! - lengths[1]!], [4]);
-});
-
-test("a connection lost while the handshake finishes leaves the terminal closed", async () => {
-  const { session, states, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  const subtle = crypto.subtle;
-  const derive = subtle.deriveBits.bind(subtle);
-  // The core's reply is in, and the connection goes as its keys are worked out.
-  subtle.deriveBits = (...args: Parameters<SubtleCrypto["deriveBits"]>) => {
-    session.lost();
-    return derive(...args);
-  };
-  try {
-    await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  } finally {
-    delete (subtle as Partial<SubtleCrypto>).deriveBits;
-  }
-
-  assert.deepEqual(states.at(-1), { kind: "closed", problem: "offline" });
-  assert.ok(!states.some((state) => state.kind === "open"));
-});
-
-test("an open terminal seals a frame every 20 seconds until it closes, so the core knows it is there", async () => {
-  const { session, sent, receive, beats } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  assert.equal(beats.ms, 0);
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const before = sent.length;
-
-  beats.run?.();
-  // Sealed after the beat's own frame, so both are out once this is.
-  await session.resize({ cols: 80, rows: 24 });
-
-  assert.equal(beats.ms, 20_000);
-  assert.equal(sent.length - before, 2);
-  assert.equal(sent.at(-1)?.action.kind, "frame");
-  assert.equal(beats.stopped, false);
-  session.close();
-  assert.equal(beats.stopped, true);
-});
-
-test("a beat after a resize keeps the new size", async () => {
-  const { session, sent, receive, beats } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const larger = { cols: 100, rows: 30 };
-
-  await session.resize(larger);
-  beats.run?.();
-  await session.resize(larger);
-
-  // Each frame seals the same size, so each is as long as the others.
-  const [resized, beat, again] = sent.slice(-3).map((command) => sealed(command).length);
-  assert.equal(beat, resized);
-  assert.equal(again, resized);
-});
-
-test("a frame still being sealed when the terminal closes isn't sent after the close", async () => {
-  const { session, sent, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-
-  const subtle = crypto.subtle;
-  const encrypt = subtle.encrypt.bind(subtle);
-  // The person closes it while the frame is encrypted.
-  subtle.encrypt = (...args: Parameters<SubtleCrypto["encrypt"]>) => {
-    session.close();
-    return encrypt(...args);
-  };
-  try {
-    await session.input(new TextEncoder().encode("y"));
-  } finally {
-    delete (subtle as Partial<SubtleCrypto>).encrypt;
-  }
-
-  assert.equal(sent.at(-1)?.action.kind, "close");
-});
-
-test("a changed key, or a pin that can't be read, sends nothing", async () => {
-  for (const [pins, problem] of [
-    [new Pins(store("00".repeat(32))), "key_changed"],
-    [new Pins(store(undefined, true)), "key_unchecked"],
-  ] as const) {
-    const { session, sent, states } = terminal(pins);
-    await session.start();
-    assert.deepEqual(sent, []);
-    assert.deepEqual(states.at(-1), { kind: "closed", problem });
-  }
-});
-
-test("an unpinned machine sends nothing and is never pinned here", async () => {
-  const pinned: string[] = [];
-  const pins = new Pins({ ...store(), put: async (id) => void pinned.push(id) });
-  const { session, sent, states } = terminal(pins);
-  await session.start();
-  await session.start();
-  assert.deepEqual(sent, []);
-  assert.deepEqual(pinned, []);
-  assert.deepEqual(states.at(-1), { kind: "closed", problem: "unpinned" });
-});
-
-test("anything that doesn't check out closes the terminal, which then shows nothing", async () => {
-  const { session, sent, written, states, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
-  const tampered = unhex(message(3).ciphertext);
-  tampered[0] = (tampered[0] ?? 0) ^ 1;
-  await receive({ kind: "frame", sealed: hex(tampered) });
-  assert.deepEqual(states.at(-1), { kind: "closed", problem: "broken" });
-  assert.equal(sent.at(-1)?.action.kind, "close");
-
-  const count = sent.length;
-  await receive({ kind: "frame", sealed: message(3).ciphertext });
-  await session.input(new TextEncoder().encode("y\r"));
   assert.deepEqual(written, []);
-  assert.equal(sent.length, count);
+  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "closed", problem: "terminal.busy" }]);
 });
 
-test("a second reply, a reply before the handshake, or a frame before the reply breaks it", async () => {
-  for (const events of [
-    [{ kind: "frame", sealed: message(3).ciphertext }],
-    [
-      { kind: "accepted", handshake: message(1).ciphertext },
-      { kind: "accepted", handshake: message(1).ciphertext },
-    ],
-  ] as const) {
-    const { session, states, receive } = terminal(new Pins(store(machine.key)));
-    await session.start();
-    for (const event of events) {
-      await receive(event);
-    }
-    assert.deepEqual(states.at(-1), { kind: "closed", problem: "broken" });
-  }
-});
+test("closing asks the core to stop once, and only a terminal that was opened", () => {
+  const unopened = terminal();
+  unopened.session.close();
+  unopened.session.start();
+  const { session, sent, states } = terminal();
+  session.start();
+  session.start();
 
-test("the core's refusal closes the terminal with its code, and others' updates are ignored", async () => {
-  const { session, states, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await session.receive({ terminal: "t-2", workspace: "w-1", event: { kind: "closed" } });
-  await session.receive({ terminal: "t-1", workspace: "w-2", event: { kind: "closed" } });
-  assert.equal(states.at(-1)?.kind, "connecting");
-  await receive({ kind: "closed", code: "terminal.busy" });
-  assert.deepEqual(states.at(-1), { kind: "closed", problem: "terminal.busy" });
-});
-
-test("updates that come at once are taken in order", async () => {
-  const { session, written, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await Promise.all([
-    receive({ kind: "accepted", handshake: message(1).ciphertext }),
-    receive({ kind: "frame", sealed: message(3).ciphertext }),
-  ]);
-  assert.deepEqual(written, ["Paste the code: "]);
-});
-
-test("a terminal closed while it checks or opens sends nothing, and opens only once", async () => {
-  const { session, sent, states } = terminal(new Pins(store(machine.key)));
-  const starting = session.start();
-  session.close();
-  await starting;
-  assert.deepEqual(sent, []);
-  assert.deepEqual(states.at(-1), { kind: "closed" });
-
-  const twice = terminal(new Pins(store(machine.key)));
-  await Promise.all([twice.session.start(), twice.session.start()]);
-  assert.deepEqual(twice.sent.map((command) => command.action.kind), ["open"]);
-});
-
-test("closing sends one close and nothing after", async () => {
-  const { session, sent, receive } = terminal(new Pins(store(machine.key)));
-  await session.start();
-  await receive({ kind: "accepted", handshake: message(1).ciphertext });
   session.close();
   session.close();
-  await session.resize({ cols: 100, rows: 30 });
-  assert.deepEqual(
-    sent.map((command) => command.action.kind),
-    ["open", "frame", "close"],
-  );
+
+  assert.deepEqual(unopened.sent, []);
+  assert.deepEqual(actions(sent), [{ kind: "open", agent: "claude", cols: 80, rows: 24 }, { kind: "close" }]);
+  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "closed" }]);
 });
 
-test("a terminal whose connection is lost closes as offline, once, and sends nothing more", async () => {
-  const { session, states, sent } = terminal(new Pins(store(machine.key)));
-  await session.start();
+test("output that isn't bytes closes the terminal as broken and stops the core", () => {
+  const { session, sent, written, states, receive } = terminal();
+  session.start();
+
+  receive({ kind: "output", data: "zz" });
+
+  assert.deepEqual(written, []);
+  assert.deepEqual(actions(sent).at(-1), { kind: "close" });
+  assert.deepEqual(states.at(-1), { kind: "closed", problem: "broken" });
+});
+
+test("a connection that can't take a command, or is lost, closes the terminal as offline", () => {
+  const unsent = terminal(false);
+  unsent.session.start();
+  const { session, sent, states } = terminal();
+  session.start();
+
   session.lost();
-  await session.receive({ terminal: "t-1", workspace: "w-1", event: { kind: "closed" } });
-  session.close();
 
-  assert.deepEqual(states.filter((state) => state.kind === "closed"), [{ kind: "closed", problem: "offline" }]);
-  assert.deepEqual(
-    sent.map((command) => command.action.kind),
-    ["open"],
-  );
-});
-
-test("a connection that can't take a command ends the terminal", async () => {
-  const { session, states } = terminal(new Pins(store(machine.key)), false);
-  await session.start();
-  assert.deepEqual(states.at(-1), { kind: "closed", problem: "offline" });
+  assert.deepEqual(unsent.states, [{ kind: "connecting" }, { kind: "closed", problem: "offline" }]);
+  assert.deepEqual(states, [{ kind: "connecting" }, { kind: "closed", problem: "offline" }]);
+  assert.equal(sent.length, 1);
 });

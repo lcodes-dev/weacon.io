@@ -66,7 +66,6 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<PairStarted, Fault
         secret_hash: &token_hash(&secret),
         name: &body.name,
         os: body.os,
-        key: &body.key,
         expires_at,
     };
     shared.db.start_pairing(&new, now).await?;
@@ -247,7 +246,7 @@ mod tests {
         assert_eq!(looked, "http/1.1 200 ok");
         assert_eq!(
             pending,
-            json!({ "pairing": pairing.pairing, "name": "Studio", "os": "macos", "key": "ab".repeat(32) })
+            json!({ "pairing": pairing.pairing, "name": "Studio", "os": "macos" })
         );
         assert_eq!(confirmed, "http/1.1 201 created");
         assert_eq!(machine["name"], "Studio");
@@ -381,7 +380,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
 
-        let start = json!({ "name": "Studio", "os": "plan9", "key": "ab".repeat(32) }).to_string();
+        let start = json!({ "name": "Studio", "os": "plan9" }).to_string();
         let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
 
         assert_eq!(status, "http/1.1 400 bad request");
@@ -394,7 +393,7 @@ mod tests {
         let server = fixture.run().await;
 
         for name in ["   ", " Studio", "Studio\u{a0}", "Studio\n"] {
-            let start = json!({ "name": name, "os": "macos", "key": "ab".repeat(32) }).to_string();
+            let start = json!({ "name": name, "os": "macos" }).to_string();
             let (status, refusal) = post(server.address, "/api/machines/pair", "", &start).await;
 
             assert_eq!(status, "http/1.1 400 bad request", "{name:?}");

@@ -1,5 +1,5 @@
 //! A sign-in terminal: the vendor's login command on a person's machine, shown in their
-//! browser and sealed end to end with Noise NK, so the server relays bytes it can't read.
+//! browser. The server relays it and never parses, stores or logs what it carries.
 
 use std::fmt;
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::hex::{from_hex, to_hex};
 use crate::token::token_id;
-use crate::{AgentKind, Asker, Code, FrameError, MachineId, SignInState, WorkspaceId};
+use crate::{AgentKind, Asker, Code, MachineId, SignInState, WorkspaceId};
 
 token_id!(
     /// One sign-in terminal, chosen by the browser that opens it; 1–64 ASCII letters, digits,
@@ -17,20 +17,12 @@ token_id!(
     "not a terminal id"
 );
 
-/// The Noise protocol every sign-in terminal speaks; the browser initiates, and the core's
-/// static key is its paired [`crate::MachineKey`].
-pub const TERMINAL_NOISE: &str = "Noise_NK_25519_AESGCM_SHA256";
+// The most `Bytes` carries.
+const BYTES_MAX: usize = 65535;
 
-/// The largest Noise message, and so the most [`Bytes`] carries.
-pub const NOISE_MAX: usize = 65535;
-
-/// The largest plaintext one sealed frame holds: a Noise message less its tag.
-pub const SEALED_MAX: usize = NOISE_MAX - 16;
-
-/// A sign-in terminal's sealed input, from the owner of `machine`'s browser to its core, which
-/// offers `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and
-/// only from the machine's owner, and the core acts only when `by` is its owner and refuses a
-/// terminal id it has already seen.
+/// A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
+/// `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only
+/// from the machine's owner, and the core acts only when `by` is its owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
     pub terminal: TerminalId,
@@ -46,11 +38,14 @@ pub struct TerminalCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TerminalAction {
-    /// Runs `agent`'s login, with the first handshake message, whose payload is a
-    /// [`TerminalInput::Resize`].
-    Open { agent: AgentKind, handshake: Bytes },
-    /// A sealed [`TerminalInput`].
-    Frame { sealed: Bytes },
+    /// Runs `agent`'s login in a terminal of this size, in characters.
+    Open {
+        agent: AgentKind,
+        cols: u32,
+        rows: u32,
+    },
+    /// What the person typed or pasted.
+    Input { data: Bytes },
     /// Ends the login, if it still runs.
     Close,
     /// An action this build doesn't know, from a newer peer; only ever received.
@@ -59,7 +54,7 @@ pub enum TerminalAction {
     Newer,
 }
 
-/// A sign-in terminal's sealed output, from a core that offers `terminal.sign_in`, through the
+/// A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the
 /// server, to the browser that opened `terminal`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalUpdate {
@@ -71,10 +66,12 @@ pub struct TerminalUpdate {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TerminalEvent {
-    /// The second handshake message, with an empty payload.
-    Accepted { handshake: Bytes },
-    /// A sealed [`TerminalOutput`].
-    Frame { sealed: Bytes },
+    /// The login runs.
+    Opened,
+    /// What the login printed.
+    Output { data: Bytes },
+    /// The login ended, and then the vendor's status command said this.
+    Ended { sign_in: SignInState },
     /// The terminal is gone; nothing more comes. `code` says why, unless it ended as asked.
     Closed {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -87,97 +84,8 @@ pub enum TerminalEvent {
     Newer,
 }
 
-/// From the browser to the core, only inside the seal.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TerminalInput {
-    /// What the person typed or pasted.
-    Input { data: Bytes },
-    /// The terminal's size in characters.
-    Resize { cols: u32, rows: u32 },
-    /// Input this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
-}
-
-/// From the core to the browser, only inside the seal.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TerminalOutput {
-    /// What the login printed.
-    Output { data: Bytes },
-    /// The login ended, and then the vendor's status command said this.
-    Ended { sign_in: SignInState },
-    /// Output this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
-}
-
-impl TerminalInput {
-    /// The plaintext to seal.
-    ///
-    /// # Errors
-    /// For [`Self::Newer`], which is only ever received, or beyond [`SEALED_MAX`].
-    pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        sealed_json(self)
-    }
-
-    /// # Errors
-    /// When `json` isn't a [`TerminalInput`].
-    pub fn from_json(json: &[u8]) -> Result<Self, FrameError> {
-        serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
-    }
-}
-
-impl TerminalOutput {
-    /// The plaintext to seal.
-    ///
-    /// # Errors
-    /// For anything only ever received, or beyond [`SEALED_MAX`].
-    pub fn to_json(&self) -> Result<Vec<u8>, FrameError> {
-        sealed_json(self)
-    }
-
-    /// # Errors
-    /// When `json` isn't a [`TerminalOutput`].
-    pub fn from_json(json: &[u8]) -> Result<Self, FrameError> {
-        serde_json::from_slice(json).map_err(|_| FrameError::Invalid)
-    }
-}
-
-fn sealed_json(value: &impl Serialize) -> Result<Vec<u8>, FrameError> {
-    let json = serde_json::to_vec(value).map_err(|_| FrameError::Invalid)?;
-    if json.len() > SEALED_MAX {
-        return Err(FrameError::TooLarge);
-    }
-    Ok(json)
-}
-
-impl TerminalCommand {
-    /// The Noise prologue both ends hash before the handshake of an [`TerminalAction::Open`],
-    /// so the server can't move it to another machine, workspace, terminal or vendor. `None`
-    /// for any other action, or an agent this build doesn't know.
-    #[must_use]
-    pub fn prologue(&self) -> Option<Vec<u8>> {
-        let TerminalAction::Open { agent, .. } = self.action else {
-            return None;
-        };
-        // Ids are tokens, which never hold the separator.
-        let parts = [
-            "weacon-terminal/1",
-            self.machine.as_str(),
-            self.workspace.as_str(),
-            self.terminal.as_str(),
-            agent.name()?,
-        ];
-        Some(parts.join("\n").into_bytes())
-    }
-}
-
-/// Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
-/// how many, since they are sealed or terminal content.
+/// Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
+/// how many, since they are terminal content.
 #[derive(Clone, PartialEq, Eq, JsonSchema)]
 pub struct Bytes(
     #[schemars(with = "String", regex(pattern = BYTES_PATTERN), length(max = HEX_MAX))] Vec<u8>,
@@ -185,13 +93,13 @@ pub struct Bytes(
 
 // The schema's form of the check in `deserialize`; a test keeps the two in step.
 const BYTES_PATTERN: &str = r"^([0-9a-f]{2})*$";
-const HEX_MAX: usize = 2 * NOISE_MAX;
+const HEX_MAX: usize = 2 * BYTES_MAX;
 
 impl Bytes {
-    /// `None` when there are more than [`NOISE_MAX`].
+    /// `None` when there are more than that.
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
-        (bytes.len() <= NOISE_MAX).then_some(Self(bytes))
+        (bytes.len() <= BYTES_MAX).then_some(Self(bytes))
     }
 
     #[must_use]
@@ -216,7 +124,7 @@ impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = from_hex(&String::deserialize(deserializer)?)
             .ok_or_else(|| de::Error::custom("not lowercase hex bytes"))?;
-        Self::new(bytes).ok_or_else(|| de::Error::custom("more bytes than a Noise message"))
+        Self::new(bytes).ok_or_else(|| de::Error::custom("too many bytes"))
     }
 }
 
@@ -251,8 +159,30 @@ mod tests {
         }))
     }
 
+    fn command_wire(action: &Value) -> Value {
+        json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
+            "workspace": "w-1", "action": action })
+    }
+
     #[test]
     fn commands_have_a_flat_tagged_shape() {
+        let cases = [
+            (
+                TerminalAction::Input {
+                    data: bytes(b"y\r"),
+                },
+                json!({ "kind": "input", "data": "790d" }),
+            ),
+            (TerminalAction::Close, json!({ "kind": "close" })),
+        ];
+        for (action, wire) in cases {
+            let sent = envelope(Message::TerminalCommand(command(action)));
+            travels(&sent, command_wire(&wire));
+        }
+    }
+
+    #[test]
+    fn a_relayed_open_names_who_asked() {
         let open = TerminalCommand {
             by: Some(Asker {
                 account: "a-1".parse().unwrap(),
@@ -260,56 +190,31 @@ mod tests {
             }),
             ..command(TerminalAction::Open {
                 agent: AgentKind::Codex,
-                handshake: bytes(&[0, 0xab, 0xff]),
+                cols: 80,
+                rows: 24,
             })
         };
-        let ids = json!({ "id": 4, "type": "terminal_command", "terminal": "t-1",
-            "machine": "m-1", "workspace": "w-1" });
-        let with = |action: Value, extra: Value| {
-            let mut wire = ids.clone();
-            wire["action"] = action;
-            if let Value::Object(extra) = extra {
-                wire.as_object_mut().unwrap().extend(extra);
-            }
-            wire
-        };
-        let cases = [
-            (
-                open,
-                with(
-                    json!({ "kind": "open", "agent": "codex", "handshake": "00abff" }),
-                    json!({ "by": { "account": "a-1", "member": "p-1" } }),
-                ),
-            ),
-            (
-                command(TerminalAction::Frame { sealed: bytes(b"") }),
-                with(json!({ "kind": "frame", "sealed": "" }), json!(null)),
-            ),
-            (
-                command(TerminalAction::Close),
-                with(json!({ "kind": "close" }), json!(null)),
-            ),
-        ];
-        for (command, wire) in cases {
-            travels(&envelope(Message::TerminalCommand(command)), wire);
-        }
+        let mut wire =
+            command_wire(&json!({ "kind": "open", "agent": "codex", "cols": 80, "rows": 24 }));
+        wire["by"] = json!({ "account": "a-1", "member": "p-1" });
+
+        travels(&envelope(Message::TerminalCommand(open)), wire);
     }
 
     #[test]
     fn updates_have_a_flat_tagged_shape() {
         let ids = json!({ "id": 4, "type": "terminal", "terminal": "t-1", "workspace": "w-1" });
         let events = [
+            (TerminalEvent::Opened, json!({ "kind": "opened" })),
             (
-                TerminalEvent::Accepted {
-                    handshake: bytes(&[1, 2]),
-                },
-                json!({ "kind": "accepted", "handshake": "0102" }),
+                TerminalEvent::Output { data: bytes(b"ok") },
+                json!({ "kind": "output", "data": "6f6b" }),
             ),
             (
-                TerminalEvent::Frame {
-                    sealed: bytes(&[0x10]),
+                TerminalEvent::Ended {
+                    sign_in: SignInState::SignedIn,
                 },
-                json!({ "kind": "frame", "sealed": "10" }),
+                json!({ "kind": "ended", "sign_in": "signed_in" }),
             ),
             (
                 TerminalEvent::Closed { code: None },
@@ -336,91 +241,20 @@ mod tests {
                 "workspace": "w-1", "action": { "kind": "rewind" } }),
             json!({ "id": 4, "type": "terminal_command", "terminal": "t-1", "machine": "m-1",
                 "workspace": "w-1", "action": { "kind": "open", "agent": "amp",
-                "handshake": "" } }),
+                "cols": 80, "rows": 24 } }),
             json!({ "id": 4, "type": "terminal", "terminal": "t-1", "workspace": "w-1",
                 "event": { "kind": "paused" } }),
         ];
         for wire in received {
             never_sent(wire);
         }
-        assert_eq!(
-            TerminalInput::from_json(br#"{"kind":"paste"}"#).unwrap(),
-            TerminalInput::Newer
-        );
-        TerminalInput::Newer.to_json().unwrap_err();
-        let outputs = [
-            r#"{"kind":"bell"}"#,
-            r#"{"kind":"ended","sign_in":"locked"}"#,
-        ];
-        for json in outputs {
-            let output = TerminalOutput::from_json(json.as_bytes()).unwrap();
-            assert_eq!(output.to_json(), Err(FrameError::Invalid), "{json}");
-        }
     }
 
     #[test]
-    fn what_travels_inside_the_seal_has_a_tagged_shape() {
-        let inputs = [
-            (
-                TerminalInput::Input {
-                    data: bytes(b"y\r"),
-                },
-                r#"{"kind":"input","data":"790d"}"#,
-            ),
-            (
-                TerminalInput::Resize { cols: 80, rows: 24 },
-                r#"{"kind":"resize","cols":80,"rows":24}"#,
-            ),
-        ];
-        for (input, json) in inputs {
-            assert_eq!(input.to_json().unwrap(), json.as_bytes());
-            assert_eq!(TerminalInput::from_json(json.as_bytes()).unwrap(), input);
-        }
-        let outputs = [
-            (
-                TerminalOutput::Output { data: bytes(b"ok") },
-                r#"{"kind":"output","data":"6f6b"}"#,
-            ),
-            (
-                TerminalOutput::Ended {
-                    sign_in: SignInState::SignedIn,
-                },
-                r#"{"kind":"ended","sign_in":"signed_in"}"#,
-            ),
-            (
-                TerminalOutput::Ended {
-                    sign_in: SignInState::Unknown,
-                },
-                r#"{"kind":"ended","sign_in":"unknown"}"#,
-            ),
-        ];
-        for (output, json) in outputs {
-            assert_eq!(output.to_json().unwrap(), json.as_bytes());
-            assert_eq!(TerminalOutput::from_json(json.as_bytes()).unwrap(), output);
-        }
-        TerminalInput::from_json(b"not json").unwrap_err();
-
-        TerminalOutput::from_json(br#"{"kind":"output"}"#).unwrap_err();
-    }
-
-    #[test]
-    fn a_plaintext_that_wouldnt_fit_one_sealed_frame_is_refused() {
-        // Each byte of data takes two in the JSON, around which the rest takes 26 or 27.
-        let fits = 32_746;
-        let data = |len| bytes(&vec![7; len]);
-        let output = |len| TerminalOutput::Output { data: data(len) }.to_json();
-        let input = |len| TerminalInput::Input { data: data(len) }.to_json();
-        assert_eq!(output(fits).unwrap().len(), 65_519);
-        assert_eq!(input(fits).unwrap().len(), 65_518);
-        assert_eq!(output(fits + 1), Err(FrameError::TooLarge));
-        assert_eq!(input(fits + 1), Err(FrameError::TooLarge));
-    }
-
-    #[test]
-    fn bytes_are_lowercase_hex_no_longer_than_a_noise_message_and_match_the_schema() {
+    fn bytes_are_lowercase_hex_within_their_limit_and_match_the_schema() {
         let pattern = Regex::new(BYTES_PATTERN).unwrap();
         let parse = |hex: &str| serde_json::from_value::<Bytes>(json!(hex));
-        let full = "ff".repeat(NOISE_MAX);
+        let full = "ff".repeat(BYTES_MAX);
         for hex in ["", "00", "0123456789abcdef", full.as_str()] {
             let parsed = parse(hex).unwrap();
             assert!(pattern.is_match(hex), "{hex}");
@@ -432,47 +266,22 @@ mod tests {
             assert!(!pattern.is_match(hex), "{hex}");
         }
         parse(&format!("{full}00")).unwrap_err();
-        assert!(Bytes::new(vec![0; NOISE_MAX]).is_some());
-        assert!(Bytes::new(vec![0; NOISE_MAX + 1]).is_none());
+        assert!(Bytes::new(vec![0; BYTES_MAX]).is_some());
+        assert!(Bytes::new(vec![0; BYTES_MAX + 1]).is_none());
         serde_json::from_value::<Bytes>(json!(7)).unwrap_err();
     }
 
     #[test]
     fn bytes_never_show_in_debug() {
         let secret = bytes(b"MARKER-CODE-1234");
-        let shown = format!(
-            "{:?}",
-            command(TerminalAction::Frame {
-                sealed: secret.clone()
-            })
-        );
+        let typed = command(TerminalAction::Input {
+            data: secret.clone(),
+        });
+        let shown = format!("{typed:?}{:?}", TerminalEvent::Output { data: secret });
         assert!(shown.contains("Bytes(16)"), "{shown}");
-        assert!(!shown.contains("4d41"), "{shown}");
-        assert!(!format!("{:?}", TerminalInput::Input { data: secret }).contains("MARKER"));
-    }
-
-    #[test]
-    fn the_prologue_binds_the_machine_workspace_terminal_and_vendor() {
-        let open = |agent| {
-            command(TerminalAction::Open {
-                agent,
-                handshake: bytes(b""),
-            })
-        };
-        assert_eq!(
-            open(AgentKind::Claude).prologue().unwrap(),
-            b"weacon-terminal/1\nm-1\nw-1\nt-1\nclaude"
+        assert!(
+            !shown.contains("4d41") && !shown.contains("MARKER"),
+            "{shown}"
         );
-        assert_eq!(
-            open(AgentKind::Codex).prologue().unwrap(),
-            b"weacon-terminal/1\nm-1\nw-1\nt-1\ncodex"
-        );
-        assert_eq!(open(AgentKind::Newer).prologue(), None);
-        assert_eq!(command(TerminalAction::Close).prologue(), None);
-        let other = TerminalCommand {
-            workspace: "w-2".parse().unwrap(),
-            ..open(AgentKind::Claude)
-        };
-        assert_ne!(other.prologue(), open(AgentKind::Claude).prologue());
     }
 }
