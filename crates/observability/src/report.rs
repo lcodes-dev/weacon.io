@@ -1,4 +1,4 @@
-//! Builds error reports: a scrubbed Sentry event for an error, ready to upload.
+//! Builds error reports: a Sentry event for an error, ready to upload.
 
 use std::borrow::Cow;
 use std::error::Error;
@@ -10,15 +10,12 @@ use weacon_protocol::{Code, code};
 
 use crate::errors::{ErrorInfo, Fault, describe_error};
 
-mod scrub;
-
 /// Where error reports go, from a Sentry DSN.
 #[derive(Clone, Debug)]
 pub struct Reports {
     dsn: Dsn,
     client: String,
     release: String,
-    home_dir: String,
 }
 
 /// One report, ready to POST: the body goes to `url` with `auth` as `X-Sentry-Auth`.
@@ -30,11 +27,11 @@ pub struct Upload {
 }
 
 impl Reports {
-    /// Reports from `client` running `release`, with `home_dir` written as "~".
+    /// Reports from `client` running `release`.
     ///
     /// # Errors
     /// When `dsn` isn't a valid DSN.
-    pub fn new(dsn: &str, client: &str, release: &str, home_dir: &str) -> Result<Self, Fault> {
+    pub fn new(dsn: &str, client: &str, release: &str) -> Result<Self, Fault> {
         let invalid = || {
             Fault::new(
                 code!("report.dsn_invalid"),
@@ -52,12 +49,10 @@ impl Reports {
             dsn,
             client: client.to_owned(),
             release: release.to_owned(),
-            home_dir: home_dir.to_owned(),
         })
     }
 
-    /// A scrubbed report of `error`, tagged with `code`, without any error message. The caller
-    /// picks the id and the time.
+    /// A report of `error`, tagged with `code`, without any error message.
     pub fn upload<E: Error + 'static>(
         &self,
         error: &E,
@@ -65,7 +60,7 @@ impl Reports {
         event_id: u128,
         time: SystemTime,
     ) -> Upload {
-        let mut event = Event {
+        let event = Event {
             event_id: Uuid::from_u128(event_id),
             timestamp: time,
             release: Some(Cow::Owned(self.release.clone())),
@@ -75,7 +70,6 @@ impl Reports {
             tags: Map::from([("code".to_owned(), code.as_str().to_owned())]),
             ..Event::default()
         };
-        scrub::scrub_event(&mut event, &self.home_dir);
         let mut envelope = Envelope::new();
         envelope.add_item(event);
         let mut body = Vec::new();
@@ -129,13 +123,7 @@ mod tests {
     }
 
     fn reports() -> Reports {
-        Reports::new(
-            DSN,
-            "weacon/0.1.0",
-            "weacon-core@0.1.0+1a2b3c4",
-            "/home/ada",
-        )
-        .unwrap()
+        Reports::new(DSN, "weacon/0.1.0", "weacon-core@0.1.0+1a2b3c4").unwrap()
     }
 
     fn sent_event(upload: &Upload) -> Event<'static> {
@@ -199,7 +187,7 @@ mod tests {
     #[test]
     fn an_invalid_dsn_is_refused() {
         for dsn in ["not a dsn", "http://public@sentry.example.com/42"] {
-            let error = Reports::new(dsn, "weacon/0.1.0", "", "").unwrap_err();
+            let error = Reports::new(dsn, "weacon/0.1.0", "").unwrap_err();
 
             assert_eq!(error.code().as_str(), "report.dsn_invalid");
         }

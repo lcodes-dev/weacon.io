@@ -335,7 +335,9 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
                 WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
                 WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
                 WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
-                WorkspaceChange::MemberJoined { .. } | WorkspaceChange::Newer => true,
+                WorkspaceChange::MemberJoined { .. }
+                | WorkspaceChange::MembersChanged
+                | WorkspaceChange::Newer => true,
             };
             if !wanted {
                 continue;
@@ -741,7 +743,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
-        w1(&fixture).await.unlink(&member_id("m1")).await;
+        w1(&fixture).await.leave(&member_id("m1")).await.unwrap();
 
         join(&fixture, server.address, "m2", "bo@example.com").await;
 
@@ -787,7 +789,7 @@ mod tests {
         let (server, ada) = fixture.client("ada@example.com").await;
         let mut client = greeted(server.address, &ada.token, 1).await;
         // Read meanwhile, so it's the unlinking that ends the feed, not unanswered pings.
-        let unlink = async { w1(&fixture).await.unlink(&member_id("m1")).await };
+        let unlink = async { w1(&fixture).await.leave(&member_id("m1")).await.unwrap() };
 
         let ((), ended) = tokio::join!(unlink, ends(&mut client));
         assert!(ended);

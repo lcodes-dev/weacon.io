@@ -617,7 +617,7 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap();
-        w1.unlink(&member_id("m1")).await;
+        w1.leave(&member_id("m1")).await.unwrap();
 
         send(&mut browser, envelope(1, query(&paired.machine_id(), "w1"))).await;
 
@@ -641,7 +641,7 @@ mod tests {
         send(&mut browser, envelope(1, query(&machine, "w1"))).await;
         let relayed = next_envelope(&mut core).await;
         let w1 = fixture.shared.db.workspace(&workspace_id("w1")).await;
-        w1.unwrap().unlink(&member_id("m1")).await;
+        w1.unwrap().leave(&member_id("m1")).await.unwrap();
         send(&mut core, envelope(relayed.id, settings_answer(&machine))).await;
 
         assert!(ends(&mut browser).await);

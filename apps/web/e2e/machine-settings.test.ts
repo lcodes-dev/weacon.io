@@ -61,7 +61,6 @@ test("a person reads and changes a machine's settings for the open workspace, th
   machine.set({ ...machine.settings, sign_ins: START.sign_ins });
 
   const warning = settings.getByText("Full access is on in a team workspace. Its agents change files on this machine without asking.");
-  const team = settings.getByLabel("Other people are in this workspace");
   const level = settings.getByLabel("What this workspace's agents may do on this machine");
 
   await settings.getByRole("button", { name: "Keep off" }).click();
@@ -71,19 +70,27 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await settings.getByText("On.", { exact: true }).waitFor();
   assert.equal(await settings.getByRole("button", { name: "Turn on" }).count(), 0);
 
-  // The warning is for full access in a team workspace only.
+  // The warning is for full access in a team workspace only: alone, there is none.
   await level.selectOption("full");
   await waitFor(() => machine.settings.access === "full");
   // The page shows the core's answer before the next change is built from it.
   await page.waitForFunction((select) => (select as HTMLSelectElement | null)?.value === "full", await level.elementHandle());
   assert.equal(await warning.count(), 0);
-  // The box shows what the core holds, so it ticks once the core has answered.
-  await team.click();
+  assert.equal(machine.settings.team, false);
+  // With someone else in the workspace it shows, and the next level saved tells the machine so.
+  await page.route("**/api/workspaces/*/members", async (route) => {
+    const answer = await route.fetch();
+    const list = (await answer.json()) as { members: Array<{ id: string; name: string; role?: string }> };
+    await route.fulfill({ response: answer, json: { ...list, members: [...list.members, { id: "m-other", name: "bo", role: "member" }] } });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await row.getByRole("button", { name: "Studio settings" }).click();
   await warning.waitFor();
-  assert.ok(await team.isChecked());
+  assert.equal(machine.settings.team, false);
   await level.selectOption("ask_first");
   await warning.waitFor({ state: "detached" });
-  assert.equal(machine.settings.team, true);
+  await waitFor(() => machine.settings.team);
 
   machine.refuse();
   await settings.getByRole("button", { name: "Turn off" }).click();

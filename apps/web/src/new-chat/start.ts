@@ -1,5 +1,5 @@
 import { type Sent, sentProblem } from "../composer/prompt.ts";
-import type { MachineSummary, RepoId, SignInState } from "../protocol.ts";
+import type { AgentKind, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
 import { lacks } from "../machines/core.ts";
 import { type Subject, settledText } from "../receipts.ts";
 
@@ -49,11 +49,11 @@ export function startProblem(sent: Sent): string | undefined {
   return settledText(sent, NEW_CHAT);
 }
 
-/** What the new-chat box knows of the machine picked: its repositories and the agent's sign-in, once its core answered. */
-export type Picked = { live: boolean; repos: RepoId[] | undefined; agent: string; signIn: SignInState | undefined };
+/** What the new-chat box knows of the machine picked: its repositories, once its core answered, and whether an agent is signed in there for the workspace. */
+export type Picked = { live: boolean; repos: RepoId[] | undefined; agent: boolean };
 
 /** Why the box can't start a chat on the machine picked now, or `undefined` when it can. */
-export function startBlocked({ live, repos, agent, signIn }: Picked): string | undefined {
+export function startBlocked({ live, repos, agent }: Picked): string | undefined {
   if (!live) {
     return "Chats start once the server is connected.";
   }
@@ -63,8 +63,12 @@ export function startBlocked({ live, repos, agent, signIn }: Picked): string | u
   if (repos.length === 0) {
     return "Add a repository on this machine to start a chat.";
   }
-  if (signIn === "signed_out") {
-    return `${agent} isn't signed in on this machine.`;
-  }
-  return signIn === "not_installed" ? `${agent} isn't installed on this machine.` : undefined;
+  return agent ? undefined : "No agent is signed in for this workspace on this machine.";
+}
+
+const KINDS: AgentKind[] = ["claude", "codex"];
+
+/** The agents New chat offers: every one until the machine answers, then those signed in there for the workspace. */
+export function signedIn(settings: MachineSettings | undefined): AgentKind[] {
+  return settings === undefined ? KINDS : KINDS.filter((kind) => settings.sign_ins.some(({ agent, state }) => agent === kind && state === "signed_in"));
 }

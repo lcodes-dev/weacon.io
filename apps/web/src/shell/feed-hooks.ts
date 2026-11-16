@@ -42,8 +42,8 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
             clearTimeout(staying);
             socket.attach(undefined);
             log.detach();
-            // Asking for the session lets one that ended reach sign-in.
-            void api.session();
+            // Asking for the workspace lets a session that ended reach sign-in, and a member removed leave it.
+            void api.workspace(workspace);
             failed = failedAfter(failed, stayed);
             stayed = false;
             if (retries(next.code)) {
