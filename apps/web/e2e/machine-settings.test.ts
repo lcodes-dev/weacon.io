@@ -6,10 +6,9 @@ import { core, pair } from "./pairing.ts";
 import { waitFor } from "./harness.ts";
 import { serve, signIn } from "./server.ts";
 
-// Marked as a team's from before, though the workspace is the person's alone.
 const START: MachineSettings = {
   access: "ask_first",
-  team: true,
+  team: false,
   sign_ins: [
     { agent: "claude", state: "signed_in" },
     { agent: "codex", state: "not_installed" },
@@ -55,8 +54,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   const rows = settings.locator(".xterm-rows");
   assert.equal(await rows.evaluate((element) => getComputedStyle(element).color), "rgb(255, 255, 255)");
   // The sign-ins are asked again once it closes, and again once the person closes it.
-  // One more read came first, for the access sent with the team mark.
-  await waitFor(() => machine.queries === 3);
+  await waitFor(() => machine.queries === 2);
   machine.set({ ...machine.settings, sign_ins: [{ agent: "claude", state: "signed_out" }, { agent: "codex", state: "not_installed" }] });
   await settings.getByRole("button", { name: "Close the sign-in" }).click();
   await settings.getByRole("button", { name: "Sign in", exact: true }).waitFor();
@@ -72,22 +70,33 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await settings.getByText("On.", { exact: true }).waitFor();
   assert.equal(await settings.getByRole("button", { name: "Turn on" }).count(), 0);
 
-  // The machine's mark follows the workspace's members, and the warning is for full access in a team workspace only.
-  await waitFor(() => !machine.settings.team);
+  // The warning is for full access in a team workspace only: alone, there is none.
   await level.selectOption("full");
   await waitFor(() => machine.settings.access === "full");
   // The page shows the core's answer before the next change is built from it.
   await page.waitForFunction((select) => (select as HTMLSelectElement | null)?.value === "full", await level.elementHandle());
   assert.equal(await warning.count(), 0);
   assert.equal(machine.settings.team, false);
+  // With someone else in the workspace it shows, and the next level saved tells the machine so.
+  await page.route("**/api/workspaces/*/members", async (route) => {
+    const answer = await route.fetch();
+    const list = (await answer.json()) as { members: Array<{ id: string; name: string; role?: string }> };
+    await route.fulfill({ response: answer, json: { ...list, members: [...list.members, { id: "m-other", name: "bo", role: "member" }] } });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await row.getByRole("button", { name: "Studio settings" }).click();
+  await warning.waitFor();
+  assert.equal(machine.settings.team, false);
   await level.selectOption("ask_first");
-  await waitFor(() => machine.settings.access === "ask_first");
+  await warning.waitFor({ state: "detached" });
+  await waitFor(() => machine.settings.team);
 
   machine.refuse();
   await settings.getByRole("button", { name: "Turn off" }).click();
   await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
   await settings.getByText("On.", { exact: true }).waitFor();
-  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: false, reports: true, sign_ins: [] });
+  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, reports: true, sign_ins: [] });
 });
 
 test("a machine paired with a workspace open shows its settings at once, to ask about error reports", { timeout: 600_000 }, async (t) => {
@@ -117,31 +126,4 @@ test("a machine paired with a workspace open shows its settings at once, to ask 
   await settings.getByRole("button", { name: "Keep off" }).click();
   await settings.getByText("Off.", { exact: true }).waitFor();
   assert.equal(machine.settings.reports, false);
-});
-
-test("a machine that refuses the team mark is told once, not again and again", { timeout: 600_000 }, async (t) => {
-  const served = await serve();
-  t.after(() => served.close());
-  const { page } = served;
-  await signIn(served);
-  await page.getByRole("button", { name: "Personal" }).click();
-  await page.getByRole("heading", { name: "Personal" }).waitFor();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
-  const connected = Promise.withResolvers<void>();
-  await page.route("**/api/machines", async (route) => {
-    await connected.promise;
-    await route.continue();
-  });
-  const { token } = await pair(page);
-  const machine = await core(page, token, START);
-  t.after(() => machine.close());
-  machine.refuse();
-  connected.resolve();
-
-  const settings = page.getByRole("region", { name: "Studio settings" });
-  await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
-  // Its settings were read to show them, and once more for the access to send with the mark.
-  await page.evaluate(() => new Promise((done) => setTimeout(done, 500)));
-  assert.equal(machine.queries, 2);
-  assert.equal(machine.settings.team, true);
 });
