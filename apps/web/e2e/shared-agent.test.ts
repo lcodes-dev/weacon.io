@@ -69,6 +69,8 @@ test("a member calls the agent of a machine shared with the workspace, and only 
   await grace.getByRole("heading", { name: "Crew" }).waitFor();
 
   await ada.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "New chat" }).click();
+  // The box opens on her own agent's mention once the machine has answered; her words replace it.
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
   await box(ada).fill("Shall we fix the parser?");
   await ada.getByRole("region", { name: "New chat" }).getByRole("button", { name: "Send" }).click();
   await ada.getByRole("heading", { name: "Shall we fix the parser?" }).waitFor();
@@ -102,10 +104,14 @@ test("a member calls the agent of a machine shared with the workspace, and only 
   assert.equal(await grace.getByText("grace's Claude Code", { exact: false }).count(), 0);
   assert.equal(await grace.getByText("Allowed Bash").count(), 1);
 
-  // Once Ada stops sharing it, Grace's agent there is gone from the chat at once: the box no longer calls it.
+  // Grace writes her next call in the box the chat now has for her agent. Once Ada stops sharing
+  // the machine, her agent there is gone from the chat at once: what she wrote no longer calls it.
+  await fields.waitFor({ state: "detached" });
+  await grace.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await box(grace).press("End");
+  await grace.keyboard.type("And the linter");
   await ada.getByRole("button", { name: "Settings", exact: true }).click();
   await share(ada, "Team VPS", false);
-  await box(grace).fill("@Claude Code And the linter");
   await grace.getByText("The agent you mention can't be called now. Remove the mention, or pick your agent again.").waitFor();
   assert.equal(vps.heard().length, 1);
 });
