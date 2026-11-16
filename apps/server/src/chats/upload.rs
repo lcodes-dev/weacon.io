@@ -182,7 +182,7 @@ async fn append(
         // A prompt is its asker's, whoever its agent works for by the time it is sent up; one
         // the server never took was written on the machine itself, by its owner.
         let asker = if let ChatEvent::Prompt { request, .. } = &entry.event {
-            place.asker(chat, request).await?
+            place.asker(chat, machine, request).await?
         } else {
             None
         };
@@ -547,6 +547,48 @@ mod tests {
             panic!("no prompt stored");
         };
         assert_eq!(author, Some(member_id("m1")));
+    }
+
+    #[tokio::test]
+    async fn a_machine_cant_send_up_a_prompt_as_one_another_machine_was_asked() {
+        let fixture = Fixture::new().await;
+        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let workspace = &ada.member.workspace;
+        let (chat, grace) = (id::<ChatId>("c-1"), grace(&fixture).await);
+        let hers = (&ada.machine, &ada.member.id);
+        workspace.asked(&chat, &R1, hers).await.unwrap();
+        let name = id("Desk");
+        let on_desk = crate::db::NewLeg {
+            machine_id: &grace.machine,
+            machine: &name,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: None,
+        };
+        let request = id("r-2");
+        let called = (&grace.member.id, &request);
+        let later = NOW + 60;
+        let leg = workspace.call_leg(&chat, called, &on_desk, later).await;
+        assert!(leg.unwrap().is_some());
+        // Her machine names the request Ada made of her own.
+        let forged = ChatEvent::Prompt {
+            request: id("r-1"),
+            text: "Go".to_owned(),
+            author: Some(member_id("m1")),
+            pick: None,
+            repo: None,
+            agent: None,
+            task: None,
+        };
+
+        let sent = update("w1", "c-1", 1, forged);
+        store(shared, &grace.machine, sent).await.unwrap();
+
+        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
+        let Some(ChatEvent::Prompt { author, .. }) = events.unwrap().pop().map(|one| one.event)
+        else {
+            panic!("no prompt stored");
+        };
+        assert_eq!(author, Some(grace.member.id));
     }
 
     #[test]

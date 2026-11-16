@@ -100,7 +100,13 @@ async fn acted_on(
             return Ok(working.clone());
         }
     }
-    legs.iter().find(theirs).cloned().ok_or_else(not_owner)
+    // Before its run reports, a call in flight says which of their legs they mean.
+    let called = workspace.calling(&command.chat, &member.id).await?;
+    let held = legs
+        .iter()
+        .find(|leg| Some(&leg.machine) == called.as_ref());
+    let leg = held.filter(theirs).or_else(|| legs.iter().find(theirs));
+    leg.cloned().ok_or_else(not_owner)
 }
 
 // Stores a person's message, in a chat it makes when there is none.
@@ -212,7 +218,8 @@ async fn start(
     Ok(())
 }
 
-// Takes a new chat's turn for its first prompt, `request`, and notes who made it.
+// Takes a new chat's turn for its first prompt, `request`, and notes who made it; a chat it
+// can't note that for is taken back.
 async fn first_call(
     workspace: &Workspace,
     id: &ChatId,
@@ -221,7 +228,11 @@ async fn first_call(
     at: i64,
 ) -> Result<(), Fault> {
     workspace.call(id, called, at).await?;
-    workspace.asked(id, request, called.1).await
+    if let Err(fault) = workspace.asked(id, request, called).await {
+        workspace.forget_chat(id).await?;
+        return Err(fault);
+    }
+    Ok(())
 }
 
 // A prompt to a chat that is there: to its agent on the machine the prompt names, which the
@@ -1307,6 +1318,32 @@ mod tests {
         let thanks = prompt("r-7", "c-1", "Thanks", Some(&ada.machine));
         two.ask(ada, thanks).await.unwrap();
         assert!(quotes_of(&sent(&mut two.adas)[0]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stop_before_a_run_reports_is_for_the_leg_the_asker_just_called() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        // Grace has called her own agent, then the shared one; both rest.
+        two.ask(grace, go("r-3", grace)).await.unwrap();
+        two.up(grace, 1, status(RunState::Running)).await;
+        two.up(grace, 2, status(RunState::Idle)).await;
+        two.ask(grace, go("r-4", ada)).await.unwrap();
+        two.up(ada, 1, status(RunState::Running)).await;
+        two.up(ada, 2, status(RunState::Idle)).await;
+        two.ask(grace, go("r-5", ada)).await.unwrap();
+        sent(&mut two.adas);
+        sent(&mut two.graces);
+
+        two.ask(grace, act("r-6", ChatAction::Interrupt))
+            .await
+            .unwrap();
+
+        let stopped = commands(sent(&mut two.adas));
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].0, ChatAction::Interrupt);
+        assert!(sent(&mut two.graces).is_empty());
     }
 
     fn author_of(event: &ChatEvent) -> Option<&MemberId> {
