@@ -149,11 +149,12 @@ pub(super) fn server(
         outside: app.outside.clone(),
         log: app.log.child(&[("component", "asks".into())]),
     };
+    let for_removals = chats.clone();
     let link = uplink::new(app, state_dir, to_daemon, chats);
     async move {
         tokio::select! {
             never = Box::pin(link.run(from_daemon)) => match never {},
-            never = uplink(Asked { host, worktrees, maps }, asks, replies, answered) => match never {},
+            never = uplink(Asked { host, chats: for_removals, worktrees, maps }, asks, replies, answered) => match never {},
             // Once every way to propose is gone, the rest serves on.
             () = async {
                 proposer.await;
@@ -168,6 +169,7 @@ pub(super) fn server(
 #[derive(Clone)]
 pub(super) struct Asked {
     pub(super) host: Host,
+    pub(super) chats: Chats,
     pub(super) worktrees: Worktrees,
     pub(super) maps: Maps,
 }
@@ -291,7 +293,7 @@ async fn relayed(asked: &Asked, ask: Envelope) -> Vec<Envelope> {
         .map(Message::WorktreeAnswer),
         Message::WorktreeCommand(command) => async {
             owners(host, command.by.as_ref()).await?;
-            worktrees.command(command).await
+            worktrees::act(&asked.chats, worktrees, command).await
         }
         .await
         .map(Message::WorktreeAnswer),
@@ -412,6 +414,7 @@ mod tests {
         (
             Asked {
                 host,
+                chats: crate::chats::test_support::bench().chats,
                 worktrees,
                 maps,
             },
@@ -634,6 +637,41 @@ mod tests {
 
         assert_eq!(owners, vec![Some("worktree.none".to_owned()); 3]);
         assert_eq!(former, vec![Some("machine.not_owner".to_owned()); 3]);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_removal_is_refused_while_the_chats_agent_is_on_a_turn() {
+        use crate::chats::test_support::{bench, key, prompt};
+        use weacon_protocol::{WorktreeAction, WorktreeCommand};
+
+        let dir = TempDir::new().unwrap();
+        pair(&dir);
+        let (mut asked, _) = host(&dir);
+        let mut running = bench();
+        running.command(prompt("r-1", "Hi")).await.unwrap();
+        let _agent = running.started.recv().await.unwrap();
+        asked.chats = running.chats.clone();
+        let remove = Message::WorktreeCommand(WorktreeCommand {
+            request: id("r-2"),
+            workspace: key().workspace,
+            chat: key().chat,
+            action: WorktreeAction::Remove,
+            by: Some(by("a-1")),
+        });
+
+        let refused = one(
+            &asked,
+            Envelope {
+                id: 9,
+                message: remove,
+            },
+        )
+        .await;
+
+        assert_eq!(
+            test_support::error_code(&refused.message),
+            Some("worktree.busy")
+        );
     }
 
     fn worktree_asks(workspace: &weacon_protocol::WorkspaceId) -> [Message; 3] {

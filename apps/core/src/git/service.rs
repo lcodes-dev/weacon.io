@@ -31,6 +31,13 @@ pub(crate) struct Worktrees {
     inner: Arc<Inner>,
 }
 
+/// Where a removed worktree stands.
+const REMOVED: WorktreeAnswerKind = WorktreeAnswerKind::State {
+    removed: true,
+    uncommitted: false,
+    unpushed: false,
+};
+
 // A chat that has a worktree: its git, its record and where the worktree is.
 struct Chat {
     git: Git,
@@ -142,21 +149,21 @@ impl Inner {
         if query.query != DiffQueryKind::Changes {
             return Err(unknown());
         }
-        let Chat {
-            git,
-            record,
-            worktree,
-            ..
-        } = self.chat(&query.workspace, &query.chat)?;
         let answer = |answer| DiffAnswer {
             request: query.request.clone(),
             workspace: query.workspace.clone(),
             chat: query.chat.clone(),
             answer,
         };
-        if !worktree.is_dir() {
+        let Some(Chat {
+            git,
+            record,
+            worktree,
+            ..
+        }) = self.chat(&query.workspace, &query.chat)?
+        else {
             return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
-        }
+        };
         let base = git.base(&worktree, &record.start)?;
         let files = git.changes(&worktree, &base)?;
         if files.is_empty() {
@@ -171,19 +178,15 @@ impl Inner {
     }
 
     fn state(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<WorktreeAnswerKind, Fault> {
-        let Chat {
+        let Some(Chat {
             git,
             record,
             worktree,
             ..
-        } = self.chat(workspace, chat)?;
-        if !worktree.is_dir() {
-            return Ok(WorktreeAnswerKind::State {
-                removed: true,
-                uncommitted: false,
-                unpushed: false,
-            });
-        }
+        }) = self.chat(workspace, chat)?
+        else {
+            return Ok(REMOVED);
+        };
         let base = git.base(&worktree, &record.start)?;
         let unsaved = git.unsaved(&worktree, &base)?;
         Ok(WorktreeAnswerKind::State {
@@ -204,18 +207,26 @@ impl Inner {
             let key = ChatKey::new(workspace, chat);
             return terminals::open_in_chat(self.work_root.as_deref(), &key, self.open_terminal);
         }
-        let found = self.chat(workspace, chat)?;
+        let Some(found) = self.chat(workspace, chat)? else {
+            return match action {
+                WorktreeAction::Remove => Ok(REMOVED),
+                WorktreeAction::OpenPullRequest { .. }
+                | WorktreeAction::OpenTerminal
+                | WorktreeAction::Newer => Err(Fault::new(
+                    code!("worktree.none"),
+                    "The chat has no worktree",
+                )),
+            };
+        };
         match action {
             WorktreeAction::Remove => {
                 let common_dir = found.git.common_dir(&found.repo_folder)?;
                 // Git can fail at changing a repository's worktrees while one is added.
                 let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
-                if found.worktree.is_dir() {
-                    found
-                        .git
-                        .remove_worktree(&found.repo_folder, &found.worktree)?;
-                }
-                self.state(workspace, chat)
+                found
+                    .git
+                    .remove_worktree(&found.repo_folder, &found.worktree)?;
+                Ok(REMOVED)
             }
             WorktreeAction::OpenPullRequest { title, body } => {
                 self.pull_request(&found, &title, &body)
@@ -259,27 +270,26 @@ impl Inner {
         Ok(WorktreeAnswerKind::PullRequestPage { url })
     }
 
-    // The chat's git, record and worktree; a chat that hasn't one is refused.
-    fn chat(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<Chat, Fault> {
+    // The chat's git, record and worktree; none once its worktree is removed, when no git
+    // runs where it was. A chat that never had one is refused.
+    fn chat(&self, workspace: &WorkspaceId, chat: &ChatId) -> Result<Option<Chat>, Fault> {
         let stores = self.stores(workspace);
         let none = || Fault::new(code!("worktree.none"), "The chat has no worktree");
         let record = stores.chats().get(chat)?.ok_or_else(none)?;
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
         let repo = stores.repo(&record.repo)?;
-        let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?;
-        // A worktree removed has no git folder to be told.
-        let git = if worktree.is_dir() {
-            git.in_tree(&repo.path, &worktree)?
-        } else {
-            git
-        };
-        Ok(Chat {
+        if !worktree.is_dir() {
+            return Ok(None);
+        }
+        let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?
+            .in_tree(&repo.path, &worktree)?;
+        Ok(Some(Chat {
             git,
             record,
             worktree,
             repo_folder: repo.path,
-        })
+        }))
     }
 
     fn stores(&self, workspace: &WorkspaceId) -> Stores {
@@ -663,6 +673,49 @@ mod tests {
         );
         let changed = bench.changes().await.unwrap();
         assert!(matches!(changed.as_slice(), [DiffAnswerKind::Unchanged]));
+        let open = Action::OpenPullRequest {
+            title: "Fix the build".to_owned(),
+            body: String::new(),
+        };
+        assert_eq!(code(&bench.act(open).await.unwrap_err()), "worktree.none");
+    }
+
+    // A folder an agent puts back where a removed worktree was, as its own repository whose
+    // config runs a command whenever git reads a changed file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn no_git_runs_in_a_folder_put_back_where_a_removed_worktree_was() {
+        let bench = bench();
+        bench.act(Action::Remove).await.unwrap();
+        let marker = bench.dir.join("ran");
+        let made = bench.worktree.to_str().unwrap();
+        fixture(&bench.dir, &bench.dir, &["init", "--quiet", made]);
+        fs::write(
+            bench.worktree.join(".git/info/attributes"),
+            "* filter=evil\n",
+        )
+        .unwrap();
+        let clean = format!("touch '{}'; cat", marker.display());
+        fixture(
+            &bench.dir,
+            &bench.worktree,
+            &["config", "filter.evil.clean", &clean],
+        );
+        fs::write(bench.worktree.join("README.md"), "# Changed\n").unwrap();
+
+        assert_eq!(
+            code(&bench.state().await.unwrap_err()),
+            "worktree.unregistered"
+        );
+        assert_eq!(
+            code(&bench.changes().await.unwrap_err()),
+            "worktree.unregistered"
+        );
+        assert_eq!(
+            code(&bench.act(Action::Remove).await.unwrap_err()),
+            "worktree.unregistered"
+        );
+        assert!(!marker.exists(), "the agent's filter ran");
     }
 
     #[tokio::test]

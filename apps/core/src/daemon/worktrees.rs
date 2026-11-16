@@ -14,7 +14,7 @@ use weacon_protocol::{
 };
 
 use super::Shared;
-use crate::chats::Places;
+use crate::chats::{Chats, Places};
 use crate::git::service::Worktrees;
 use crate::platform;
 use crate::runs::ChatKey;
@@ -77,19 +77,29 @@ pub(super) fn query(shared: &Shared, id: u32, query: WorktreeQuery, late: &Late)
 pub(super) fn command(shared: &Shared, id: u32, command: WorktreeCommand, late: &Late) -> Reply {
     let (worktrees, chats) = (shared.worktrees.clone(), shared.chats.clone());
     send(shared, id, late, async move {
-        if command.action == WorktreeAction::Remove {
-            let key = ChatKey::new(&command.workspace, &command.chat);
-            let listed = chats.list().await?;
-            let run = listed.iter().find(|chat| chat.key == key);
-            if run.is_some_and(|chat| on_a_turn(chat.run.as_ref())) {
-                return Err(Fault::new(
-                    code!("worktree.busy"),
-                    "Stop the chat's agent before removing its worktree",
-                ));
-            }
-        }
-        worktrees.command(command).await
+        act(&chats, &worktrees, command).await
     })
+}
+
+/// What `command` does to its chat's worktree, from the socket or relayed; a removal is
+/// refused while the chat's agent is on a turn.
+pub(super) async fn act(
+    chats: &Chats,
+    worktrees: &Worktrees,
+    command: WorktreeCommand,
+) -> Result<WorktreeAnswer, Fault> {
+    if command.action == WorktreeAction::Remove {
+        let key = ChatKey::new(&command.workspace, &command.chat);
+        let listed = chats.list().await?;
+        let run = listed.iter().find(|chat| chat.key == key);
+        if run.is_some_and(|chat| on_a_turn(chat.run.as_ref())) {
+            return Err(Fault::new(
+                code!("worktree.busy"),
+                "Stop the chat's agent before removing its worktree",
+            ));
+        }
+    }
+    worktrees.command(command).await
 }
 
 // Whether a run is writing in its worktree, or about to.
