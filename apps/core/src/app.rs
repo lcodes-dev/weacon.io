@@ -174,12 +174,10 @@ fn nothing() -> Sink {
 
 fn reports_from_env(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
     let dsn = platform::var(env, "WEACON_SENTRY_DSN")?;
-    let home_dir = platform::home_dir(env).unwrap_or_default();
     weacon_appkit::reports(
         &dsn.to_string_lossy(),
         &format!("weacon/{}", version.version),
         version,
-        &home_dir.to_string_lossy(),
         log,
     )
 }
