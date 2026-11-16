@@ -375,8 +375,9 @@ test("on a phone a prompt with a long command or a whole file keeps its text in 
     await nav.getByRole("button", { name: `Pantry ${id}` }).tap();
     const card = page.getByRole("group", { name: `Use ${tool}?` });
     const wants = card.locator(".wants");
-    await wants.waitFor();
-    assert.equal(await wants.innerText(), text);
+    // By its text, since the card of the chat left a moment ago may name the same tool.
+    await wants.filter({ hasText: text.slice(0, 40) }).waitFor();
+    assert.equal(await wants.textContent(), text);
     for (const width of [360, 390]) {
       await page.setViewportSize({ width, height: 844 });
       // The text wraps, and what is too tall scrolls inside its own box, so the card and its answers stay whole on screen.
