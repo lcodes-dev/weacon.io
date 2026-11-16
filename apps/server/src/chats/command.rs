@@ -1,17 +1,17 @@
 //! A member's command to a chat: a message is stored here, and a command to one of its agents
 //! is checked, then relayed to that agent's machine, whose answer is its receipt.
 
-use weacon_model::{ChatRuns, chat_title};
+use weacon_model::chat_title;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentKind, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId, MemberId,
-    Message, Outcome, Receipt, RequestId, RunState, code,
+    Message, Outcome, Receipt, RequestId, code,
 };
 
 use super::admit::{Admitted, admit, not_owner};
 use super::{link, quotes};
 use crate::auth::Member;
-use crate::db::{Asked, Chat, Incoming, Leg, NewChat, NewLeg, Standing, Workspace};
+use crate::db::{Asked, Chat, Incoming, Leg, NewChat, NewLeg, Standing, Workspace, at_work};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
@@ -107,9 +107,11 @@ async fn stopped(
     let theirs = |leg: &&Leg| leg.member == member.id;
     let own = called.filter(|(_, by)| *by == member.id);
     let held = |leg: &&Leg| !leg.detached && Some(&leg.machine) == own.as_ref().map(|(on, _)| on);
+    // Its machine's owner may always mean a leg there, whoever it works for.
+    let owned = |leg: &&Leg| theirs(leg) || leg.shared_by.as_ref() == Some(&member.id);
     let meant = at_work(&runs, &legs)
         .or_else(|| all.iter().find(held))
-        .or_else(|| legs.iter().find(theirs));
+        .or_else(|| legs.iter().find(owned));
     let leg = meant.ok_or_else(not_owner)?;
     let owns = shared.db.has_machine(&asker.account, &leg.machine);
     let may = theirs(&leg) || owns.await?;
@@ -361,20 +363,6 @@ async fn away(
     Ok(away.map(|leg| leg.machine.clone()))
 }
 
-// Which of `legs` works or waits for an answer, as the chat's `runs` say, if one does.
-fn at_work<'a>(runs: &ChatRuns, legs: &'a [Leg]) -> Option<&'a Leg> {
-    let working = |state| {
-        matches!(
-            state,
-            RunState::Starting | RunState::Running | RunState::Waiting
-        )
-    };
-    let run = runs.run().filter(|run| working(run.state))?;
-    let named = legs.iter().find(|leg| leg.own_run(&run.run).is_some());
-    // A run from before legs named theirs is the chat's first leg's.
-    named.or_else(|| legs.first())
-}
-
 fn agent_working() -> Fault {
     Fault::new(
         code!("chat.agent_working"),
@@ -411,7 +399,8 @@ async fn stamp(workspace: &Workspace, task: &mut Option<ChatTask>) -> Result<(),
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{
-        AgentKind, ChatAction, ChatQuery, ChatQueryKind, ErrorBody, Message, Outcome, Receipt, code,
+        AgentKind, ChatAction, ChatQuery, ChatQueryKind, ErrorBody, Message, Outcome, Receipt,
+        RunState, code,
     };
 
     use tokio::sync::mpsc;
@@ -1410,6 +1399,27 @@ mod tests {
         sent(&mut two.adas);
 
         two.ask(grace, act("r-4", ChatAction::Interrupt))
+            .await
+            .unwrap();
+
+        let stopped = commands(sent(&mut two.adas));
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].0, ChatAction::Interrupt);
+    }
+
+    #[tokio::test]
+    async fn a_machines_owner_stops_its_agent_whoever_it_last_worked_for() {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        // The shared agent on Ada's machine last worked for Grace, and rests.
+        two.ask(grace, go("r-3", ada)).await.unwrap();
+        two.up(ada, 1, prompted("r-3", "Go")).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        two.up(ada, 3, status(RunState::Idle)).await;
+        sent(&mut two.adas);
+
+        two.ask(ada, act("r-4", ChatAction::Interrupt))
             .await
             .unwrap();
 

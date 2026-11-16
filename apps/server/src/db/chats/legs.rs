@@ -180,19 +180,8 @@ impl Workspace {
         away: Option<&MachineId>,
     ) -> Result<bool, Fault> {
         let runs = self.read_runs(&mut *connection, chat).await?;
-        let working = |state| {
-            matches!(
-                state,
-                RunState::Starting | RunState::Running | RunState::Waiting
-            )
-        };
-        let Some(run) = runs.run().filter(|run| working(run.state)) else {
-            return Ok(false);
-        };
         let legs = self.legs_in(&mut *connection, chat).await?;
-        let named = legs.iter().find(|leg| leg.own_run(&run.run).is_some());
-        // A run from before legs named theirs is the chat's first leg's.
-        let Some(at_work) = named.or_else(|| legs.first()) else {
+        let Some(at_work) = at_work(&runs, &legs) else {
             return Ok(false);
         };
         let theirs = at_work.machine == *machine && at_work.member == *member;
@@ -681,6 +670,20 @@ impl Workspace {
     }
 }
 
+/// Which of `legs` works or waits for an answer, as the chat's `runs` say, if one does.
+pub(crate) fn at_work<'a>(runs: &weacon_model::ChatRuns, legs: &'a [Leg]) -> Option<&'a Leg> {
+    let working = |state| {
+        matches!(
+            state,
+            RunState::Starting | RunState::Running | RunState::Waiting
+        )
+    };
+    let run = runs.run().filter(|run| working(run.state))?;
+    let named = legs.iter().find(|leg| leg.own_run(&run.run).is_some());
+    // A run from before legs named theirs is the chat's first leg's.
+    named.or_else(|| legs.first())
+}
+
 pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
     let (member, machine, machine_name, agent, repo, core_seq, detached, quoted_seq, number, by) =
         row;
@@ -930,7 +933,7 @@ mod tests {
         assert_eq!(his.unwrap(), None);
         assert_eq!(called(&one).await, None);
         assert_eq!(one.asker(&chat, &hers, &R1).await.unwrap(), None);
-        // Her own next prompt goes, and so does his once her machine is away.
+        // Her own next prompt goes.
         let more = one.call_leg(&chat, ask(&ada, &R2), &on_hers, NOW + 1).await;
         assert!(more.unwrap().is_some());
         one.uncall_leg(&chat, &hers, ask(&ada, &R2)).await.unwrap();
@@ -969,6 +972,10 @@ mod tests {
             agent: AgentKind::Claude,
             repo: None,
         };
+
+        let before = one.call_leg(&chat, ask(&bo, &R1), &on_hers, NOW).await;
+        assert!(before.unwrap().is_some());
+        one.uncall_leg(&chat, &hers, ask(&bo, &R1)).await.unwrap();
 
         one.leave(&bo).await.unwrap();
 
