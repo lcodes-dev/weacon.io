@@ -245,6 +245,8 @@ The machine's owner sets it up on the machine itself, and Weacon touches none of
 target/debug/weacon share <workspace id> on
 ```
 
+The server lists the machine only in a workspace you are a member of.
+
 Using a seat or a key for a whole team this way must be allowed by the vendor's terms, which Weacon does not check.
 
 Every member of that workspace then finds the machine under **Machine** in **New chat** and **Add your agent**, marked "(shared)", with the repositories it has for the workspace and the agents signed in there. They see nothing else of it, and it shows in no other workspace. A member who picks it gets their own agent on it in that chat, in a folder of its own, and its messages are labelled as the shared agent's, such as "Shared Claude Code · Team VPS".

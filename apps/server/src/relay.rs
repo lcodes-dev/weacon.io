@@ -1508,6 +1508,55 @@ mod tests {
     ];
 
     #[tokio::test]
+    async fn a_member_reads_the_changes_of_their_agent_on_a_shared_machine_and_changes_nothing() {
+        let fixture = Fixture::new().await;
+        let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let machine = paired.machine_id();
+        let mut core = connected(server.address, &paired, &ALL).await;
+        let reads = ["workspace.feed", "diff.view", "worktree.manage"];
+        let (account, mut grace) = graces_feed(&fixture, server.address, &reads).await;
+        let mut ada = open(server.address, "/api/workspaces/w1/feed", &paired.session)
+            .await
+            .unwrap();
+        say(&mut ada, &reads).await;
+        let db = &fixture.shared.db;
+        db.set_shares(&machine, &[workspace_id("w1")])
+            .await
+            .unwrap();
+        let hers = Making {
+            chat: "c-1",
+            owner: "m5",
+            title: "Fix the build",
+            machine: machine.as_str(),
+            at: 1,
+            task: None,
+        };
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+        make_as(&w1, &hers).await.unwrap();
+
+        send(&mut grace, envelope(41, diff_query("c-1", "w1"))).await;
+        let diff = next_envelope(&mut core).await;
+        send(&mut grace, envelope(42, worktree_query("c-1"))).await;
+        let state = next_envelope(&mut core).await;
+        let remove = worktree_command("c-1", WorktreeAction::Remove);
+        let changed = answer_to(&mut grace, 43, remove).await;
+        let owners = answer_to(&mut ada, 44, diff_query("c-1", "w1")).await;
+
+        let Message::DiffQuery(diff) = diff.message else {
+            panic!("{diff:?}");
+        };
+        let Message::WorktreeQuery(state) = state.message else {
+            panic!("{state:?}");
+        };
+        assert_eq!(diff.by.unwrap().account, account);
+        assert_eq!(state.by.unwrap().account, account);
+        // The worktree is its machine's owner's to change, and her agent's changes hers to read.
+        assert_eq!(error_of(&changed), (43, "machine.not_found", false));
+        assert_eq!(error_of(&owners), (44, "chat.not_owner", false));
+    }
+
+    #[tokio::test]
     async fn a_chats_diff_and_worktree_reach_its_machine_as_its_owners_and_come_back() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;

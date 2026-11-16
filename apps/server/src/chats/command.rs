@@ -359,24 +359,40 @@ fn agent_working() -> Fault {
 
 // Relays `command` to the machine of `leg`, while it still serves the leg's member.
 async fn serve(
-    Sender { shared, member, .. }: Sender<'_>,
+    from: Sender<'_>,
     leg: &Leg,
     command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
+    let Sender { shared, member, .. } = from;
     let workspace = &member.workspace;
-    if leg.detached {
-        return Err(detached());
-    }
-    let held = workspace.leg_on(&command.chat, &leg.machine).await?;
-    if held.is_none() {
-        // A leg whose machine was unpaired can never run again; the chat stays.
-        workspace.detach_leg(&command.chat, &leg.member).await?;
-        shared.wake_feeds(workspace.id());
-        return Err(detached());
+    if !ends_own(from, leg, &command).await? {
+        if leg.detached {
+            return Err(detached());
+        }
+        let held = workspace.leg_on(&command.chat, &leg.machine).await?;
+        if held.is_none() {
+            // A leg whose machine no longer serves it can never run again; the chat stays.
+            workspace.detach_leg(&command.chat, &leg.member).await?;
+            shared.wake_feeds(workspace.id());
+            return Err(detached());
+        }
     }
     let follow = link::follow(workspace.id(), &command.chat, leg.core_seq);
     relay::command(shared, &leg.machine, command, follow, back)
+}
+
+// Whether `command` is an answer or a stop from the owner of `leg`'s machine: what still runs
+// there once they stopped sharing it is theirs to end.
+async fn ends_own(
+    Sender { shared, asker, .. }: Sender<'_>,
+    leg: &Leg,
+    command: &ChatCommand,
+) -> Result<bool, Fault> {
+    if matches!(command.action, ChatAction::Prompt { .. }) {
+        return Ok(false);
+    }
+    shared.db.has_machine(&asker.account, &leg.machine).await
 }
 
 /// Gives the task a chat's first words name the title it has now in `workspace`.
@@ -1168,6 +1184,37 @@ mod tests {
         ];
         assert_eq!(commands(sent(&mut two.adas)), relayed);
         assert!(sent(&mut two.graces).is_empty());
+    }
+
+    #[tokio::test]
+    async fn what_still_runs_on_a_machine_no_longer_shared_is_its_owners_to_stop_and_no_one_elses()
+    {
+        let mut two = Two::new().await;
+        share(&two, &["w1"]).await;
+        let (ada, grace) = (&two.ada, &two.grace);
+        let call = prompt("r-4", "c-1", "Go", Some(&ada.machine));
+        two.ask(grace, call).await.unwrap();
+        two.up(ada, 1, prompted("r-4", "Go")).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        two.up(ada, 3, crate::db::test_support::asks(1)).await;
+        sent(&mut two.adas);
+        share(&two, &[]).await;
+
+        let by_caller = two.ask(grace, act("r-5", ChatAction::Interrupt)).await;
+        two.ask(ada, act("r-6", ChatAction::Interrupt))
+            .await
+            .unwrap();
+        two.ask(ada, allow("r-7", "run-1-l1")).await.unwrap();
+        let more = two.ask(grace, prompt("r-8", "c-1", "More", None)).await;
+
+        assert_eq!(code(by_caller), "chat.detached");
+        assert_eq!(code(more), "chat.detached");
+        let owner = ada.asker.account.clone();
+        let ended = [
+            (ChatAction::Interrupt, owner.clone()),
+            (allow("r-7", "run-1").action, owner),
+        ];
+        assert_eq!(commands(sent(&mut two.adas)), ended);
     }
 
     #[tokio::test]

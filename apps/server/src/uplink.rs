@@ -210,7 +210,7 @@ async fn hand_off(
         Message::Chat(update) => chats::upload::store(shared, &machine.id, update).await?,
         Message::Terminal(update) => terminals::delivered(shared, &machine.id, update),
         Message::ChatLive(live) => chats::live::pass(shared, &machine.id, live).await,
-        Message::MachineShares(told) => sharing::keep(shared, machine, told).await,
+        Message::MachineShares(told) => sharing::keep(shared, machine, told).await?,
         Message::ProposalCommand(command) => {
             let receipt = proposals::command(shared, machine, command).await;
             return Ok(Some(Message::Receipt(receipt)));

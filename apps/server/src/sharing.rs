@@ -10,22 +10,28 @@ use weacon_protocol::{Code, MachineShares, SharedMachineList, code};
 use crate::auth::{Machine, Member};
 use crate::http::failure;
 use crate::shared::Shared;
+use crate::socket::Closed;
 
 /// What a core offers, and the server offers, to have the workspaces a machine is shared with
 /// kept.
 pub(crate) const SHARE: Code = code!("machine.share");
 
-/// Keeps what `machine`'s core says it is shared with, in place of what it said before.
-pub(crate) async fn keep(shared: &Shared, machine: &Machine, told: MachineShares) {
+/// Keeps what `machine`'s core says it is shared with, in place of what it said before. When
+/// the database fails, the link closes, so the core, connecting again, says it once more.
+pub(crate) async fn keep(
+    shared: &Shared,
+    machine: &Machine,
+    told: MachineShares,
+) -> Result<(), Closed> {
     let kept = shared.db.set_shares(&machine.id, &told.workspaces).await;
     let machine_id = ("machine_id", machine.id.as_str().into());
-    match kept {
-        Ok(()) => shared.log.info("machine shares kept", &[machine_id]),
-        Err(fault) => {
-            let fields = [machine_id, ("err", Field::error(&fault))];
-            shared.log.warn("machine shares not kept", &fields);
-        }
-    }
+    let Err(fault) = kept else {
+        shared.log.info("machine shares kept", &[machine_id]);
+        return Ok(());
+    };
+    let fields = [machine_id, ("err", Field::error(&fault))];
+    shared.log.warn("machine shares not kept", &fields);
+    Err(Closed)
 }
 
 /// `GET /api/workspaces/{workspace}/machines`: the machines shared with the workspace, to one
@@ -96,5 +102,9 @@ mod tests {
                               "owner": "m1", "connected": true });
         assert_eq!(shared, json!({ "machines": [machine] }));
         assert_eq!(after, before);
+        // A share the database can't keep ends the link, so the core says it again.
+        w1.break_shares().await;
+        send(&mut core, says(&["w1"])).await;
+        assert!(crate::test_support::socket::ends(&mut core).await);
     }
 }

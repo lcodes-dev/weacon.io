@@ -147,13 +147,24 @@ impl Workspace {
         .await
         .map_err(failed)?;
         // Checked as it is written, so a machine unpaired meanwhile gets no leg.
-        let served = self.served(transaction, chat, leg.machine_id).await?;
-        match served.as_slice() {
-            [] => Err(machine_not_found()),
-            [_] => Ok(()),
-            // A core keeps one log for a chat, so a machine runs one member's agent in it.
-            _ => Err(machine_taken()),
+        let served = self.leg_on_in(transaction, chat, leg.machine_id).await?;
+        served.ok_or_else(machine_not_found)?;
+        // A core keeps one log for a chat, so a machine runs one member's agent in it, whether
+        // or not it still serves the member who had it first.
+        let legs: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chat_legs
+             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(leg.machine_id.as_str())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(failed)?;
+        if legs > 1 {
+            return Err(machine_taken());
         }
+        Ok(())
     }
 
     /// `member`'s leg of `chat`, whoever owns its machine now.
@@ -219,17 +230,6 @@ impl Workspace {
         chat: &ChatId,
         machine: &MachineId,
     ) -> Result<Option<Leg>, Fault> {
-        Ok(self.served(connection, chat, machine).await?.pop())
-    }
-
-    // The legs of `chat` on `machine`, while it serves their members: one, but for a second
-    // being written.
-    async fn served(
-        &self,
-        connection: &mut SqliteConnection,
-        chat: &ChatId,
-        machine: &MachineId,
-    ) -> Result<Vec<Leg>, Fault> {
         let select = format!(
             "SELECT {} {}
              WHERE l.workspace_id = ? AND l.chat_id = ? AND l.machine_id = ?",
@@ -240,12 +240,11 @@ impl Workspace {
             .bind(self.id.as_str())
             .bind(chat.as_str())
             .bind(machine.as_str())
-            .fetch_all(connection)
+            .fetch_optional(connection)
             .await
             .map_err(failed)?
-            .into_iter()
             .map(stored_leg)
-            .collect()
+            .transpose()
     }
 
     /// Notes that `member`'s agent in `chat` was given the chat up to `seq` as quotes.
@@ -469,6 +468,42 @@ mod tests {
         assert_eq!(one.legs_on(&desk, 9).await.unwrap(), [(chat.clone(), 1)]);
         assert!(two.legs_on(&desk, 9).await.unwrap().is_empty());
         assert!(two.chats().await.unwrap()[0].legs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_machine_holds_one_members_leg_of_a_chat_even_once_it_no_longer_serves_them() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m3", "mc-3").await;
+        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
+        let (name, desk) = (id("Bo's desk"), id::<MachineId>("mc-3"));
+        let on_desk = NewLeg {
+            machine_id: &desk,
+            machine: &name,
+            agent: AgentKind::Codex,
+            repo: None,
+        };
+        let shared_with = |workspaces: &'static [&str]| {
+            let workspaces: Vec<_> = workspaces.iter().copied().map(id).collect();
+            let (db, desk) = (one.db.clone(), desk.clone());
+            async move { db.set_shares(&desk, &workspaces).await.unwrap() }
+        };
+
+        let unshared = one.set_leg(&chat, &ada, &on_desk).await;
+        shared_with(&["w1"]).await;
+        one.set_leg(&chat, &ada, &on_desk).await.unwrap();
+        let sharer = one.leg(&chat, &ada).await.unwrap().unwrap().shared_by;
+        shared_with(&[]).await;
+        let second = one.set_leg(&chat, &bo, &on_desk).await;
+        shared_with(&["w1"]).await;
+
+        assert_eq!(code(&unshared.unwrap_err()), "machine.not_found");
+        assert_eq!(sharer, Some(bo.clone()));
+        assert_eq!(code(&second.unwrap_err()), "chat.machine_taken");
+        let held = one.leg_on(&chat, &desk).await.unwrap().unwrap();
+        assert_eq!(held.member, ada);
+        assert_eq!(one.legs(&chat).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
