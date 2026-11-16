@@ -2,13 +2,14 @@
 
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentKind, ChatAction, ChatCommand, ChatEvent, Outcome, PermissionAnswer, RepoId, RequestId,
-    RunEvent, RunUpdate, code,
+    AgentKind, ChatAction, ChatCommand, ChatEvent, MemberId, Outcome, PermissionAnswer, RepoId,
+    RequestId, RunEvent, RunUpdate, code,
 };
 
 use super::agent::{Agent, Order};
 use super::launch::not_started;
 use super::{ChatKey, Engine, PendingInterrupt, chat_about, unsupported};
+use crate::chats::quoted;
 use crate::git::state::Stores;
 use crate::runs::Queued;
 
@@ -19,7 +20,9 @@ impl<A: Agent> Engine<A> {
         command: ChatCommand,
     ) -> Result<(), Fault> {
         let request = command.request;
-        let acted = self.act(key, request.clone(), command.action).await;
+        let author = command.by.map(|by| by.member);
+        let asked = (request.clone(), author);
+        let acted = self.act(key, asked, command.action).await;
         let Err(fault) = acted else {
             return Ok(());
         };
@@ -35,7 +38,7 @@ impl<A: Agent> Engine<A> {
     async fn act(
         &mut self,
         key: &ChatKey,
-        request: RequestId,
+        (request, author): (RequestId, Option<MemberId>),
         action: ChatAction,
     ) -> Result<(), Fault> {
         // Before the log, so a chat a newer core runs gets nothing from this one.
@@ -43,6 +46,7 @@ impl<A: Agent> Engine<A> {
         match action {
             ChatAction::Prompt {
                 text,
+                quotes,
                 repo,
                 agent: named,
                 task,
@@ -57,20 +61,26 @@ impl<A: Agent> Engine<A> {
                     ));
                 }
                 self.has_room(key)?;
+                // The log keeps the person's own words; the agent also gets the quotes.
+                let told = quoted::prompt(&text, &quotes);
                 let prompt = ChatEvent::Prompt {
                     request: request.clone(),
-                    text: text.clone(),
+                    text,
+                    author,
                     repo,
                     agent: named,
                     task,
                 };
                 self.commit(key, prompt).await?;
-                self.prompt(key, request, text, agent).await
+                self.prompt(key, request, told, agent).await
             }
             ChatAction::Permission { answer } => self.permission(key, request, answer).await,
             ChatAction::Interrupt => self.interrupt(key, request).await,
-            // Taken before the log, by `command_from`.
-            ChatAction::Hold | ChatAction::Release | ChatAction::Newer => Err(unsupported()),
+            // A hold is taken before the log, by `command_from`, and only the server takes a
+            // message to a chat's people.
+            ChatAction::Say { .. } | ChatAction::Hold | ChatAction::Release | ChatAction::Newer => {
+                Err(unsupported())
+            }
         }
     }
 

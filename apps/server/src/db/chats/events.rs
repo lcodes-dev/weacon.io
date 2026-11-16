@@ -16,7 +16,7 @@ const EVENT_MAX: usize = weacon_protocol::MAX_FRAME - (32 << 10);
 /// The most permission prompts one chat keeps waiting, so its snapshot always fits a frame.
 const WAITING_MAX: usize = 1000;
 
-/// An event to store, with its place in its machine's log, when it came from there.
+/// An event to store, with its place in its machine's log, when it came from one.
 #[derive(Debug)]
 pub(crate) struct Incoming<'a> {
     pub(crate) core_seq: Option<u64>,
@@ -26,7 +26,8 @@ pub(crate) struct Incoming<'a> {
 
 impl Workspace {
     /// Stores `events` after the chat's last, in order, and gives the chat's seq after them.
-    /// Those from its machine at or before the last one stored are replays and are skipped.
+    /// Those from the machine of `from`'s leg at or before the last one of it stored are
+    /// replays and are skipped.
     /// Events that would take the workspace past [`CHAT_QUOTA`] make an open chat `full`, which
     /// the feed hears, and they and every later event of a full chat are `chat.quota_full`,
     /// with none stored. So do events that would leave more than [`WAITING_MAX`] prompts
@@ -36,12 +37,16 @@ impl Workspace {
         &self,
         mut transaction: Transaction<'static, Sqlite>,
         chat: &ChatId,
+        from: Option<&MemberId>,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
         let (seq, core_seq, state, owner) = sqlx::query_as::<_, (i64, i64, String, String)>(
-            "SELECT seq, core_seq, state, owner_member FROM chats
-             WHERE workspace_id = ? AND chat_id = ?",
+            "SELECT c.seq, COALESCE(l.core_seq, 0), c.state, c.owner_member FROM chats AS c
+             LEFT JOIN chat_legs AS l ON l.workspace_id = c.workspace_id
+                 AND l.chat_id = c.chat_id AND l.member_id = ?
+             WHERE c.workspace_id = ? AND c.chat_id = ?",
         )
+        .bind(from.map(MemberId::as_str))
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .fetch_optional(&mut *transaction)
@@ -67,8 +72,10 @@ impl Workspace {
                 chat_quota_full()
             });
         }
-        self.store(&mut transaction, chat, &rows, &runs).await?;
-        self.advance(&mut transaction, chat, seq, core_seq).await?;
+        self.store(&mut transaction, chat, from, &rows, &runs)
+            .await?;
+        self.advance(&mut transaction, chat, seq, from.zip(Some(core_seq)))
+            .await?;
         transaction.commit().await.map_err(failed)?;
         count(seq)
     }
@@ -118,18 +125,19 @@ impl Workspace {
         &self,
         transaction: &mut SqliteConnection,
         chat: &ChatId,
+        from: Option<&MemberId>,
         rows: &[Row<'_>],
         runs: &ChatRuns,
     ) -> Result<(), Fault> {
         for row in rows {
             sqlx::query(
-                "INSERT INTO chat_events (workspace_id, chat_id, seq, core_seq, body, at)
+                "INSERT INTO chat_events (workspace_id, chat_id, seq, member_id, body, at)
                  VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(self.id.as_str())
             .bind(chat.as_str())
             .bind(row.seq)
-            .bind(row.core_seq)
+            .bind(from.map(MemberId::as_str))
             .bind(&row.body)
             .bind(row.at)
             .execute(&mut *transaction)
@@ -171,15 +179,26 @@ impl Workspace {
         transaction: &mut SqliteConnection,
         chat: &ChatId,
         seq: i64,
-        core_seq: i64,
+        leg: Option<(&MemberId, i64)>,
     ) -> Result<(), Fault> {
+        sqlx::query("UPDATE chats SET seq = ? WHERE workspace_id = ? AND chat_id = ?")
+            .bind(seq)
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        let Some((member, core_seq)) = leg else {
+            return Ok(());
+        };
         sqlx::query(
-            "UPDATE chats SET seq = ?, core_seq = ? WHERE workspace_id = ? AND chat_id = ?",
+            "UPDATE chat_legs SET core_seq = ?
+             WHERE workspace_id = ? AND chat_id = ? AND member_id = ?",
         )
-        .bind(seq)
         .bind(core_seq)
         .bind(self.id.as_str())
         .bind(chat.as_str())
+        .bind(member.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -317,7 +336,6 @@ pub(super) enum Place {
 
 pub(in crate::db) struct Row<'a> {
     pub(in crate::db) seq: i64,
-    core_seq: Option<i64>,
     pub(in crate::db) event: &'a ChatEvent,
     body: String,
     pub(in crate::db) at: i64,
@@ -340,7 +358,6 @@ fn numbered<'a>(
         seq = seq.checked_add(1).ok_or_else(unreadable)?;
         rows.push(Row {
             seq,
-            core_seq: from_core,
             event: incoming.event,
             body: sized(serde_json::to_string(incoming.event).map_err(|_| unstorable())?)?,
             at: incoming.at,
@@ -359,12 +376,12 @@ fn sized(body: String) -> Result<String, Fault> {
     Ok(body)
 }
 
-/// Whether `event` begins a turn, a prompt from Weacon or from outside it, or ends one, a
-/// receipt that ends its command.
+/// Whether `event` is a person writing, to the chat or to an agent, in Weacon or outside it,
+/// or ends a turn, a receipt that ends its command.
 pub(crate) fn turns(event: &ChatEvent) -> bool {
     matches!(
         event,
-        ChatEvent::Prompt { .. } | ChatEvent::OutsidePrompt { .. }
+        ChatEvent::Message { .. } | ChatEvent::Prompt { .. } | ChatEvent::OutsidePrompt { .. }
     ) || matches!(event, ChatEvent::Receipt { receipt } if receipt.outcome != Outcome::Accepted)
 }
 
@@ -388,7 +405,9 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::test_support::{NOW, append, asks, code, id, make, said, seqs, status};
+    use crate::db::test_support::{
+        NOW, append, asks, code, core_seq, id, make, said, seqs, status,
+    };
     use crate::test_support::two_teams;
 
     #[tokio::test]
@@ -415,7 +434,7 @@ mod tests {
         assert_eq!(append(&one, "c-1", &[]).await.unwrap(), 4);
 
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
-        assert_eq!((chat.seq, chat.core_seq), (4, 6));
+        assert_eq!((chat.seq, core_seq(&one, "c-1").await), (4, 6));
         let missing = append(&two, "c-2", &first).await.unwrap_err();
         assert_eq!(code(&missing), "chat.not_found");
     }
@@ -524,7 +543,7 @@ mod tests {
         assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes + 1);
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!(
-            (chat.state, chat.seq, chat.core_seq),
+            (chat.state, chat.seq, core_seq(&one, "c-1").await),
             (ChatState::Full, 2, 2)
         );
         assert_eq!(
@@ -539,7 +558,7 @@ mod tests {
         let (one, _) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
         make(&one, "c-2", "m1", NOW).await.unwrap();
-        one.set_chat_state(&id("c-2"), ChatState::Detached)
+        one.set_chat_state(&id("c-2"), ChatState::Full)
             .await
             .unwrap();
         sqlx::query("UPDATE workspaces SET chat_bytes = ? WHERE workspace_id = 'w1'")
@@ -558,7 +577,7 @@ mod tests {
         assert_eq!(code(&after.unwrap_err()), "chat.quota_full");
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!(
-            (chat.state, chat.seq, chat.core_seq),
+            (chat.state, chat.seq, core_seq(&one, "c-1").await),
             (ChatState::Full, 0, 0)
         );
 
@@ -571,8 +590,6 @@ mod tests {
         append(&one, "c-2", &[(Some(1), said("a"))])
             .await
             .unwrap_err();
-        let detached = one.chat(&id("c-2")).await.unwrap().unwrap().state;
-        assert_eq!(detached, ChatState::Detached);
         assert_eq!(one.changes_since(0, 50).await.unwrap().len(), changes);
     }
 

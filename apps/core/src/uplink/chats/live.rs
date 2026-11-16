@@ -38,7 +38,8 @@ impl Live {
         let (run, asked) = match &update.entry.event {
             ChatEvent::RunStatus { status } => (&status.run, None),
             ChatEvent::Run { update: run } => (&run.run, named(&run.event)),
-            ChatEvent::Prompt { .. }
+            ChatEvent::Message { .. }
+            | ChatEvent::Prompt { .. }
             | ChatEvent::OutsidePrompt { .. }
             | ChatEvent::Receipt { .. }
             | ChatEvent::Newer => return None,

@@ -462,6 +462,7 @@ mod tests {
 
     fn prompt(text: &str) -> Envelope {
         command(ChatAction::Prompt {
+            quotes: Vec::new(),
             text: text.to_owned(),
             repo: None,
             machine: None,
@@ -518,6 +519,7 @@ mod tests {
 
     fn kind(event: &ChatEvent) -> String {
         match event {
+            ChatEvent::Message { text, .. } => format!("message {text}"),
             ChatEvent::Prompt { text, .. } => format!("prompt {text}"),
             ChatEvent::OutsidePrompt { text } => format!("outside {text}"),
             ChatEvent::Run { update } => format!(
@@ -828,6 +830,7 @@ mod tests {
         let mut fake = fake();
         let named = |agent| {
             command(ChatAction::Prompt {
+                quotes: Vec::new(),
                 text: "Go.".to_owned(),
                 repo: None,
                 machine: None,
@@ -1037,6 +1040,7 @@ mod tests {
             [refusal(3, code!("message.unsupported"))]
         );
         let unnamed = command(ChatAction::Prompt {
+            quotes: Vec::new(),
             text: "Hi".to_owned(),
             repo: None,
             machine: None,

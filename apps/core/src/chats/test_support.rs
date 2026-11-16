@@ -230,6 +230,7 @@ pub(crate) fn allow(request: &str, chat_id: &str, run_id: &str, prompt: u32) -> 
 /// A prompt as chat `c-1`'s log holds it.
 pub(crate) fn logged_prompt(request_id: &str, text: &str) -> ChatEvent {
     ChatEvent::Prompt {
+        author: None,
         request: request(request_id),
         text: text.to_owned(),
         repo: None,
@@ -254,6 +255,7 @@ pub(crate) fn prompt(request: &str, text: &str) -> ChatCommand {
         request,
         "c-1",
         ChatAction::Prompt {
+            quotes: Vec::new(),
             text,
             repo: None,
             machine: None,

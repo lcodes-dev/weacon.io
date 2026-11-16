@@ -1,55 +1,113 @@
-//! A member's command to a chat: checked here, then relayed to the chat's machine, whose
-//! answer is the command's receipt.
+//! A member's command to a chat: a message is stored here, and a command to their own agent is
+//! checked, then relayed to their machine, whose answer is its receipt.
 
 use weacon_observability::Fault;
-use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatTask};
+use weacon_protocol::{
+    AgentKind, AgentOwner, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId,
+    Message, Outcome, Receipt, RunState, code,
+};
 
-use super::admit::{Admitted, admit, detached};
-use super::link;
+use super::admit::{Admitted, admit, detached, not_owner, title};
+use super::{link, quotes};
 use crate::auth::Member;
-use crate::db::{Chat, NewChat, Workspace};
+use crate::db::{Chat, Incoming, Leg, NewChat, NewLeg, Workspace};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
-/// Takes `command` from `asker`, one of the chat's workspace's members, refusing what the
-/// chat's owner or machine doesn't allow, and relays it once; the machine's answer goes `back`.
+/// Takes `command` from `asker`, one of the chat's workspace's members. A message is stored,
+/// and its receipt is the answer. A command to the asker's own agent is refused when their
+/// machine or another member's working agent doesn't allow it, and else relayed once; the
+/// machine's answer goes `back`.
 pub(crate) async fn take(
     member: &Member,
     asker: &Asker,
     shared: &Shared,
     command: ChatCommand,
     back: Back<'_>,
-) -> Result<(), Fault> {
+) -> Result<Option<Message>, Fault> {
+    let (id, request) = (command.chat.clone(), command.request.clone());
     let chat = member.workspace.chat(&command.chat).await?;
     match admit(chat, asker.clone(), command)? {
-        Admitted::New {
-            title,
-            machine,
-            repo,
-            mut command,
+        Admitted::Said {
+            chat,
+            text,
+            mut task,
         } => {
-            let task = stamp(&member.workspace, &mut command).await?;
-            let owned = shared.db.machines_of(&asker.account, &[]).await?;
-            let Some(summary) = owned.iter().find(|summary| summary.id == machine) else {
-                return Err(crate::db::machine_not_found());
-            };
-            let id = command.chat.clone();
-            let chat = NewChat {
-                id: &id,
-                owner: &member.id,
-                title: &title,
-                repo: repo.as_ref(),
-                machine_id: &summary.id,
-                machine: &summary.name,
-                at: shared.now(),
-                task: task.as_ref(),
-            };
-            start(shared, member, &chat, command, back).await
+            say(shared, member, chat.as_ref(), &id, text, &mut task).await?;
+            let outcome = Outcome::Accepted;
+            return Ok(Some(Message::Receipt(Receipt { request, outcome })));
         }
-        Admitted::Existing { chat, command } => {
-            existing(shared, member, &chat, command, back).await
+        Admitted::Prompt {
+            chat: None,
+            machine,
+            command,
+        } => start(shared, member, asker, machine, command, back).await?,
+        Admitted::Prompt {
+            chat: Some(chat),
+            machine,
+            command,
+        } => prompt(shared, (member, asker), &chat, machine, command, back).await?,
+        Admitted::Act { chat, command } => {
+            let made = Some(chat.made).filter(|made| *made);
+            let leg = member.workspace.leg(&id, &member.id).await?;
+            let leg = made.and(leg).filter(|leg| leg.core_seq > 0);
+            let leg = leg.ok_or_else(not_owner)?;
+            serve(shared, member, &leg, command, back).await?;
         }
     }
+    Ok(None)
+}
+
+// Stores a person's message, in a chat it makes when there is none.
+async fn say(
+    shared: &Shared,
+    member: &Member,
+    chat: Option<&Chat>,
+    id: &ChatId,
+    text: String,
+    task: &mut Option<ChatTask>,
+) -> Result<(), Fault> {
+    let workspace = &member.workspace;
+    let at = shared.now();
+    match chat {
+        None => {
+            stamp(workspace, task).await?;
+            let new = NewChat {
+                id,
+                owner: &member.id,
+                title: &title(&text),
+                leg: None,
+                task: task.as_ref(),
+                at,
+            };
+            workspace.add_chat(&new).await?;
+        }
+        // Its first prompt is still on its way, and may yet be taken back.
+        Some(chat) if !chat.made => return Err(link::offline()),
+        Some(_) => {}
+    }
+    let event = ChatEvent::Message {
+        author: member.id.clone(),
+        text,
+    };
+    let incoming = Incoming {
+        core_seq: None,
+        event: &event,
+        at,
+    };
+    let stored = workspace.append_events(id, &[incoming]).await;
+    if chat.is_none() {
+        if let Err(fault) = stored {
+            workspace.forget_chat(id).await?;
+            return Err(fault);
+        }
+        workspace.chat_made(id, &member.id).await?;
+    } else {
+        stored?;
+    }
+    shared.wake_feeds(workspace.id());
+    shared.chats.stored(workspace.id().clone(), id.clone());
+    Ok(())
 }
 
 // A chat's first prompt: the chat is made before it is sent, so two at once can't both reach
@@ -57,63 +115,167 @@ pub(crate) async fn take(
 async fn start(
     shared: &Shared,
     member: &Member,
-    chat: &NewChat<'_>,
-    command: ChatCommand,
+    asker: &Asker,
+    machine: Option<MachineId>,
+    mut command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
-    workspace.add_chat(chat).await?;
-    let follow = link::follow(workspace.id(), chat.id, 0);
-    if let Err(fault) = relay::command(shared, chat.machine_id, command, follow, back) {
-        workspace.forget_chat(chat.id).await?;
+    let ChatAction::Prompt {
+        text,
+        repo,
+        agent,
+        task,
+        ..
+    } = &mut command.action
+    else {
+        return Err(super::unsupported());
+    };
+    stamp(workspace, task).await?;
+    let (title, repo, task) = (title(text), repo.clone(), task.clone());
+    let (machine_id, machine) = own_machine(shared, asker, machine).await?;
+    let id = command.chat.clone();
+    let chat = NewChat {
+        id: &id,
+        owner: &member.id,
+        title: &title,
+        leg: Some(NewLeg {
+            machine_id: &machine_id,
+            machine: &machine,
+            agent: agent.unwrap_or(AgentKind::Claude),
+            repo: repo.as_ref(),
+        }),
+        task: task.as_ref(),
+        at: shared.now(),
+    };
+    workspace.add_chat(&chat).await?;
+    let follow = link::follow(workspace.id(), &id, 0);
+    if let Err(fault) = relay::command(shared, &machine_id, command, follow, back) {
+        workspace.forget_chat(&id).await?;
         return Err(fault);
     }
-    workspace.chat_made(chat.id, &member.id).await?;
+    workspace.chat_made(&id, &member.id).await?;
     shared.wake_feeds(workspace.id());
     Ok(())
 }
 
-// A command to a chat that exists, on a machine its owner still owns.
-async fn existing(
+// A prompt to a chat that is there: to the asker's own agent in it, which their first one
+// there fixes, with what the others said since their last.
+async fn prompt(
     shared: &Shared,
-    member: &Member,
+    (member, asker): (&Member, &Asker),
     chat: &Chat,
-    command: ChatCommand,
+    machine: Option<MachineId>,
+    mut command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
     let workspace = &member.workspace;
-    if !workspace.runs_on(&command.chat, &chat.machine).await? {
-        // A chat whose machine was unpaired can still be read, never run.
-        workspace.detach_chat(&command.chat, &member.id).await?;
-        shared.wake_feeds(workspace.id());
-        return Err(detached());
-    }
     if !chat.made {
         // Its first prompt is still on its way, and may yet be taken back.
         return Err(link::offline());
     }
-    let follow = link::follow(workspace.id(), &command.chat, chat.core_seq);
-    relay::command(shared, &chat.machine, command, follow, back)
+    let id = command.chat.clone();
+    let fixed = workspace.leg(&id, &member.id).await?;
+    let leg = match fixed.filter(|leg| leg.core_seq > 0) {
+        Some(leg) if machine.as_ref().is_some_and(|named| *named != leg.machine) => {
+            return Err(crate::db::machine_fixed());
+        }
+        Some(leg) => leg,
+        None => {
+            let ChatAction::Prompt { repo, agent, .. } = &command.action else {
+                return Err(super::unsupported());
+            };
+            let (machine_id, machine) = own_machine(shared, asker, machine).await?;
+            let leg = NewLeg {
+                machine_id: &machine_id,
+                machine: &machine,
+                agent: agent.unwrap_or(AgentKind::Claude),
+                repo: repo.as_ref(),
+            };
+            workspace.set_leg(&id, &member.id, &leg).await?;
+            let made = workspace.leg(&id, &member.id).await?;
+            made.ok_or_else(crate::db::machine_not_found)?
+        }
+    };
+    one_at_a_time(workspace, &id, member).await?;
+    if let ChatAction::Prompt { quotes, .. } = &mut command.action {
+        *quotes = quotes::since(workspace, &id, &member.id).await?;
+    }
+    serve(shared, member, &leg, command, back).await
 }
 
-/// Gives the task a chat's first prompt names the title it has now in `workspace`.
-async fn stamp(
-    workspace: &Workspace,
-    command: &mut ChatCommand,
-) -> Result<Option<ChatTask>, Fault> {
-    let ChatAction::Prompt {
-        task: Some(named), ..
-    } = &mut command.action
-    else {
-        return Ok(None);
+// The asker's machine `named`, which a first prompt must name, and what it is called.
+async fn own_machine(
+    shared: &Shared,
+    asker: &Asker,
+    named: Option<MachineId>,
+) -> Result<(MachineId, weacon_protocol::MachineName), Fault> {
+    let named = named.ok_or_else(|| {
+        Fault::new(
+            code!("chat.machine_required"),
+            "Pick a machine for your agent in this chat",
+        )
+    })?;
+    let owned = shared.db.machines_of(&asker.account, &[]).await?;
+    let found = owned.into_iter().find(|summary| summary.id == named);
+    let summary = found.ok_or_else(crate::db::machine_not_found)?;
+    Ok((summary.id, summary.name))
+}
+
+// A chat runs one agent at a time: while another member's works or waits for an answer, no
+// one else's is called.
+async fn one_at_a_time(workspace: &Workspace, chat: &ChatId, member: &Member) -> Result<(), Fault> {
+    let runs = workspace.chat_runs(chat).await?;
+    let Some(run) = runs.run() else {
+        return Ok(());
     };
-    workspace
-        .task(&named.id)
-        .await?
-        .title
-        .as_str()
-        .clone_into(&mut named.title);
-    Ok(Some(named.clone()))
+    let working = matches!(
+        run.state,
+        RunState::Starting | RunState::Running | RunState::Waiting
+    );
+    let theirs = run.agent.as_ref().is_some_and(
+        |agent| matches!(&agent.owner, AgentOwner::Member { member: owner } if *owner == member.id),
+    );
+    if working && !theirs {
+        return Err(Fault::new(
+            code!("chat.agent_working"),
+            "Another person's agent is working in this chat",
+        ));
+    }
+    Ok(())
+}
+
+// Relays `command` to the machine of `leg`, the asker's own, while they still own it.
+async fn serve(
+    shared: &Shared,
+    member: &Member,
+    leg: &Leg,
+    command: ChatCommand,
+    back: Back<'_>,
+) -> Result<(), Fault> {
+    let workspace = &member.workspace;
+    if leg.detached {
+        return Err(detached());
+    }
+    let held = workspace.leg_on(&command.chat, &leg.machine).await?;
+    if held.is_none() {
+        // A leg whose machine was unpaired can never run again; the chat stays.
+        workspace.detach_leg(&command.chat, &member.id).await?;
+        shared.wake_feeds(workspace.id());
+        return Err(detached());
+    }
+    let follow = link::follow(workspace.id(), &command.chat, leg.core_seq);
+    relay::command(shared, &leg.machine, command, follow, back)
+}
+
+/// Gives the task a chat's first words name the title it has now in `workspace`.
+async fn stamp(workspace: &Workspace, task: &mut Option<ChatTask>) -> Result<(), Fault> {
+    let Some(named) = task else {
+        return Ok(());
+    };
+    let now = workspace.task(&named.id).await?;
+    now.title.as_str().clone_into(&mut named.title);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -126,8 +288,8 @@ mod tests {
     use weacon_protocol::Envelope;
 
     use super::*;
-    use crate::chats::test_support::{Ada, ada, attach, sent};
-    use crate::db::test_support::{NOW, id, make, prompt};
+    use crate::chats::test_support::{Ada, ada, attach, grace, sent};
+    use crate::db::test_support::{NOW, append, id, make, prompt, said, status};
     use crate::test_support::Fixture;
 
     // `command`, a prompt, naming the agent to run; the server passes it on as it is.
@@ -151,7 +313,7 @@ mod tests {
         ada: &Ada,
         shared: &Shared,
         command: ChatCommand,
-    ) -> (Result<(), Fault>, mpsc::Receiver<Envelope>) {
+    ) -> (Result<Option<Message>, Fault>, mpsc::Receiver<Envelope>) {
         let (back, answers) = mpsc::channel(4);
         let taken = take(
             &ada.member,
@@ -186,11 +348,14 @@ mod tests {
         assert_eq!(envelope.message, Message::ChatCommand(relayed));
         assert_eq!(sent(&mut attached), [follow(0)]);
         let chats = ada.member.workspace.chats().await.unwrap();
-        let made: Vec<_> = chats
-            .iter()
-            .map(|chat| (chat.title.as_str(), chat.machine.as_str()))
-            .collect();
-        assert_eq!(made, [("Fix it", "Studio")]);
+        let titles: Vec<_> = chats.iter().map(|chat| chat.title.as_str()).collect();
+        assert_eq!(titles, ["Fix it"]);
+        let leg = ada.member.workspace.leg(&id("c-1"), &ada.member.id).await;
+        let leg = leg.unwrap().unwrap();
+        assert_eq!(
+            (leg.machine_name.as_str(), leg.agent, leg.core_seq),
+            ("Studio", AgentKind::Codex, 0)
+        );
         answers.try_recv().unwrap_err();
         let busy = Message::Receipt(Receipt {
             request: id("r-1"),
@@ -260,6 +425,7 @@ mod tests {
         assert_eq!(listed[0].task, Some(id("t-1")));
         // Sent again, it goes again to its chat, for the chat's own task.
         asked(&ada, shared, first()).await.0.unwrap();
+        workspace.legs_took_prompts().await;
         let later = for_task(prompt("r-2", "c-1", "And this", None), "t-9");
         asked(&ada, shared, later).await.0.unwrap();
         let plain = prompt("r-3", "c-1", "Then that", None);
@@ -319,6 +485,7 @@ mod tests {
         assert_eq!(workspace.chat(&id("c-1")).await.unwrap(), None);
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
+        workspace.legs_took_prompts().await;
         let (refused, _answers) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
         assert!(sent(&mut attached).is_empty());
@@ -337,6 +504,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
+        workspace.legs_took_prompts().await;
         let mut attached = attach(shared, &ada, &["chat.serve", "chat.answers"]);
 
         let (one, mut first) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
@@ -353,7 +521,7 @@ mod tests {
         assert!(
             envelopes
                 .iter()
-                .any(|envelope| envelope.message == follow(0))
+                .any(|envelope| envelope.message == follow(1))
         );
         let refused = Message::Error(ErrorBody {
             code: code!("chat.unavailable"),
@@ -372,21 +540,214 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_whose_machine_is_no_longer_its_owners_is_detached_and_the_feed_hears() {
+    async fn a_leg_whose_machine_is_no_longer_its_members_is_detached_and_the_feed_hears() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
+        let idle = [(Some(1), status(RunState::Idle))];
+        append(workspace, "c-1", &idle).await.unwrap();
         let before = workspace.changes_since(0, 50).await.unwrap().len();
 
         let (refused, _answers) = asked(&ada, shared, prompt("r-2", "c-1", "Go", None)).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.detached");
-        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
-        assert_eq!(chat.state, weacon_protocol::ChatState::Detached);
+        let leg = workspace.leg(&id("c-1"), &ada.member.id).await.unwrap();
+        assert!(leg.unwrap().detached);
         let changes = workspace.changes_since(0, 50).await.unwrap();
         assert_eq!(changes.len(), before + 1);
+        // The chat itself still takes what its people say.
+        let hello = say("r-3", "c-1", "MARKER-HELLO");
+        asked(&ada, shared, hello).await.0.unwrap();
+        let (again, _answers) = asked(&ada, shared, prompt("r-4", "c-1", "Go", None)).await;
+        assert_eq!(again.unwrap_err().code().as_str(), "chat.detached");
+    }
+
+    fn say(request: &str, chat: &str, text: &str) -> ChatCommand {
+        let mut command = prompt(request, chat, text, None);
+        command.action = ChatAction::Say {
+            text: text.to_owned(),
+            task: None,
+        };
+        command
+    }
+
+    fn message(author: &str, text: &str) -> ChatEvent {
+        ChatEvent::Message {
+            author: id(author),
+            text: text.to_owned(),
+        }
+    }
+
+    async fn events(workspace: &Workspace, chat: &str) -> Vec<ChatEvent> {
+        let chat = id(chat);
+        let entries = workspace.events_after(&chat, 0, 50, usize::MAX);
+        let entries = entries.await.unwrap();
+        entries.into_iter().map(|entry| entry.event).collect()
+    }
+
+    #[tokio::test]
+    async fn a_message_makes_a_chat_or_joins_one_and_is_stored_under_its_author_for_its_workspace_only()
+     {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let (ada, grace) = (ada(&fixture).await, grace(&fixture).await);
+        let workspace = &ada.member.workspace;
+        let other = id("w9");
+        let other = shared.db.create_workspace(&other, "Other").await.unwrap();
+        let mut attached = attach(shared, &ada, &["chat.serve", "chat.answers"]);
+        let mut notices = shared.chats.notices();
+
+        let first = say("r-1", "c-1", "MARKER-MORNING\nand more");
+        let (taken, _answers) = asked(&ada, shared, first).await;
+        let reply = say("r-2", "c-1", "MARKER-REPLY");
+        let (answered, _answers) = asked(&grace, shared, reply).await;
+
+        let accepted = |request: &str| {
+            Some(Message::Receipt(Receipt {
+                request: id(request),
+                outcome: Outcome::Accepted,
+            }))
+        };
+        assert_eq!(taken.unwrap(), accepted("r-1"));
+        assert_eq!(answered.unwrap(), accepted("r-2"));
+        // No machine is told, and no agent starts.
+        assert!(sent(&mut attached).is_empty());
+        let said = [
+            message("m1", "MARKER-MORNING\nand more"),
+            message("m5", "MARKER-REPLY"),
+        ];
+        assert_eq!(events(workspace, "c-1").await, said);
+        let listed = workspace.chats().await.unwrap();
+        let chat = listed.first().unwrap();
+        assert_eq!(
+            (chat.title.as_str(), chat.owner.as_str(), chat.legs.len()),
+            ("MARKER-MORNING", "m1", 0)
+        );
+        assert_eq!(notices.try_recv().unwrap(), (id("w1"), id("c-1")));
+        assert!(other.chats().await.unwrap().is_empty());
+        assert_eq!(other.chat(&id("c-1")).await.unwrap(), None);
+        let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
+        assert!(!logged.contains("MARKER"), "{logged}");
+    }
+
+    fn quotes_of(message: &Message) -> Vec<(String, Option<AgentKind>, String)> {
+        let Message::ChatCommand(ChatCommand {
+            action: ChatAction::Prompt { quotes, .. },
+            ..
+        }) = message
+        else {
+            panic!("not a prompt: {message:?}");
+        };
+        let agent = |quote: &weacon_protocol::Quote| quote.agent.as_ref().map(|agent| agent.kind);
+        quotes
+            .iter()
+            .map(|quote| (quote.name.clone(), agent(quote), quote.text.clone()))
+            .collect()
+    }
+
+    // What `person`'s machine sends up as its log's entry `seq`, stored as the server keeps it.
+    async fn up(shared: &Shared, person: &Ada, seq: u64, event: ChatEvent) {
+        let update = weacon_protocol::ChatUpdate {
+            workspace: id("w1"),
+            chat: id("c-1"),
+            entry: weacon_protocol::ChatEntry { seq, event },
+        };
+        let stored = crate::chats::upload::store(shared, &person.machine, update);
+        stored.await.unwrap();
+    }
+
+    fn prompted(request: &str, text: &str) -> ChatEvent {
+        ChatEvent::Prompt {
+            request: id(request),
+            text: text.to_owned(),
+            author: None,
+            repo: None,
+            agent: None,
+            task: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn each_member_calls_their_own_agent_on_their_own_machine_with_what_the_others_said() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let (ada, grace) = (ada(&fixture).await, grace(&fixture).await);
+        let offers = ["chat.serve", "chat.answers"];
+        let mut adas = attach(shared, &ada, &offers);
+        let mut graces = attach(shared, &grace, &offers);
+        let ask = |person, command| async move { asked(person, shared, command).await.0 };
+        ask(&ada, say("r-1", "c-1", "Morning")).await.unwrap();
+        ask(&grace, say("r-2", "c-1", "Try the cache"))
+            .await
+            .unwrap();
+
+        // Grace has no agent in the chat until a prompt of hers names her machine.
+        let unnamed = ask(&grace, prompt("r-3", "c-1", "Go", None)).await;
+        let stolen = ask(&grace, prompt("r-3", "c-1", "Go", Some(&ada.machine))).await;
+        ask(&ada, prompt("r-4", "c-1", "Fix it", Some(&ada.machine)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            unnamed.unwrap_err().code().as_str(),
+            "chat.machine_required"
+        );
+        assert_eq!(stolen.unwrap_err().code().as_str(), "machine.not_found");
+        assert!(sent(&mut graces).is_empty());
+        let relayed = sent(&mut adas);
+        let person = |name: &str, text: &str| (name.to_owned(), None, text.to_owned());
+        // Her own message is quoted too: her agent hasn't seen it.
+        let both = [person("ada", "Morning"), person("grace", "Try the cache")];
+        assert_eq!(quotes_of(&relayed[0]), both);
+        up(shared, &ada, 1, prompted("r-4", "Fix it")).await;
+        up(shared, &ada, 2, status(RunState::Running)).await;
+        // While Ada's agent works, Grace's isn't called, and Grace can't stop or answer Ada's.
+        let grace_first = || prompt("r-5", "c-1", "And mine", Some(&grace.machine));
+        let busy = ask(&grace, grace_first()).await;
+        assert_eq!(busy.unwrap_err().code().as_str(), "chat.agent_working");
+        let mut stop = prompt("r-6", "c-1", "x", None);
+        stop.action = ChatAction::Interrupt;
+        let stopped = ask(&grace, stop.clone()).await;
+        assert_eq!(stopped.unwrap_err().code().as_str(), "chat.not_owner");
+        ask(&grace, say("r-7", "c-1", "Still here")).await.unwrap();
+        ask(&ada, stop).await.unwrap();
+        assert_eq!(sent(&mut adas).len(), 2);
+        up(shared, &ada, 3, said("Fixed.")).await;
+        up(shared, &ada, 4, status(RunState::Idle)).await;
+
+        ask(&grace, grace_first()).await.unwrap();
+
+        let relayed = sent(&mut graces);
+        let quoted = [
+            person("ada", "Morning"),
+            person("grace", "Try the cache"),
+            person("ada", "Fix it"),
+            person("grace", "Still here"),
+            (
+                "ada".to_owned(),
+                Some(AgentKind::Claude),
+                "Fixed.".to_owned(),
+            ),
+        ];
+        assert_eq!(quotes_of(&relayed[0]), quoted);
+        assert_eq!(relayed[1], follow(0));
+        up(shared, &grace, 1, prompted("r-5", "And mine")).await;
+        // Since her last prompt, Ada's agent has only Grace's own words to read.
+        ask(&ada, prompt("r-8", "c-1", "Thanks", None))
+            .await
+            .unwrap();
+        let again = sent(&mut adas);
+        let since = [person("grace", "Still here"), person("grace", "And mine")];
+        assert_eq!(quotes_of(&again[0]), since);
+        assert_eq!(again[1], follow(4));
+        let legs = ada.member.workspace.chats().await.unwrap().remove(0).legs;
+        let on: Vec<_> = legs
+            .iter()
+            .map(|leg| (leg.member.as_str(), leg.machine_id.as_str()))
+            .collect();
+        assert_eq!(on, [("m1", ada.machine.as_str()), ("m5", "mc-grace")]);
     }
 
     #[tokio::test]
@@ -397,6 +758,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
+        workspace.legs_took_prompts().await;
         let mut serving = attach(shared, &ada, &["chat.serve", "chat.answers"]);
         for action in [ChatAction::Hold, ChatAction::Release] {
             let mut command = prompt("r-2", "c-1", "Go", None);

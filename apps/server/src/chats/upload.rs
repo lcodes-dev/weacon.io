@@ -3,21 +3,21 @@
 use serde_json::Value;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, RunEvent, RunUpdate, WorkspaceId,
-    code,
+    AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, RunEvent,
+    RunStatus, RunUpdate, WorkspaceId, code,
 };
 
-use crate::db::{Incoming, turns};
+use crate::db::{Incoming, Leg, turns};
 use crate::shared::Shared;
 use crate::socket::Closed;
 
 /// What the server offers to cores whose chats' events it stores.
 pub(crate) const UPLOAD: Code = code!("chat.upload");
 
-/// Stores what is [`kept`] of `update` from `machine`, and tells the sockets that follow its
-/// chat. An event of a chat that isn't on `machine`, or whose owner no longer owns it there, is
-/// dropped. When the database fails, the link closes, so nothing later is stored before it
-/// and the core, connecting again, sends it once more.
+/// Stores what is [`kept`] of `update` from `machine`, named as its leg's member's, and tells
+/// the sockets that follow its chat. An event of a chat `machine` holds no leg of, or whose
+/// member no longer owns it, is dropped. When the database fails, the link closes, so nothing
+/// later is stored before it and the core, connecting again, sends it once more.
 pub(crate) async fn store(
     shared: &Shared,
     machine: &MachineId,
@@ -26,30 +26,23 @@ pub(crate) async fn store(
     let ChatUpdate {
         workspace,
         chat,
-        entry: ChatEntry { seq, event },
+        entry,
     } = update;
-    let Some(event) = kept(event) else {
-        return Ok(());
-    };
     let fields = [
         ("machine_id", machine.as_str().into()),
         ("workspace_id", workspace.as_str().into()),
         ("chat_id", chat.as_str().into()),
     ];
-    let incoming = Incoming {
-        core_seq: Some(seq),
-        event: &event,
-        at: shared.now(),
-    };
-    match append(shared, machine, &workspace, &chat, incoming).await {
-        Ok(true) => {
-            // A turn's start or end changes the chat's summary in the workspace's list.
+    match append(shared, machine, (&workspace, &chat), entry).await {
+        Ok(Stored::Kept(event)) => {
+            // Someone writing, or a turn's end, changes the chat's summary in the list.
             if turns(&event) {
                 shared.wake_feeds(&workspace);
             }
             shared.chats.stored(workspace, chat);
         }
-        Ok(false) => shared.log.warn("chat upload refused", &fields),
+        Ok(Stored::Dropped) => {}
+        Ok(Stored::Refused) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
             // A chat a limit just filled is news to the list.
             let full = [code!("chat.quota_full"), code!("chat.too_many_waiting")];
@@ -66,8 +59,18 @@ pub(crate) async fn store(
     Ok(())
 }
 
-/// What the server keeps of a chat event: its messages, never a tool's name or input.
-fn kept(event: ChatEvent) -> Option<ChatEvent> {
+/// What became of an event a machine sent.
+enum Stored {
+    Kept(ChatEvent),
+    /// Not one the server keeps.
+    Dropped,
+    /// Not the machine's to send.
+    Refused,
+}
+
+/// What the server keeps of a chat event from `leg`'s machine: its messages, never a tool's
+/// name or input, with who wrote a prompt and whose agent runs, and where, as the leg says.
+fn kept(event: ChatEvent, leg: &Leg) -> Option<ChatEvent> {
     match event {
         ChatEvent::Run { update } => {
             let RunUpdate { run, event } = update;
@@ -76,12 +79,37 @@ fn kept(event: ChatEvent) -> Option<ChatEvent> {
                 update: RunUpdate { run, event },
             })
         }
-        ChatEvent::Prompt { .. }
-        | ChatEvent::OutsidePrompt { .. }
-        | ChatEvent::Receipt { .. }
-        | ChatEvent::RunStatus { .. } => Some(event),
-        // What a newer core sends may hold anything.
-        ChatEvent::Newer => None,
+        ChatEvent::Prompt {
+            request,
+            text,
+            repo,
+            agent,
+            task,
+            ..
+        } => Some(ChatEvent::Prompt {
+            request,
+            text,
+            author: Some(leg.member.clone()),
+            repo,
+            agent,
+            task,
+        }),
+        ChatEvent::RunStatus { status } => Some(ChatEvent::RunStatus {
+            status: RunStatus {
+                agent: Some(AgentRef {
+                    kind: leg.agent,
+                    owner: AgentOwner::Member {
+                        member: leg.member.clone(),
+                    },
+                    machine: Some(leg.machine_name.clone()),
+                }),
+                ..status
+            },
+        }),
+        ChatEvent::OutsidePrompt { .. } | ChatEvent::Receipt { .. } => Some(event),
+        // Only the server writes a person's message, and what a newer core sends may hold
+        // anything.
+        ChatEvent::Message { .. } | ChatEvent::Newer => None,
     }
 }
 
@@ -106,20 +134,30 @@ fn kept_run(event: RunEvent) -> Option<RunEvent> {
     }
 }
 
-// Whether `incoming` was one to store, which it then is.
 async fn append(
     shared: &Shared,
     machine: &MachineId,
-    workspace: &WorkspaceId,
-    chat: &ChatId,
-    incoming: Incoming<'_>,
-) -> Result<bool, Fault> {
+    (workspace, chat): (&WorkspaceId, &ChatId),
+    entry: ChatEntry,
+) -> Result<Stored, Fault> {
     let Some(place) = shared.db.find_workspace(workspace).await? else {
-        return Ok(false);
+        return Ok(Stored::Refused);
     };
-    match place.append_from(machine, chat, &[incoming]).await {
-        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(false),
-        appended => appended.map(|_| true),
+    let Some(leg) = place.leg_on(chat, machine).await? else {
+        return Ok(Stored::Refused);
+    };
+    let Some(event) = kept(entry.event, &leg) else {
+        return Ok(Stored::Dropped);
+    };
+    let incoming = Incoming {
+        core_seq: Some(entry.seq),
+        event: &event,
+        at: shared.now(),
+    };
+    let from = (&leg.member, machine);
+    match place.append_from(from, chat, &[incoming]).await {
+        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
+        appended => appended.map(|_| Stored::Kept(event)),
     }
 }
 
@@ -129,7 +167,7 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{Ada, ada};
-    use crate::db::test_support::{NOW, append, asks, id, make, said};
+    use crate::db::test_support::{NOW, append, asks, core_seq, id, make, said};
     use crate::test_support::{Fixture, member_id};
 
     fn update(workspace: &str, chat: &str, seq: u64, event: ChatEvent) -> ChatUpdate {
@@ -175,8 +213,7 @@ mod tests {
 
         let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
         assert_eq!(events.unwrap().len(), 1);
-        let core_seq = workspace.chat(&id("c-1")).await.unwrap().unwrap().core_seq;
-        assert_eq!(core_seq, 4);
+        assert_eq!(core_seq(workspace, "c-1").await, 4);
         assert_eq!(notices.try_recv().unwrap(), (id("w1"), id("c-1")));
         notices.try_recv().unwrap_err();
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
@@ -237,8 +274,7 @@ mod tests {
         let failed = store(shared, &ada.machine, update("w1", "c-1", 2, said("b"))).await;
 
         failed.unwrap_err();
-        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
-        assert_eq!(chat.core_seq, 1);
+        assert_eq!(core_seq(workspace, "c-1").await, 1);
         // Refused for good, not failed: the link goes on.
         workspace.fill_quota().await;
         store(shared, &ada.machine, update("w1", "c-1", 3, said("c")))
@@ -257,15 +293,16 @@ mod tests {
             event: &event,
             at: NOW,
         };
+        let owner = member_id("m1");
         let elsewhere = workspace
-            .append_from(&id("mc-2"), &chat, &[incoming()])
+            .append_from((&owner, &id("mc-2")), &chat, &[incoming()])
             .await;
         assert_eq!(elsewhere.unwrap_err().code(), &code!("chat.not_found"));
         let unpaired = shared.db.unpair(&ada.asker.account, &ada.machine).await;
         assert!(unpaired.unwrap());
 
         let stored = workspace
-            .append_from(&ada.machine, &chat, &[incoming()])
+            .append_from((&owner, &ada.machine), &chat, &[incoming()])
             .await;
 
         assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));
@@ -351,13 +388,73 @@ mod tests {
         let finished = RunEvent::Finished {
             outcome: Outcome::Completed,
         };
-        assert_eq!(kept(ChatEvent::Newer), None);
-        assert_eq!(kept(run(RunEvent::Newer)), None);
-        assert_eq!(kept(run(done)), None);
-        assert_eq!(kept(run(finished.clone())), Some(run(finished)));
+        let leg = leg();
+        assert_eq!(kept(ChatEvent::Newer, &leg), None);
+        assert_eq!(kept(run(RunEvent::Newer), &leg), None);
+        assert_eq!(kept(run(done), &leg), None);
+        assert_eq!(kept(run(finished.clone()), &leg), Some(run(finished)));
         let outside = ChatEvent::OutsidePrompt {
             text: "Go".to_owned(),
         };
-        assert_eq!(kept(outside.clone()), Some(outside));
+        assert_eq!(kept(outside.clone(), &leg), Some(outside));
+    }
+
+    fn leg() -> Leg {
+        Leg {
+            member: member_id("m5"),
+            machine: id("mc-5"),
+            machine_name: id("Studio"),
+            agent: weacon_protocol::AgentKind::Codex,
+            repo: None,
+            core_seq: 0,
+            detached: false,
+        }
+    }
+
+    #[test]
+    fn a_prompt_and_a_runs_status_are_named_by_the_leg_whatever_the_machine_says_and_no_machine_writes_a_message()
+     {
+        let leg = leg();
+        let forged = |member: &str| AgentRef {
+            kind: weacon_protocol::AgentKind::Claude,
+            owner: AgentOwner::Member {
+                member: member_id(member),
+            },
+            machine: Some(id("Not mine")),
+        };
+        let prompt = |author: Option<&str>| ChatEvent::Prompt {
+            request: id("r-1"),
+            text: "Go".to_owned(),
+            author: author.map(member_id),
+            repo: None,
+            agent: None,
+            task: None,
+        };
+        let status = |agent| ChatEvent::RunStatus {
+            status: RunStatus {
+                run: id("run-1"),
+                state: weacon_protocol::RunState::Running,
+                agent,
+            },
+        };
+        let named = AgentRef {
+            kind: weacon_protocol::AgentKind::Codex,
+            owner: AgentOwner::Member {
+                member: member_id("m5"),
+            },
+            machine: Some(id("Studio")),
+        };
+
+        for author in [None, Some("m1")] {
+            assert_eq!(kept(prompt(author), &leg), Some(prompt(Some("m5"))));
+        }
+        for agent in [None, Some(forged("m1"))] {
+            assert_eq!(kept(status(agent), &leg), Some(status(Some(named.clone()))));
+        }
+        let message = ChatEvent::Message {
+            author: member_id("m1"),
+            text: "Hi".to_owned(),
+        };
+        assert_eq!(kept(message, &leg), None);
     }
 }

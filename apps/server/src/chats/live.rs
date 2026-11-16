@@ -42,8 +42,8 @@ pub(crate) async fn pass(shared: &Shared, machine: &MachineId, mut live: ChatLiv
     }
 }
 
-// The chat's seq when `live` goes on: it runs on `machine`, whose owner still owns it there,
-// and holds no event stored after the one `live` came after.
+// The chat's seq when `live` goes on: `machine` holds a leg of it, whose member still owns it,
+// and the chat holds no event of that leg stored after the one `live` came after.
 async fn placed(
     shared: &Shared,
     machine: &MachineId,
@@ -55,12 +55,10 @@ async fn placed(
     let Some(chat) = place.chat(&live.chat).await? else {
         return Ok(None);
     };
-    let text = matches!(live.update.event, RunEvent::TextDelta { .. });
-    if text && live.after.is_some_and(|after| after < chat.core_seq) {
+    let Some(leg) = place.leg_on(&live.chat, machine).await? else {
         return Ok(None);
-    }
-    Ok(place
-        .runs_on(&live.chat, machine)
-        .await?
-        .then_some(chat.seq))
+    };
+    let text = matches!(live.update.event, RunEvent::TextDelta { .. });
+    let late = text && live.after.is_some_and(|after| after < leg.core_seq);
+    Ok((!late).then_some(chat.seq))
 }

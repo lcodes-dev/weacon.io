@@ -127,8 +127,7 @@ impl Watch {
         } else if let Message::ChatCommand(sent) = message {
             if sent.workspace == *here {
                 let back = Back { id, to: back };
-                let relayed = command::take(member, asker, shared, sent, back).await;
-                relayed.map(|()| None)
+                command::take(member, asker, shared, sent, back).await
             } else {
                 Err(chat_not_found())
             }
@@ -220,7 +219,7 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Capability, ChatState, code};
+    use weacon_protocol::{Capability, code};
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
@@ -397,6 +396,7 @@ mod tests {
         let machine = paired.machine["id"].as_str().unwrap().to_owned();
         let workspace = w1(&fixture).await;
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
+        workspace.legs_took_prompts().await;
         let mut client = feed(
             &server,
             &paired.session,
@@ -422,8 +422,8 @@ mod tests {
         ask(&mut client, 4, prompt("c-1", None)).await;
         assert_eq!(refused(&heard(&mut client).await), ("chat.detached", false));
 
-        let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
-        assert_eq!(chat.state, ChatState::Detached);
+        let leg = workspace.leg(&id("c-1"), &id("m1")).await.unwrap().unwrap();
+        assert!(leg.detached);
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("MARKER"), "{logged}");

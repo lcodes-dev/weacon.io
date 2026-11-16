@@ -542,6 +542,7 @@ mod tests {
         }
 
         let chat = workspace.chat(&id("c-1")).await.unwrap().unwrap();
-        assert_eq!((chat.seq, chat.core_seq), (2, 2));
+        let core_seq = crate::db::test_support::core_seq(&workspace, "c-1").await;
+        assert_eq!((chat.seq, core_seq), (2, 2));
     }
 }

@@ -214,7 +214,7 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
         | ChatEvent::OutsidePrompt { .. }
         | ChatEvent::Receipt { .. }
         | ChatEvent::RunStatus { .. } => {}
-        ChatEvent::Newer => return None,
+        ChatEvent::Message { .. } | ChatEvent::Newer => return None,
     }
     Some(update)
 }

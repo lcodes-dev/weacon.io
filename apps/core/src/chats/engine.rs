@@ -214,7 +214,7 @@ impl<A: Agent> Engine<A> {
         let status = RunStatus {
             run: run.clone(),
             state,
-            agent: None,
+            agent: self.open(key).await?.log.agent_ref(),
         };
         self.commit(key, ChatEvent::RunStatus { status }).await
     }
