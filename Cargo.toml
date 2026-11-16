@@ -28,7 +28,6 @@ schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["raw_value"] }
 sha2 = "0.11.1"
-snow = { version = "0.10.0", default-features = false, features = ["ring-resolver"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "sqlite-bundled"] }
 subtle = "2.6.1"
 tokio = { version = "1.54.1", features = ["io-std", "io-util", "macros", "net", "rt", "signal", "time"] }
@@ -49,7 +48,6 @@ weacon-protocol = { path = "crates/protocol" }
 weacon-testing = { path = "crates/testing" }
 weacon-version = { path = "crates/version" }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }
-x25519-dalek = { version = "2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
 
 [profile.release]
 codegen-units = 1

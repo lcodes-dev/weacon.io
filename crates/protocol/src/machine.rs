@@ -1,7 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
 use crate::{AccountId, App, Capability, MemberId, Secret, WorkspaceId};
 
@@ -15,14 +14,6 @@ token_id!(
     /// or `_`.
     PairingId,
     "not a pairing id"
-);
-
-hex_string!(
-    /// A machine's public X25519 key, the static key of its sealed channels, as 64 lowercase hex
-    /// digits. A browser pins it when the person confirms the pairing.
-    MachineKey,
-    64,
-    "not a machine key"
 );
 
 /// What a machine is called: 1–64 characters, none of them control or bidirectional
@@ -67,7 +58,6 @@ pub enum MachineOs {
 pub struct PairStart {
     pub name: MachineName,
     pub os: MachineOs,
-    pub key: MachineKey,
 }
 
 /// The answer to a [`PairStart`]: the single-use `code` the person enters in the web app, and
@@ -88,13 +78,12 @@ pub struct PairLookup {
     pub code: Secret,
 }
 
-/// A machine waiting to be paired, for the person to check against what its terminal shows.
+/// A machine waiting to be paired, for the person to confirm.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PairPending {
     pub pairing: PairingId,
     pub name: MachineName,
     pub os: MachineOs,
-    pub key: MachineKey,
 }
 
 /// From the web app, signed in: pairs the machine waiting under `code` with the signed-in
@@ -140,7 +129,6 @@ pub struct MachineSummary {
     pub id: MachineId,
     pub name: MachineName,
     pub os: MachineOs,
-    pub key: MachineKey,
     pub paired_at: i64,
     /// The core's build when it last connected; none until it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,13 +179,6 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-
-    fn key() -> MachineKey {
-        let mut bytes = [0; 32];
-        bytes[0] = 0xab;
-        bytes[31] = 0x0f;
-        MachineKey::from_bytes(bytes)
-    }
 
     fn name(name: &str) -> MachineName {
         name.parse().unwrap()
@@ -275,27 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_is_64_lowercase_hex_digits_checked_on_arrival() {
-        let hex = format!("ab{}0f", "0".repeat(60));
-
-        assert_eq!(MachineKey::try_from(hex.clone()), Ok(key()));
-        assert_eq!(key().as_str(), hex);
-        assert_eq!(serde_json::to_value(key()).unwrap(), json!(hex));
-        assert_eq!(
-            serde_json::from_value::<MachineKey>(json!(hex)).unwrap(),
-            key()
-        );
-        for bad in [
-            hex.to_uppercase(),
-            "0".repeat(62),
-            format!("{hex}00"),
-            format!("g{}", "0".repeat(63)),
-            String::new(),
-        ] {
-            assert_eq!(MachineKey::try_from(bad.clone()), Err(bad.clone()));
-            let error = serde_json::from_value::<MachineKey>(json!(bad)).unwrap_err();
-            assert!(error.to_string().contains("not a machine key"), "{bad}");
-        }
+    fn ids_are_checked_on_arrival() {
         let bad = serde_json::from_value::<MachineId>(json!("a b")).unwrap_err();
         assert!(bad.to_string().contains("not a machine id"), "{bad}");
         assert_eq!("a/b".parse::<PairingId>(), Err("not a pairing id"));
@@ -306,9 +267,8 @@ mod tests {
         let start = PairStart {
             name: name("Studio"),
             os: MachineOs::Macos,
-            key: key(),
         };
-        let start_wire = json!({ "name": "Studio", "os": "macos", "key": key().as_str() });
+        let start_wire = json!({ "name": "Studio", "os": "macos" });
         let claimed = PairClaimed::Paired {
             machine: "mc-1".parse().unwrap(),
             owner: "a-1".parse().unwrap(),

@@ -1,6 +1,6 @@
 //! Sign-in terminals between a person's browser and one of their machines: each command goes to
 //! the machine, and each of its updates back to the connection that opened the terminal. What
-//! they carry is sealed between the two ends; nothing here reads, keeps or logs it.
+//! they carry is only passed on; nothing here parses, keeps or logs it.
 
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -239,8 +239,6 @@ mod tests {
     use crate::test_support::socket::{Socket, next, next_envelope, open, pongs, say, send};
     use crate::test_support::{Fixture, Paired, ask, pair_machine};
 
-    const HANDSHAKE: &[u8] = b"MARKER-HANDSHAKE-3e1";
-    const REPLY: &[u8] = b"MARKER-REPLY-77a";
     const TYPED: &[u8] = b"MARKER-TYPED-c90";
     const SHOWN: &[u8] = b"MARKER-SHOWN-5d2";
 
@@ -275,7 +273,8 @@ mod tests {
             workspace,
             TerminalAction::Open {
                 agent: weacon_protocol::AgentKind::Claude,
-                handshake: bytes(HANDSHAKE),
+                cols: 80,
+                rows: 24,
             },
         )
     }
@@ -324,26 +323,21 @@ mod tests {
         code.as_ref().map(Code::as_str)
     }
 
-    // The bytes a relayed command carries, and the account it was stamped with.
-    fn carried(envelope: Envelope) -> (Vec<u8>, String) {
+    // What a relayed command asks, and the account it was stamped with.
+    fn carried(envelope: Envelope) -> (TerminalAction, String) {
         let Message::TerminalCommand(command) = envelope.message else {
             panic!("{envelope:?}");
         };
-        let bytes = match command.action {
-            TerminalAction::Open { handshake, .. } => handshake,
-            TerminalAction::Frame { sealed } => sealed,
-            action @ (TerminalAction::Close | TerminalAction::Newer) => panic!("{action:?}"),
-        };
         let by = command.by.unwrap().account.as_str().to_owned();
-        (bytes.as_slice().to_vec(), by)
+        (command.action, by)
     }
 
-    fn frame(raw: &[u8]) -> Envelope {
-        update(TerminalEvent::Frame { sealed: bytes(raw) })
+    fn output(raw: &[u8]) -> Envelope {
+        update(TerminalEvent::Output { data: bytes(raw) })
     }
 
-    fn frame_update(raw: &[u8]) -> TerminalUpdate {
-        let Message::Terminal(update) = frame(raw).message else {
+    fn output_update(raw: &[u8]) -> TerminalUpdate {
+        let Message::Terminal(update) = output(raw).message else {
             panic!("not an update");
         };
         update
@@ -360,32 +354,30 @@ mod tests {
         let mut core = connect_core(server.address, &paired, &signs_in).await;
         let mut browser = browser(server.address, &paired).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
-        let accepted = update(TerminalEvent::Accepted {
-            handshake: bytes(REPLY),
-        });
+        let Message::TerminalCommand(open) = opening(&machine, "w1").message else {
+            panic!("not a command");
+        };
 
         send(&mut browser, opening(&machine, "w1")).await;
         let opened = carried(next_envelope(&mut core).await);
-        send(&mut core, accepted.clone()).await;
+        send(&mut core, update(TerminalEvent::Opened)).await;
         let answered = next_envelope(&mut browser).await;
-        let typed = TerminalAction::Frame {
-            sealed: bytes(TYPED),
-        };
-        send(&mut browser, command(&machine, "w1", typed)).await;
-        let (typed, _) = carried(next_envelope(&mut core).await);
-        send(&mut core, frame(SHOWN)).await;
+        let typed = TerminalAction::Input { data: bytes(TYPED) };
+        send(&mut browser, command(&machine, "w1", typed.clone())).await;
+        let (passed, _) = carried(next_envelope(&mut core).await);
+        send(&mut core, output(SHOWN)).await;
         let shown = next_envelope(&mut browser).await;
         send(&mut core, update(TerminalEvent::Closed { code: None })).await;
         let ended = next_envelope(&mut browser).await;
 
         let account = session["account"].as_str().unwrap().to_owned();
-        assert_eq!(opened, (HANDSHAKE.to_vec(), account));
-        assert_eq!(answered, accepted);
-        assert_eq!(typed, TYPED);
-        assert_eq!(shown, frame(SHOWN));
+        assert_eq!(opened, (open.action, account));
+        assert_eq!(answered, update(TerminalEvent::Opened));
+        assert_eq!(passed, typed);
+        assert_eq!(shown, output(SHOWN));
         assert_eq!(closed_code(&ended), None);
         let logged = format!("{:?}", fixture.records.lock().unwrap());
-        for marker in [HANDSHAKE, REPLY, TYPED, SHOWN] {
+        for marker in [TYPED, SHOWN] {
             let text = String::from_utf8_lossy(marker);
             let hex = weacon_protocol::to_hex(marker);
             assert!(
@@ -454,23 +446,12 @@ mod tests {
             update(TerminalEvent::Closed { code: None }),
         )
         .await;
-        send(
-            &mut core,
-            update(TerminalEvent::Frame {
-                sealed: bytes(SHOWN),
-            }),
-        )
-        .await;
+        send(&mut core, output(SHOWN)).await;
         let first_heard = next_envelope(&mut opener).await;
 
         assert_eq!(closed_code(&reopened), Some("terminal.refused"));
         assert_eq!(closed_code(&not_its_own), Some("terminal.unknown"));
-        assert_eq!(
-            first_heard,
-            update(TerminalEvent::Frame {
-                sealed: bytes(SHOWN)
-            })
-        );
+        assert_eq!(first_heard, output(SHOWN));
     }
 
     #[tokio::test]
@@ -515,9 +496,7 @@ mod tests {
         next_envelope(&mut core).await;
         send(&mut core, update(TerminalEvent::Closed { code: None })).await;
         let ended = next_envelope(&mut browser).await;
-        let typed = TerminalAction::Frame {
-            sealed: bytes(TYPED),
-        };
+        let typed = TerminalAction::Input { data: bytes(TYPED) };
         send(&mut browser, command(&machine, "w1", typed)).await;
         let late = next_envelope(&mut browser).await;
 
@@ -560,8 +539,8 @@ mod tests {
         let key = (machine.clone(), open.terminal.clone());
         shared.terminals.route(key, &open, &asker, &back).unwrap();
 
-        delivered(shared, &machine, frame_update(SHOWN));
-        delivered(shared, &machine, frame_update(TYPED));
+        delivered(shared, &machine, output_update(SHOWN));
+        delivered(shared, &machine, output_update(TYPED));
         let patience = crate::test_support::PATIENCE;
         let first = tokio::time::timeout(patience, answers.recv())
             .await
@@ -571,7 +550,7 @@ mod tests {
             .unwrap();
         let (first, then) = (first.unwrap(), then.unwrap());
 
-        assert_eq!(first, frame(SHOWN));
+        assert_eq!(first, output(SHOWN));
         assert_eq!(closed_code(&then), Some("terminal.lagged"));
         assert!(shared.terminals.lock().is_empty());
     }

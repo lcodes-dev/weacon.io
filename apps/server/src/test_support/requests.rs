@@ -7,8 +7,8 @@ use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use weacon_protocol::{
-    AccountSignInFinish, AccountSignInStart, ChallengeId, MachineId, MachineKey, MachineOs,
-    PairClaim, PairConfirm, PairLookup, PairStart, PairStarted, SignInStarted,
+    AccountSignInFinish, AccountSignInStart, ChallengeId, MachineId, MachineOs, PairClaim,
+    PairConfirm, PairLookup, PairStart, PairStarted, SignInStarted,
 };
 
 use super::{Fixture, PATIENCE};
@@ -139,7 +139,6 @@ pub(crate) fn pairing_start(os: MachineOs) -> String {
     body(&PairStart {
         name: "Studio".parse().unwrap(),
         os,
-        key: MachineKey::from_bytes([0xab; 32]),
     })
 }
 

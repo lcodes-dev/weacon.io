@@ -10,7 +10,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{MachineName, PairClaim, PairClaimed, PairStart, PairStarted, code};
 
 use crate::app::{App, state_unavailable};
-use crate::machine::{self, Key, Paired};
+use crate::machine::{self, Paired};
 use crate::platform;
 use crate::server::{Failure, Server};
 
@@ -22,8 +22,7 @@ const CLAIMS: u32 = 330;
 const FAILED_CLAIMS: u32 = 15;
 
 /// Pairs this machine with the server at `url`, named `name`, trusting the certificates in
-/// the PEM file `pin` in place of the public ones; prints the code to confirm and the key's
-/// fingerprint to `out`.
+/// the PEM file `pin` in place of the public ones; prints the code to confirm to `out`.
 ///
 /// # Errors
 /// When the pin can't be read, the server can't be reached or refuses, nobody confirms in
@@ -44,13 +43,7 @@ pub(crate) fn run(
         name: name.unwrap_or_else(|| platform::MACHINE_NAME.to_owned()),
         pinned,
     };
-    pair(
-        state_dir,
-        &asked,
-        Key::from_random(random_key()?),
-        CLAIM_EVERY,
-        out,
-    )
+    pair(state_dir, &asked, CLAIM_EVERY, out)
 }
 
 /// What `weacon pair` was asked.
@@ -64,7 +57,6 @@ struct Asked<'a> {
 fn pair(
     state_dir: &Path,
     asked: &Asked<'_>,
-    key: Key,
     every: Duration,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
@@ -72,14 +64,12 @@ fn pair(
     let start = PairStart {
         name: MachineName::try_from(asked.name.clone()).map_err(|_| bad_name())?,
         os: platform::MACHINE_OS,
-        key: key.public(),
     };
     let started: PairStarted = server.post("/api/machines/pair", &start).map_err(failed)?;
     writeln!(
         out,
-        "Enter this code in Weacon to pair this machine: {}\nCheck that Weacon shows this key: {}\nWaiting for you to confirm…",
-        started.code.expose(),
-        key.fingerprint()
+        "Enter this code in Weacon to pair this machine: {}\nWaiting for you to confirm…",
+        started.code.expose()
     )
     .map_err(|error| not_printed().because(error))?;
     let claim = PairClaim {
@@ -100,7 +90,6 @@ fn pair(
         machine,
         owner,
         token: token.into_inner(),
-        key,
     };
     machine::write(state_dir, &paired)?;
     writeln!(
@@ -129,13 +118,6 @@ fn claimed(server: &Server, claim: &PairClaim, every: Duration) -> Result<PairCl
         sleep(every);
     }
     Err(expired())
-}
-
-fn random_key() -> Result<[u8; 32], Fault> {
-    let mut bytes = [0; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|_| Fault::new(code!("random.failed"), "The core couldn't get random bytes"))?;
-    Ok(bytes)
 }
 
 fn failed(failure: Failure) -> Fault {
@@ -193,11 +175,6 @@ mod tests {
         self,
         tls::{Tls, answer, nowhere, read_request},
     };
-
-    #[test]
-    fn each_key_is_new() {
-        assert_ne!(random_key().unwrap(), random_key().unwrap());
-    }
 
     fn started() -> PairStarted {
         PairStarted {
@@ -257,13 +234,7 @@ mod tests {
                 pinned: Some(pem),
             };
             let mut out = Vec::new();
-            let done = pair(
-                &dir,
-                &asked,
-                Key::from_random([7; 32]),
-                Duration::ZERO,
-                &mut out,
-            );
+            let done = pair(&dir, &asked, Duration::ZERO, &mut out);
             (done, out)
         });
         let finished = Notify::new();
@@ -287,7 +258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_core_shows_its_code_and_key_and_keeps_the_pairing_once_confirmed() {
+    async fn the_core_shows_its_code_and_keeps_the_pairing_once_confirmed() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         let answers = vec![
             ("201 Created", json(&started())),
@@ -303,11 +274,9 @@ mod tests {
 
         done.unwrap();
         let kept = machine::read(&dir).unwrap().unwrap();
-        let key = Key::from_random([7; 32]);
         let start = PairStart {
             name: MachineName::try_from("Studio".to_owned()).unwrap(),
             os: platform::MACHINE_OS,
-            key: key.public(),
         };
         let claim = r#"{"pairing":"p-1","secret":"s3cret"}"#;
         assert_eq!(
@@ -319,7 +288,6 @@ mod tests {
             ]
         );
         assert!(printed.contains("ABCD-EFGH"), "{printed}");
-        assert!(printed.contains(&key.fingerprint()), "{printed}");
         assert_eq!(
             kept,
             Paired {
@@ -328,7 +296,6 @@ mod tests {
                 machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
                 owner: AccountId::try_from("a-1".to_owned()).unwrap(),
                 token: "t0ken".to_owned(),
-                key,
             }
         );
     }

@@ -60,9 +60,9 @@ pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use hex::to_hex;
 pub use log::Level;
 pub use machine::{
-    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineShares, MachineSummary,
-    PairClaim, PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted,
-    PairingId, SharedMachine, SharedMachineList,
+    MachineId, MachineList, MachineName, MachineOs, MachineShares, MachineSummary, PairClaim,
+    PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
+    SharedMachine, SharedMachineList,
 };
 pub use map::{MapAnswer, MapQuery, MapQueryKind};
 pub use mcp::{FlowArgs, MapArgs, McpCall, ProposeArgs, SearchArgs, SymbolArgs};
@@ -99,8 +99,7 @@ pub use task::{
 };
 pub use team::{Invitation, InvitationOffer, MemberAction, MemberCommand};
 pub use terminal::{
-    Bytes, NOISE_MAX, SEALED_MAX, TERMINAL_NOISE, TerminalAction, TerminalCommand, TerminalEvent,
-    TerminalId, TerminalInput, TerminalOutput, TerminalUpdate,
+    Bytes, TerminalAction, TerminalCommand, TerminalEvent, TerminalId, TerminalUpdate,
 };
 pub use workspace::{
     Asker, MemberId, MemberList, MemberSummary, WorkspaceChange, WorkspaceCreate, WorkspaceId,
@@ -154,8 +153,6 @@ mod tests {
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
-        generator.subschema_for::<TerminalInput>();
-        generator.subschema_for::<TerminalOutput>();
         generator.subschema_for::<WorkspaceCreate>();
         generator.subschema_for::<WorkspaceSummary>();
         generator.subschema_for::<WorkspaceList>();

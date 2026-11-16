@@ -36,14 +36,10 @@ pub(crate) fn run(app: &App, out: &mut impl Write) -> Result<(), Fault> {
     Ok(())
 }
 
-/// The paired server and the key's fingerprint, which a person checks against a browser.
+/// The paired server.
 fn pairing(log: &Logger, read: Result<Option<Paired>, Fault>) -> String {
     match read {
-        Ok(Some(paired)) => format!(
-            "Paired with: {}\nMachine key: {}\n",
-            paired.server,
-            paired.key.fingerprint()
-        ),
+        Ok(Some(paired)) => format!("Paired with: {}\n", paired.server),
         Ok(None) => String::new(),
         Err(fault) => {
             log.warn("pairing unreadable", &[("err", Field::error(&fault))]);
@@ -111,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn prints_the_pairings_server_and_key_but_never_its_token() {
+    fn prints_the_pairings_server_but_never_its_token() {
         let dir = TempDir::new().unwrap();
         let paired = Paired {
             server: "https://weacon.example.com".to_owned(),
@@ -119,9 +115,7 @@ mod tests {
             machine: weacon_protocol::MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: weacon_protocol::AccountId::try_from("a-1".to_owned()).unwrap(),
             token: "t0ken-marker".to_owned(),
-            key: machine::Key::from_random([7; 32]),
         };
-        let fingerprint = paired.key.fingerprint();
         machine::write(&dir, &paired).unwrap();
         let mut out = Vec::new();
 
@@ -129,9 +123,7 @@ mod tests {
 
         let printed = String::from_utf8(out).unwrap();
         assert!(
-            printed.contains(&format!(
-                "\nPaired with: https://weacon.example.com\nMachine key: {fingerprint}\n"
-            )),
+            printed.contains("\nPaired with: https://weacon.example.com\n"),
             "{printed}"
         );
         assert!(!printed.contains("t0ken-marker"));

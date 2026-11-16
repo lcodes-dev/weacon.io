@@ -8,7 +8,6 @@ const machine: MachineSummary = {
   id: "mc-1",
   name: "Studio",
   os: "linux",
-  key: "k",
   paired_at: 1,
 };
 

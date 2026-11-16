@@ -9,7 +9,6 @@ import { type LinkSocket, terminalLink } from "../terminal/link.ts";
 import { TerminalView } from "../terminal/terminal-view.tsx";
 import type { MachineSocket } from "./ask-machine.ts";
 import { isOutdated } from "./core.ts";
-import type { Pins } from "./pins.ts";
 import { change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
@@ -34,7 +33,6 @@ type Props = {
   machine: MachineSummary;
   socket: MachineSocket & LinkSocket;
   later: Later;
-  pins: Pins;
   /** Whether the server relays sign-in terminals. */
   relays: boolean;
   /** Whether other people are in the workspace, once its members are known. */
@@ -45,7 +43,7 @@ type Props = {
  * What one of the person's machines keeps for the open workspace, asked of its core: what the
  * workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, socket, later, pins, relays, team }: Props) {
+export function MachineSettingsView({ machine, socket, later, relays, team }: Props) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
   const [signingIn, setSigningIn] = useState<AgentKind>();
   const changing = useAsk();
@@ -77,7 +75,6 @@ export function MachineSettingsView({ machine, socket, later, pins, relays, team
             machine={machine}
             workspace={socket.workspace}
             agent={signingIn}
-            pins={pins}
             {...terminalLink(socket)}
             onClosed={() => void settings.load()}
           />

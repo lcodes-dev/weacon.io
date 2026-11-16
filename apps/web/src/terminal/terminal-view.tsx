@@ -2,7 +2,6 @@ import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef, useState } from "react";
 
-import type { Pins } from "../machines/pins.ts";
 import type { AgentKind, MachineSummary, TerminalCommand, TerminalUpdate, WorkspaceId } from "../protocol.ts";
 import { SignInTerminal, type TerminalState } from "./sign-in-terminal.ts";
 import { adoptStyles } from "./styles.ts";
@@ -13,7 +12,6 @@ export type TerminalProps = {
   machine: MachineSummary;
   workspace: WorkspaceId;
   agent: AgentKind;
-  pins: Pins;
   /** `false` when the connection can't take it, which ends the terminal. */
   send: (command: TerminalCommand) => boolean;
   /** Hands each terminal update to `handle` until the returned function is called. */
@@ -25,15 +23,15 @@ export type TerminalProps = {
 };
 
 /**
- * A vendor's sign-in on the person's machine, sealed between this page and the machine. A new
- * machine key, workspace, agent or pins opens a new terminal; new callbacks don't.
+ * A vendor's sign-in on the person's machine. A new machine, workspace or agent opens a new
+ * terminal; new callbacks don't.
  */
 export function TerminalView(props: TerminalProps) {
-  const { machine, workspace, agent, pins } = props;
+  const { machine, workspace, agent } = props;
   const latest = useRef(props);
   latest.current = props;
   const screen = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<TerminalState>({ kind: "checking" });
+  const [state, setState] = useState<TerminalState>({ kind: "connecting" });
   useEffect(() => {
     const host = screen.current;
     if (host === null) {
@@ -47,7 +45,6 @@ export function TerminalView(props: TerminalProps) {
       machine,
       workspace,
       agent,
-      pins,
       send: (command) => latest.current.send(command),
       size: SIZE,
       screen: {
@@ -61,10 +58,10 @@ export function TerminalView(props: TerminalProps) {
       },
     });
     const encoder = new TextEncoder();
-    const typing = terminal.onData((data) => void opened.input(encoder.encode(data)));
-    const unsubscribe = latest.current.subscribe((update) => void opened.receive(update));
+    const typing = terminal.onData((data) => opened.input(encoder.encode(data)));
+    const unsubscribe = latest.current.subscribe((update) => opened.receive(update));
     const unwatch = latest.current.lost(() => opened.lost());
-    void opened.start();
+    opened.start();
     return () => {
       mounted = false;
       unsubscribe();
@@ -74,20 +71,18 @@ export function TerminalView(props: TerminalProps) {
       terminal.dispose();
       unstyle();
     };
-  }, [machine.id, machine.key, workspace, agent, pins]);
+  }, [machine.id, workspace, agent]);
   const note = noteOf(state);
   return (
     <div className="sign-in-terminal">
       {note !== undefined && <p className="muted">{note}</p>}
-      <div ref={screen} hidden={state.kind === "checking"} />
+      <div ref={screen} />
     </div>
   );
 }
 
 function noteOf(state: TerminalState): string | undefined {
   switch (state.kind) {
-    case "checking":
-      return "Checking the machine's key.";
     case "connecting":
       return "Connecting to the machine.";
     case "open":
@@ -98,16 +93,10 @@ function noteOf(state: TerminalState): string | undefined {
       switch (state.problem) {
         case undefined:
           return "The terminal closed.";
-        case "unpinned":
-          return "Confirm this machine's key in Settings › Machines first.";
         case "offline":
           return "The connection to the server dropped. Try again once it's back.";
-        case "key_changed":
-          return "This machine's key changed. Pair it again.";
-        case "key_unchecked":
-          return "This machine's key couldn't be checked, so the terminal didn't open.";
         case "broken":
-          return "The terminal closed because something didn't check out.";
+          return "The terminal closed because what the machine sent couldn't be read.";
         case "machine.offline":
           return "The machine isn't connected, or its core can't open sign-in terminals.";
         case "terminal.busy":

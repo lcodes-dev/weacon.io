@@ -1,6 +1,5 @@
 import type { End } from "../connection.ts";
 import { isId } from "../ids.ts";
-import { isMachineKey } from "../machines/fingerprint.ts";
 import type {
   AccountSignedIn,
   AccountSignInFinish,
@@ -331,13 +330,10 @@ const isHit = (value: unknown): boolean => {
 const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);
 const isEmpty = (value: unknown): value is undefined => value === undefined;
 const isPending = (value: unknown): value is PairPending =>
-  fields(value, ["pairing", "name", "os", "key"]) &&
-  isId((value as PairPending).pairing) &&
-  isMachineKey((value as PairPending).key);
+  fields(value, ["pairing", "name", "os"]) && isId((value as PairPending).pairing);
 const isMachine = (value: unknown): value is MachineSummary =>
-  fields(value, ["id", "name", "os", "key"]) &&
+  fields(value, ["id", "name", "os"]) &&
   isId((value as MachineSummary).id) &&
-  isMachineKey((value as MachineSummary).key) &&
   typeof (value as MachineSummary).paired_at === "number" &&
   isOffers((value as { missing?: unknown }).missing) &&
   ["undefined", "boolean"].includes(typeof (value as { connected?: unknown }).connected);

@@ -8,26 +8,20 @@ import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
-import { ConfirmKey } from "./confirm-key.tsx";
 import { isOutdated } from "./core.ts";
-import { fingerprint } from "./fingerprint.ts";
-import { keep } from "./keep.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
 import { OutsideSessions } from "./outside-sessions.tsx";
-import type { Pins } from "./pins.ts";
 
 /** The signed-in account's machines: pairing one by its code, the list, and unpairing. */
 export function Machines({
   api,
-  pins,
   later,
   socket,
   opened,
   team,
 }: {
   api: Api;
-  pins: Pins;
   later: Later;
   /** The open workspace's socket, for its settings on each machine; none while no workspace is open. */
   socket: WorkspaceSocket | undefined;
@@ -66,7 +60,7 @@ export function Machines({
       {list !== undefined && list.length > 0 && (
         <ul aria-label="Machines">
           {list.map((machine) => (
-            <Machine key={machine.id} api={api} pins={pins} later={later} socket={socket} team={team} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
+            <Machine key={machine.id} api={api} later={later} socket={socket} team={team} machine={machine} justPaired={machine.id === justPaired} unpaired={() => void load()} />
           ))}
         </ul>
       )}
@@ -75,7 +69,6 @@ export function Machines({
       {stalled && <p role="alert">The machine didn't connect. Check that weacon pair is still running there.</p>}
       <Pair
         api={api}
-        pins={pins}
         paired={(id) => {
           setStalled(false);
           setWaiting(id);
@@ -88,7 +81,6 @@ export function Machines({
 
 function Machine({
   api,
-  pins,
   later,
   socket,
   team,
@@ -97,7 +89,6 @@ function Machine({
   unpaired,
 }: {
   api: Api;
-  pins: Pins;
   later: Later;
   socket: WorkspaceSocket | undefined;
   team: boolean | undefined;
@@ -139,11 +130,7 @@ function Machine({
             onClick={() =>
               void ask(
                 () => api.unpair(machine.id),
-                () => {
-                  // The key goes with the pairing; a failure to forget it leaves a key no one shows.
-                  void pins.unpin(machine.id).catch(() => {});
-                  unpaired();
-                },
+                unpaired,
               )
             }
           >
@@ -159,14 +146,13 @@ function Machine({
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
-      <ConfirmKey pins={pins} machine={machine} />
       {socket !== undefined && settable && (
         <button type="button" aria-label={`${machine.name} settings`} aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide settings" : "Settings"}
         </button>
       )}
       {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} pins={pins} relays={relays} team={team} />
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} relays={relays} team={team} />
       )}
       {socket !== undefined && readable && (
         <>
@@ -180,9 +166,9 @@ function Machine({
   );
 }
 
-type Found = { pending: PairPending; code: string; fingerprint: string };
+type Found = { pending: PairPending; code: string };
 
-function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineId): void }) {
+function Pair({ api, paired }: { api: Api; paired(id: MachineId): void }) {
   // The code outlives Cancel, so a mistyped look-up can be fixed rather than typed again.
   const [code, setCode] = useState("");
   const [found, setFound] = useState<Found>();
@@ -192,7 +178,6 @@ function Pair({ api, pins, paired }: { api: Api; pins: Pins; paired(id: MachineI
   return (
     <ConfirmPairing
       api={api}
-      pins={pins}
       found={found}
       paired={paired}
       close={(done) => {
@@ -217,20 +202,14 @@ function LookUp({
   found(found: Found): void;
 }) {
   const looking = useAsk();
-  const [unchecked, setUnchecked] = useState(false);
   return (
     <form
       aria-label="Pair a machine"
       onSubmit={(event) => {
         event.preventDefault();
-        setUnchecked(false);
         void looking.ask(
           () => api.lookUpPairing(code),
-          (pending) =>
-            void fingerprint(pending.key).then(
-              (shown) => found({ pending, code, fingerprint: shown }),
-              () => setUnchecked(true),
-            ),
+          (pending) => found({ pending, code }),
         );
       }}
     >
@@ -243,42 +222,23 @@ function LookUp({
         Look up
       </button>
       {looking.problem !== undefined && <p role="alert">{looking.problem}</p>}
-      {unchecked && <p role="alert">This browser can't check a machine's key on this page. Open Weacon over HTTPS.</p>}
     </form>
   );
 }
 
 function ConfirmPairing({
   api,
-  pins,
   found,
   paired,
   close,
 }: {
   api: Api;
-  pins: Pins;
   found: Found;
   paired(id: MachineId): void;
   close(done: boolean): void;
 }) {
   const { pending } = found;
   const confirming = useAsk();
-  const [saving, setSaving] = useState(false);
-  const [local, setLocal] = useState<string>();
-  // The server has paired the machine by now: whatever happens here, the list shows it.
-  const confirmed = async (machine: MachineSummary) => {
-    setSaving(true);
-    const problem = await keep(pins, machine, pending);
-    setSaving(false);
-    paired(machine.id);
-    if (problem === undefined) {
-      close(true);
-    } else {
-      setLocal(problem);
-    }
-  };
-  const busy = confirming.busy || saving;
-  const alert = confirming.problem ?? local;
   return (
     <section aria-label="Pair a machine">
       <h3>Pair {pending.name}?</h3>
@@ -287,34 +247,26 @@ function ConfirmPairing({
         <dd>{pending.name}</dd>
         <dt>System</dt>
         <dd>{osName(pending.os)}</dd>
-        <dt>Fingerprint</dt>
-        <dd>{found.fingerprint}</dd>
       </dl>
-      <p>Check that the machine's terminal shows the same fingerprint.</p>
-      {local === undefined ? (
-        <>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              void confirming.ask(
-                () => api.confirmPairing({ pairing: pending.pairing, code: found.code }),
-                (machine) => void confirmed(machine),
-              )
-            }
-          >
-            Confirm
-          </button>{" "}
-          <button type="button" disabled={busy} onClick={() => close(false)}>
-            Cancel
-          </button>
-        </>
-      ) : (
-        <button type="button" onClick={() => close(true)}>
-          Close
-        </button>
-      )}
-      {alert !== undefined && <p role="alert">{alert}</p>}
+      <button
+        type="button"
+        disabled={confirming.busy}
+        onClick={() =>
+          void confirming.ask(
+            () => api.confirmPairing({ pairing: pending.pairing, code: found.code }),
+            (machine) => {
+              paired(machine.id);
+              close(true);
+            },
+          )
+        }
+      >
+        Confirm
+      </button>{" "}
+      <button type="button" disabled={confirming.busy} onClick={() => close(false)}>
+        Cancel
+      </button>
+      {confirming.problem !== undefined && <p role="alert">{confirming.problem}</p>}
     </section>
   );
 }

@@ -6,17 +6,9 @@ use weacon_protocol::{AccountId, App, Capability, MachineId, MachineSummary};
 use super::paired;
 use crate::db::{Db, failed};
 
-/// A machine's id, name, system, key and when it was paired, and its core's build and offers
+/// A machine's id, name, system and when it was paired, and its core's build and offers
 /// as JSON, as stored.
-type Row = (
-    String,
-    String,
-    String,
-    String,
-    i64,
-    Option<String>,
-    Option<String>,
-);
+type Row = (String, String, String, i64, Option<String>, Option<String>);
 
 impl Db {
     /// The machines paired with `account`, oldest first, each with the `offered` capabilities
@@ -27,7 +19,7 @@ impl Db {
         offered: &[Capability],
     ) -> Result<Vec<MachineSummary>, Fault> {
         sqlx::query_as::<_, Row>(
-            "SELECT machine_id, name, os, machine_key, paired_at, core_build, core_offers
+            "SELECT machine_id, name, os, paired_at, core_build, core_offers
              FROM machines WHERE account_id = ? ORDER BY paired_at, machine_id",
         )
         .bind(account.as_str())
@@ -59,7 +51,7 @@ impl Db {
 }
 
 fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fault> {
-    let (id, name, os, key, paired_at, core, offers) = row;
+    let (id, name, os, paired_at, core, offers) = row;
     // A value this build can't read shows the machine as not connected yet, not the list as broken.
     let core: Option<App> = core.and_then(|core| serde_json::from_str(&core).ok());
     let offers: Option<Vec<Capability>> =
@@ -75,7 +67,7 @@ fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fa
     Ok(MachineSummary {
         core,
         missing,
-        ..paired(id, name, &os, key, paired_at)?
+        ..paired(id, name, &os, paired_at)?
     })
 }
 

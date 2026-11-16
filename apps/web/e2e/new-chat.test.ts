@@ -8,7 +8,7 @@ import { serveFeed } from "./feed.ts";
 import { waitFor } from "./harness.ts";
 import { type Served, serve, signIn } from "./server.ts";
 
-const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, key: "ab".repeat(32), paired_at: 1 };
+const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, paired_at: 1 };
 const SETTINGS: MachineSettings = {
   access: "ask_first",
   team: false,

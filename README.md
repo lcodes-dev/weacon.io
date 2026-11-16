@@ -12,7 +12,7 @@ With Weacon you can:
 - keep tasks and docs next to the chats, and search them all with ⌘K (Ctrl+K on Linux and Windows);
 - accept or reject the changes agents propose to docs and tasks;
 - pair your machines and choose what each workspace's agents may do on them;
-- sign your agents in from the web app, in a terminal sealed end to end, or with the vendor's own command line;
+- sign your agents in from the web app, in a terminal, or with the vendor's own command line;
 - ask the code map where things are in a repository, from the command line or from an agent.
 
 Weacon is open source, under the MIT licence.
@@ -41,7 +41,7 @@ Weacon is open source, under the MIT licence.
 
 ## What Weacon promises
 
-- **Your agent sign-ins never touch Weacon.** Agents run as the vendors' own programs. You sign in with the vendor's own tool. Weacon only reads whether you are signed in, and never stores, logs or forwards a credential. The sign-in terminal in the web app is sealed between your browser and your core, but it trusts whoever runs the server, which serves the web app's code; if you don't, sign in over SSH on the machine instead.
+- **Your agent sign-ins never touch Weacon.** Agents run as the vendors' own programs. You sign in with the vendor's own tool. Weacon only reads whether you are signed in, and never stores, logs or forwards a credential. The sign-in terminal in the web app passes through your server, which never stores or logs it; if you don't trust whoever runs the server, sign in over SSH on the machine instead.
 - **Workspaces never mix.** An agent only runs with a sign-in from its own workspace. Nothing one workspace sees reveals another.
 - **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies. What it serves to its own agents listens on 127.0.0.1 only.
 - **Agents propose, people decide.** Changes that agents make to docs and tasks arrive as proposals that a person accepts.
@@ -55,8 +55,8 @@ Weacon is in early development. This is what works on `main` today:
 | --- | --- | --- |
 | Accounts | Email sign-in with a code; the first account owns the server | Sending the codes by email: nothing sends mail yet, so the server prints each one to its log |
 | Workspaces | A personal workspace for each account; new workspaces; inviting people by email from the web app and removing them; members the operator adds with `weacon-server add-member` | Sending invitations by email: the server prints each one to its log |
-| Machines | Pairing with a key fingerprint check; online status; per-workspace agent access; a note when a machine's core is too old for the server | |
-| Agent sign-in | The sealed sign-in terminal in a machine's settings; `weacon login` in a terminal | |
+| Machines | Pairing with a code; online status; per-workspace agent access; a note when a machine's core is too old for the server | |
+| Agent sign-in | The sign-in terminal in a machine's settings; `weacon login` in a terminal | |
 | Chats | **New chat** starts a chat with a message and, if you want, an open task; every member of the workspace writes in every chat; a message that mentions your own agent calls it on your own machine, with what the others wrote since as quotes; the server keeps the messages and what each agent says | Changing a chat's task after it starts; the agent's text as it is written, proven with a real agent |
 | Agents | Claude Code and Codex | |
 | Terminals | **Open terminal** in a chat, once the machine's owner allows it there; `weacon resume` to carry on a chat's agent in a terminal | |
@@ -147,7 +147,7 @@ export WEACON_STATE_DIR="$PWD/.dev/state"
 target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop"
 ```
 
-It prints a code and a key fingerprint, then waits. In the web app, open **Settings**, enter the code under **Pair a machine** and choose **Look up**. Check that the fingerprint matches the terminal's, then choose **Confirm**. The terminal says `Paired.`
+It prints a code, then waits. In the web app, open **Settings**, enter the code under **Pair a machine** and choose **Look up**. Check the machine's name and system, then choose **Confirm**. The terminal says `Paired.`
 
 Within 30 seconds the daemon connects, and the machine's row shows its version. Check from the terminal:
 
@@ -161,7 +161,7 @@ Open your workspace, then **Settings**, then the machine's **Settings**. There y
 
 - **Agent access**: what the workspace's agents may do on this machine: off, read only, ask first or full.
 - **Sharing**: whether every member of the workspace may call agents on this machine (see "A shared machine" below). Off until you turn it on.
-- **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal sealed between the browser and your core. The server only relays bytes it can't read. But the server also serves the web app's code, so this trusts whoever runs the server; if you don't, sign in over SSH on the machine instead, with the command below.
+- **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal in the web app. It passes through the server, which never stores or logs it; if you don't trust whoever runs the server, sign in over SSH on the machine instead, with the command below.
 
 Error reports: a core or server started with `OTEL_EXPORTER_OTLP_ENDPOINT` set sends each error's code and type, never content, to that OpenTelemetry endpoint; without it nothing is sent.
 

@@ -22,7 +22,6 @@ rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-snow.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tokio-rustls.workspace = true
@@ -37,7 +36,6 @@ weacon-observability.workspace = true
 weacon-protocol.workspace = true
 weacon-version.workspace = true
 webpki-roots.workspace = true
-x25519-dalek.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

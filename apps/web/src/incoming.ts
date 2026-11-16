@@ -103,17 +103,19 @@ const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
   terminal: (fields) => text(fields, "terminal") && text(fields, "workspace") && isTerminalEvent(fields["event"]),
 };
 
-// A terminal event of a kind this app knows, with its fields; a newer kind would be read as a frame.
+// A terminal event of a kind this app knows, with its fields.
 function isTerminalEvent(value: unknown): boolean {
   const event = record(value);
   if (event === undefined) {
     return false;
   }
   switch (event["kind"]) {
-    case "accepted":
-      return text(event, "handshake");
-    case "frame":
-      return text(event, "sealed");
+    case "opened":
+      return true;
+    case "output":
+      return text(event, "data");
+    case "ended":
+      return text(event, "sign_in");
     case "closed":
       return event["code"] === undefined || text(event, "code");
     default:

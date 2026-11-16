@@ -6,7 +6,6 @@ import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
 import { later } from "../connection.ts";
 import { Machines } from "../machines/machines.tsx";
-import { Pins, browserStore } from "../machines/pins.ts";
 import { ME } from "../me.ts";
 import { MembersSection, isTeam } from "../members/members-section.tsx";
 import { useMembers } from "../members/use-names.ts";
@@ -23,9 +22,6 @@ type Screen =
   | { name: "failed"; code: Code }
   | { name: "signed out" }
   | { name: "signed in"; account: AccountSignedIn };
-
-// Keys pinned in this browser, opened on first use.
-const PINS = new Pins(browserStore());
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
 export function Shell({ fetch }: { fetch: Fetch }) {
@@ -111,7 +107,7 @@ function SignedIn({
     ? (open: OpenWorkspace | undefined) => (
         <Settings me={ME} account={{ email: account.email, signOut, signingOut: signingOut.busy }}>
           {open !== undefined && <WorkspaceSettings api={api} open={open} opened={opened} />}
-          {open === undefined && <Machines api={api} pins={PINS} later={later} socket={undefined} opened={opened} team={undefined} />}
+          {open === undefined && <Machines api={api} later={later} socket={undefined} opened={opened} team={undefined} />}
         </Settings>
       )
     : undefined;
@@ -131,7 +127,7 @@ function WorkspaceSettings({ api, open, opened }: { api: Api; open: OpenWorkspac
   return (
     <>
       <MembersSection api={api} open={open} members={members} />
-      <Machines api={api} pins={PINS} later={later} socket={open.socket} opened={opened} team={team} />
+      <Machines api={api} later={later} socket={open.socket} opened={opened} team={team} />
     </>
   );
 }
