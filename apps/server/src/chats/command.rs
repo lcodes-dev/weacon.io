@@ -1,7 +1,7 @@
 //! A member's command to a chat: checked here, then relayed to the chat's machine, whose
 //! answer is the command's receipt.
 
-use weacon_observability::Fault;
+use weacon_observability::{Fault, Field};
 use weacon_protocol::{Asker, ChatAction, ChatCommand, ChatTask};
 
 use super::admit::{Admitted, admit, detached};
@@ -68,7 +68,15 @@ async fn start(
         workspace.forget_chat(chat.id).await?;
         return Err(fault);
     }
-    workspace.chat_made(chat.id, &member.id).await?;
+    // Sent, so its machine's answer is its receipt, whatever the list shows.
+    if let Err(fault) = workspace.chat_made(chat.id, &member.id).await {
+        let fields = [
+            ("workspace_id", workspace.id().as_str().into()),
+            ("chat_id", chat.id.as_str().into()),
+            ("err", Field::error(&fault)),
+        ];
+        shared.log.warn("chat not made", &fields);
+    }
     shared.wake_feeds(workspace.id());
     Ok(())
 }
@@ -288,6 +296,24 @@ mod tests {
         assert_eq!(refused.unwrap_err().code().as_str(), "task.not_found");
         assert!(sent(&mut attached).is_empty());
         assert_eq!(ada.member.workspace.chat(&id("c-1")).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_first_prompt_sent_whose_chat_cant_be_listed_still_waits_for_its_machine() {
+        let fixture = Fixture::new().await;
+        let shared = &fixture.shared;
+        let ada = ada(&fixture).await;
+        ada.member.workspace.break_changes().await;
+        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+
+        let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
+        let (taken, mut answers) = asked(&ada, shared, first).await;
+
+        taken.unwrap();
+        assert_eq!(sent(&mut attached).len(), 2);
+        answers.try_recv().unwrap_err();
+        let logged = crate::test_support::messages(&fixture.records);
+        assert!(logged.contains(&"chat not made"), "{logged:?}");
     }
 
     #[tokio::test]

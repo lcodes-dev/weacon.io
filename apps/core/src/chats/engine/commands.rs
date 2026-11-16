@@ -126,8 +126,14 @@ impl<A: Agent> Engine<A> {
             text,
         };
         self.runs.enqueue(key, agent, queued, self.now()).await?;
-        self.commit_receipt(key, &request, Outcome::Accepted)
-            .await?;
+        if let Err(fault) = self.commit_receipt(key, &request, Outcome::Accepted).await {
+            // Refused, so it never runs.
+            let taken_back = |record: &mut crate::runs::Record| {
+                record.queue.retain(|queued| queued.request != request);
+            };
+            self.runs.update(key, taken_back).await?;
+            return Err(fault);
+        }
         self.advance(key).await
     }
 
@@ -430,6 +436,25 @@ mod tests {
 
         assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
         assert_eq!(soon(on.agent.told.recv()).await, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_whose_receipt_fails_leaves_the_queue() {
+        let (_bench, mut engine) = parts();
+        engine.open(&key()).await.unwrap().log.jam();
+
+        let refused = engine
+            .prompt(
+                &key(),
+                crate::chats::test_support::request("r-1"),
+                "Hi".to_owned(),
+                AgentKind::Claude,
+            )
+            .await;
+
+        assert_eq!(refused.unwrap_err().code().as_str(), "chat.log_not_written");
+        let queue = engine.runs.of(&key()).map(|record| record.queue.len());
+        assert_eq!(queue, Some(0));
     }
 
     #[tokio::test(start_paused = true)]

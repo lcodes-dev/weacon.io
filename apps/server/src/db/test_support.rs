@@ -263,6 +263,16 @@ impl Workspace {
         .unwrap();
     }
 
+    /// Makes every change this workspace records fail in the database, as a full disk would.
+    pub(crate) async fn break_changes(&self) {
+        sqlx::query(
+            "CREATE TRIGGER broken_changes BEFORE INSERT ON changes BEGIN SELECT RAISE(ABORT, 'broken'); END",
+        )
+        .execute(&self.db.writer)
+        .await
+        .unwrap();
+    }
+
     /// Makes every chat event this workspace stores fail in the database, as a full disk would.
     pub(crate) async fn break_chat_events(&self) {
         sqlx::query(
