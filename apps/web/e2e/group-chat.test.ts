@@ -66,6 +66,8 @@ test("two people talk in one chat, and each calls only their own agent, which re
   // Ada starts a chat with a plain message: no agent is asked for, and none starts.
   await ada.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "New chat" }).click();
   const form = ada.getByRole("region", { name: "New chat" });
+  // With her machine picked the box opens on her agent's mention; writing over it leaves a plain message.
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
   await box(form.page()).fill("Shall we fix the parser?");
   await form.getByRole("button", { name: "Send" }).click();
   await ada.getByRole("heading", { name: "Shall we fix the parser?" }).waitFor();
