@@ -11,8 +11,8 @@ pub struct WorktreeQuery {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub query: WorktreeQueryKind,
-    /// The machine whose agent's work in the chat is meant, as a client tells the server; a core
-    /// answers for its own.
+    /// The machine whose agent's work in the chat is meant, which a client names for the server
+    /// to send this on to; a core answers for its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "MachineId")]
     pub machine: Option<MachineId>,
@@ -43,8 +43,8 @@ pub struct WorktreeCommand {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub action: WorktreeAction,
-    /// The machine whose agent's work in the chat is meant, as a client tells the server; a core
-    /// answers for its own.
+    /// The machine whose agent's work in the chat is meant, which a client names for the server
+    /// to send this on to; a core answers for its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "MachineId")]
     pub machine: Option<MachineId>,

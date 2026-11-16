@@ -219,7 +219,7 @@ async fn prompt(
     from: Sender<'_>,
     chat: &Chat,
     machine: Option<MachineId>,
-    mut command: ChatCommand,
+    command: ChatCommand,
     back: Back<'_>,
 ) -> Result<(), Fault> {
     let member = from.member;
@@ -242,16 +242,27 @@ async fn prompt(
     };
     let called = workspace.call_leg(&id, &member.id, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
-    if let ChatAction::Prompt { quotes, .. } = &mut command.action {
-        let stretch = (leg.quoted_seq, chat.seq);
-        *quotes = quotes::between(workspace, &id, &leg.machine, stretch).await?;
-    }
-    let follow = link::follow(workspace.id(), &id, leg.core_seq);
-    if let Err(fault) = relay::command(from.shared, &leg.machine, command, follow, back) {
+    if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
         workspace.uncall_leg(&id, &leg, &member.id).await?;
         return Err(fault);
     }
     workspace.quoted(&id, &leg.machine, chat.seq).await
+}
+
+// Relays the prompt `command` to `leg`, with what `chat`'s others said since its last.
+async fn relay_to(
+    Sender { shared, member, .. }: Sender<'_>,
+    (chat, leg): (&Chat, &Leg),
+    mut command: ChatCommand,
+    back: Back<'_>,
+) -> Result<(), Fault> {
+    let workspace = &member.workspace;
+    if let ChatAction::Prompt { quotes, .. } = &mut command.action {
+        let stretch = (leg.quoted_seq, chat.seq);
+        *quotes = quotes::between(workspace, &command.chat, &leg.machine, stretch).await?;
+    }
+    let follow = link::follow(workspace.id(), &command.chat, leg.core_seq);
+    relay::command(shared, &leg.machine, command, follow, back)
 }
 
 // The machine a prompt to chat `id` names, which every one must, and what it is called: the
@@ -1187,8 +1198,19 @@ mod tests {
             .unwrap();
         two.ask(ada, allow("r-7", "run-1-l1")).await.unwrap();
         let more = two.ask(grace, go("r-8", ada)).await;
+        // What it sends from then on is its owner's own agent's.
+        two.up(ada, 4, status(RunState::Waiting)).await;
+        let stored = events(&ada.member.workspace, "c-1").await;
+        let Some(ChatEvent::RunStatus { status }) = stored.last() else {
+            panic!("no status: {stored:?}");
+        };
+        let owner = status.agent.clone().map(|agent| agent.owner);
+        let hers = weacon_protocol::AgentOwner::Member {
+            member: ada.member.id.clone(),
+        };
+        assert_eq!(owner, Some(hers));
 
-        assert_eq!(code(by_caller), "machine.not_found");
+        assert_eq!(code(by_caller), "chat.not_owner");
         assert_eq!(code(more), "machine.not_found");
         let owner = ada.asker.account.clone();
         let ended = [

@@ -24,7 +24,7 @@ const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => str
   detached: ({ gone }) => `Your agent's machine no longer has this chat, so ${gone}.`,
   full: ({ subject, unsent }) => `There's no room left, so ${subject} ${unsent}.`,
   unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
-  working: ({ subject, unsent }) => `Another person's agent is working in this chat, so ${subject} ${unsent}. Try again once it's done.`,
+  working: ({ subject, unsent }) => `Another agent is working in this chat, so ${subject} ${unsent}. Try again once it's done.`,
   lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
   unsure: ({ subject, unsure }) => `No answer came. ${capital(subject)} ${unsure}.`,
 };

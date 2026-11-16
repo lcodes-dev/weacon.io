@@ -353,9 +353,12 @@ impl Workspace {
         member: &MemberId,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
-        self.uncall_in(&mut transaction, chat, member).await?;
-        self.lend_in(&mut transaction, chat, &leg.machine, &leg.member)
-            .await?;
+        let called = (&leg.machine, member);
+        // A turn someone else took since isn't given back, nor the leg they called.
+        if self.uncall_in(&mut transaction, chat, called).await? {
+            self.lend_in(&mut transaction, chat, &leg.machine, &leg.member)
+                .await?;
+        }
         transaction.commit().await.map_err(failed)
     }
 
@@ -382,30 +385,35 @@ impl Workspace {
 
     /// [`Self::uncall_in`], on a connection of its own.
     #[cfg(test)]
-    pub(crate) async fn uncall(&self, chat: &ChatId, member: &MemberId) -> Result<(), Fault> {
+    pub(crate) async fn uncall(
+        &self,
+        chat: &ChatId,
+        called: (&MachineId, &MemberId),
+    ) -> Result<bool, Fault> {
         let mut writer = self.db.writer.acquire().await.map_err(failed)?;
-        self.uncall_in(&mut writer, chat, member).await
+        self.uncall_in(&mut writer, chat, called).await
     }
 
-    /// Gives back the turn `member`'s call took in `chat`, as once its run reports or when it
-    /// never reached its machine.
+    /// Gives back the turn `member`'s call of the leg on `machine` took in `chat`, as once its
+    /// run reports or when it never reached its machine; whether that call held the turn.
     pub(super) async fn uncall_in(
         &self,
         connection: &mut SqliteConnection,
         chat: &ChatId,
-        member: &MemberId,
-    ) -> Result<(), Fault> {
-        sqlx::query(
+        (machine, member): (&MachineId, &MemberId),
+    ) -> Result<bool, Fault> {
+        let given = sqlx::query(
             "UPDATE chats SET called_by = NULL, called_on = NULL, called_at = NULL
-             WHERE workspace_id = ? AND chat_id = ? AND called_by = ?",
+             WHERE workspace_id = ? AND chat_id = ? AND called_by = ? AND called_on = ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(member.as_str())
+        .bind(machine.as_str())
         .execute(connection)
         .await
         .map_err(failed)?;
-        Ok(())
+        Ok(given.rows_affected() > 0)
     }
 
     /// Detaches `leg` of `chat`, whose machine no longer serves it, and tells the feed.
@@ -556,7 +564,7 @@ mod tests {
         let (codex, stray) = (on(&desk, AgentKind::Codex), on(&adas, AgentKind::Codex));
         let called = one.call_leg(&chat, &bo, &codex, NOW).await;
         called.unwrap().unwrap();
-        one.uncall(&chat, &bo).await.unwrap();
+        one.uncall(&chat, (&desk, &bo)).await.unwrap();
         let stolen = one.call_leg(&chat, &bo, &stray, NOW).await;
 
         assert_eq!(code(&stolen.unwrap_err()), "machine.not_found");
@@ -575,7 +583,7 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        let stored = one.append_from(&desk, &chat, &[first]).await;
+        let stored = one.append_from((&desk, &bo), &chat, &[first]).await;
         assert_eq!(stored.unwrap(), 1);
         let claude = on(&desk, AgentKind::Claude);
         let again = one.call_leg(&chat, &bo, &claude, NOW).await;
@@ -616,7 +624,9 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        one.append_from(&desk, &chat, &[first]).await.unwrap();
+        one.append_from((&desk, &ada), &chat, &[first])
+            .await
+            .unwrap();
         let hers = one.leg(&chat, &desk).await.unwrap().unwrap();
         // His call of the same leg waits for hers, as anyone's would.
         let held = one.call_leg(&chat, &bo, &on_desk, at(1)).await;
@@ -772,10 +782,12 @@ mod tests {
         let theirs = (&hers, &member_id("m2"));
         assert!(two.call(&chat, theirs, NOW).await.unwrap());
         assert_eq!(called(&one).await, Some(("m1".to_owned(), NOW + 1)));
-        one.uncall(&chat, &bo).await.unwrap();
+        // Only the call that holds the turn gives it back: not his, nor hers of another leg.
+        assert!(!one.uncall(&chat, bos).await.unwrap());
+        assert!(!one.uncall(&chat, (&his, &ada)).await.unwrap());
         assert!(!one.call(&chat, bos, NOW + 2).await.unwrap());
         assert!(one.call(&chat, bos, NOW + 1 + CALL_SECS).await.unwrap());
-        one.uncall(&chat, &bo).await.unwrap();
+        assert!(one.uncall(&chat, bos).await.unwrap());
         assert!(one.call(&chat, adas, NOW + 3 + CALL_SECS).await.unwrap());
         // Her run at work ends the hold; an earlier run of hers going idle doesn't.
         let reports = [
@@ -813,7 +825,7 @@ mod tests {
         make(&one, "c-1", "m1", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
         one.pair_for("m3", "mc-3").await;
-        let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
+        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
         let (name, hers, his) = (id("Bo's desk"), id("mc-1"), id("mc-3"));
         let leg = NewLeg {
             machine_id: &his,
@@ -830,11 +842,11 @@ mod tests {
         };
 
         let stored = [
-            one.append_from(&hers, &chat, &[at(1), at(2)]).await,
-            one.append_from(&his, &chat, &[at(1)]).await,
+            one.append_from((&hers, &ada), &chat, &[at(1), at(2)]).await,
+            one.append_from((&his, &bo), &chat, &[at(1)]).await,
             // A replay from one machine is skipped, whatever the other sent since.
-            one.append_from(&hers, &chat, &[at(2), at(3)]).await,
-            one.append_from(&his, &chat, &[at(1), at(2)]).await,
+            one.append_from((&hers, &ada), &chat, &[at(2), at(3)]).await,
+            one.append_from((&his, &bo), &chat, &[at(1), at(2)]).await,
         ];
 
         let seqs: Vec<_> = stored.into_iter().map(Result::unwrap).collect();
@@ -872,20 +884,29 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        one.append_from(&hers, &chat, &[at(1)]).await.unwrap();
+        one.append_from((&hers, &ada), &chat, &[at(1)])
+            .await
+            .unwrap();
         let adas = one.leg(&chat, &hers).await.unwrap().unwrap();
         let later = NOW + 2 * CALL_SECS;
 
         let his = one.call_leg(&chat, &bo, &on_hers, later).await.unwrap();
         assert_eq!(his, Some(adas.clone()));
-        one.append_from(&hers, &chat, &[at(2)]).await.unwrap();
+        one.append_from((&hers, &bo), &chat, &[at(2)])
+            .await
+            .unwrap();
+        // Named as hers, it is refused: the leg works for him now.
+        let stale = one.append_from((&hers, &ada), &chat, &[at(3)]).await;
+        assert_eq!(code(&stale.unwrap_err()), "chat.leg_called");
         // Ada's call while his holds the turn leaves the leg his.
         let held = one.call_leg(&chat, &ada, &on_hers, later).await.unwrap();
         assert_eq!(held, None);
         let lent = one.leg_on(&chat, &hers).await.unwrap().unwrap();
         assert_eq!((lent.member, lent.number), (bo.clone(), adas.number));
         one.uncall_leg(&chat, &adas, &bo).await.unwrap();
-        one.append_from(&hers, &chat, &[at(3)]).await.unwrap();
+        one.append_from((&hers, &ada), &chat, &[at(3)])
+            .await
+            .unwrap();
 
         assert_eq!(senders(&one).await, ["m1", "m3", "m1"]);
         assert_eq!(called(&one).await, None);

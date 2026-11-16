@@ -638,8 +638,8 @@ export type DiffQuery = {
   by?: Asker;
   chat: ChatId;
   /**
-   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
-   * answers for its own.
+   * The machine whose agent's work in the chat is meant, which a client names for the server
+   * to send this on to; a core answers for its own.
    */
   machine?: MachineId;
   query: DiffQueryKind;
@@ -2285,8 +2285,8 @@ export type WorktreeCommand = {
   by?: Asker;
   chat: ChatId;
   /**
-   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
-   * answers for its own.
+   * The machine whose agent's work in the chat is meant, which a client names for the server
+   * to send this on to; a core answers for its own.
    */
   machine?: MachineId;
   request: RequestId;
@@ -2304,8 +2304,8 @@ export type WorktreeQuery = {
   by?: Asker;
   chat: ChatId;
   /**
-   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
-   * answers for its own.
+   * The machine whose agent's work in the chat is meant, which a client names for the server
+   * to send this on to; a core answers for its own.
    */
   machine?: MachineId;
   query: WorktreeQueryKind;

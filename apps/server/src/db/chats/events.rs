@@ -150,8 +150,8 @@ impl Workspace {
                 RunState::Starting | RunState::Running | RunState::Waiting
             ))
         };
-        if let Some((member, _)) = from.filter(|_| rows.iter().any(reports)) {
-            self.uncall_in(transaction, chat, member).await?;
+        if let Some((member, machine)) = from.filter(|_| rows.iter().any(reports)) {
+            self.uncall_in(transaction, chat, (machine, member)).await?;
         }
         self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;

@@ -18,7 +18,7 @@ pub(in crate::db) const SHARER: &str = "(SELECT o.member_id FROM shared_machines
 impl Db {
     /// Keeps `workspaces`, those of them its owner is a member of, as all that `machine` is
     /// shared with; gives the workspaces it is newly shared with or no longer, whose feeds
-    /// hear so.
+    /// hear so. Where it is shared no longer, its agents work for its owner from then on.
     pub(crate) async fn set_shares(
         &self,
         machine: &MachineId,
@@ -49,19 +49,22 @@ impl Db {
         let changed = both.filter(|one| before.contains(one) != after.contains(one));
         let changed: Vec<WorkspaceId> = changed.cloned().collect();
         for workspace in &changed {
-            self.told_in(&mut transaction, workspace, machine).await?;
+            let ended = !after.contains(workspace);
+            self.changed_in(&mut transaction, (workspace, machine), ended)
+                .await?;
         }
         transaction.commit().await.map_err(failed)?;
         Ok(changed)
     }
 
     // Records for `workspace`'s feeds that `machine`'s sharing with it changed, as its owner's
-    // doing while they are a member there.
-    async fn told_in(
+    // doing while they are a member there; once it `ended`, the machine's legs there are its
+    // owner's alone.
+    async fn changed_in(
         &self,
         transaction: &mut SqliteConnection,
-        workspace: &WorkspaceId,
-        machine: &MachineId,
+        (workspace, machine): (&WorkspaceId, &MachineId),
+        ended: bool,
     ) -> Result<(), Fault> {
         let owner = sqlx::query_scalar::<_, String>(
             "SELECT m.member_id FROM members AS m
@@ -76,6 +79,17 @@ impl Db {
         let Some(owner) = owner else {
             return Ok(());
         };
+        if ended {
+            sqlx::query(
+                "UPDATE chat_legs SET member_id = ? WHERE workspace_id = ? AND machine_id = ?",
+            )
+            .bind(&owner)
+            .bind(workspace.as_str())
+            .bind(machine.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        }
         let place = Workspace {
             db: self.clone(),
             id: workspace.clone(),
@@ -253,9 +267,10 @@ mod tests {
         let told = one.changes_since(0, 99).await.unwrap();
         let news: Vec<_> = told.iter().skip(before).map(|one| &one.change).collect();
         assert_eq!(news, [&weacon_protocol::WorkspaceChange::MachinesChanged]);
-        // What she called there still reports, and is its owner's to call from here on.
+        // What she called there still reports, as its owner's agent from here on.
         assert!(!detached(&one, "c-1", &desk).await);
-        assert!(one.leg_on(&chat, &desk).await.unwrap().is_some());
+        let left = one.leg_on(&chat, &desk).await.unwrap().unwrap();
+        assert_eq!((left.member, left.shared_by), (member_id("m3"), None));
         let all = (begun.unwrap(), same, ended);
         assert_eq!(all, (vec![id("w1")], vec![], vec![id("w1")]));
     }

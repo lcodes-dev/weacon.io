@@ -181,7 +181,7 @@ CREATE TABLE legs_by_machine (
     FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
 ) STRICT;
 
-INSERT OR IGNORE INTO legs_by_machine (rowid, workspace_id, chat_id, machine_id, member_id,
+INSERT INTO legs_by_machine (rowid, workspace_id, chat_id, machine_id, member_id,
     machine_name, agent, repo, core_seq, detached, quoted_seq)
 SELECT rowid, workspace_id, chat_id, machine_id, member_id, machine_name, agent, repo, core_seq,
     detached, quoted_seq

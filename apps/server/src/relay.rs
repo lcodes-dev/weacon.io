@@ -1532,16 +1532,7 @@ mod tests {
         db.set_shares(&machine, &[workspace_id("w1")])
             .await
             .unwrap();
-        let hers = Making {
-            chat: "c-1",
-            owner: "m5",
-            title: "Fix the build",
-            machine: machine.as_str(),
-            at: 1,
-            task: None,
-        };
-        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
-        make_as(&w1, &hers).await.unwrap();
+        chat_on(&fixture, "c-1", &machine).await;
 
         let diff_of = || on(&machine, diff_query("c-1", "w1"));
         send(&mut grace, envelope(41, diff_of())).await;
@@ -1560,15 +1551,18 @@ mod tests {
         let Message::WorktreeQuery(state) = state.message else {
             panic!("{state:?}");
         };
-        assert_eq!(diff.by.unwrap().account, account);
-        assert_eq!(state.by.unwrap().account, account);
-        // The worktree is its machine's owner's to change; the agent's changes are both's to
-        // read, on the machine each names.
+        let asked = [diff.by, state.by].map(|by| by.map(|by| by.account));
+        assert_eq!(asked, [Some(account.clone()), Some(account.clone())]);
+        // The worktree is its machine's owner's to change; the agent's changes both read.
         assert_eq!(error_of(&changed), (43, "machine.not_found", false));
         let Message::DiffQuery(owners) = owners.message else {
             panic!("{owners:?}");
         };
         assert_ne!(owners.by.unwrap().account, account);
+        // Once sharing ends, they are its owner's alone to read.
+        db.set_shares(&machine, &[]).await.unwrap();
+        let ended = answer_to(&mut grace, 46, diff_of()).await;
+        assert_eq!(error_of(&ended), (46, "machine.not_found", false));
     }
 
     #[tokio::test]

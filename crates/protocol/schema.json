@@ -1708,7 +1708,7 @@
           "$ref": "#/$defs/ChatId"
         },
         "machine": {
-          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
           "$ref": "#/$defs/MachineId"
         },
         "query": {
@@ -5622,7 +5622,7 @@
           "$ref": "#/$defs/ChatId"
         },
         "machine": {
-          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
           "$ref": "#/$defs/MachineId"
         },
         "request": {
@@ -5651,7 +5651,7 @@
           "$ref": "#/$defs/ChatId"
         },
         "machine": {
-          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "description": "The machine whose agent's work in the chat is meant, which a client names for the server\nto send this on to; a core answers for its own.",
           "$ref": "#/$defs/MachineId"
         },
         "query": {

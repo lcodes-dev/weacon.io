@@ -174,22 +174,27 @@ async fn append(
     let Some(place) = shared.db.find_workspace(workspace).await? else {
         return Ok(Stored::Refused);
     };
-    let Some(leg) = place.leg_on(chat, machine).await? else {
-        return Ok(Stored::Refused);
-    };
-    let Some(event) = kept(entry.event, &leg) else {
-        return Ok(Stored::Dropped);
-    };
-    let incoming = Incoming {
-        core_seq: Some(entry.seq),
-        event: &event,
-        at: shared.now(),
-    };
-    match place.append_from(machine, chat, &[incoming]).await {
-        Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
-        appended => appended.map(|_| Stored::Kept {
-            turned: turns(&event),
-        }),
+    loop {
+        let Some(leg) = place.leg_on(chat, machine).await? else {
+            return Ok(Stored::Refused);
+        };
+        let Some(event) = kept(entry.event.clone(), &leg) else {
+            return Ok(Stored::Dropped);
+        };
+        let incoming = Incoming {
+            core_seq: Some(entry.seq),
+            event: &event,
+            at: shared.now(),
+        };
+        let from = (machine, &leg.member);
+        return match place.append_from(from, chat, &[incoming]).await {
+            // Called by someone else since it was read: named again, as theirs.
+            Err(fault) if *fault.code() == code!("chat.leg_called") => continue,
+            Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
+            appended => appended.map(|_| Stored::Kept {
+                turned: turns(&event),
+            }),
+        };
     }
 }
 
@@ -311,15 +316,16 @@ mod tests {
             event: &event,
             at: NOW,
         };
+        let owner = member_id("m1");
         let elsewhere = workspace
-            .append_from(&id("mc-2"), &chat, &[incoming()])
+            .append_from((&id("mc-2"), &owner), &chat, &[incoming()])
             .await;
         assert_eq!(elsewhere.unwrap_err().code(), &code!("chat.not_found"));
         let unpaired = shared.db.unpair(&ada.asker.account, &ada.machine).await;
         assert!(unpaired.unwrap());
 
         let stored = workspace
-            .append_from(&ada.machine, &chat, &[incoming()])
+            .append_from((&ada.machine, &owner), &chat, &[incoming()])
             .await;
 
         assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));

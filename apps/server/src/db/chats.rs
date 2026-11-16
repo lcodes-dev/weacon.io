@@ -168,20 +168,26 @@ impl Workspace {
         self.append(transaction, chat, None, events).await
     }
 
-    /// [`Self::append`] for events `machine` sent, as those of whom its leg of `chat` works
-    /// for, stored only while it holds that leg and still serves them, checked in the
-    /// transaction that stores them; otherwise `chat.not_found`.
+    /// [`Self::append`] for events `machine` sent as those of `member`, whom its leg of `chat`
+    /// works for, stored only while it holds that leg and still serves it, checked in the
+    /// transaction that stores them: otherwise `chat.not_found`, or `chat.leg_called` when the
+    /// leg works for someone else by now.
     pub(crate) async fn append_from(
         &self,
-        machine: &weacon_protocol::MachineId,
+        (machine, member): (&weacon_protocol::MachineId, &MemberId),
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
         let mut transaction = self.db.write().await?;
         let held = self.leg_on_in(&mut transaction, chat, machine).await?;
-        let held = held.ok_or_else(chat_not_found)?;
-        let from = Some((&held.member, machine));
-        self.append(transaction, chat, from, events).await
+        if held.ok_or_else(chat_not_found)?.member != *member {
+            return Err(Fault::new(
+                code!("chat.leg_called"),
+                "The chat's agent there works for someone else now",
+            ));
+        }
+        self.append(transaction, chat, Some((member, machine)), events)
+            .await
     }
 
     /// [`Self::append`] for events sent by the machine of the leg that works for `member`,

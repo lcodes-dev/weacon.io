@@ -105,7 +105,7 @@ test("how a command ended is said once for every subject", () => {
     "The answer wasn't taken.",
     "The machine is offline, so the answer wasn't sent. Try again once it's back.",
     "Your agent's machine no longer has this chat, so it takes no answers.",
-    "Another person's agent is working in this chat, so the answer wasn't sent. Try again once it's done.",
+    "Another agent is working in this chat, so the answer wasn't sent. Try again once it's done.",
     "The connection closed. The answer may not have been sent.",
     "No answer came. The answer may not have been sent.",
   ]);
@@ -125,7 +125,7 @@ test("a full workspace and a core that can't do a command each end it as their o
   all.take({ id: 9, type: "receipt", request: "r-4", state: "failed", code: "message.unsupported" });
   all.take({ id: 9, type: "receipt", request: "r-5", state: "failed", code: "chat.agent_conflict" });
   assert.deepEqual(await Promise.all([full, unsupported, failed, other]), ["full", "unsupported", "unsupported", "refused"]);
-  // Another person's agent on a turn refuses a call, which can go again once it is done.
+  // Another agent on a turn refuses a call, which can go again once it is done.
   assert.equal(await working, "working");
   const about = { subject: "the message", refused: "wasn't sent", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes none" };
   assert.equal(settledText("full", about), "There's no room left, so the message wasn't sent.");
