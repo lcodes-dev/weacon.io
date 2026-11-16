@@ -348,23 +348,21 @@ mod tests {
         fixture.pinging();
         let server = fixture.run().await;
         let (paired, mut client) = connected(server.address, &fixture).await;
+        let path = format!(
+            "DELETE /api/machines/{}",
+            paired.machine["id"].as_str().unwrap()
+        );
         // The client reads on, so it answers every ping until then.
-        let unpair = async {
-            let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
-            let account = session["account"].as_str().unwrap().to_owned();
-            let account = AccountId::try_from(account).unwrap();
-            fixture
-                .shared
-                .db
-                .unpair(&account, &paired.machine_id())
-                .await
-        };
+        let unpair = ask(server.address, &path, &paired.proof, "");
 
-        let (unpaired, said) = tokio::join!(unpair, next(&mut client));
+        let ((unpaired, _), said) = tokio::join!(unpair, next(&mut client));
+        let ended = ends(&mut client).await;
+        let again = open(server.address, CONNECT_PATH, &paired.token).await;
 
-        assert!(unpaired.unwrap());
+        assert_eq!(unpaired, "http/1.1 204 no content");
         assert_eq!(said, refusal(code!("machine.unpaired")));
-        assert!(ends(&mut client).await);
+        assert!(ended);
+        assert_eq!(upgrade_status(again), 401);
     }
 
     #[tokio::test]

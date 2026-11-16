@@ -1,6 +1,5 @@
 /// Chats, the events their machines report, the prompts that wait for their owners and the
-/// commands their owners sent them, and the feed's changes to them. A workspace counts the
-/// bytes its chats' events take.
+/// commands their owners sent them, and the feed's changes to them. Nothing reads `chat_bytes`.
 pub(crate) const CHATS: &str = "
 ALTER TABLE workspaces ADD COLUMN chat_bytes INTEGER NOT NULL DEFAULT 0;
 

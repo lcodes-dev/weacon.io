@@ -92,7 +92,7 @@ fn written(text: &str) -> Result<(), Fault> {
 fn takes_words(state: ChatState) -> Result<(), Fault> {
     match state {
         ChatState::Open => Ok(()),
-        ChatState::Full | ChatState::Newer => Err(crate::db::chat_quota_full()),
+        ChatState::Full | ChatState::Newer => Err(crate::db::chat_full()),
     }
 }
 
@@ -297,7 +297,7 @@ mod tests {
         let full = chat(ChatState::Full);
 
         for action in [prompt("Go", None), say("Hi"), ChatAction::Interrupt] {
-            assert_eq!(refused(Some(full.clone()), "m1", action), "chat.quota_full");
+            assert_eq!(refused(Some(full.clone()), "m1", action), "chat.full");
         }
         assert_eq!(
             refused(None, "m1", prompt(" \n ", Some("mc-1"))),

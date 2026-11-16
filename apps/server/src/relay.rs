@@ -301,7 +301,6 @@ impl Relay {
         back: &mpsc::Sender<Envelope>,
     ) -> Result<(), Refusal> {
         let mut waiting = self.lock();
-        waiting.retain(|_, waiter| !waiter.back.is_closed());
         let theirs = waiting
             .values()
             .filter(|waiter| waiter.back.same_channel(back))
@@ -1089,20 +1088,16 @@ mod tests {
             asker: &asker,
             workspace: &w1,
         };
-        let ((one, one_answers), (two, _two_answers)) = (mpsc::channel(1), mpsc::channel(4));
-        let three = mpsc::channel(4).0;
+        let ((one, _one_answers), (two, _two_answers)) = (mpsc::channel(1), mpsc::channel(4));
         let to = |id| envelope(id, query(&machine, "w1"));
 
         let mut codes = Vec::new();
-        for (id, back) in [(1, &one), (2, &one), (3, &two), (4, &two), (5, &three)] {
+        for (id, back) in [(1, &one), (2, &one), (3, &two), (4, &two)] {
             codes.push(code_of(forward(&fixture.shared, &ask, to(id), back).await));
         }
-        drop(one_answers);
-        // An asker that left no longer holds its place.
-        codes.push(code_of(forward(&fixture.shared, &ask, to(6), &three).await));
 
         let busy = Some("relay.busy".to_owned());
-        assert_eq!(codes, [None, busy, None, None, None, None]);
+        assert_eq!(codes, [None, busy, None, None]);
         assert_eq!(fixture.shared.relay.lock().len(), 3);
     }
 

@@ -22,7 +22,7 @@ const SETTLED_TEXT: Record<Exclude<Settled, "accepted">, (about: Subject) => str
   refused: ({ subject, refused }) => `${capital(subject)} ${refused}.`,
   offline: ({ subject, unsent }) => `The machine is offline, so ${subject} ${unsent}. Try again once it's back.`,
   detached: ({ gone }) => `Your machine no longer has this chat, so ${gone}.`,
-  full: ({ subject, unsent }) => `This workspace is full, so ${subject} ${unsent}.`,
+  full: ({ subject, unsent }) => `There's no room left, so ${subject} ${unsent}.`,
   unsupported: ({ subject, refused }) => `The machine's core can't do this, so ${subject} ${refused}.`,
   working: ({ subject, unsent }) => `Another person's agent is working in this chat, so ${subject} ${unsent}. Try again once it's done.`,
   lost: ({ subject, unsure }) => `The connection closed. ${capital(subject)} ${unsure}.`,
@@ -50,7 +50,7 @@ const SETTLED = new Map<string, Settled>([
 const REFUSALS = new Map<string, Settled>([
   ["machine.offline", "offline"],
   ["chat.detached", "detached"],
-  ["chat.quota_full", "full"],
+  ["chat.full", "full"],
   ["store.full", "full"],
   ["message.unsupported", "unsupported"],
   ["chat.agent_working", "working"],

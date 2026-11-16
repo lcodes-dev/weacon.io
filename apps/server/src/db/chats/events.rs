@@ -28,7 +28,7 @@ impl Workspace {
     /// replays and are skipped.
     /// Events that would leave more than [`WAITING_MAX`] prompts waiting make an open chat
     /// `full`, which the feed hears, and are `chat.too_many_waiting`; every later event of a
-    /// full chat is `chat.quota_full`, with none stored. An event over [`EVENT_MAX`] is
+    /// full chat is `chat.full`, with none stored. An event over [`EVENT_MAX`] is
     /// `chat.event_too_large`.
     pub(super) async fn append(
         &self,
@@ -50,9 +50,9 @@ impl Workspace {
         .await
         .map_err(failed)?
         .ok_or_else(chat_not_found)?;
-        // Once one event didn't fit, none after it is stored, so the log has no hole.
+        // Once one event was refused, none after it is stored, so the log has no hole.
         if state == "full" {
-            return Err(chat_quota_full());
+            return Err(chat_full());
         }
         let (rows, seq, core_seq) = numbered(events, seq, core_seq)?;
         let runs = self.folded(&mut transaction, chat, &rows).await?;
@@ -368,11 +368,8 @@ pub(crate) fn turns(event: &ChatEvent) -> bool {
     ) || matches!(event, ChatEvent::Receipt { receipt } if receipt.outcome != Outcome::Accepted)
 }
 
-pub(crate) fn chat_quota_full() -> Fault {
-    Fault::new(
-        code!("chat.quota_full"),
-        "The workspace has no room left for chats",
-    )
+pub(crate) fn chat_full() -> Fault {
+    Fault::new(code!("chat.full"), "The chat is full")
 }
 
 #[cfg(test)]
@@ -494,7 +491,7 @@ mod tests {
 
         let refused = append(&one, "c-1", &[(Some(1), said("a"))]).await;
 
-        assert_eq!(code(&refused.unwrap_err()), "chat.quota_full");
+        assert_eq!(code(&refused.unwrap_err()), "chat.full");
         let chat = one.chat(&id("c-1")).await.unwrap().unwrap();
         assert_eq!(
             (chat.state, chat.seq, core_seq(&one, "c-1").await),

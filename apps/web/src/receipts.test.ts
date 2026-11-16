@@ -121,7 +121,7 @@ test("a full workspace and a core that can't do a command each end it as their o
   const working = all.wait("r-6", 7);
 
   all.take({ id: 7, type: "error", code: "chat.agent_working", retryable: false });
-  all.take({ id: 2, type: "error", code: "chat.quota_full", retryable: false });
+  all.take({ id: 2, type: "error", code: "chat.full", retryable: false });
   all.take({ id: 3, type: "error", code: "store.full", retryable: false });
   all.take({ id: 4, type: "error", code: "message.unsupported", retryable: false });
   all.take({ id: 9, type: "receipt", request: "r-4", state: "failed", code: "message.unsupported" });
@@ -130,6 +130,6 @@ test("a full workspace and a core that can't do a command each end it as their o
   // Another person's agent on a turn refuses a call, which can go again once it is done.
   assert.equal(await working, "working");
   const about = { subject: "the message", refused: "wasn't sent", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes none" };
-  assert.equal(settledText("full", about), "This workspace is full, so the message wasn't sent.");
+  assert.equal(settledText("full", about), "There's no room left, so the message wasn't sent.");
   assert.equal(settledText("unsupported", about), "The machine's core can't do this, so the message wasn't sent.");
 });
