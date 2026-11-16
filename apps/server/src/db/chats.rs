@@ -181,7 +181,6 @@ impl Workspace {
     pub(crate) async fn append_from(
         &self,
         (machine, member): (&weacon_protocol::MachineId, &MemberId),
-        by: &MemberId,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
@@ -190,7 +189,7 @@ impl Workspace {
         if held.ok_or_else(chat_not_found)?.member != *member {
             return Err(leg_called());
         }
-        self.append(transaction, chat, Some((by, machine)), events)
+        self.append(transaction, chat, Some((member, machine)), events)
             .await
     }
 

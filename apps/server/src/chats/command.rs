@@ -102,11 +102,12 @@ async fn acted_on(
     }
     // Before its run reports, a call in flight says which of their legs they mean, even one
     // whose machine has sent nothing up yet.
-    let called = workspace.calling(&command.chat, &member.id).await?;
+    let now = shared.now();
+    let called = workspace.calling(&command.chat, &member.id, now).await?;
     let held = all
         .iter()
         .find(|leg| !leg.detached && Some(&leg.machine) == called.as_ref());
-    let leg = held.filter(theirs).or_else(|| legs.iter().find(theirs));
+    let leg = held.or_else(|| legs.iter().find(theirs));
     leg.cloned().ok_or_else(not_owner)
 }
 
@@ -552,9 +553,9 @@ mod tests {
         let task = crate::test_support::new_task("t-1", "Speed up the build", "a");
         workspace.add_task(&task, &by).await.unwrap();
         let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
-        let first = || for_task(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)), "t-1");
+        let first = |request| for_task(prompt(request, "c-1", "Fix it", Some(&ada.machine)), "t-1");
 
-        asked(&ada, shared, first()).await.0.unwrap();
+        asked(&ada, shared, first("r-1")).await.0.unwrap();
         let stamped = ChatTask {
             id: id("t-1"),
             title: "Speed up the build".to_owned(),
@@ -563,7 +564,7 @@ mod tests {
         let listed = workspace.chats().await.unwrap();
         assert_eq!(listed[0].task, Some(id("t-1")));
         // Sent again, it goes again to its chat, for the chat's own task.
-        asked(&ada, shared, first()).await.0.unwrap();
+        asked(&ada, shared, first("r-9")).await.0.unwrap();
         workspace.legs_took_prompts().await;
         let later = for_task(prompt("r-2", "c-1", "And this", Some(&ada.machine)), "t-9");
         asked(&ada, shared, later).await.0.unwrap();
@@ -645,7 +646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_command_sent_again_goes_again_and_each_answer_returns_to_its_own_ask() {
+    async fn a_second_command_goes_too_and_each_answer_returns_to_its_own_ask() {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
@@ -656,7 +657,7 @@ mod tests {
         let mut attached = attach(shared, &ada, &["chat.serve"]);
 
         let (one, mut first) = asked(&ada, shared, go("r-2", &ada)).await;
-        let (two, mut second) = asked(&ada, shared, go("r-2", &ada)).await;
+        let (two, mut second) = asked(&ada, shared, go("r-3", &ada)).await;
 
         one.unwrap();
         two.unwrap();
@@ -930,17 +931,17 @@ mod tests {
     async fn two_calls_at_once_dont_both_run_and_a_call_that_never_left_holds_nothing() {
         let mut two = Two::new().await;
         let (ada, grace) = (&two.ada, &two.grace);
-        let hers = || prompt("r-4", "c-1", "Fix it", Some(&ada.machine));
+        let hers = |request| prompt(request, "c-1", "Fix it", Some(&ada.machine));
         let mine = || prompt("r-5", "c-1", "And mine", Some(&grace.machine));
 
         // Ada's reached her machine, whose run hasn't reported yet.
-        two.ask(ada, hers()).await.unwrap();
+        two.ask(ada, hers("r-4")).await.unwrap();
         let second = two.ask(grace, mine()).await;
 
         assert_eq!(second.unwrap_err().code().as_str(), "chat.agent_working");
         assert!(sent(&mut two.graces).is_empty());
         // Her own next one still goes, and her run's first word ends the wait for it.
-        two.ask(ada, hers()).await.unwrap();
+        two.ask(ada, hers("r-7")).await.unwrap();
         two.up(ada, 1, status(RunState::Running)).await;
         two.up(ada, 2, status(RunState::Idle)).await;
         drop(std::mem::replace(
@@ -1342,11 +1343,12 @@ mod tests {
         let mut two = Two::new().await;
         share(&two, &["w1"]).await;
         let (ada, grace) = (&two.ada, &two.grace);
-        // Grace has called her own agent, then the shared one; both rest.
+        // Grace has called her own agent, and Ada the shared one, which works for Ada; both
+        // rest. Then Grace calls the shared one.
         two.ask(grace, go("r-3", grace)).await.unwrap();
         two.up(grace, 1, status(RunState::Running)).await;
         two.up(grace, 2, status(RunState::Idle)).await;
-        two.ask(grace, go("r-4", ada)).await.unwrap();
+        two.ask(ada, go("r-4", ada)).await.unwrap();
         two.up(ada, 1, status(RunState::Running)).await;
         two.up(ada, 2, status(RunState::Idle)).await;
         two.ask(grace, go("r-5", ada)).await.unwrap();

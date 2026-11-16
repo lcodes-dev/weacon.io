@@ -248,9 +248,7 @@ async fn append_other(
         at,
     };
     let from = (&leg.machine, &leg.member);
-    place
-        .append_from(from, &leg.member, chat, &[incoming])
-        .await?;
+    place.append_from(from, chat, &[incoming]).await?;
     Ok(Some(event))
 }
 
@@ -378,14 +376,14 @@ mod tests {
         };
         let owner = member_id("m1");
         let elsewhere = workspace
-            .append_from((&id("mc-2"), &owner), &owner, &chat, &[incoming()])
+            .append_from((&id("mc-2"), &owner), &chat, &[incoming()])
             .await;
         assert_eq!(elsewhere.unwrap_err().code(), &code!("chat.not_found"));
         let unpaired = shared.db.unpair(&ada.asker.account, &ada.machine).await;
         assert!(unpaired.unwrap());
 
         let stored = workspace
-            .append_from((&ada.machine, &owner), &owner, &chat, &[incoming()])
+            .append_from((&ada.machine, &owner), &chat, &[incoming()])
             .await;
 
         assert_eq!(stored.unwrap_err().code(), &code!("chat.not_found"));
@@ -648,7 +646,8 @@ mod tests {
                 .await
                 .unwrap();
             // His run reporting leaves her call holding the turn.
-            let holds = workspace.calling(&chat, &ada.member.id).await.unwrap();
+            let holds = workspace.calling(&chat, &ada.member.id, NOW + 60);
+            let holds = holds.await.unwrap();
             assert_eq!(holds.is_some(), seq < 4, "{seq}");
         }
 
