@@ -41,9 +41,11 @@ test("a server that never starts is stopped and its folder removed", async () =>
   assert.equal(existsSync(folder), false);
 });
 
-test("a route still answering when its test stops fails nothing after it", async () => {
+test("a route still answering when its test stops fails nothing after it", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "weacon-harness-"));
   const { page, stop } = await open(dir, child("console.log('ready'); setInterval(() => {}, 1000)"), (server) => firstLine(server, 10_000), () => "about:blank");
+  // Stopping twice is harmless, and a step that fails before the stop below leaves nothing running.
+  t.after(stop);
   let answering = false;
   await page.route("**/slow", async (route) => {
     answering = true;
