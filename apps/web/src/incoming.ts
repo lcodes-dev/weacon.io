@@ -114,8 +114,6 @@ function isTerminalEvent(value: unknown): boolean {
       return true;
     case "output":
       return text(event, "data");
-    case "ended":
-      return text(event, "sign_in");
     case "closed":
       return event["code"] === undefined || text(event, "code");
     default:

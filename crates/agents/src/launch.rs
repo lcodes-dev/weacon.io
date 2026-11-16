@@ -1,11 +1,9 @@
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::time::timeout;
 use weacon_observability::Fault;
@@ -55,8 +53,6 @@ impl fmt::Debug for McpServer {
 
 // A status command that hangs is given up on, so a report still prints.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(30);
-// So a status command that prints without end can't fill memory.
-const STATUS_LIMIT: u64 = 64 * 1024;
 
 /// Whether an agent is signed in for a workspace, as the vendor's own status command says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,19 +117,15 @@ impl Launch {
     pub async fn sign_in_status(&self) -> Result<SignIn, Fault> {
         let vendor = self.vendor()?;
         let mut command = self.status_command(vendor);
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        command.stdin(Stdio::null()).kill_on_drop(true);
         let failed = || {
             Fault::new(
                 code!("agent.status_failed"),
                 "The agent's sign-in couldn't be checked",
             )
         };
-        match timeout(STATUS_TIMEOUT, status_of(command)).await {
-            Ok(Ok((exit, status))) if exit.success() && (vendor.own_sign_in)(&status) => {
+        match timeout(STATUS_TIMEOUT, command.output()).await {
+            Ok(Ok(said)) if said.status.success() && (vendor.own_sign_in)(&said.stdout) => {
                 Ok(SignIn::SignedIn)
             }
             Ok(Ok(_)) => Ok(SignIn::SignedOut),
@@ -269,17 +261,6 @@ impl OtherSignIns {
         self.prefixes.iter().any(|prefix| name.starts_with(prefix))
             || self.names.contains(&name.as_str())
     }
-}
-
-// Runs a status command and keeps the start of what it prints; closing the pipe stops the
-// rest.
-async fn status_of(mut command: Command) -> io::Result<(ExitStatus, Vec<u8>)> {
-    let mut child = command.spawn()?;
-    let mut status = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        stdout.take(STATUS_LIMIT).read_to_end(&mut status).await?;
-    }
-    Ok((child.wait().await?, status))
 }
 
 fn not_installed() -> Fault {

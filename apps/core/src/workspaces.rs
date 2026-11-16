@@ -16,7 +16,6 @@ use weacon_protocol::{AccessLevel, AgentKind, SignInState, WorkspaceId, code};
 pub(crate) use access::{Settings, run as access, store as store_access};
 
 use crate::app::{App, runtime};
-use crate::hold::{Hold, hold};
 use crate::{names, platform};
 
 /// Runs the vendor's own sign-in for `agent` in this terminal, against `workspace`'s config
@@ -100,22 +99,21 @@ impl Workspaces {
     }
 
     /// A line for each known workspace with its access level and whether each agent is signed
-    /// in, then a line for each warning. `sign_ins` answers for all the launches at once, in
-    /// their order; `None` shows as unknown.
+    /// in, then a line for each warning. `sign_ins` answers for every place at once, in their
+    /// order.
     ///
     /// # Errors
     /// When the workspaces' folder can't be listed, so the lines would leave some out.
     pub(crate) fn describe(
         &self,
-        sign_ins: impl FnOnce(&[Launch]) -> Vec<Option<SignIn>>,
+        sign_ins: impl FnOnce(Vec<Option<Launch>>) -> Vec<SignInState>,
     ) -> io::Result<String> {
         let known = self.known()?;
         let places: Vec<Option<Launch>> = known
             .iter()
             .flat_map(|workspace| self.places(workspace).map(|(_, launch)| launch))
             .collect();
-        let asked: Vec<Launch> = places.iter().flatten().cloned().collect();
-        let mut states = states(&places, sign_ins(&asked)).into_iter();
+        let mut states = sign_ins(places).into_iter();
         let lines = known.iter().map(|workspace| {
             let agents = AGENTS.map(|(_, name)| {
                 let state = states.next().unwrap_or(SignInState::Unknown);
@@ -165,13 +163,6 @@ impl Workspaces {
     /// What this machine's owner chose for `workspace`.
     pub(crate) fn settings(&self, workspace: &WorkspaceId) -> Result<Settings, Fault> {
         Settings::read(&self.settings_file(workspace))
-    }
-
-    /// A hold on `workspace`'s settings, for a change that reads them first: one at a time,
-    /// across the daemon and every command.
-    pub(crate) fn hold_settings(&self, workspace: &WorkspaceId) -> io::Result<Hold> {
-        platform::private_dir(&self.settings)?;
-        hold(&self.settings_file(workspace).with_extension("lock"))
     }
 
     /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
@@ -266,35 +257,31 @@ pub(crate) fn resolved(path: &Path) -> Option<PathBuf> {
     }
 }
 
-// Vendor programs asked at once: enough that a slow one doesn't hold up a report, few enough
-// for a small machine.
-const AT_ONCE: usize = 8;
-
-/// Each launch's sign-in, a few at once; a check that fails is logged here, once, and is `None`.
-pub(crate) async fn sign_ins(log: &Logger, launches: &[Launch]) -> Vec<Option<SignIn>> {
-    let failed = |err: Field| log.warn("sign-in check failed", &[("err", err)]);
-    let mut answers = Vec::new();
-    for together in launches.chunks(AT_ONCE) {
-        let checks: Vec<_> = together
-            .iter()
-            .cloned()
-            .map(|launch| tokio::spawn(async move { launch.sign_in_status().await }))
-            .collect();
-        for check in checks {
-            answers.push(match check.await {
-                Ok(Ok(sign_in)) => Some(sign_in),
-                Ok(Err(error)) => {
-                    failed(Field::error(&error));
-                    None
-                }
-                Err(error) => {
-                    failed(Field::error(&error));
-                    None
-                }
-            });
-        }
+/// Each place's sign-in, all checked at once: a place with no launch is an agent that isn't
+/// installed, and a check that fails is logged here, once, and is unknown.
+pub(crate) async fn sign_ins(log: &Logger, places: Vec<Option<Launch>>) -> Vec<SignInState> {
+    let failed = |err: Field| {
+        log.warn("sign-in check failed", &[("err", err)]);
+        SignInState::Unknown
+    };
+    let checks: Vec<_> = places
+        .into_iter()
+        .map(|place| place.map(|launch| tokio::spawn(async move { launch.sign_in_status().await })))
+        .collect();
+    let mut states = Vec::new();
+    for check in checks {
+        let Some(check) = check else {
+            states.push(SignInState::NotInstalled);
+            continue;
+        };
+        states.push(match check.await {
+            Ok(Ok(SignIn::SignedIn)) => SignInState::SignedIn,
+            Ok(Ok(SignIn::SignedOut)) => SignInState::SignedOut,
+            Ok(Err(error)) => failed(Field::error(&error)),
+            Err(error) => failed(Field::error(&error)),
+        });
     }
-    answers
+    states
 }
 
 const FOLDER_PREFIX: &str = "w-";
@@ -313,22 +300,6 @@ pub(crate) fn vendor_name(agent: AgentKind) -> &'static str {
 /// What a workspace's folders are called, wherever they are.
 pub(crate) fn folder_name(workspace: &WorkspaceId) -> String {
     names::case_safe_name(FOLDER_PREFIX, workspace.as_str())
-}
-
-/// Each place's sign-in, given `answers` for the places that have a launch, in their order.
-pub(crate) fn states(places: &[Option<Launch>], answers: Vec<Option<SignIn>>) -> Vec<SignInState> {
-    let mut answers = answers.into_iter();
-    places
-        .iter()
-        .map(
-            |place| match place.as_ref().map(|_| answers.next().flatten()) {
-                None => SignInState::NotInstalled,
-                Some(Some(SignIn::SignedIn)) => SignInState::SignedIn,
-                Some(Some(SignIn::SignedOut)) => SignInState::SignedOut,
-                Some(None) => SignInState::Unknown,
-            },
-        )
-        .collect()
 }
 
 const fn state_name(state: SignInState) -> &'static str {
@@ -431,20 +402,19 @@ mod tests {
         }
         let w2 = dir.join("workspaces/w-w2");
 
-        let sign_in = |launch: &Launch| {
+        let sign_in = |place: &Option<Launch>| {
+            let launch = place.as_ref().unwrap();
             let in_w2 = launch.cwd == w2 && launch.config_dir.starts_with(&w2);
             match launch.agent {
-                AgentKind::Claude if in_w2 => Some(SignIn::SignedIn),
-                AgentKind::Codex if in_w2 => Some(SignIn::SignedOut),
-                AgentKind::Claude => Some(SignIn::SignedOut),
-                AgentKind::Codex | AgentKind::Newer => None,
+                AgentKind::Claude if in_w2 => SignInState::SignedIn,
+                AgentKind::Codex if in_w2 => SignInState::SignedOut,
+                AgentKind::Claude => SignInState::SignedOut,
+                AgentKind::Codex | AgentKind::Newer => SignInState::Unknown,
             }
         };
         let text = workspaces
-            .describe(|launches| launches.iter().map(sign_in).collect())
+            .describe(|places| places.iter().map(sign_in).collect())
             .unwrap();
-        // Answers that run out show as unknown.
-        let cut_short = workspaces.describe(|_| vec![Some(SignIn::SignedIn)]);
 
         assert_eq!(
             text,
@@ -452,10 +422,6 @@ mod tests {
              Workspace a: access ask-first; Claude Code signed out, Codex unknown\n\
              Workspace w2: access ask-first; Claude Code signed in, Codex signed out\n"
         );
-        assert!(cut_short.unwrap().starts_with(
-            "Workspace W1: access ask-first; Claude Code signed in, Codex unknown\n\
-             Workspace a: access ask-first; Claude Code unknown"
-        ));
     }
 
     #[test]
@@ -468,16 +434,21 @@ mod tests {
         unlisted.unwrap_err();
     }
 
+    // Stands in for the checks where no place has a launch to ask.
+    fn none_installed(places: Vec<Option<Launch>>) -> Vec<SignInState> {
+        let unasked = |place: Option<Launch>| {
+            assert_eq!(place, None);
+            SignInState::NotInstalled
+        };
+        places.into_iter().map(unasked).collect()
+    }
+
     #[test]
     fn a_program_that_isnt_on_the_path_is_not_installed_and_never_asked() {
         let dir = TempDir::new().unwrap();
         workspaces(&dir)
             .launch(&id("w1"), AgentKind::Claude, PathBuf::from("/work"))
             .unwrap();
-        let none_asked = |asked: &[Launch]| {
-            assert_eq!(asked, []);
-            Vec::new()
-        };
         let not_installed =
             "Workspace w1: access ask-first; Claude Code not installed, Codex not installed\n";
 
@@ -489,7 +460,7 @@ mod tests {
 
             assert_eq!(error.code().as_str(), "agent.not_installed");
             assert!(!workspaces.root(&id("w2")).exists());
-            assert_eq!(workspaces.describe(none_asked).unwrap(), not_installed);
+            assert_eq!(workspaces.describe(none_installed).unwrap(), not_installed);
         }
     }
 
@@ -539,7 +510,7 @@ mod tests {
         choose(&dir, "c", "{");
 
         let text = Workspaces::new(&dir, None)
-            .describe(|_| Vec::new())
+            .describe(none_installed)
             .unwrap();
 
         assert_eq!(
@@ -644,7 +615,7 @@ mod tests {
     // `true` and `false` stand in for a vendor's status command.
     #[cfg(unix)]
     #[tokio::test]
-    async fn every_sign_in_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
+    async fn every_place_is_checked_in_order_and_a_failed_check_is_logged_once_and_unknown() {
         let dir = TempDir::new().unwrap();
         let (log, records) = crate::test_support::recording_logger();
         let launch = |program: &str| Launch {
@@ -656,82 +627,24 @@ mod tests {
             mcp: None,
             plugin: None,
         };
-        let launches = ["true", "/missing/codex", "false"].map(launch);
+        let places = vec![
+            Some(launch("true")),
+            None,
+            Some(launch("/missing/codex")),
+            Some(launch("false")),
+        ];
 
-        let answers = sign_ins(&log, &launches).await;
+        let states = sign_ins(&log, places).await.into_iter().map(state_name);
 
         assert_eq!(
-            answers,
-            [Some(SignIn::SignedIn), None, Some(SignIn::SignedOut)]
+            states.collect::<Vec<_>>(),
+            ["signed in", "not installed", "unknown", "signed out"]
         );
+        assert_eq!(state_name(SignInState::Newer), "unknown");
         assert_eq!(
             crate::test_support::messages(&records),
             ["sign-in check failed"]
         );
-    }
-
-    // The script never exits in time. With time paused, the clock moves only when every check
-    // is waiting, so it shows how many waits there were, one after another.
-    #[cfg(unix)]
-    #[tokio::test(start_paused = true)]
-    async fn checks_run_a_few_at_once_so_slow_ones_dont_add_up() {
-        use std::time::Duration;
-
-        let dir = TempDir::new().unwrap();
-        let (log, records) = crate::test_support::recording_logger();
-        let program = dir.join("hang");
-        weacon_testing::platform::write_program(&program, "#!/bin/sh\nexec sleep 1000\n").unwrap();
-        let hanging = Launch {
-            agent: AgentKind::Claude,
-            program,
-            config_dir: dir.to_path_buf(),
-            cwd: dir.to_path_buf(),
-            access: AccessLevel::AskFirst,
-            mcp: None,
-            plugin: None,
-        };
-        let launches = vec![hanging; AT_ONCE + 1];
-        let started = tokio::time::Instant::now();
-
-        let answers = sign_ins(&log, &launches).await;
-
-        let waits = started.elapsed().as_secs() / 30;
-        assert_eq!(waits, 2);
-        assert!(started.elapsed() < Duration::from_secs(61));
-        assert_eq!(answers, vec![None; AT_ONCE + 1]);
-        assert_eq!(crate::test_support::messages(&records).len(), AT_ONCE + 1);
-    }
-
-    #[test]
-    fn each_installed_agent_takes_the_next_answer_in_order() {
-        let dir = TempDir::new().unwrap();
-        let installed = workspaces(&dir)
-            .located(&id("w1"), AgentKind::Claude, dir.to_path_buf())
-            .ok();
-        let places =
-            [&installed, &None, &installed, &installed, &None, &installed].map(Clone::clone);
-        let answers = vec![
-            Some(SignIn::SignedIn),
-            None,
-            Some(SignIn::SignedOut),
-            Some(SignIn::SignedIn),
-        ];
-
-        let shown = states(&places, answers).into_iter().map(state_name);
-
-        assert_eq!(
-            shown.collect::<Vec<_>>(),
-            [
-                "signed in",
-                "not installed",
-                "unknown",
-                "signed out",
-                "not installed",
-                "signed in"
-            ]
-        );
-        assert_eq!(states(&[installed], Vec::new()), [SignInState::Unknown]);
-        assert_eq!(state_name(SignInState::Newer), "unknown");
     }
 
     #[cfg(unix)]

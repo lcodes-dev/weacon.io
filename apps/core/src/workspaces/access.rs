@@ -115,7 +115,6 @@ pub(crate) fn store(
         )
         .because(error)
     };
-    let _hold = workspaces.hold_settings(workspace).map_err(unsaved)?;
     let current = workspaces.settings(workspace);
     let settings = match team {
         Some(team) => Settings {

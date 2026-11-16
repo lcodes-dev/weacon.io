@@ -51,7 +51,6 @@ pub(crate) fn store(
 ) -> Result<Settings, Fault> {
     let unsaved =
         |error| Fault::new(code!("share.not_saved"), "The choice couldn't be saved").because(error);
-    let _hold = workspaces.hold_settings(workspace).map_err(unsaved)?;
     let settings = Settings {
         shared,
         ..workspaces.settings(workspace)?
@@ -170,26 +169,6 @@ mod tests {
         assert!(shared(&dir).await.is_empty());
         let refused = share(&dir, "w1", true).unwrap_err();
         assert_eq!(refused.code().as_str(), "workspace.settings_unreadable");
-    }
-
-    #[test]
-    fn each_change_to_a_workspaces_settings_takes_their_hold_first() {
-        let dir = TempDir::new().unwrap();
-        let workspaces = Workspaces::new(&dir, None);
-        let log = test_support::app(Some(&dir), None).log.clone();
-        store(&workspaces, &id("w1"), true, &log).unwrap();
-        // A folder where the lock file belongs: no hold can be taken, so nothing is changed.
-        fs::remove_file(dir.join("settings/w-w1.lock")).unwrap();
-        fs::create_dir(dir.join("settings/w-w1.lock")).unwrap();
-
-        let unshared = store(&workspaces, &id("w1"), false, &log).unwrap_err();
-        let level = AccessLevel::Full;
-        let access = super::super::store_access(&workspaces, &id("w1"), level, None, &log);
-
-        assert_eq!(unshared.code().as_str(), "share.not_saved");
-        assert_eq!(access.unwrap_err().code().as_str(), "access.not_saved");
-        let kept = workspaces.settings(&id("w1")).unwrap();
-        assert_eq!((kept.shared, kept.access), (true, AccessLevel::AskFirst));
     }
 
     #[test]
