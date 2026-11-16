@@ -324,9 +324,9 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   const { page } = served;
   await listChats(page, () => ({
     chats: [
-      { id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1_800_000_000 },
-      { id: "c-2", title: "Sort the pantry", owner: "m-1", machine: "team VPS", machine_id: "mc-1", state: "full", updated_at: 1_800_000_100, run: "waiting" },
-      { id: "c-3", title: "Old notes", owner: "m-1", machine: "desktop", machine_id: "mc-1", state: "detached", updated_at: 1_700_000_000 },
+      { id: "c-1", title: "Merge the shopping lists", owner: "m-1", legs: [{ member: "m-1", machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open", updated_at: 1_800_000_000 },
+      { id: "c-2", title: "Sort the pantry", owner: "m-1", legs: [{ member: "m-1", machine: "team VPS", machine_id: "mc-1", agent: "claude", detached: false }], state: "full", updated_at: 1_800_000_100, run: "waiting" },
+      { id: "c-3", title: "Old notes", owner: "m-1", legs: [{ member: "m-1", machine: "desktop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open", updated_at: 1_700_000_000 },
     ],
   }));
   await serveFeed(page);
@@ -336,11 +336,11 @@ test("a workspace lists its chats newest first, and opens one in the address", {
   await chats.getByText("Sort the pantry").waitFor();
 
   assert.deepEqual(await chats.locator(".title").allInnerTexts(), ["Sort the pantry", "Merge the shopping lists", "Old notes"]);
-  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["team VPS · Waiting for a person · Full", "laptop", "desktop · Read only"]);
+  assert.deepEqual(await chats.locator("li .muted").allInnerTexts(), ["Waiting for a person · Full", "", ""]);
   await chats.getByRole("button", { name: /Merge the shopping lists/ }).click();
   await page.getByRole("heading", { name: "Merge the shopping lists" }).waitFor();
   assert.match(page.url(), /\?workspace=[A-Za-z0-9_-]+&chat=c-1$/);
-  assert.equal(await chats.locator("[aria-current]").innerText(), "Merge the shopping lists\nlaptop");
+  assert.equal((await chats.locator("[aria-current]").innerText()).trim(), "Merge the shopping lists");
   await page.goBack();
   await page.getByRole("heading", { name: "Personal" }).waitFor();
 });
@@ -350,7 +350,7 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   t.after(() => served.close());
   const { page } = served;
   const listed = await listChats(page, (asked) => ({
-    chats: asked === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1 }],
+    chats: asked === 1 ? [] : [{ id: "c-9", title: "A new chat", owner: "m-1", legs: [{ member: "m-1", machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open", updated_at: 1 }],
   }));
   const change = (workspace: string, seq: number): Envelope => ({ id: 0, type: "workspace", workspace, seq, change: { kind: "chat_changed", chat: "c-9" } });
   // A burst of two changes and one of another workspace, then, once reopened, the same two again and one more.
@@ -395,7 +395,7 @@ function snapshot(asked: Envelope): Envelope[] {
   if (asked.type !== "chat_query" || asked.query.kind !== "snapshot") {
     return [];
   }
-  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
+  const agent = { kind: "claude" as const, owner: { kind: "member" as const, member: agentOwner }, machine: "laptop" };
   const said = asked.chat === "c-1" ? "Sorting the shelves now." : "Watering the plants now.";
   return [
     {
@@ -418,6 +418,9 @@ function snapshot(asked: Envelope): Envelope[] {
   ];
 }
 
+// Whose agent the snapshot's run is, which `openChats` sets to the chats' owner.
+let agentOwner = "m-1";
+
 // Answers a chat's snapshot, and takes every command.
 function chatServer(asked: Envelope): Envelope[] {
   return asked.type === "chat_command" ? [{ id: asked.id, type: "receipt", request: asked.request, state: "accepted" }] : snapshot(asked);
@@ -438,20 +441,22 @@ async function firstWorkspace(page: Page): Promise<{ id: string; member: string 
   });
 }
 
-// Signs in and opens the first workspace, whose chats are `chats`, each owned by `owner` of its member.
+// Signs in and opens the first workspace, whose chats are `chats`, each started by `owner` of its
+// member, whose own agent runs in it.
 async function openChats(served: Served, chats: Array<{ id: string; title: string }>, owner: (member: string) => string): Promise<string> {
   const { page } = served;
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { id, member } = await firstWorkspace(page);
-  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), machine: "laptop", machine_id: "mc-1", state: "open" as const, updated_at: 1 })) }));
+  agentOwner = owner(member);
+  await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), legs: [{ member: owner(member), machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open" as const, updated_at: 1 })) }));
   await page.getByRole("button", { name: "Personal" }).click();
   return id;
 }
 
 const nav = (page: Page) => page.getByRole("navigation", { name: "Chats" });
 
-test("a person's own chat shows its transcript and prompts, and takes their messages and Stop", { timeout: 600_000 }, async (t) => {
+test("a chat where a person has their agent shows its transcript and prompts, and takes their messages, calls and Stop", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -461,14 +466,29 @@ test("a person's own chat shows its transcript and prompts, and takes their mess
 
   await page.getByText("Sorting the shelves now.").waitFor();
   await page.getByRole("button", { name: "Allow" }).waitFor();
-  await page.getByRole("combobox", { name: "Message" }).fill("Use the top shelf too.");
+  const box = page.getByRole("combobox", { name: "Message" });
+  await box.fill("Use the top shelf too.");
   await page.getByRole("button", { name: "Send" }).click();
-  await page.getByRole("button", { name: "Stop" }).click();
+  await waitFor(() => commands(sent).length === 1);
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
+  // A message that mentions their agent calls it.
+  await box.focus();
+  await page.keyboard.type("@cl");
+  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("go on");
+  await page.keyboard.press("Enter");
   await waitFor(() => commands(sent).length === 2);
+  await page.getByRole("button", { name: "Stop" }).click();
+  await waitFor(() => commands(sent).length === 3);
 
-  const [prompt, stop] = commands(sent);
-  assert.deepEqual([prompt?.action, stop?.action], [{ kind: "prompt", text: "Use the top shelf too." }, { kind: "interrupt" }]);
-  for (const command of [prompt, stop]) {
+  const [said, prompt, stop] = commands(sent);
+  assert.deepEqual(
+    [said?.action, prompt?.action, stop?.action],
+    [{ kind: "say", text: "Use the top shelf too." }, { kind: "prompt", text: "@Claude Code go on" }, { kind: "interrupt" }],
+  );
+  assert.equal(await page.getByRole("button", { name: "Add your agent" }).count(), 0);
+  for (const command of [said, prompt, stop]) {
     assert.equal(command?.workspace, workspace);
     assert.equal(command?.chat, "c-1");
   }
@@ -476,21 +496,32 @@ test("a person's own chat shows its transcript and prompts, and takes their mess
   assert.ok(sent.some((envelope) => envelope.type === "chat_query" && envelope.query.kind === "subscribe"));
 });
 
-test("someone else's chat shows its transcript, without the message box, Stop or the prompts' answers", { timeout: 600_000 }, async (t) => {
+test("a chat where only someone else has an agent takes a person's messages, without Stop or the prompts' answers", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: snapshot });
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
   await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
 
   await page.getByText("Sorting the shelves now.").waitFor();
   await page.getByText("Bash").first().waitFor();
-  for (const name of ["Send", "Stop", "Allow", "Deny"]) {
+  for (const name of ["Stop", "Allow", "Deny", "Changes"]) {
     assert.equal(await page.getByRole("button", { name }).count(), 0, name);
   }
-  assert.equal(await page.getByRole("combobox", { name: "Message" }).count(), 0);
-  assert.deepEqual(commands(sent), []);
+  await page.getByRole("button", { name: "Add your agent" }).waitFor();
+  // With no agent of their own here, @ offers nothing, and what they write goes to the chat's people.
+  const box = page.getByRole("combobox", { name: "Message" });
+  await box.focus();
+  await page.keyboard.type("@");
+  assert.equal(await page.getByRole("option").count(), 0);
+  await box.fill("Mind the jars.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await waitFor(() => commands(sent).length === 1);
+  assert.deepEqual(
+    commands(sent).map(({ chat, action }) => ({ chat, action })),
+    [{ chat: "c-1", action: { kind: "say", text: "Mind the jars." } }],
+  );
 });
 
 test("picking another chat shows that one, and sends only to it", { timeout: 600_000 }, async (t) => {
@@ -517,7 +548,7 @@ test("picking another chat shows that one, and sends only to it", { timeout: 600
   await waitFor(() => commands(sent).length === 1);
   assert.deepEqual(
     commands(sent).map(({ chat, action }) => ({ chat, action })),
-    [{ chat: "c-2", action: { kind: "prompt", text: "Only the ferns." } }],
+    [{ chat: "c-2", action: { kind: "say", text: "Only the ferns." } }],
   );
 
   // Back on the first chat, its subscription is still the one it had.
@@ -569,7 +600,7 @@ function worktreeServer(asked: Envelope): Envelope[] {
 
 const WORKTREES = ["diff.view", "worktree.manage", "worktree.open_terminal"];
 
-test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
+test("a person with their agent in a chat gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -600,19 +631,19 @@ test("a chat's owner gets its worktree's bar, with its title to start a pull req
   assert.equal((await bar.boundingBox())?.height, withButtons);
 });
 
-test("someone else's chat shows no worktree bar, and asks nothing of it", { timeout: 600_000 }, async (t) => {
+test("a chat where only someone else has an agent offers no changes or worktree, and asks nothing of them", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
   const { sent } = await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
   await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
-  await page.getByRole("button", { name: "Changes" }).click();
-  await page.locator(".chat-changes").waitFor();
+  await page.getByRole("button", { name: "Add your agent" }).waitFor();
 
+  assert.equal(await page.getByRole("button", { name: "Changes" }).count(), 0);
   assert.equal(await page.getByRole("region", { name: "Worktree" }).count(), 0);
   assert.deepEqual(
-    sent.filter((envelope) => envelope.type === "worktree_query" || envelope.type === "worktree_command"),
+    sent.filter((envelope) => ["worktree_query", "worktree_command", "diff_query"].includes(envelope.type)),
     [],
   );
 });
@@ -701,7 +732,7 @@ test("⌘K searches the open workspace, and choosing a hit goes to its place", {
   t.after(() => served.close());
   const { page } = served;
   await listChats(page, () => ({
-    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", machine: "laptop", machine_id: "mc-1", state: "open", updated_at: 1_800_000_000 }],
+    chats: [{ id: "c-1", title: "Merge the shopping lists", owner: "m-1", legs: [{ member: "m-1", machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open", updated_at: 1_800_000_000 }],
   }));
   const asked: string[] = [];
   let answerBread = () => {};

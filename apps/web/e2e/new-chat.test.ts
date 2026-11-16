@@ -20,18 +20,26 @@ const SETTINGS: MachineSettings = {
 const AGENT = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "Studio" };
 
 /**
- * A stand-in for the server and the machine's core: what a person's first prompts made, and the
- * refusals still to come.
+ * A stand-in for the server and the machine's core: what a person's first words made, with
+ * whether they called the agent, and the refusals still to come.
  */
-type Chats = { made: Map<string, string>; offline: number; settings?: MachineSettings };
+type Chats = { made: Map<string, string>; called: Set<string>; offline: number; settings?: MachineSettings };
 
-// Answers the machine's settings and repositories, takes a first prompt on the person's own
-// machine unless it is offline, and plays the made chat: the prompt, then a running run's reply.
+// Answers the machine's settings and repositories, takes a first message, or a first prompt on
+// the person's own machine unless it is offline, and plays the made chat: its first words, then,
+// when they called the agent, a running run's reply.
 function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[] {
   return (asked, _opened, reply) => {
     if (asked.type === "machine_settings_query") {
       const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["kitchen", "garden"] } : { kind: "current" as const, ...(chats.settings ?? SETTINGS) };
       return [{ id: 0, type: "machine_settings_answer", request: asked.request, machine: asked.machine, workspace: asked.workspace, answer }];
+    }
+    if (asked.type === "chat_command" && asked.action.kind === "say") {
+      chats.made.set(asked.chat, asked.action.text);
+      return [
+        { id: asked.id, type: "receipt", request: asked.request, state: "accepted" },
+        { id: 0, type: "workspace", workspace: asked.workspace, seq: 1, change: { kind: "chat_changed", chat: asked.chat } },
+      ];
     }
     if (asked.type === "chat_command" && asked.action.kind === "prompt") {
       if (asked.action.machine !== STUDIO.id) {
@@ -42,6 +50,7 @@ function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (
         return [{ id: asked.id, type: "error", code: "machine.offline", retryable: true }];
       }
       chats.made.set(asked.chat, asked.action.text);
+      chats.called.add(asked.chat);
       return [
         { id: asked.id, type: "receipt", request: asked.request, state: "accepted" },
         { id: 0, type: "workspace", workspace: asked.workspace, seq: 1, change: { kind: "chat_changed", chat: asked.chat } },
@@ -56,7 +65,7 @@ function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (
       const events = [{ seq: 1, event: { kind: "prompt" as const, request: "q-1", text } }];
       return [{ id: asked.id, type: "chat_answer", workspace, chat, answer: { kind: "snapshot", seq: 1, runs: [], waiting: [], events } }];
     }
-    if (asked.query.kind === "subscribe" && asked.query.after === 1) {
+    if (asked.query.kind === "subscribe" && asked.query.after === 1 && chats.called.has(chat)) {
       // A run says it is running before its first text, as a core's does.
       reply({ id: 0, type: "chat", workspace, chat, entry: { seq: 2, event: { kind: "run_status", status: { run: "r-1", state: "running", agent: AGENT } } } });
       reply({ id: 0, type: "chat", workspace, chat, entry: { seq: 3, event: { kind: "run", update: { run: "r-1", event: { event: "text", text: "Sorting the shelves now." } } } } });
@@ -71,7 +80,14 @@ async function standIn(page: Page, machines: MachineList, chats: Chats): Promise
   await page.route("**/api/workspaces/*/chats", async (route) => {
     const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as { workspaces: Array<{ member?: string }> }).workspaces[0]?.member ?? "");
     const list: ChatList = {
-      chats: [...chats.made].map(([id, text]) => ({ id, title: text, owner: member, machine: STUDIO.name, machine_id: "mc-1", state: "open", updated_at: 1 })),
+      chats: [...chats.made].map(([id, text]) => ({
+        id,
+        title: text,
+        owner: member,
+        legs: chats.called.has(id) ? [{ member, machine: STUDIO.name, machine_id: "mc-1", agent: "claude", detached: false }] : [],
+        state: "open",
+        updated_at: 1,
+      })),
     };
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(list) });
   });
@@ -89,11 +105,20 @@ function firstPrompts(sent: Envelope[]): Array<{ chat: string; request: string; 
 
 const nav = (page: Page) => page.getByRole("navigation", { name: "Chats" });
 
-test("from an empty workspace, a person starts a chat on their connected machine and reads the agent's reply", { timeout: 600_000 }, async (t) => {
+// Types a message that calls the person's own agent, picked from the list `@` opens.
+async function call(page: Page, text: string): Promise<void> {
+  await page.getByRole("combobox", { name: "Message" }).focus();
+  await page.keyboard.type("@cl");
+  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type(text);
+}
+
+test("from an empty workspace, a person starts a chat that calls their agent on their connected machine and reads its reply", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const chats: Chats = { made: new Map(), offline: 0 };
+  const chats: Chats = { made: new Map(), called: new Set(), offline: 0 };
   await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
   const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
   await openPersonal(served);
@@ -101,6 +126,7 @@ test("from an empty workspace, a person starts a chat on their connected machine
   await nav(page).getByRole("button", { name: "New chat" }).click();
 
   const form = page.getByRole("region", { name: "New chat" });
+  await form.getByRole("group", { name: "Your agent in this chat" }).waitFor();
   await form.getByLabel("Repository").selectOption("garden");
   // Only the agents signed in for this workspace on the machine are offered.
   await form.getByRole("button", { name: "Sign in from Settings" }).waitFor();
@@ -115,23 +141,24 @@ test("from an empty workspace, a person starts a chat on their connected machine
   await form.getByRole("button", { name: "Sign in from Settings" }).waitFor({ state: "detached" });
   await form.getByLabel("Agent").selectOption("claude");
   assert.equal(await form.getByLabel("Machine").inputValue(), STUDIO.id);
-  await form.getByRole("combobox", { name: "Message" }).fill("Sort the pantry.");
+  await call(page, "Sort the pantry.");
   await form.getByRole("button", { name: "Send" }).click();
 
   await page.getByText("Sorting the shelves now.").waitFor();
-  await page.getByRole("heading", { name: "Sort the pantry." }).waitFor();
+  await page.getByRole("heading", { name: "@Claude Code Sort the pantry." }).waitFor();
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).waitFor();
   const [prompt] = firstPrompts(sent);
-  assert.deepEqual(prompt?.action, { kind: "prompt", text: "Sort the pantry.", machine: STUDIO.id, repo: "garden", agent: "claude" });
+  assert.deepEqual(prompt?.action, { kind: "prompt", text: "@Claude Code Sort the pantry.", machine: STUDIO.id, repo: "garden", agent: "claude" });
   assert.equal(new URL(page.url()).searchParams.get("chat"), prompt?.chat);
   assert.equal(firstPrompts(sent).length, 1);
 });
 
-test("with no machine paired, New chat can't be used and the empty state says what is missing", { timeout: 600_000 }, async (t) => {
+test("with no machine paired, New chat says what calling an agent lacks, and still starts a chat with a plain message", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  await standIn(page, { machines: [] }, { made: new Map(), offline: 0 });
+  const chats: Chats = { made: new Map(), called: new Set(), offline: 0 };
+  await standIn(page, { machines: [] }, chats);
   let failed = false;
   await page.route("**/api/machines", async (route) => {
     if (failed) {
@@ -140,16 +167,26 @@ test("with no machine paired, New chat can't be used and the empty state says wh
     failed = true;
     return route.fulfill({ status: 500 });
   });
-  await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"] });
+  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
   await openPersonal(served);
+  await nav(page).getByRole("button", { name: "New chat" }).click();
+  const form = page.getByRole("region", { name: "New chat" });
 
-  // A failed fetch of the machines says so, and asks again.
-  await nav(page).getByText("Something went wrong. Try again.").waitFor();
-  await nav(page).getByRole("button", { name: "Try again" }).click();
-
-  await nav(page).getByText("Pair a machine in Settings to start a chat.").waitFor();
-  assert.ok(await nav(page).getByRole("button", { name: "New chat" }).isDisabled());
-  await nav(page).getByRole("button", { name: "Open Settings" }).click();
+  await form.getByText("Pair a machine in Settings to call your own agent.").waitFor();
+  assert.equal(await form.getByRole("group", { name: "Your agent in this chat" }).count(), 0);
+  // Without an agent, @ offers nothing, and the message goes to the chat's people.
+  const box = form.getByRole("combobox", { name: "Message" });
+  await box.focus();
+  await page.keyboard.type("@");
+  assert.equal(await page.getByRole("option").count(), 0);
+  await box.fill("Who waters the plants?");
+  await form.getByRole("button", { name: "Send" }).click();
+  await page.getByRole("heading", { name: "Who waters the plants?" }).waitFor();
+  assert.deepEqual(firstPrompts(sent).map(({ action }) => action), [{ kind: "say", text: "Who waters the plants?" }]);
+  // In the chat, adding an agent says the same, with the way to Settings.
+  await page.getByRole("button", { name: "Add your agent" }).click();
+  await page.getByText("Pair a machine in Settings to call your own agent.").waitFor();
+  await page.getByRole("button", { name: "Open Settings" }).click();
   await page.getByRole("heading", { name: "Machines" }).waitFor();
 });
 
@@ -157,7 +194,7 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const chats: Chats = { made: new Map(), offline: 1 };
+  const chats: Chats = { made: new Map(), called: new Set(), offline: 1 };
   await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
   const { sent, opened, closeLatest } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
   await openPersonal(served);
@@ -166,15 +203,15 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   const form = page.getByRole("region", { name: "New chat" });
   const box = form.getByRole("combobox", { name: "Message" });
   await form.getByLabel("Repository").waitFor();
-  await box.fill("Water the plants.");
+  await call(page, "Water the plants.");
   await form.getByRole("button", { name: "Send" }).click();
   await form.getByText("The machine is offline, so the chat wasn't started. Try again once it's back.").waitFor();
-  assert.equal(await box.inputValue(), "Water the plants.");
+  assert.equal(await box.inputValue(), "@Claude Code Water the plants.");
   // The view and its text stay while the feed reconnects.
   await closeLatest();
   await waitFor(() => opened.length === 2);
   await page.getByText("Connected").first().waitFor();
-  assert.equal(await box.inputValue(), "Water the plants.");
+  assert.equal(await box.inputValue(), "@Claude Code Water the plants.");
 
   await form.getByRole("button", { name: "Send" }).click();
   await page.getByText("Sorting the shelves now.").waitFor();

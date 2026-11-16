@@ -268,6 +268,14 @@ function WorkspaceChats({
   const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
   useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
   const machines = useLoaded(() => api.machines(), api);
+  // Back from Settings, where a machine may have been paired, they are read again.
+  const wasAway = useRef(away);
+  useEffect(() => {
+    if (wasAway.current && !away) {
+      void machines.load();
+    }
+    wasAway.current = away;
+  }, [away]);
   // Until the feed is welcomed, whether it takes commands isn't known yet.
   const ready = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines);
   const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);

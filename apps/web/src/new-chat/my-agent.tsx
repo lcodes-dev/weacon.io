@@ -94,9 +94,9 @@ export function MyAgentFields({ pick, workspace, openSettings }: { pick: ReturnT
       )}
       {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
-      {offered.length === 0 && (
+      {settings.value !== undefined && offered.length < 2 && (
         <p className="muted">
-          {missing}{" "}
+          {offered.length === 0 && missing}{" "}
           <button type="button" onClick={() => openSettings(machine?.id)}>
             Sign in from Settings
           </button>
