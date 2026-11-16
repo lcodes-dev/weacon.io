@@ -551,9 +551,9 @@ function worktreeServer(asked: Envelope): Envelope[] {
   return [{ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer }];
 }
 
-const WORKTREES = ["diff.view", "worktree.manage", "worktree.open_terminal"];
+const WORKTREES = ["diff.view", "worktree.manage"];
 
-test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
+test("a chat's owner gets its worktree's bar, with its title to start a pull request and a terminal", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
