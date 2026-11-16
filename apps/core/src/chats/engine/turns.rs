@@ -1,12 +1,12 @@
 //! What the engine does with a chat's turns. A prompt is logged, queued in the journal and
 //! accepted, then given its turn, which ends with a receipt. Each step is saved before the next;
-//! `advance` finishes what a failed write or a restart left half done.
+//! `advance` finishes what an exit or a restart left half done.
 
 use weacon_observability::Fault;
 use weacon_protocol::{Outcome, RunId, RunState, RunStatus};
 
 use super::agent::{Agent, Order};
-use super::{Chat, ChatKey, Engine, PendingEnd};
+use super::{ChatKey, Engine};
 use crate::runs::Queued;
 
 impl<A: Agent> Engine<A> {
@@ -24,23 +24,9 @@ impl<A: Agent> Engine<A> {
         } else {
             RunState::Sleeping
         };
-        let chat = self.open(key).await?;
-        // What the run reported first wins over a later end, such as its exit.
-        let outcome = match chat.pending_end.take() {
-            Some(end) if turn.as_ref() == Some(&end.turn) => end.outcome,
-            _ => outcome,
-        };
-        // The turn stays in the journal until its receipt is in the log; `advance` retries it.
-        if let Some(request) = turn
-            && let Err(fault) = self.commit_receipt(key, &request, outcome.clone()).await
-        {
-            if let Some(chat) = self.open_chats.get_mut(key) {
-                chat.pending_end = Some(PendingEnd {
-                    turn: request,
-                    outcome,
-                });
-            }
-            return Err(fault);
+        // The turn stays in the journal until its receipt is in the log.
+        if let Some(request) = turn {
+            self.commit_receipt(key, &request, outcome).await?;
         }
         // The state goes in the same save, so no record is left running with no turn.
         self.runs
@@ -74,8 +60,7 @@ impl<A: Agent> Engine<A> {
             return Ok(());
         };
         // A run still starting takes the turn once it is up; a hold takes none.
-        let starting = self.open_chats.get(key).is_some_and(Chat::is_starting);
-        if starting || self.is_held(key) {
+        if self.is_launching(key) || self.is_held(key) {
             return Ok(());
         }
         let Some(run) = self.run_of(key).filter(|_| self.takes_orders(key)) else {
@@ -99,7 +84,7 @@ impl<A: Agent> Engine<A> {
             })
             .await?;
         self.tell_state(key, run, RunState::Running).await?;
-        // Sent only once the turn is written, so a run a failed write ended is never told it.
+        // Sent only once the turn is written.
         let order = self.order_for(key, &next).await;
         if !self.order(key, order) {
             // It stopped reading while the journal was saved: the prompt waits for the next run.
@@ -121,7 +106,7 @@ impl<A: Agent> Engine<A> {
         Ok(())
     }
 
-    // Brings the journal in line with the log after a failed write, an exit or a restart:
+    // Brings the journal in line with the log after an exit or a restart:
     // queued prompts already ended leave the queue, and a turn that is over ends.
     pub(super) async fn catch_up(&mut self, key: &ChatKey) -> Result<(), Fault> {
         self.unqueue_ended(key).await?;
@@ -159,9 +144,8 @@ impl<A: Agent> Engine<A> {
     // A turn whose run is gone, as after a restart, is over too.
     async fn turn_is_over(&mut self, key: &ChatKey) -> Result<bool, Fault> {
         let (turn, live) = (self.turn(key), self.is_live(key));
-        let chat = self.open(key).await?;
-        Ok(turn
-            .is_some_and(|turn| !live || chat.pending_end.is_some() || chat.log.has_ended(&turn)))
+        let log = &self.open(key).await?.log;
+        Ok(turn.is_some_and(|turn| !live || log.has_ended(&turn)))
     }
 
     // Whether the log shows the chat's run working though it is gone, as after a restart.
@@ -356,7 +340,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_turn_whose_receipt_cant_be_committed_ends_as_reported_on_the_next_prompt() {
+    async fn a_turn_whose_receipt_cant_be_committed_stays_open_and_the_next_prompt_waits() {
         let mut on = on_turn().await;
         assert_eq!(
             soon(on.agent.told.recv()).await,
@@ -374,14 +358,45 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            soon(on.agent.told.recv()).await,
-            Some(Told::Send("More".to_owned()))
-        );
+        assert_eq!(soon(on.agent.told.recv()).await, None);
+        assert!(on.engine.is_live(&key()));
+        assert_eq!(on.engine.turn(&key()), Some(request.clone()));
+        let queue = &on.engine.runs.of(&key()).unwrap().queue;
+        assert_eq!(queue.len(), 1);
         assert_eq!(
             outcomes(&mut on.engine, &request).await,
-            [Outcome::Accepted, Outcome::Completed]
+            [Outcome::Accepted]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_turn_whose_running_state_cant_be_written_never_reaches_the_agent() {
+        let mut on = on_turn().await;
+        assert_eq!(
+            soon(on.agent.told.recv()).await,
+            Some(Told::Send("Hi".to_owned()))
+        );
+        let outcome = Outcome::Completed;
+        hear(&mut on.engine, RunEvent::Finished { outcome })
+            .await
+            .unwrap();
+        let queued = Queued {
+            pick: None,
+            request: prompt("r-2", "More").request,
+            text: "More".to_owned(),
+        };
+        let agent = weacon_protocol::AgentKind::Claude;
+        on.engine
+            .runs
+            .enqueue(&key(), agent, queued, 0)
+            .await
+            .unwrap();
+        on.engine.open(&key()).await.unwrap().log.jam();
+
+        let failed = on.engine.advance(&key()).await;
+
+        assert_eq!(failed.unwrap_err().code().as_str(), "chat.log_not_written");
+        assert_eq!(soon(on.agent.told.recv()).await, None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -410,80 +425,6 @@ mod tests {
 
         assert_eq!(soon(on.agent.told.recv()).await, None);
         assert!(on.engine.runs.of(&key()).unwrap().queue.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_exit_whose_receipt_failed_is_ended_before_the_next_run_starts() {
-        let mut on = on_turn().await;
-        on.engine.open(&key()).await.unwrap().log.jam();
-        drop(on.agent);
-        let exited = Said::Exited(None);
-        let lost = on.engine.hear(&key(), &run("run-1"), exited).await;
-        assert_eq!(lost.unwrap_err().code().as_str(), "chat.log_not_written");
-        // Its outcome keeps the chat open, though nothing else does.
-        on.engine.close_if_unused(&key());
-        assert!(on.engine.open_chats.contains_key(&key()));
-
-        on.engine
-            .command(&key(), prompt("r-2", "More"))
-            .await
-            .unwrap();
-
-        launched(&mut on.engine).await;
-        let mut next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.run_as.run, run("run-2"));
-        assert_eq!(
-            soon(next.told.recv()).await,
-            Some(Told::Send("More".to_owned()))
-        );
-        let first = prompt("r-1", "Hi").request;
-        assert_eq!(
-            outcomes(&mut on.engine, &first).await,
-            [Outcome::Accepted, Outcome::Unknown]
-        );
-        assert!(on.engine.open(&key()).await.unwrap().pending_end.is_none());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_turns_end_saved_late_starts_the_prompt_queued_behind_it() {
-        let mut on = on_turn().await;
-        on.engine
-            .command(&key(), prompt("r-2", "More"))
-            .await
-            .unwrap();
-        let chat = on.engine.open(&key()).await.unwrap();
-        chat.orders = None;
-        chat.pending_end = Some(PendingEnd {
-            turn: prompt("r-1", "Hi").request,
-            outcome: Outcome::Completed,
-        });
-
-        on.engine.advance(&key()).await.unwrap();
-        launched(&mut on.engine).await;
-        let next = soon(on.bench.started.recv()).await.unwrap();
-        assert_eq!(next.run_as.run, run("run-2"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_outcome_left_by_another_turn_doesnt_end_this_one() {
-        let mut on = on_turn().await;
-        let other = PendingEnd {
-            turn: prompt("r-0", "Earlier").request,
-            outcome: Outcome::Completed,
-        };
-        on.engine.open(&key()).await.unwrap().pending_end = Some(other);
-
-        let run_1 = run("run-1");
-        on.engine
-            .end_turn(&key(), &run_1, Outcome::Interrupted)
-            .await
-            .unwrap();
-
-        let first = prompt("r-1", "Hi").request;
-        assert_eq!(
-            outcomes(&mut on.engine, &first).await,
-            [Outcome::Accepted, Outcome::Interrupted]
-        );
     }
 
     #[tokio::test(start_paused = true)]

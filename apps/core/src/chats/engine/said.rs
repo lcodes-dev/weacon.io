@@ -5,9 +5,8 @@ use weacon_protocol::{
     ChatEvent, Message, Outcome, PermissionAnswer, RunEvent, RunId, RunState, RunUpdate, code,
 };
 
-use super::agent::{Agent, Order, Said};
+use super::agent::{Agent, FromRun, Order, Said};
 use super::cut::cut;
-use super::unwritten::is_unwritten;
 use super::{ChatKey, Engine, about, failed};
 
 /// How a run's event reached the log: whole, or cut down to fit one frame.
@@ -17,6 +16,16 @@ enum Logged {
 }
 
 impl<A: Agent> Engine<A> {
+    // Takes up what a run said; the chat it is about.
+    pub(super) async fn take_said(&mut self, from: FromRun) -> ChatKey {
+        let FromRun { key, run, said } = from;
+        if let Err(fault) = self.hear(&key, &run, said).await {
+            self.log
+                .error("run event not committed", &failed(&key, &run, &fault));
+        }
+        key
+    }
+
     pub(super) async fn hear(
         &mut self,
         key: &ChatKey,
@@ -69,15 +78,9 @@ impl<A: Agent> Engine<A> {
                 let exited = self.exited(key, run).await;
                 committed.and(exited)
             }
-            // The turn is over whether or not its last event could be committed; a run whose last
-            // word couldn't be written is ended next, so it takes no other turn.
+            // The turn is over whether or not its last event could be committed.
             RunEvent::Finished { outcome } => {
                 let ended = self.end_turn(key, run, outcome).await;
-                if let Err(fault) = &committed
-                    && is_unwritten(fault)
-                {
-                    return committed.map(drop).and(ended);
-                }
                 let advanced = self.advance(key).await;
                 committed.and(ended).and(advanced)
             }
@@ -171,6 +174,26 @@ mod tests {
     use crate::chats::test_support::{
         Told, asks, chat, client, key, prompt, pushed, run, session, soon, text,
     };
+
+    #[tokio::test(start_paused = true)]
+    async fn an_event_that_cant_be_logged_is_logged_once_as_an_error_and_its_run_goes_on() {
+        let mut on = on_turn().await;
+        on.engine.open(&key()).await.unwrap().log.jam();
+        let from = FromRun {
+            key: key(),
+            run: run("run-1"),
+            said: Said::Event(text("Hello")),
+        };
+
+        assert_eq!(on.engine.take_said(from).await, key());
+
+        assert!(on.engine.is_live(&key()));
+        let logged = messages(&on.bench.records);
+        let errors = logged
+            .iter()
+            .filter(|msg| **msg == "run event not committed");
+        assert_eq!(errors.count(), 1, "{logged:?}");
+    }
 
     // The workspace, chat, run and error named by the first line logged as `msg`.
     fn named(on: &OnTurn, msg: &str) -> [Value; 4] {
