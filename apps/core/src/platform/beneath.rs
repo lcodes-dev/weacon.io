@@ -5,14 +5,14 @@ use std::io;
 use std::path::Path;
 
 /// The file at `relative`, a `/`-separated path, in `root`, opened to read; a link at any
-/// step below `root`, a folder, a pipe and a path that isn't there are refused.
+/// step below `root`, a `..`, a folder, a pipe and a path that isn't there are refused.
 pub(crate) fn open_beneath(root: &Path, relative: &str) -> io::Result<File> {
     let mut path = root.to_path_buf();
     let mut plain = false;
     for part in relative.split('/') {
         path.push(part);
         let about = fs::symlink_metadata(&path)?;
-        if about.is_symlink() {
+        if part == ".." || about.is_symlink() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         plain = about.is_file();
@@ -20,6 +20,21 @@ pub(crate) fn open_beneath(root: &Path, relative: &str) -> io::Result<File> {
     if !plain {
         return Err(io::ErrorKind::InvalidInput.into());
     }
+    open_unfollowed(&path)
+}
+
+// A link put there since the check is refused too, where the system can say so.
+#[cfg(unix)]
+fn open_unfollowed(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_unfollowed(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
@@ -49,6 +64,7 @@ mod tests {
         assert_eq!(read(&dir, "a/c.md").as_deref(), Some("inside"));
         assert_eq!(read(&dir, "a"), None);
         assert_eq!(read(&dir, "a/x.md"), None);
+        assert_eq!(read(&dir.join("a"), "../a/c.md"), None);
         let linked = crate::platform::plant_link(&dir.join("a/c.md"), &dir.join("link.md"))
             && crate::platform::plant_link(&dir.join("a"), &dir.join("folder"));
         if linked {
@@ -68,5 +84,16 @@ mod tests {
         assert!(made.success());
 
         open_beneath(&dir, "pipe.md").unwrap_err();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_open_itself_follows_no_link() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.join("c.md"), "inside").unwrap();
+        std::os::unix::fs::symlink(dir.join("c.md"), dir.join("link.md")).unwrap();
+
+        open_unfollowed(&dir.join("c.md")).unwrap();
+        open_unfollowed(&dir.join("link.md")).unwrap_err();
     }
 }
