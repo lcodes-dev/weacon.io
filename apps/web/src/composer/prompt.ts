@@ -6,13 +6,13 @@ import { type Receipts, type Settled, type Subject, settledText } from "../recei
 /** How sending a prompt ended: as its command did, or refused here for its size. */
 export type Sent = Settled | "too_long";
 
-/** Sends `text` under `request`. */
-export type Send = (text: string, request: RequestId) => Promise<Sent>;
+/** Sends `text` under `request`: to the writer's own agent when it `calls` it, else to the chat's people. */
+export type Send = (text: string, request: RequestId, calls: boolean) => Promise<Sent>;
 
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 1_015_808;
 
-/** Sends the prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
+/** Sends the message or prompt `command` through `send` and waits for its receipt, unless it is too long to send. */
 export function deliverPrompt(command: Command, receipts: Receipts, send: (envelope: Envelope) => void): Promise<Sent> {
   if (new TextEncoder().encode(JSON.stringify(command)).length > FEED_LIMIT) {
     return Promise.resolve("too_long");
@@ -25,7 +25,7 @@ const MESSAGE: Subject = {
   refused: "wasn't sent",
   unsent: "wasn't sent",
   unsure: "may not have been sent",
-  gone: "it can be read but takes no messages",
+  gone: "your agent can't be called here",
 };
 
 /** Why a send that ended as `sent` wasn't taken, or may not have been; nothing when it was. */

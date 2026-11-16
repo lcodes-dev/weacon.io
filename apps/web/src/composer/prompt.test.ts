@@ -37,6 +37,6 @@ test("a send says why it wasn't taken, or may not have been, and nothing once it
   assert.equal(sentProblem("unsure"), "No answer came. The message may not have been sent.");
   assert.equal(sentProblem("refused"), "The message wasn't sent.");
   assert.equal(sentProblem("offline"), "The machine is offline, so the message wasn't sent. Try again once it's back.");
-  assert.equal(sentProblem("detached"), "This chat's machine is gone, so it can be read but takes no messages.");
+  assert.equal(sentProblem("detached"), "Your machine no longer has this chat, so your agent can't be called here.");
   assert.equal(sentProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });

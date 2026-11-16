@@ -58,7 +58,7 @@ export function Composer({
   };
   const submit = async () => {
     if (ready) {
-      await deliver(draft.text, draft.text);
+      await deliver(draft.text, draft.text, draft.mentions.length > 0);
     }
   };
   const choose = (item: MentionItem | undefined) => {
@@ -100,6 +100,7 @@ export function Composer({
         <textarea
           ref={box}
           aria-label="Message"
+          placeholder={agent === undefined ? "Write to the chat" : `Write to the chat, or type @ to call ${agent.label}`}
           role="combobox"
           aria-expanded={options.length > 0}
           aria-controls="mentions"

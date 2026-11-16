@@ -4,6 +4,7 @@ import type { ChatRef } from "../chat-ref.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Asks, Connection, type Status, later, offers, statusText } from "../connection.ts";
 import type { Log } from "../log.ts";
+import type { ChatLeg } from "../protocol.ts";
 import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
 import { useSocketFor } from "../shell/workspace-socket.ts";
@@ -11,6 +12,8 @@ import { useSocketFor } from "../shell/workspace-socket.ts";
 const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "workspace.chats", "workspace.chat_commands", "worktree.manage", "worktree.open_terminal", "log.forward"] };
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
 const FAKE_WORKSPACE = "w-1";
+// The fake server's one person, with their agent in its one chat.
+const FAKE_LEG: ChatLeg = { member: "m-1", machine_id: "mc-1", machine: "laptop", agent: "claude", detached: false };
 
 /**
  * The chat at `chatRef` on the fake server, over a connection of its own behind a workspace
@@ -65,7 +68,7 @@ export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef
       </header>
       <main>
         <div className={settings ? "pane away" : "pane"}>
-          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} mine away={settings} />
+          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} me={FAKE_LEG.member} leg={FAKE_LEG} machines={[]} missing={undefined} openSettings={() => {}} away={settings} />
         </div>
         {settings && (
           <div className="pane">

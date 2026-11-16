@@ -196,6 +196,16 @@ test("a status keeps the agent the run had when it names none", () => {
   assert.deepEqual(next.runs.get("r-3"), { state: "starting", agent: undefined });
 });
 
+test("only a run of the reader's own agent, or one no one is named for, is theirs to stop", () => {
+  const owned = (member: string) => ({ kind: "claude" as const, owner: { kind: "member" as const, member } });
+  const on = (agent: ReturnType<typeof owned> | undefined) => fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "running", agent }]]), waiting: [], events: [] });
+
+  assert.equal(working(on(owned("m-1")), "m-1"), true);
+  assert.equal(working(on(owned("m-2")), "m-1"), false);
+  assert.equal(working(on(owned("m-2")), undefined), false);
+  assert.equal(working(on(undefined), "m-1"), true);
+});
+
 test("a chat is working while one of its runs starts, runs or waits", () => {
   const states: [RunState, boolean][] = [
     ["starting", true],
@@ -207,7 +217,7 @@ test("a chat is working while one of its runs starts, runs or waits", () => {
   ];
   for (const [state, expected] of states) {
     const one = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state, agent: undefined }]]), waiting: [], events: [] });
-    assert.equal(working(one), expected, state);
+    assert.equal(working(one, "m-1"), expected, state);
   }
 });
 
@@ -293,7 +303,7 @@ test("earlier runs take their agents from the statuses the log holds, by the sna
   assert.deepEqual(widened.runs.get("r-1"), { state: "ended", agent: codex });
   // A run the snapshot doesn't hold is over, whatever its last logged status said.
   assert.deepEqual(widened.runs.get("r-2"), { state: "ended", agent: claude });
-  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] })), false);
+  assert.equal(working(fromSnapshot({ seq: 4, runs: new Map(), waiting: [], events: [named(3, "r-2", "running", claude)] }), "m-1"), false);
   // The snapshot's own word on a run wins over what its log said before.
   assert.deepEqual(widened.runs.get("r-3"), { state: "waiting", agent: claude });
   assert.equal(snapshot.runs.get("r-1"), undefined);

@@ -155,9 +155,13 @@ export function answered(chat: Chat, run: RunId, prompt: number): Chat {
   return { ...chat, items };
 }
 
-/** Whether a run of the chat is on a turn, so that it can be stopped. */
-export function working(chat: Chat): boolean {
-  return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state));
+/**
+ * Whether a run of `me`'s own agent is on a turn in the chat, so that they can stop it; a run whose
+ * owner the log doesn't name counts as theirs.
+ */
+export function working(chat: Chat, me: MemberId | undefined): boolean {
+  const theirs = ({ agent }: Run) => agent?.owner.kind !== "member" || agent.owner.member === me;
+  return [...chat.runs.values()].some((run) => ON_TURN.includes(run.state) && theirs(run));
 }
 
 // The states of a run on a turn, which streams text and can be stopped.

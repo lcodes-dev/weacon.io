@@ -88,7 +88,7 @@ function OutsideSessionView({
       </p>
       {opened.problem !== undefined && <Problem text={opened.problem} retry={() => void opened.load()} />}
       {(chat !== undefined || opened.loading) && (
-        <TranscriptView lines={shown} away={false} answering={undefined} older={undefined} loading={opened.loading} retry={undefined} />
+        <TranscriptView lines={shown} away={false} answering={undefined} me={undefined} older={undefined} loading={opened.loading} retry={undefined} />
       )}
     </section>
   );

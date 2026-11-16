@@ -1,33 +1,30 @@
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useState } from "react";
 
-import { answered, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { useChatCommands } from "../chat/chat-hooks.ts";
 import { Composer } from "../composer/composer.tsx";
+import { agentItem } from "../composer/mentionables.ts";
 import type { Send } from "../composer/prompt.ts";
-import { later } from "../connection.ts";
 import { newId } from "../ids.ts";
-import { vendorName } from "../chat/label.ts";
-import { current, repos } from "../machines/remote-settings.ts";
-import type { AgentKind, ChatId, MachineId, MachineSettings, MachineSummary, RepoId, TaskId, TaskRecord } from "../protocol.ts";
+import type { ChatId, MachineId, MachineSummary, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Readiness, missingText, startBlocked, startProblem } from "./start.ts";
+import { MyAgentFields, useMyAgent } from "./my-agent.tsx";
+import { type Readiness, missingText, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
 
-const KINDS: AgentKind[] = ["claude", "codex"];
-
 /**
- * Starts a chat on one of `machines`, the person's own that run chats: in a repository the
- * machine has for the workspace, with an agent, for one of `tasks` if the person picks one, by
- * its first prompt; `task` is picked to begin with. Once the server takes it,
- * `started` hears the chat's id; until then the box keeps the text. Back from `away`, such as
- * Settings, where an agent may have been signed in, it asks the machine again.
+ * Starts a chat by its first message, for one of `tasks` if the person picks one; `task` is
+ * picked to begin with. With one of `machines`, the person's own that run chats, they also pick
+ * their agent in the chat, which a message that mentions it calls; `missing` says what calling
+ * one lacks when there is none. Once the server takes the message, `started` hears the chat's
+ * id; until then the box keeps the text.
  */
 export function NewChat({
   socket,
   live,
   away,
   machines,
+  missing,
   started,
   openSettings,
   tasks,
@@ -38,6 +35,7 @@ export function NewChat({
   live: boolean;
   away: boolean;
   machines: MachineSummary[];
+  missing: ReactNode;
   started(chat: ChatId): void;
   /** Opens Settings, where the person signs an agent in on a machine, with `machine`'s own open. */
   openSettings(machine?: MachineId): void;
@@ -45,39 +43,18 @@ export function NewChat({
   tasks?: readonly TaskRecord[] | undefined;
   task?: TaskId | undefined;
 }) {
-  const [picked, setPicked] = useState<MachineId>();
-  const machine = machines.find(({ id }) => id === picked) ?? machines[0];
-  const id = machine?.id;
-  const key = `${id} ${socket.workspace}`;
-  const settings = useLoaded(() => (id === undefined ? answered<MachineSettings | undefined>(undefined) : current(socket, id, later)), key);
-  const listed = useLoaded(() => (id === undefined ? answered<RepoId[]>([]) : repos(socket, id, later)), key);
-  const back = useRef(away);
-  useEffect(() => {
-    if (back.current && !away) {
-      void settings.load();
-      void listed.load();
-    }
-    back.current = away;
-  }, [away]);
-  const [repo, setRepo] = useState<RepoId>();
-  const [agent, setAgent] = useState<AgentKind>("claude");
+  const pick = useMyAgent(socket, machines, away);
   const [taskId, setTaskId] = useState(task);
   const forTask = tasks?.find(({ id }) => id === taskId);
   const commands = useChatCommands(socket, undefined, live, () => {});
-  const shownRepos = listed.value;
-  const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
-  const signIn = settings.value?.sign_ins.find((one) => one.agent === agent)?.state;
-  const agentName = vendorName(agent);
-  const blocked = machine === undefined ? "Pick a machine to start a chat." : startBlocked({ live, repos: shownRepos, agent: agentName, signIn });
-  const send: Send = async (text, request) => {
-    if (machine === undefined || chosenRepo === undefined) {
-      return "refused";
-    }
+  const { choice } = pick;
+  const send: Send = async (text, request, calls) => {
     // The server gives the task its title, so a task picked before the list loaded still goes;
     // one the loaded list doesn't have doesn't.
     const named = taskId !== undefined && (tasks === undefined || forTask !== undefined);
+    const forIt = named && { task: { id: taskId, title: forTask?.title ?? "" } };
     const chat = newId();
-    const action = { kind: "prompt" as const, text, machine: machine.id, repo: chosenRepo, agent, ...(named && { task: { id: taskId, title: forTask?.title ?? "" } }) };
+    const action = calls && choice !== undefined ? { kind: "prompt" as const, text, ...choice, ...forIt } : { kind: "say" as const, text, ...forIt };
     const sent = await commands.start({ workspace: socket.workspace, chat }, action, request);
     if (sent === "accepted") {
       started(chat);
@@ -86,65 +63,23 @@ export function NewChat({
   };
   return (
     <section className="new-chat" aria-label="New chat">
-      <label>
-        Machine
-        <select value={machine?.id} onChange={(event) => setPicked(event.target.value)}>
-          {machines.map((one) => (
-            <option key={one.id} value={one.id}>
-              {one.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {shownRepos !== undefined && shownRepos.length > 0 && (
-        <label>
-          Repository
-          <select value={chosenRepo} onChange={(event) => setRepo(event.target.value)}>
-            {shownRepos.map((one) => (
-              <option key={one} value={one}>
-                {one}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {shownRepos?.length === 0 && (
-        <p className="muted">
-          No repository is added on this machine for this workspace. Run <code>weacon repo add --workspace {socket.workspace} &lt;name&gt; &lt;folder&gt;</code> on
-          it, then try again.{" "}
-          <button type="button" onClick={() => void listed.load()}>
-            Try again
-          </button>
-        </p>
-      )}
-      {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
-      <label>
-        Agent
-        <select value={agent} onChange={(event) => setAgent(KINDS.find((kind) => kind === event.target.value) ?? agent)}>
-          {KINDS.map((kind) => (
-            <option key={kind} value={kind}>
-              {vendorName(kind)}
-            </option>
-          ))}
-        </select>
-      </label>
       {tasks !== undefined && <TaskField tasks={tasks} chosen={forTask} choose={setTaskId} />}
-      {signIn === "signed_out" && (
-        <p>
-          <button type="button" onClick={() => openSettings(machine?.id)}>
-            Sign in from Settings
-          </button>
-        </p>
-      )}
-      {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
-      <Composer send={send} blocked={blocked} hidden={false} explain={startProblem} />
+      {machines.length > 0 ? <MyAgentFields pick={pick} workspace={socket.workspace} openSettings={openSettings} /> : missing}
+      <Composer
+        send={send}
+        blocked={live ? undefined : "Chats start once the server is connected."}
+        hidden={false}
+        explain={startProblem}
+        agent={choice && agentItem(choice.agent)}
+      />
     </section>
   );
 }
 
 /**
- * Why New chat can't be used, in one line, with what fixes it: Settings, to pair a machine, and
- * Check again; nothing when it can. A `problem` fetching the machines shows with Try again.
+ * Why the person can't call an agent of their own, in one line, with what fixes it: Settings, to
+ * pair a machine, and Check again; nothing when they can. A `problem` fetching the machines shows
+ * with Try again.
  */
 export function StartMissing({
   ready,
