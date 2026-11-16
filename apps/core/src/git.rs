@@ -157,7 +157,10 @@ impl Git {
         let start = if fresh {
             Some(self.new_branch(repo, path, &branch, &full)?)
         } else {
-            self.add(repo, path, &["--force"], &branch)?;
+            // Forced only past the missing folder git still lists, never past a checkout made
+            // elsewhere meanwhile.
+            let force: &[&str] = if here.is_some() { &["--force"] } else { &[] };
+            self.add(repo, path, force, &branch)?;
             None
         };
         Ok(Worktree {
