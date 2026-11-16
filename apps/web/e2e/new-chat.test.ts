@@ -136,6 +136,16 @@ test("from an empty workspace, a person starts a chat that calls their agent on 
 
   const form = page.getByRole("region", { name: "New chat" });
   await form.getByRole("group", { name: "Your agent in this chat" }).waitFor();
+  // In a short window the column scrolls, with its first field still in reach.
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 1024, height: 240 });
+  const fields = form.getByRole("group", { name: "Your agent in this chat" });
+  await fields.scrollIntoViewIfNeeded();
+  const [top, column] = [await fields.boundingBox(), await form.boundingBox()];
+  assert.ok(top !== null && column !== null && top.y >= column.y, `the agent's fields are at ${JSON.stringify(top)}, above the column at ${JSON.stringify(column)}`);
+  if (size !== null) {
+    await page.setViewportSize(size);
+  }
   await form.getByLabel("Repository").selectOption("garden");
   // Only the agents signed in for this workspace on the machine are offered.
   await form.getByRole("button", { name: "Sign in from Settings" }).waitFor();
