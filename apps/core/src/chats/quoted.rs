@@ -75,7 +75,10 @@ mod tests {
 
         let told = prompt("Ship it", &[shared]);
 
-        assert!(told.contains("\nShared Codex on Team VPS wrote:\nDone.\n"), "{told}");
+        assert!(
+            told.contains("\nShared Codex on Team VPS wrote:\nDone.\n"),
+            "{told}"
+        );
         assert!(!told.contains("Grace"), "{told}");
     }
 

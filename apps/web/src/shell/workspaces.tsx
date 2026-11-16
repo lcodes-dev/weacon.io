@@ -296,7 +296,7 @@ function WorkspaceChats({
   const mine = own?.kind === "ready" ? own.machines : [];
   const missing = <StartMissing ready={ready} problem={machines.problem} check={loadMachines} openSettings={openSettings} />;
   const leg = legOf(workspace.member, open);
-  const guest = leg !== undefined && machines.value !== undefined && !machines.value.machines.some(({ id }) => id === leg.machine_id);
+  const guest = others.some(({ id, owner }) => id === leg?.machine_id && owner !== workspace.member);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (
     <div className="workspace">

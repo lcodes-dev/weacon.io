@@ -47,12 +47,12 @@ impl Workspace {
              ORDER BY e.seq DESC"
         );
         let mut rows = sqlx::query_as::<_, SaidRow>(sqlx::AssertSqlSafe(select))
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(member.as_str())
-        .bind(super::number(after)?)
-        .bind(super::number(upto)?)
-        .fetch(&mut *reader);
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .bind(member.as_str())
+            .bind(super::number(after)?)
+            .bind(super::number(upto)?)
+            .fetch(&mut *reader);
         let mut said = Vec::new();
         while let Some(row) = rows.try_next().await.map_err(failed)? {
             let Some(one) = said_in(row)? else {

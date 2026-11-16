@@ -31,7 +31,14 @@ type Chats = { made: Map<string, string>; called: Set<string>; offline: number; 
 function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[] {
   return (asked, _opened, reply) => {
     if (asked.type === "machine_settings_query") {
-      const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["kitchen", "garden"] } : { kind: "current" as const, ...(chats.settings ?? SETTINGS) };
+      const settings = chats.settings ?? SETTINGS;
+      const signedIn = settings.sign_ins.filter(({ state }) => state === "signed_in").map(({ agent }) => agent);
+      const answer =
+        asked.query.kind === "repos"
+          ? { kind: "repos" as const, repos: ["kitchen", "garden"] }
+          : asked.query.kind === "agents"
+            ? { kind: "agents" as const, agents: signedIn }
+            : { kind: "current" as const, ...settings };
       return [{ id: 0, type: "machine_settings_answer", request: asked.request, machine: asked.machine, workspace: asked.workspace, answer }];
     }
     if (asked.type === "chat_command" && asked.action.kind === "say") {

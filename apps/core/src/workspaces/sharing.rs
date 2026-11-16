@@ -125,6 +125,9 @@ mod tests {
         share(&dir, "w3", true).unwrap();
 
         assert!(on.starts_with("Workspace w1: shared. Every member can call agents"));
+        let described = workspaces.describe(|_| Vec::new()).unwrap();
+        assert!(described.contains("Workspace w1: access ask-first, shared; "));
+        assert!(described.contains("Workspace w2: access full; "));
         assert_eq!(workspaces.shared(), [id("w1"), id("w3")]);
         assert!(workspaces.shares(&id("w1")) && !workspaces.shares(&id("w2")));
         let off = share(&dir, "w1", false).unwrap();
@@ -148,7 +151,10 @@ mod tests {
 
         let shared = store(&workspaces, &id("w1"), true, &log).unwrap();
 
-        assert_eq!((shared.access, shared.shared), (AccessLevel::ReadOnly, true));
+        assert_eq!(
+            (shared.access, shared.shared),
+            (AccessLevel::ReadOnly, true)
+        );
         assert!(access(AccessLevel::Full, None).shared);
         assert!(access(AccessLevel::Full, Some(true)).shared);
     }

@@ -819,15 +819,12 @@ mod tests {
         match reply {
             Envelope {
                 id: 9,
-                message: Message::Error(ErrorBody { code, .. }),
-            } => Some(code.as_str().to_owned()),
-            Envelope {
                 message:
-                    Message::Receipt(Receipt {
+                    Message::Error(ErrorBody { code, .. })
+                    | Message::Receipt(Receipt {
                         outcome: Outcome::Failed { code },
                         ..
                     }),
-                ..
             } => Some(code.as_str().to_owned()),
             other => Some(format!("{other:?}")),
         }
@@ -924,8 +921,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_server_is_told_what_the_machine_is_shared_with_as_it_connects_and_as_it_changes()
-    {
+    async fn the_server_is_told_what_the_machine_is_shared_with_as_it_connects_and_as_it_changes() {
         let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
         share(&dir, "w-2", true);
         let link = uplink(&dir);

@@ -359,9 +359,8 @@ mod tests {
                 json!({ "run": "run-7", "state": "running", "agent": agent }),
             )
         };
-        let robot =
-            newer(json!({ "kind": "robot", "owner": { "kind": "member", "member": "m-1" } }))
-                .unwrap();
+        let mine = json!({ "kind": "member", "member": "m-1" });
+        let robot = newer(json!({ "kind": "robot", "owner": mine })).unwrap();
         let team =
             newer(json!({ "kind": "claude", "owner": { "kind": "team", "id": 1 } })).unwrap();
         serde_json::to_value(&robot).unwrap_err();
@@ -370,9 +369,7 @@ mod tests {
         newer(json!({ "kind": "claude" })).unwrap_err();
         newer(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();
         newer(json!({ "kind": "claude", "owner": { "kind": "shared" } })).unwrap_err();
-        let nowhere = json!({ "kind": "claude", "machine": "",
-                              "owner": { "kind": "member", "member": "m-1" } });
-        newer(nowhere).unwrap_err();
+        newer(json!({ "kind": "claude", "owner": mine, "machine": "" })).unwrap_err();
     }
 
     #[test]

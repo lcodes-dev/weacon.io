@@ -60,6 +60,11 @@ impl Settings {
         level_name(self.access)
     }
 
+    /// What the line of a workspace shared with its members adds after its level.
+    pub(crate) const fn sharing(&self) -> &'static str {
+        if self.shared { ", shared" } else { "" }
+    }
+
     pub(crate) fn warning(&self) -> &'static str {
         if self.team && self.access == AccessLevel::Full {
             "Warning: full access is on in a team workspace. Its agents change files on this \

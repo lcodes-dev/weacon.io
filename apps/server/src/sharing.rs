@@ -16,8 +16,8 @@ use crate::shared::Shared;
 pub(crate) const SHARE: Code = code!("machine.share");
 
 /// Keeps what `machine`'s core says it is shared with, in place of what it said before.
-pub(crate) async fn keep(shared: &Shared, machine: &Machine, shares: MachineShares) {
-    let kept = shared.db.set_shares(&machine.id, &shares.workspaces).await;
+pub(crate) async fn keep(shared: &Shared, machine: &Machine, told: MachineShares) {
+    let kept = shared.db.set_shares(&machine.id, &told.workspaces).await;
     let machine_id = ("machine_id", machine.id.as_str().into());
     match kept {
         Ok(()) => shared.log.info("machine shares kept", &[machine_id]),
@@ -61,7 +61,9 @@ mod tests {
         let (account, grace) = (fresh_account(), email("grace@example.com"));
         db.add_account(&account, &grace).await.unwrap();
         let w1 = db.workspace(&id("w1")).await.unwrap();
-        w1.add_member(&member_id("m5"), &account, &grace).await.unwrap();
+        w1.add_member(&member_id("m5"), &account, &grace)
+            .await
+            .unwrap();
         let grace = fixture.sign_in_client(server.address, "grace@example.com");
         let grace = grace.await;
         let mut core = open(server.address, "/api/machines/connect", &paired.token)
@@ -73,7 +75,7 @@ mod tests {
             let path = "GET /api/workspaces/w1/machines";
             ask(server.address, path, &grace.proof(), "").await.1
         };
-        let shares = |workspaces: &[&str]| Envelope {
+        let says = |workspaces: &[&str]| Envelope {
             id: 0,
             message: Message::MachineShares(MachineShares {
                 workspaces: workspaces.iter().copied().map(id).collect(),
@@ -81,11 +83,11 @@ mod tests {
         };
 
         let before = listed().await;
-        send(&mut core, shares(&["w1"])).await;
+        send(&mut core, says(&["w1"])).await;
         // Its pong comes once the server has taken what was sent before it.
         assert!(pongs(&mut core).await);
         let shared = listed().await;
-        send(&mut core, shares(&[])).await;
+        send(&mut core, says(&[])).await;
         assert!(pongs(&mut core).await);
         let after = listed().await;
 

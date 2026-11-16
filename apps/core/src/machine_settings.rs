@@ -451,10 +451,18 @@ mod tests {
         );
         assert_eq!(code(all.await), "settings.not_owner");
         // One with no asker named is no member's.
-        let unnamed = query(&host, &owner, asked(MachineSettingsQueryKind::Repos, "mc-1", None)).await;
+        let unnamed = query(
+            &host,
+            &owner,
+            asked(MachineSettingsQueryKind::Repos, "mc-1", None),
+        )
+        .await;
         assert_eq!(code(unnamed), "settings.not_owner");
         assert!(!current(share(false).await.unwrap()).shared);
-        assert_eq!(code(member(MachineSettingsQueryKind::Repos).await), "settings.not_owner");
+        assert_eq!(
+            code(member(MachineSettingsQueryKind::Repos).await),
+            "settings.not_owner"
+        );
     }
 
     #[test]

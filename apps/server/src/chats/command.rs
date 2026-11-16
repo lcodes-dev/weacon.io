@@ -73,32 +73,38 @@ pub(crate) async fn take(
 // name for it, and only from the owner of the machine that runs it. A stop is for the asker's
 // own agent, or from a machine's owner for another member's agent at work on it.
 async fn acted_on(
-    Sender { shared, member, asker }: Sender<'_>,
+    Sender {
+        shared,
+        member,
+        asker,
+    }: Sender<'_>,
     chat: &Chat,
     command: &mut ChatCommand,
 ) -> Result<Leg, Fault> {
     let workspace = &member.workspace;
     let legs = workspace.legs(&command.chat).await?;
     let mut legs = legs.into_iter().filter(|leg| chat.made && leg.core_seq > 0);
-    let leg = if let ChatAction::Permission { answer } = &mut command.action {
+    if let ChatAction::Permission { answer } = &mut command.action {
         let asked = legs.find_map(|leg| Some((leg.own_run(&answer.run)?, leg)));
         let (run, leg) = asked.ok_or_else(not_owner)?;
         answer.run = run;
-        leg
-    } else {
-        let at_work = at_work(workspace, chat, &command.chat).await?;
-        let (own, others): (Vec<Leg>, Vec<Leg>) = legs.partition(|leg| leg.member == member.id);
-        let working = others.into_iter().find(|leg| Some(&leg.member) == at_work.as_ref());
-        match (working, own.into_iter().next()) {
-            (Some(working), own) => {
-                let owns = shared.db.has_machine(&asker.account, &working.machine);
-                return if owns.await? { Some(working) } else { own }.ok_or_else(not_owner);
-            }
-            (None, own) => return own.ok_or_else(not_owner),
-        }
-    };
-    let owns = shared.db.has_machine(&asker.account, &leg.machine).await?;
-    owns.then_some(leg).ok_or_else(not_owner)
+        let owns = shared.db.has_machine(&asker.account, &leg.machine).await?;
+        return owns.then_some(leg).ok_or_else(not_owner);
+    }
+    let at_work = at_work(workspace, chat, &command.chat).await?;
+    let (own, others): (Vec<Leg>, Vec<Leg>) = legs.partition(|leg| leg.member == member.id);
+    let mut working = others
+        .into_iter()
+        .filter(|leg| Some(&leg.member) == at_work.as_ref());
+    if let Some(working) = working.next()
+        && shared
+            .db
+            .has_machine(&asker.account, &working.machine)
+            .await?
+    {
+        return Ok(working);
+    }
+    own.into_iter().next().ok_or_else(not_owner)
 }
 
 // Stores a person's message, in a chat it makes when there is none.
@@ -322,7 +328,11 @@ async fn one_at_a_time(
 }
 
 // The member whose agent works or waits for an answer in `chat`, if one does.
-async fn at_work(workspace: &Workspace, chat: &Chat, id: &ChatId) -> Result<Option<MemberId>, Fault> {
+async fn at_work(
+    workspace: &Workspace,
+    chat: &Chat,
+    id: &ChatId,
+) -> Result<Option<MemberId>, Fault> {
     let runs = workspace.chat_runs(id).await?;
     let working = |state| {
         matches!(
@@ -1066,9 +1076,11 @@ mod tests {
 
     // The commands among what a machine was sent, each with the account it names as its asker.
     fn commands(sent: Vec<Message>) -> Vec<(ChatAction, weacon_protocol::AccountId)> {
-        let command = |message| match message {
-            Message::ChatCommand(command) => Some((command.action, command.by?.account)),
-            _ => None,
+        let command = |message| {
+            let Message::ChatCommand(command) = message else {
+                return None;
+            };
+            Some((command.action, command.by?.account))
         };
         sent.into_iter().filter_map(command).collect()
     }
@@ -1093,14 +1105,10 @@ mod tests {
         two.up(ada, 2, status(RunState::Running)).await;
         // Its events are the caller's, and its agent the workspace's shared one.
         let stored = events(workspace, "c-1").await;
-        let authors: Vec<_> = stored
-            .iter()
-            .filter_map(|event| match event {
-                ChatEvent::Prompt { author, .. } => author.clone(),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(authors, [grace.member.id.clone()]);
+        let Some(ChatEvent::Prompt { author, .. }) = stored.get(2) else {
+            panic!("no prompt: {stored:?}");
+        };
+        assert_eq!(*author, Some(grace.member.id.clone()));
         let Some(ChatEvent::RunStatus { status }) = stored.last() else {
             panic!("no status: {stored:?}");
         };
@@ -1172,7 +1180,10 @@ mod tests {
         let address = |name: &str| crate::test_support::email(&format!("{name}@example.com"));
         for (member, person, name) in [("m1", ada, "ada"), ("m5", grace, "grace")] {
             let account = &person.asker.account;
-            other.add_member(&id(member), account, &address(name)).await.unwrap();
+            other
+                .add_member(&id(member), account, &address(name))
+                .await
+                .unwrap();
         }
         let there = Member {
             workspace: other,

@@ -135,7 +135,10 @@ mod tests {
 
         // Bo is in w1 only, so his core naming w2 shares nothing there.
         db.set_shares(&bos, &both).await.unwrap();
-        assert_eq!(names(&one.shared_machines().await.unwrap()), [("mc-3", "m3")]);
+        assert_eq!(
+            names(&one.shared_machines().await.unwrap()),
+            [("mc-3", "m3")]
+        );
         assert!(two.shared_machines().await.unwrap().is_empty());
         assert!(one.callable(&ada, &bos).await.unwrap().is_some());
         assert_eq!(two.callable(&ada, &bos).await.unwrap(), None);
@@ -144,8 +147,14 @@ mod tests {
         assert_eq!(one.callable(&bo, &adas).await.unwrap(), None);
         assert_eq!(one.callable(&bo, &id("mc-none")).await.unwrap(), None);
         db.set_shares(&adas, &both[1..2]).await.unwrap();
-        assert_eq!(names(&two.shared_machines().await.unwrap()), [("mc-1", "m2")]);
-        assert_eq!(names(&one.shared_machines().await.unwrap()), [("mc-3", "m3")]);
+        assert_eq!(
+            names(&two.shared_machines().await.unwrap()),
+            [("mc-1", "m2")]
+        );
+        assert_eq!(
+            names(&one.shared_machines().await.unwrap()),
+            [("mc-3", "m3")]
+        );
         db.set_shares(&bos, &[]).await.unwrap();
         assert!(one.shared_machines().await.unwrap().is_empty());
         assert_eq!(one.callable(&ada, &bos).await.unwrap(), None);
@@ -165,7 +174,10 @@ mod tests {
 
         assert!(db.unpair(&bo, &desk).await.unwrap());
 
-        assert_eq!(names(&one.shared_machines().await.unwrap()), [("mc-4", "m3")]);
+        assert_eq!(
+            names(&one.shared_machines().await.unwrap()),
+            [("mc-4", "m3")]
+        );
         assert_eq!(one.callable(&ada, &desk).await.unwrap(), None);
         one.leave(&member_id("m3")).await.unwrap();
         assert!(one.shared_machines().await.unwrap().is_empty());

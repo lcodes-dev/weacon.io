@@ -124,7 +124,7 @@ impl Workspaces {
             match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
                     let (level, warning) = (settings.level(), settings.warning());
-                    let shared = if settings.shared { ", shared" } else { "" };
+                    let shared = settings.sharing();
                     format!("Workspace {id}: access {level}{shared}; {agents}\n{warning}")
                 }
                 Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),

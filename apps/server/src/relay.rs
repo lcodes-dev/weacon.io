@@ -538,6 +538,56 @@ mod tests {
         (envelope.id, code.as_str(), *retryable)
     }
 
+    // Grace, another member of w1 with no machine, and her feed of it offering `capabilities`.
+    async fn graces_feed(
+        fixture: &Fixture,
+        address: SocketAddr,
+        capabilities: &[&str],
+    ) -> (AccountId, Socket) {
+        let db = &fixture.shared.db;
+        let email = crate::test_support::email("grace@example.com");
+        let account = crate::test_support::fresh_account();
+        db.add_account(&account, &email).await.unwrap();
+        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
+        w1.add_member(&member_id("m5"), &account, &email)
+            .await
+            .unwrap();
+        let grace = fixture.sign_in_client(address, "grace@example.com").await;
+        let mut browser = open(address, "/api/workspaces/w1/feed", &grace.token)
+            .await
+            .unwrap();
+        say(&mut browser, capabilities).await;
+        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        (account, browser)
+    }
+
+    // What the feed answers `message`, sent under `id`, past what it says of the workspace.
+    async fn answer_to(browser: &mut Socket, id: u32, message: Message) -> Envelope {
+        send(browser, envelope(id, message)).await;
+        let mut heard = next_envelope(browser).await;
+        while heard.id != id {
+            heard = next_envelope(browser).await;
+        }
+        heard
+    }
+
+    // A query of `kind` for `machine`'s settings in w1.
+    fn of_kind(machine: &MachineId, kind: MachineSettingsQueryKind) -> Message {
+        let Message::MachineSettingsQuery(mut asked) = query(machine, "w1") else {
+            panic!();
+        };
+        asked.query = kind;
+        Message::MachineSettingsQuery(asked)
+    }
+
+    // Who a relayed settings query says asked, and what.
+    fn asked_by(relayed: Envelope) -> Option<(AccountId, MachineSettingsQueryKind)> {
+        let Message::MachineSettingsQuery(asked) = relayed.message else {
+            return None;
+        };
+        Some((asked.by?.account, asked.query))
+    }
+
     #[tokio::test]
     async fn a_member_asks_a_machine_shared_with_their_workspace_for_its_repos_and_agents_alone() {
         let fixture = Fixture::new().await;
@@ -545,58 +595,30 @@ mod tests {
         let offers = ["workspace.feed", "machine.settings"];
         let (paired, mut core, _adas) = both(&fixture, server.address, &offers).await;
         let machine = paired.machine_id();
-        let db = &fixture.shared.db;
-        let address = crate::test_support::email("grace@example.com");
-        let account = crate::test_support::fresh_account();
-        db.add_account(&account, &address).await.unwrap();
-        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
-        w1.add_member(&member_id("m5"), &account, &address)
-            .await
-            .unwrap();
-        let grace = fixture.sign_in_client(server.address, "grace@example.com");
-        let token = grace.await.token;
-        let mut browser = open(server.address, "/api/workspaces/w1/feed", &token)
-            .await
-            .unwrap();
-        say(&mut browser, &offers).await;
-        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
-        let of_kind = |kind| {
-            let Message::MachineSettingsQuery(mut asked) = query(&machine, "w1") else {
-                panic!();
-            };
-            asked.query = kind;
-            Message::MachineSettingsQuery(asked)
-        };
-        let repos = || of_kind(MachineSettingsQueryKind::Repos);
-        // Past what her feed tells her of the workspace.
-        async fn refused(browser: &mut Socket, id: u32, message: Message) -> Envelope {
-            send(browser, envelope(id, message)).await;
-            loop {
-                let heard = next_envelope(browser).await;
-                if heard.id == id {
-                    return heard;
-                }
-            }
-        }
+        let (account, mut browser) = graces_feed(&fixture, server.address, &offers).await;
+        let repos = || of_kind(&machine, MachineSettingsQueryKind::Repos);
+        let agents = of_kind(&machine, MachineSettingsQueryKind::Agents);
 
-        let unshared = refused(&mut browser, 40, repos()).await;
-        db.set_shares(&machine, &[workspace_id("w1")]).await.unwrap();
+        let unshared = answer_to(&mut browser, 40, repos()).await;
+        let db = &fixture.shared.db;
+        db.set_shares(&machine, &[workspace_id("w1")])
+            .await
+            .unwrap();
         send(&mut browser, envelope(41, repos())).await;
         let relayed = next_envelope(&mut core).await;
-        let all = refused(&mut browser, 42, query(&machine, "w1")).await;
-        let change = refused(&mut browser, 43, command(&machine)).await;
-        send(&mut browser, envelope(44, of_kind(MachineSettingsQueryKind::Agents))).await;
-        let agents = next_envelope(&mut core).await;
+        let all = answer_to(&mut browser, 42, query(&machine, "w1")).await;
+        let change = answer_to(&mut browser, 43, command(&machine)).await;
+        send(&mut browser, envelope(44, agents)).await;
+        let asked_agents = next_envelope(&mut core).await;
 
         assert_eq!(error_of(&unshared), (40, "machine.not_found", false));
         // Stamped as hers, whatever her browser claimed.
-        let asker = |message: Message| match message {
-            Message::MachineSettingsQuery(asked) => asked.by.map(|by| (by.account, asked.query)),
-            _ => None,
-        };
         let hers = |kind| Some((account.clone(), kind));
-        assert_eq!(asker(relayed.message), hers(MachineSettingsQueryKind::Repos));
-        assert_eq!(asker(agents.message), hers(MachineSettingsQueryKind::Agents));
+        assert_eq!(asked_by(relayed), hers(MachineSettingsQueryKind::Repos));
+        assert_eq!(
+            asked_by(asked_agents),
+            hers(MachineSettingsQueryKind::Agents)
+        );
         assert_eq!(error_of(&all), (42, "machine.not_found", false));
         assert_eq!(error_of(&change), (43, "machine.not_found", false));
     }
