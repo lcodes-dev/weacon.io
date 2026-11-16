@@ -308,7 +308,6 @@ const isMark = (value: unknown): boolean =>
   typeof value === "object" && value !== null && Number.isSafeInteger((value as Mark).start) && Number.isSafeInteger((value as Mark).end);
 const isCount = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
 const isSnippet = (value: unknown): boolean => fields(value, ["text"]) && listOf("marks", isMark)(value);
-// A hit of a kind this build doesn't know only needs its kind; the palette leaves it out.
 const isHit = (value: unknown): boolean => {
   if (!fields(value, ["kind"])) {
     return false;
@@ -324,7 +323,7 @@ const isHit = (value: unknown): boolean => {
     case "chat":
       return known && fields(value, ["chat"]) && isId(hit.chat) && (hit.seq === undefined || isCount(hit.seq));
     default:
-      return true;
+      return false;
   }
 };
 const isSearchAnswer = listOf<SearchAnswer>("hits", isHit);

@@ -6,14 +6,13 @@ import { listed, opensPalette, parts } from "./hits.ts";
 
 const snippet = { text: "the plan", marks: [] };
 
-test("hits list in the server's order, each opening its place, and a newer kind is left out", () => {
+test("hits list in the server's order, each opening its place", () => {
   const hits = [
     { kind: "doc", doc: "d-1", title: "Plan", snippet },
-    { kind: "symbol", name: "a::b" },
     { kind: "chat", chat: "c-1", title: "Fix the build", seq: 3, snippet },
     { kind: "chat", chat: "c-1", title: "Fix the build", snippet },
     { kind: "task", task: "t-1", title: "Ship", snippet },
-  ] as unknown as SearchHit[];
+  ] satisfies SearchHit[];
 
   assert.deepEqual(
     listed(hits).map(({ key, kind, title, place }) => [key, kind, title, place]),

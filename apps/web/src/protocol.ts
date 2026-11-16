@@ -797,11 +797,9 @@ export type InvitationOffer = {
 };
 
 export type LineOp = (
-  | (
-    | "context"
-    | "added"
-    | "removed"
-  )
+  | "context"
+  | "added"
+  | "removed"
 );
 
 /**
@@ -1853,18 +1851,16 @@ export type Symbol = {
 };
 
 export type SymbolKind = (
-  | (
-    | "const"
-    | "enum"
-    | "fn"
-    | "macro"
-    | "mod"
-    | "static"
-    | "struct"
-    | "trait"
-    | "type"
-    | "union"
-  )
+  | "const"
+  | "enum"
+  | "fn"
+  | "macro"
+  | "mod"
+  | "static"
+  | "struct"
+  | "trait"
+  | "type"
+  | "union"
 );
 
 /**

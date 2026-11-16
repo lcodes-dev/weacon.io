@@ -1,5 +1,5 @@
 import { record } from "./fields.ts";
-import type { App, ChatEntry, Envelope, RunEvent } from "./protocol.ts";
+import type { App, ChatEntry, Envelope, RunEvent, SymbolKind } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<
@@ -288,7 +288,7 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
   );
 }
 
-// A state needs its three flags and a page its https address; a newer kind passes, to be ignored.
+// A state needs its three flags and a page its https address.
 function isWorktreeAnswer(answer: unknown): boolean {
   const fields = record(answer);
   switch (fields?.["kind"]) {
@@ -297,8 +297,10 @@ function isWorktreeAnswer(answer: unknown): boolean {
     case "pull_request_opened":
     case "pull_request_page":
       return isHttps(fields["url"]);
+    case "terminal_opened":
+      return true;
     default:
-      return typeof fields?.["kind"] === "string";
+      return false;
   }
 }
 
@@ -327,8 +329,16 @@ function isDiffAnswer(answer: unknown): boolean {
 
 function isFileChange(change: unknown): boolean {
   const fields = record(change);
-  const kind = fields?.["kind"];
-  return typeof kind === "string" && (kind !== "renamed" || typeof fields?.["from"] === "string");
+  switch (fields?.["kind"]) {
+    case "added":
+    case "removed":
+    case "modified":
+      return true;
+    case "renamed":
+      return typeof fields["from"] === "string";
+    default:
+      return false;
+  }
 }
 
 function isContent(content: unknown): boolean {
@@ -338,8 +348,11 @@ function isContent(content: unknown): boolean {
       const hunks = fields["hunks"];
       return Array.isArray(hunks) && hunks.every(isHunk);
     }
+    case "binary":
+    case "too_large":
+      return true;
     default:
-      return typeof fields?.["kind"] === "string";
+      return false;
   }
 }
 
@@ -352,7 +365,7 @@ function isHunk(hunk: unknown): boolean {
     Array.isArray(lines) &&
     lines.every((line) => {
       const parts = record(line);
-      return typeof parts?.["op"] === "string" && typeof parts["text"] === "string";
+      return ["context", "added", "removed"].includes(parts?.["op"] as string) && typeof parts?.["text"] === "string";
     })
   );
 }
@@ -379,17 +392,20 @@ function isSessionsAnswer(answer: unknown): boolean {
 function isSymbolsAnswer(answer: unknown): boolean {
   const fields = record(answer);
   if (fields?.["kind"] !== "found") {
-    return typeof fields?.["kind"] === "string";
+    return false;
   }
   const symbols = fields["symbols"];
   return Array.isArray(symbols) && symbols.every(isSymbol) && typeof fields["more"] === "boolean";
 }
 
+const SYMBOL_KINDS: readonly string[] = ["const", "enum", "fn", "macro", "mod", "static", "struct", "trait", "type", "union"] satisfies SymbolKind[];
+
 function isSymbol(symbol: unknown): boolean {
   const fields = record(symbol);
   return (
     fields !== undefined &&
-    ["repo", "kind", "name", "path"].every((key) => text(fields, key)) &&
+    ["repo", "name", "path"].every((key) => text(fields, key)) &&
+    SYMBOL_KINDS.includes(fields["kind"] as string) &&
     isSeq(fields["line"], 1)
   );
 }
