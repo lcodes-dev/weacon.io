@@ -26,14 +26,10 @@ pub enum MachineSettingsQueryKind {
     /// The settings as they are now.
     Current,
     /// The repositories the owner registered for the workspace, of a core that offers
-    /// `repo.list`; an older core answers `request.unknown`.
+    /// `repo.list`.
     Repos,
     /// The agents signed in on the machine for the workspace.
     Agents,
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From the owner of `machine` to its core, which offers `machine.settings`: changes what the
@@ -59,10 +55,6 @@ pub enum MachineSettingsAction {
     SetAccess { level: AccessLevel },
     /// Whether every member of `workspace` may call agents on the machine.
     SetShared { shared: bool },
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From the core to a client that has `machine.settings`, in answer to a
@@ -88,10 +80,6 @@ pub enum MachineSettingsAnswerKind {
     Agents {
         agents: Vec<AgentKind>,
     },
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// What a machine keeps for one workspace.
@@ -120,10 +108,6 @@ pub enum SignInState {
     NotInstalled,
     /// The vendor's tool didn't say.
     Unknown,
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -131,7 +115,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::test_support::{envelope, request, travels, workspace};
     use crate::{Envelope, Message};
 
     fn asker() -> Asker {
@@ -311,94 +295,5 @@ mod tests {
                 json!({ "kind": "agents", "agents": ["claude", "codex"] }),
             ),
         );
-    }
-
-    // What a newer peer sends: it parses, and is never sent on.
-    fn newer(message: &str, field: &str, body: Value) -> Message {
-        never_sent(wire(message, field, body)).message
-    }
-
-    fn newer_answer(body: Value) -> MachineSettingsAnswerKind {
-        let Message::MachineSettingsAnswer(answer) =
-            newer("machine_settings_answer", "answer", body)
-        else {
-            panic!("not an answer");
-        };
-        answer.answer
-    }
-
-    #[test]
-    fn a_newer_query_or_action_parses_but_is_never_sent() {
-        let later = json!({ "kind": "later" });
-
-        assert!(matches!(
-            newer("machine_settings_query", "query", later.clone()),
-            Message::MachineSettingsQuery(MachineSettingsQuery {
-                query: MachineSettingsQueryKind::Newer,
-                ..
-            })
-        ));
-        assert!(matches!(
-            newer("machine_settings_command", "action", later),
-            Message::MachineSettingsCommand(MachineSettingsCommand {
-                action: MachineSettingsAction::Newer,
-                ..
-            })
-        ));
-        assert!(matches!(
-            newer(
-                "machine_settings_command",
-                "action",
-                json!({ "kind": "set_access", "level": "sandboxed" })
-            ),
-            Message::MachineSettingsCommand(MachineSettingsCommand {
-                action: MachineSettingsAction::SetAccess {
-                    level: AccessLevel::Newer,
-                },
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn an_answer_with_anything_newer_in_it_parses_but_is_never_sent() {
-        let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "sign_ins": sign_ins });
-        let sign_in = |answer: MachineSettingsAnswerKind| match answer {
-            MachineSettingsAnswerKind::Current(settings) => settings.sign_ins.first().cloned(),
-            MachineSettingsAnswerKind::Repos { .. }
-            | MachineSettingsAnswerKind::Agents { .. }
-            | MachineSettingsAnswerKind::Newer => None,
-        };
-
-        assert_eq!(
-            newer_answer(json!({ "kind": "later" })),
-            MachineSettingsAnswerKind::Newer
-        );
-        assert_eq!(
-            sign_in(newer_answer(current(
-                "full",
-                json!([{ "agent": "claude", "state": "expired" }])
-            ))),
-            Some(AgentSignIn {
-                agent: AgentKind::Claude,
-                state: SignInState::Newer
-            })
-        );
-        assert_eq!(
-            sign_in(newer_answer(current(
-                "full",
-                json!([{ "agent": "amp", "state": "signed_in" }])
-            ))),
-            Some(AgentSignIn {
-                agent: AgentKind::Newer,
-                state: SignInState::SignedIn
-            })
-        );
-        let MachineSettingsAnswerKind::Current(level) =
-            newer_answer(current("sandboxed", json!([])))
-        else {
-            panic!("not the current settings");
-        };
-        assert_eq!(level.access, AccessLevel::Newer);
     }
 }

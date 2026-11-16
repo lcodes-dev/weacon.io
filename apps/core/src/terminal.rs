@@ -295,9 +295,9 @@ mod tests {
                     shown.push_str(&String::from_utf8_lossy(data.as_slice()));
                 }
                 TerminalEvent::Closed { code: None } => return shown,
-                event @ (TerminalEvent::Opened
-                | TerminalEvent::Closed { .. }
-                | TerminalEvent::Newer) => panic!("{event:?} after {shown:?}"),
+                event @ (TerminalEvent::Opened | TerminalEvent::Closed { .. }) => {
+                    panic!("{event:?} after {shown:?}")
+                }
             }
         }
     }

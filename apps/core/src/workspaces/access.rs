@@ -62,11 +62,10 @@ impl Settings {
     }
 }
 
-/// The name `weacon access` takes and shows for `level`; one this build doesn't know allows
-/// nothing.
+/// The name `weacon access` takes and shows for `level`.
 pub(crate) const fn level_name(level: AccessLevel) -> &'static str {
     match level {
-        AccessLevel::Off | AccessLevel::Newer => "off",
+        AccessLevel::Off => "off",
         AccessLevel::ReadOnly => "read-only",
         AccessLevel::AskFirst => "ask-first",
         AccessLevel::Full => "full",
@@ -182,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn older_and_newer_settings_files_still_read() {
+    fn a_settings_file_reads_with_fields_left_out_or_unknown_but_not_an_unknown_level() {
         let dir = TempDir::new().unwrap();
         let read = |json: &str| {
             let file = dir.join("w-w1.json");
@@ -198,11 +197,10 @@ mod tests {
                 shared: false,
             }
         );
-        let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
-        assert_eq!(newer.access, AccessLevel::Newer);
-        assert_eq!(level_name(newer.access), "off");
-        let broken = read("not json").unwrap_err();
-        assert_eq!(broken.code().as_str(), "workspace.settings_unreadable");
+        for broken in ["not json", r#"{"access":"sandboxed"}"#] {
+            let unreadable = read(broken).unwrap_err();
+            assert_eq!(unreadable.code().as_str(), "workspace.settings_unreadable");
+        }
     }
 
     #[test]

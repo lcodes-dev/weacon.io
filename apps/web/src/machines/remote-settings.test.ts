@@ -44,13 +44,13 @@ test("a command carries its action, and an error for its envelope answers it", a
   assert.equal(core.listeners(), 0);
 });
 
-test("no answer in time, a newer answer, a closed socket or a reconnecting one each end the request", async () => {
+test("no answer in time, another kind of answer, a closed socket or a reconnecting one each end the request", async () => {
   const silent = fake();
   const waiting = current(silent.socket, "mc-1", silent.later);
   silent.expire();
-  const newer = fake();
-  const odd = current(newer.socket, "mc-1", newer.later);
-  newer.deliver({ id: 3, type: "machine_settings_answer", request: request(newer.sent[0]), ...PLACE, answer: { kind: "later" } as never });
+  const other = fake();
+  const odd = current(other.socket, "mc-1", other.later);
+  other.deliver({ id: 3, type: "machine_settings_answer", request: request(other.sent[0]), ...PLACE, answer: { kind: "repos", repos: [] } });
   const closed = fake({ send: "throws" });
   const dropped = fake({ send: "dropped" });
 
@@ -61,7 +61,7 @@ test("no answer in time, a newer answer, a closed socket or a reconnecting one e
     ok: false,
     code: RECONNECTING,
   });
-  for (const core of [silent, newer, closed, dropped]) {
+  for (const core of [silent, other, closed, dropped]) {
     assert.equal(core.listeners(), 0);
   }
 });

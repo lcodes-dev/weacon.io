@@ -23,11 +23,12 @@ const AGENTS = new Map<AgentKind | string, string>([
   ["codex", "Codex"],
 ]);
 
-const STATES = new Map<SignInState | string, string>([
-  ["signed_in", "Signed in"],
-  ["signed_out", "Signed out"],
-  ["not_installed", "Not installed"],
-]);
+const STATES: Record<SignInState, string> = {
+  signed_in: "Signed in",
+  signed_out: "Signed out",
+  not_installed: "Not installed",
+  unknown: "Unknown",
+};
 
 type Props = {
   machine: MachineSummary;
@@ -140,7 +141,7 @@ function Shown({ settings, busy, set, team, signIn }: ShownProps) {
       <ul aria-label="Sign-ins">
         {settings.sign_ins.map(({ agent, state }) => (
           <li key={agent}>
-            {AGENTS.get(agent) ?? "Another agent"}: {STATES.get(state) ?? "Unknown"}{" "}
+            {AGENTS.get(agent) ?? "Another agent"}: {STATES[state]}{" "}
             {signIn !== undefined && AGENTS.has(agent) && state !== "not_installed" && (
               <button type="button" onClick={() => signIn(agent)}>
                 {state === "signed_in" ? "Sign in again" : "Sign in"}

@@ -8,14 +8,14 @@ export function current(socket: MachineSocket, machine: MachineId, later: Later)
   return ask(socket, later, query(socket, machine, "current"), settingsIn);
 }
 
-/** The repositories `machine` has for the socket's workspace, sorted; a core older than `repo.list` answers `request.unknown`. */
+/** The repositories `machine` has for the socket's workspace, sorted. */
 export function repos(socket: MachineSocket, machine: MachineId, later: Later): Promise<Answer<RepoId[]>> {
   return ask(socket, later, query(socket, machine, "repos"), (answer) => (answer.kind === "repos" ? answer.repos : undefined));
 }
 
 /** The agents signed in on `machine` for the socket's workspace, which a member of a workspace it is shared with may ask too. */
 export function agents(socket: MachineSocket, machine: MachineId, later: Later): Promise<Answer<AgentKind[]>> {
-  return ask(socket, later, query(socket, machine, "agents"), (answer) => (answer.kind === "agents" && Array.isArray(answer.agents) ? answer.agents : undefined));
+  return ask(socket, later, query(socket, machine, "agents"), (answer) => (answer.kind === "agents" ? answer.agents : undefined));
 }
 
 /** Changes `machine`'s settings for the socket's workspace; the answer is them after the change. */

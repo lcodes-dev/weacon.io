@@ -6,10 +6,9 @@ use std::path::PathBuf;
 use weacon_agents::Launch;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
-    MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
-    MachineSettingsCommand, MachineSettingsQuery, MachineSettingsQueryKind, RepoId, RequestId,
-    SignInState, WorkspaceId, code,
+    AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings, MachineSettingsAction,
+    MachineSettingsAnswer, MachineSettingsAnswerKind, MachineSettingsCommand, MachineSettingsQuery,
+    MachineSettingsQueryKind, RepoId, RequestId, SignInState, WorkspaceId, code,
 };
 
 use crate::app;
@@ -52,7 +51,6 @@ pub(crate) async fn query(
             let all = answer(host, query.request, query.machine, query.workspace);
             return all.await.map(signed_in);
         }
-        MachineSettingsQueryKind::Newer => return Err(unknown()),
     }
     answer(host, query.request, query.machine, query.workspace).await
 }
@@ -74,9 +72,7 @@ fn signed_in(mut answer: MachineSettingsAnswer) -> MachineSettingsAnswer {
 async fn repos(host: &Host, query: MachineSettingsQuery) -> Result<MachineSettingsAnswer, Fault> {
     let workspaces = Workspaces::new(&host.state_dir, host.path.clone());
     let workspace = query.workspace.clone();
-    let listed = app::blocking(move || Ok(Stores::new(&workspaces, &workspace).repos().list()))
-        .await
-        .map_err(|error| unknown().because(error))??;
+    let listed = blocking(move || Stores::new(&workspaces, &workspace).repos().list()).await?;
     let mut repos: Vec<RepoId> = listed.into_iter().map(|repo| repo.id).collect();
     repos.sort_by(|one, other| one.as_str().cmp(other.as_str()));
     Ok(MachineSettingsAnswer {
@@ -130,7 +126,7 @@ fn change(
     action: &MachineSettingsAction,
 ) -> Result<(), Fault> {
     match action {
-        MachineSettingsAction::SetAccess { level } if *level != AccessLevel::Newer => {
+        MachineSettingsAction::SetAccess { level } => {
             let workspaces = Workspaces::new(&host.state_dir, None);
             store_access(&workspaces, workspace, *level, &host.log).map(drop)
         }
@@ -138,7 +134,6 @@ fn change(
             let workspaces = Workspaces::new(&host.state_dir, None);
             sharing::store(&workspaces, workspace, *shared, &host.log).map(drop)
         }
-        MachineSettingsAction::SetAccess { .. } | MachineSettingsAction::Newer => Err(unknown()),
     }
 }
 
@@ -199,18 +194,11 @@ async fn blocking<T: Send + 'static>(
         })
 }
 
-fn unknown() -> Fault {
-    Fault::new(
-        code!("settings.unknown"),
-        "This core doesn't know that request",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use weacon_protocol::{MemberId, SignInState};
+    use weacon_protocol::{AccessLevel, MemberId, SignInState};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -443,34 +431,6 @@ mod tests {
 
         let agents = vec![AgentKind::Codex];
         assert_eq!(told, MachineSettingsAnswerKind::Agents { agents });
-    }
-
-    #[tokio::test]
-    async fn what_this_core_doesnt_know_changes_nothing() {
-        let dir = TempDir::new().unwrap();
-        let host = host(&dir, None);
-        let owner = owner();
-        let read = query(
-            &host,
-            &owner,
-            asked(MachineSettingsQueryKind::Newer, "mc-1", Some(by("a-1"))),
-        )
-        .await;
-        let newer = command(
-            &host,
-            &owner,
-            told(MachineSettingsAction::Newer, "mc-1", Some(by("a-1"))),
-        )
-        .await;
-        let level = MachineSettingsAction::SetAccess {
-            level: AccessLevel::Newer,
-        };
-        let level = command(&host, &owner, told(level, "mc-1", Some(by("a-1")))).await;
-
-        for result in [read, newer, level] {
-            assert_eq!(result.unwrap_err().code().as_str(), "settings.unknown");
-        }
-        assert!(!dir.join("settings").exists());
     }
 
     #[tokio::test]

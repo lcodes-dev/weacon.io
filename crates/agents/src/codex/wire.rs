@@ -256,7 +256,7 @@ impl Wire {
 const fn sandbox(access: AccessLevel) -> &'static str {
     match access {
         AccessLevel::AskFirst | AccessLevel::Full => "workspace-write",
-        AccessLevel::Off | AccessLevel::ReadOnly | AccessLevel::Newer => "read-only",
+        AccessLevel::Off | AccessLevel::ReadOnly => "read-only",
     }
 }
 

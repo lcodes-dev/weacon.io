@@ -1,5 +1,5 @@
 import { record } from "./fields.ts";
-import type { App, ChatEntry, Envelope, RunEvent, SymbolKind } from "./protocol.ts";
+import type { AccessLevel, App, ChatEntry, Envelope, RunEvent, SignInState, SymbolKind } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<
@@ -267,24 +267,31 @@ function isChange(value: unknown): boolean {
   return fields?.["kind"] === "chat_changed" ? typeof fields["chat"] === "string" : typeof fields?.["kind"] === "string";
 }
 
-/** Whether `answer` is the current settings with every field this app reads, or another kind it ignores. */
+const ACCESS_LEVELS: readonly string[] = ["off", "read_only", "ask_first", "full"] satisfies AccessLevel[];
+const SIGN_IN_STATES: readonly string[] = ["signed_in", "signed_out", "not_installed", "unknown"] satisfies SignInState[];
+
+/** Whether `answer` is of a kind the protocol names, with every field this app reads. */
 function isMachineSettingsAnswer(answer: unknown): boolean {
   const fields = record(answer);
-  if (fields === undefined) {
-    return false;
+  switch (fields?.["kind"]) {
+    case "current": {
+      const signIns = fields["sign_ins"];
+      return (
+        ACCESS_LEVELS.includes(fields["access"] as string) &&
+        Array.isArray(signIns) &&
+        signIns.every((signIn: unknown) => {
+          const one = record(signIn);
+          return one !== undefined && text(one, "agent") && SIGN_IN_STATES.includes(one["state"] as string);
+        })
+      );
+    }
+    case "repos":
+      return isStrings(fields["repos"]);
+    case "agents":
+      return isStrings(fields["agents"]);
+    default:
+      return false;
   }
-  if (fields["kind"] !== "current") {
-    return typeof fields["kind"] === "string";
-  }
-  const signIns = fields["sign_ins"];
-  return (
-    text(fields, "access") &&
-    Array.isArray(signIns) &&
-    signIns.every((signIn: unknown) => {
-      const one = record(signIn);
-      return one !== undefined && text(one, "agent") && text(one, "state");
-    })
-  );
 }
 
 // A state needs its three flags and a page its https address.

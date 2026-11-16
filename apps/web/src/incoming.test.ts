@@ -226,10 +226,10 @@ test("answers about a chat pass with the fields this app reads", () => {
   }
 });
 
-test("a machine's settings answer passes with the fields the page reads, and a newer kind passes to be ignored", () => {
+test("a machine's settings answer passes with the fields the page reads, and no other kind does", () => {
   const settings = (answer: unknown) => frame({ id: 6, type: "machine_settings_answer", request: "r-1", machine: "mc-1", workspace: "w-1", answer });
   const current = { kind: "current", access: "full", sign_ins: [{ agent: "claude", state: "signed_in" }] };
-  const good = [current, { ...current, sign_ins: [] }, { kind: "later" }];
+  const good = [current, { ...current, sign_ins: [] }, { kind: "repos", repos: ["web"] }, { kind: "agents", agents: ["claude"] }];
   const bad = [
     null,
     { access: "full" },
@@ -237,6 +237,11 @@ test("a machine's settings answer passes with the fields the page reads, and a n
     { ...current, sign_ins: [{ agent: "claude" }] },
     { ...current, sign_ins: [null] },
     { ...current, access: undefined },
+    { ...current, access: "sandboxed" },
+    { ...current, sign_ins: [{ agent: "claude", state: "expired" }] },
+    { kind: "repos" },
+    { kind: "agents", agents: [7] },
+    { kind: "later" },
   ];
 
   for (const answer of good) {
@@ -248,7 +253,7 @@ test("a machine's settings answer passes with the fields the page reads, and a n
   assert.equal(parse(frame({ id: 6, type: "machine_settings_answer", request: "r-1", workspace: "w-1", answer: current })), undefined);
 });
 
-test("a terminal update passes with the fields the terminal reads, and a newer kind is dropped", () => {
+test("a terminal update passes with the fields the terminal reads, and no other kind does", () => {
   const update = (event: unknown) => frame({ id: 0, type: "terminal", terminal: "t-1", workspace: "w-1", event });
   const good = [{ kind: "opened" }, { kind: "output", data: "cd" }, { kind: "closed" }, { kind: "closed", code: "terminal.busy" }];
   const bad = [null, { kind: "output" }, { kind: "output", data: 7 }, { kind: "closed", code: 7 }, { kind: "later", data: "cd" }];
