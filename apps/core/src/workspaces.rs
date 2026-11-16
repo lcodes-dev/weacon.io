@@ -124,9 +124,8 @@ impl Workspaces {
             let (id, agents) = (workspace.as_str(), agents.join(", "));
             match Settings::read(&self.settings_file(workspace)) {
                 Ok(settings) => {
-                    let (level, warning) = (settings.level(), settings.warning());
-                    let shared = settings.sharing();
-                    format!("Workspace {id}: access {level}{shared}; {agents}\n{warning}")
+                    let (level, shared) = (settings.level(), settings.sharing());
+                    format!("Workspace {id}: access {level}{shared}; {agents}\n")
                 }
                 Err(_) => format!("Workspace {id}: access unknown; {agents}\n"),
             }
@@ -507,7 +506,7 @@ mod tests {
         choose(&dir, "newer", r#"{"access":"sandboxed"}"#);
         choose(&dir, "reading", r#"{"access":"read_only"}"#);
         choose(&dir, "asking", r#"{"access":"ask_first"}"#);
-        choose(&dir, "full", r#"{"access":"full","team":true}"#);
+        choose(&dir, "full", r#"{"access":"full"}"#);
         choose(&dir, "broken", "{");
         let launch = |workspace: &str| {
             let launch =
@@ -532,9 +531,9 @@ mod tests {
     }
 
     #[test]
-    fn each_known_workspace_shows_its_access_level_and_warnings() {
+    fn each_known_workspace_shows_its_access_level() {
         let dir = TempDir::new().unwrap();
-        choose(&dir, "a", r#"{"access":"full","team":true}"#);
+        choose(&dir, "a", r#"{"access":"full"}"#);
         choose(&dir, "b", r#"{"access":"off"}"#);
         choose(&dir, "c", "{");
 
@@ -545,8 +544,6 @@ mod tests {
         assert_eq!(
             text,
             "Workspace a: access full; Claude Code not installed, Codex not installed\n\
-             Warning: full access is on in a team workspace. Its agents change files on this \
-             machine without asking.\n\
              Workspace b: access off; Claude Code not installed, Codex not installed\n\
              Workspace c: access unknown; Claude Code not installed, Codex not installed\n"
         );

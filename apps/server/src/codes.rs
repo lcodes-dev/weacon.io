@@ -2,7 +2,7 @@
 
 use weacon_observability::Fault;
 
-use crate::secret::random_u64;
+use crate::random::random_u64;
 
 /// Crockford's base 32: no I, L, O or U, which read like other letters.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";

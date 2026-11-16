@@ -11,16 +11,15 @@ use axum::routing::{delete, get, post};
 use weacon_observability::Fault;
 use weacon_protocol::{
     MachineId, MachineList, MachineOs, MachineSummary, PairClaim, PairClaimed, PairConfirm,
-    PairLookup, PairStart, PairStarted, code, to_hex,
+    PairLookup, PairStart, PairStarted, code,
 };
 
 use crate::app::{fresh, new_id};
 use crate::auth::Session;
-use crate::auth::token_hash;
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Claim, Claiming, Confirmation, NewPairing};
 use crate::http::{Body, error, failure, not_found};
-use crate::secret::random_token;
+use crate::random::random_token;
 use crate::shared::Shared;
 use crate::uplink;
 
@@ -56,14 +55,15 @@ pub(crate) async fn start(State(shared): State<Shared>, Body(body): Body<PairSta
 }
 
 async fn started(shared: &Shared, body: &PairStart) -> Result<PairStarted, Fault> {
-    let (code, secret) = (new_code()?, random_token()?);
+    let (code, secret, token) = (new_code()?, random_token()?, random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
     let expires_at = now.saturating_add(PAIRING_LIFETIME);
     let new = NewPairing {
         id: &pairing,
-        code_hash: &shared.secret.pairing_code_hash(&code),
-        secret_hash: &token_hash(&secret),
+        code: &code,
+        secret: &secret,
+        token: &token,
         name: &body.name,
         os: body.os,
         expires_at,
@@ -84,10 +84,8 @@ pub(crate) async fn lookup(
     _: Session,
     Body(body): Body<PairLookup>,
 ) -> Response {
-    let code_hash = shared
-        .secret
-        .pairing_code_hash(&normalised(body.code.expose()));
-    match shared.db.pending_pairing(&code_hash, shared.now()).await {
+    let code = normalised(body.code.expose());
+    match shared.db.pending_pairing(&code, shared.now()).await {
         Ok(Some(pending)) => Json(pending).into_response(),
         Ok(None) => not_found(code!("pairing.not_found")),
         Err(fault) => failure(fault),
@@ -117,9 +115,7 @@ async fn confirmed(
     let confirmation = Confirmation {
         account: &session.account,
         pairing: &body.pairing,
-        code_hash: &shared
-            .secret
-            .pairing_code_hash(&normalised(body.code.expose())),
+        code: &normalised(body.code.expose()),
         machine: &fresh(&new_id)?,
         claim_by: now.saturating_add(CLAIM_WITHIN),
     };
@@ -138,20 +134,22 @@ pub(crate) async fn claim(State(shared): State<Shared>, Body(body): Body<PairCla
 }
 
 async fn claimed(shared: &Shared, body: &PairClaim) -> Result<Option<PairClaimed>, Fault> {
-    let token = to_hex(&shared.secret.machine_token(body.secret.expose()));
     let claiming = Claiming {
         pairing: &body.pairing,
-        secret_hash: &token_hash(body.secret.expose()),
-        token_hash: &token_hash(&token),
+        secret: body.secret.expose(),
     };
     let claim = shared.db.claim_pairing(&claiming, shared.now()).await?;
     Ok(match claim {
         Claim::Unknown => None,
         Claim::Waiting => Some(PairClaimed::Waiting),
-        Claim::Paired { machine, owner } => Some(PairClaimed::Paired {
+        Claim::Paired {
             machine,
             owner,
-            token: token.into(),
+            token,
+        } => Some(PairClaimed::Paired {
+            machine,
+            owner,
+            token,
         }),
     })
 }

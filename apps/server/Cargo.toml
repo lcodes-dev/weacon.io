@@ -12,7 +12,6 @@ axum.workspace = true
 clap.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
-hmac.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 serde.workspace = true

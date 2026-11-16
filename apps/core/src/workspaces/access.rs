@@ -16,8 +16,6 @@ use crate::platform;
 #[serde(default)]
 pub(crate) struct Settings {
     pub(crate) access: AccessLevel,
-    /// Whether other people are in the workspace.
-    pub(crate) team: bool,
     /// Whether every member of the workspace may call agents on this machine.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) shared: bool,
@@ -27,7 +25,6 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             access: AccessLevel::AskFirst,
-            team: false,
             shared: false,
         }
     }
@@ -55,7 +52,6 @@ impl Settings {
         weacon_appkit::write_whole(file, &serde_json::to_vec(&self)?)
     }
 
-    /// A line of warning for full access in a team workspace, or nothing.
     pub(crate) const fn level(&self) -> &'static str {
         level_name(self.access)
     }
@@ -63,15 +59,6 @@ impl Settings {
     /// What the line of a workspace shared with its members adds after its level.
     pub(crate) const fn sharing(&self) -> &'static str {
         if self.shared { ", shared" } else { "" }
-    }
-
-    pub(crate) fn warning(&self) -> &'static str {
-        if self.team && self.access == AccessLevel::Full {
-            "Warning: full access is on in a team workspace. Its agents change files on this \
-             machine without asking.\n"
-        } else {
-            ""
-        }
     }
 }
 
@@ -99,13 +86,12 @@ pub(crate) fn parse_level(name: &str) -> Result<AccessLevel, &'static str> {
     .ok_or("not an access level: use off, read-only, ask-first or full")
 }
 
-/// Saves what `workspace`'s agents may do on this machine; `team` is kept as it was when left
-/// out, and saying it replaces settings that can't be read.
+/// Saves what `workspace`'s agents may do on this machine, in place of settings that can't
+/// be read.
 pub(crate) fn store(
     workspaces: &Workspaces,
     workspace: &WorkspaceId,
     access: AccessLevel,
-    team: Option<bool>,
     log: &Logger,
 ) -> Result<Settings, Fault> {
     let unsaved = |error| {
@@ -117,13 +103,9 @@ pub(crate) fn store(
     };
     let _hold = workspaces.hold_settings(workspace).map_err(unsaved)?;
     let current = workspaces.settings(workspace);
-    let settings = match team {
-        Some(team) => Settings {
-            access,
-            team,
-            ..current.unwrap_or_default()
-        },
-        None => Settings { access, ..current? },
+    let settings = Settings {
+        access,
+        ..current.unwrap_or_default()
     };
     workspaces.save(workspace, &settings).map_err(unsaved)?;
     log.info("access set", &[("workspace_id", workspace.as_str().into())]);
@@ -135,13 +117,12 @@ pub(crate) fn run(
     app: &App,
     workspace: &WorkspaceId,
     access: AccessLevel,
-    team: Option<bool>,
     out: &mut impl Write,
 ) -> Result<(), Fault> {
     let workspaces = Workspaces::new(app.state_dir()?, None);
-    let settings = store(&workspaces, workspace, access, team, &app.log)?;
-    let (id, level, warning) = (workspace.as_str(), settings.level(), settings.warning());
-    write!(out, "Workspace {id}: access {level}\n{warning}").map_err(|error| {
+    let settings = store(&workspaces, workspace, access, &app.log)?;
+    let (id, level) = (workspace.as_str(), settings.level());
+    writeln!(out, "Workspace {id}: access {level}").map_err(|error| {
         Fault::new(
             code!("access.output_failed"),
             "The access level couldn't be printed",
@@ -165,10 +146,10 @@ mod tests {
 
     const FILE: &str = "settings/w-w1.json";
 
-    fn set(dir: &Path, access: AccessLevel, team: Option<bool>) -> Result<String, Fault> {
+    fn set(dir: &Path, access: AccessLevel) -> Result<String, Fault> {
         let app = test_support::app(Some(dir), None);
         let mut out = Vec::new();
-        run(&app, &id("w1"), access, team, &mut out)?;
+        run(&app, &id("w1"), access, &mut out)?;
         Ok(String::from_utf8(out).unwrap())
     }
 
@@ -179,7 +160,7 @@ mod tests {
         assert_eq!(Settings::read(&file).unwrap(), Settings::default());
         assert_eq!(Settings::default().access, AccessLevel::AskFirst);
 
-        let said = set(&dir, AccessLevel::ReadOnly, None).unwrap();
+        let said = set(&dir, AccessLevel::ReadOnly).unwrap();
 
         assert_eq!(said, "Workspace w1: access read-only\n");
         assert_eq!(
@@ -191,56 +172,13 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
-            r#"{"access":"read_only","team":false}"#
+            r#"{"access":"read_only"}"#
         );
         // Nothing an agent is given holds it.
         assert_eq!(
             fs::read_dir(dir.join("workspaces/w-w1")).unwrap().count(),
             0
         );
-    }
-
-    #[test]
-    fn full_access_in_a_team_workspace_warns_and_the_team_mark_is_kept() {
-        let dir = TempDir::new().unwrap();
-        let personal = set(&dir, AccessLevel::Full, None).unwrap();
-        let team = set(&dir, AccessLevel::Full, Some(true)).unwrap();
-        let asking = set(&dir, AccessLevel::AskFirst, None).unwrap();
-        let full_again = set(&dir, AccessLevel::Full, None).unwrap();
-        let left = set(&dir, AccessLevel::Full, Some(false)).unwrap();
-
-        assert_eq!(personal, "Workspace w1: access full\n");
-        assert_eq!(
-            team,
-            "Workspace w1: access full\nWarning: full access is on in a team workspace. Its \
-             agents change files on this machine without asking.\n"
-        );
-        assert_eq!(asking, "Workspace w1: access ask-first\n");
-        assert_eq!(full_again, team);
-        assert_eq!(left, personal);
-    }
-
-    #[test]
-    fn only_full_access_in_a_team_workspace_has_a_warning() {
-        let warning = |access, team| {
-            let settings = Settings {
-                access,
-                team,
-                shared: false,
-            };
-            settings.warning()
-        };
-
-        assert!(warning(AccessLevel::Full, true).starts_with("Warning: full access"));
-        assert_eq!(warning(AccessLevel::Full, false), "");
-        for quiet in [
-            AccessLevel::Off,
-            AccessLevel::ReadOnly,
-            AccessLevel::AskFirst,
-            AccessLevel::Newer,
-        ] {
-            assert_eq!(warning(quiet, true), "", "{quiet:?}");
-        }
     }
 
     #[test]
@@ -257,40 +195,31 @@ mod tests {
             read(r#"{"access":"full","team":true,"later":1}"#).unwrap(),
             Settings {
                 access: AccessLevel::Full,
-                team: true,
                 shared: false,
             }
         );
         let newer = read(r#"{"access":"sandboxed"}"#).unwrap();
         assert_eq!(newer.access, AccessLevel::Newer);
-        assert_eq!((level_name(newer.access), newer.warning()), ("off", ""));
+        assert_eq!(level_name(newer.access), "off");
         let broken = read("not json").unwrap_err();
         assert_eq!(broken.code().as_str(), "workspace.settings_unreadable");
     }
 
     #[test]
-    fn settings_that_cant_be_read_or_saved_are_errors() {
-        let dir = TempDir::new().unwrap();
-        fs::create_dir_all(dir.join(FILE)).unwrap();
-        let unreadable = set(&dir, AccessLevel::Full, None).unwrap_err();
+    fn settings_that_cant_be_read_are_replaced_and_ones_that_cant_be_saved_are_errors() {
         let broken = TempDir::new().unwrap();
         fs::create_dir_all(broken.join("settings")).unwrap();
         fs::write(broken.join(FILE), "").unwrap();
-        let kept = set(&broken, AccessLevel::Off, None).unwrap_err();
-        let replaced = set(&broken, AccessLevel::Off, Some(true)).unwrap();
+        let replaced = set(&broken, AccessLevel::Off).unwrap();
         let blocked = TempDir::new().unwrap();
-        // A file where the workspaces' folder belongs; the choice in full is never read.
+        // A file where the workspaces' folder belongs.
         fs::write(blocked.join("workspaces"), "").unwrap();
-        let unsaved = set(&blocked, AccessLevel::Full, Some(false)).unwrap_err();
+        let unsaved = set(&blocked, AccessLevel::Full).unwrap_err();
         let app = test_support::app(None, None);
-        let nowhere = run(&app, &id("w1"), AccessLevel::Off, None, &mut Vec::new()).unwrap_err();
+        let nowhere = run(&app, &id("w1"), AccessLevel::Off, &mut Vec::new()).unwrap_err();
 
-        assert_eq!(unreadable.code().as_str(), "workspace.settings_unreadable");
-        assert_eq!(unsaved.code().as_str(), "access.not_saved");
-        assert_eq!(kept.code().as_str(), "workspace.settings_unreadable");
         assert_eq!(replaced, "Workspace w1: access off\n");
-        let full = set(&broken, AccessLevel::Full, None).unwrap();
-        assert_eq!(full.lines().count(), 2);
+        assert_eq!(unsaved.code().as_str(), "access.not_saved");
         assert_eq!(nowhere.code().as_str(), "state.unavailable");
     }
 
@@ -299,7 +228,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let app = test_support::app(Some(&dir), None);
 
-        let error = run(&app, &id("w1"), AccessLevel::Off, None, &mut Broken).unwrap_err();
+        let error = run(&app, &id("w1"), AccessLevel::Off, &mut Broken).unwrap_err();
 
         assert_eq!(error.code().as_str(), "access.output_failed");
         let saved = Settings::read(&dir.join(FILE)).unwrap();
@@ -312,7 +241,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().unwrap();
-        set(&dir, AccessLevel::Full, None).unwrap();
+        set(&dir, AccessLevel::Full).unwrap();
 
         for folder in ["workspaces", "workspaces/w-w1", "settings"] {
             let mode = fs::metadata(dir.join(folder)).unwrap().permissions().mode();

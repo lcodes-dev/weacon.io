@@ -27,7 +27,6 @@ pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_s
 use crate::connections;
 use crate::db::Db;
 use crate::http;
-use crate::secret::Secret;
 use crate::shared::Shared;
 use crate::sign_in;
 
@@ -77,8 +76,6 @@ impl Fixture {
         let dir = TempDir::new().unwrap();
         let db = with_ada(&dir).await;
         let (log, records) = recording_logger();
-        // Its own logger: off Unix it warns, and tests read the fixture's records.
-        let secret = Secret::open(&dir.join("secret"), &recording_logger().0).unwrap();
         let clock = Arc::new(AtomicU64::new(START));
         let now = Arc::clone(&clock);
         let shared = Shared {
@@ -86,7 +83,6 @@ impl Fixture {
             log,
             reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
             db,
-            secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
             // A short hello; pings far apart, since a client answers them only while its test
             // reads it. Tests about pings ask for them with `pinging`.

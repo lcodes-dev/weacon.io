@@ -90,18 +90,18 @@ impl Workspace {
         stored(added.ok_or_else(exists)?)
     }
 
-    /// The member whose account has the live session with the token hashed as `token_hash`.
+    /// The member whose account has the live session with the token `token`.
     pub(crate) async fn session_member(
         &self,
-        token_hash: &[u8],
+        token: &str,
         now: i64,
     ) -> Result<Option<MemberId>, Fault> {
         sqlx::query_scalar::<_, String>(
             "SELECT m.member_id FROM sessions AS s JOIN members AS m ON m.account_id = s.account_id
-             WHERE m.workspace_id = ? AND s.token_hash = ? AND s.expires_at > ?",
+             WHERE m.workspace_id = ? AND s.token = ? AND s.expires_at > ?",
         )
         .bind(self.id.as_str())
-        .bind(token_hash)
+        .bind(token)
         .bind(now)
         .fetch_optional(&self.db.readers)
         .await
@@ -229,7 +229,7 @@ mod tests {
     }
 
     // Signs `address` in at time 100 with a session that ends at 200, whose token is `token`.
-    async fn session(db: &Db, address: &str, token: &[u8]) {
+    async fn session(db: &Db, address: &str, token: &str) {
         let (address, challenge) = (email(address), ChallengeId::try_from("c".to_owned()));
         let challenge = challenge.unwrap();
         let new = NewChallenge {
@@ -244,7 +244,7 @@ mod tests {
             email: &address,
             challenge: &challenge,
             code: "code",
-            token_hash: token,
+            token,
             now: 100,
             token_expires_at: 200,
             personal: &NewWorkspace {
@@ -260,19 +260,19 @@ mod tests {
     async fn a_session_is_a_member_only_where_its_account_is_and_while_it_lasts() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
-        session(&one.db, "ada@example.com", b"ada").await;
-        session(&one.db, "bo@example.com", b"bo").await;
+        session(&one.db, "ada@example.com", "ada").await;
+        session(&one.db, "bo@example.com", "bo").await;
         let member = |id| Some(member_id(id));
 
-        assert_eq!(one.session_member(b"ada", 100).await.unwrap(), member("m1"));
-        assert_eq!(two.session_member(b"ada", 199).await.unwrap(), member("m2"));
-        assert_eq!(one.session_member(b"bo", 100).await.unwrap(), member("m3"));
-        assert_eq!(two.session_member(b"bo", 100).await.unwrap(), None);
-        assert_eq!(one.session_member(b"other", 100).await.unwrap(), None);
-        assert_eq!(one.session_member(b"ada", 200).await.unwrap(), None);
+        assert_eq!(one.session_member("ada", 100).await.unwrap(), member("m1"));
+        assert_eq!(two.session_member("ada", 199).await.unwrap(), member("m2"));
+        assert_eq!(one.session_member("bo", 100).await.unwrap(), member("m3"));
+        assert_eq!(two.session_member("bo", 100).await.unwrap(), None);
+        assert_eq!(one.session_member("other", 100).await.unwrap(), None);
+        assert_eq!(one.session_member("ada", 200).await.unwrap(), None);
         one.leave(&member_id("m1")).await.unwrap();
-        assert_eq!(one.session_member(b"ada", 100).await.unwrap(), None);
-        assert_eq!(two.session_member(b"ada", 100).await.unwrap(), member("m2"));
+        assert_eq!(one.session_member("ada", 100).await.unwrap(), None);
+        assert_eq!(two.session_member("ada", 100).await.unwrap(), member("m2"));
     }
 
     async fn rows(db: &Db, table: &str) -> i64 {

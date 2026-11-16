@@ -8,7 +8,6 @@ import { serve, signIn } from "./server.ts";
 
 const START: MachineSettings = {
   access: "ask_first",
-  team: false,
   sign_ins: [
     { agent: "claude", state: "signed_in" },
     { agent: "codex", state: "not_installed" },
@@ -76,8 +75,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   // The page shows the core's answer before the next change is built from it.
   await page.waitForFunction((select) => (select as HTMLSelectElement | null)?.value === "full", await level.elementHandle());
   assert.equal(await warning.count(), 0);
-  assert.equal(machine.settings.team, false);
-  // With someone else in the workspace it shows, and the next level saved tells the machine so.
+  // With someone else in the workspace it shows.
   await page.route("**/api/workspaces/*/members", async (route) => {
     const answer = await route.fetch();
     const list = (await answer.json()) as { members: Array<{ id: string; name: string; role?: string }> };
@@ -87,10 +85,9 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await page.getByRole("button", { name: "Settings", exact: true }).click();
   await row.getByRole("button", { name: "Studio settings" }).click();
   await warning.waitFor();
-  assert.equal(machine.settings.team, false);
   await level.selectOption("ask_first");
   await warning.waitFor({ state: "detached" });
-  await waitFor(() => machine.settings.team);
+  await waitFor(() => machine.settings.access === "ask_first");
 
   machine.refuse();
   await settings.getByRole("button", { name: "Turn off" }).click();

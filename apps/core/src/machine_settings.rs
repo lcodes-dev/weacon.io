@@ -139,9 +139,9 @@ fn change(
             Settings::read(&workspaces.settings_file(workspace))?;
             reports::store(&host.state_dir, *send, &host.reporter, &host.log)
         }
-        MachineSettingsAction::SetAccess { level, team } if *level != AccessLevel::Newer => {
+        MachineSettingsAction::SetAccess { level } if *level != AccessLevel::Newer => {
             let workspaces = Workspaces::new(&host.state_dir, None);
-            store_access(&workspaces, workspace, *level, *team, &host.log).map(drop)
+            store_access(&workspaces, workspace, *level, &host.log).map(drop)
         }
         MachineSettingsAction::SetShared { shared } => {
             let workspaces = Workspaces::new(&host.state_dir, None);
@@ -188,7 +188,6 @@ async fn answer(
         answer: MachineSettingsAnswerKind::Current(MachineSettings {
             reports,
             access: settings.access,
-            team: settings.team,
             shared: settings.shared,
             sign_ins,
         }),
@@ -330,7 +329,6 @@ mod tests {
             MachineSettings {
                 reports: None,
                 access: AccessLevel::AskFirst,
-                team: false,
                 shared: false,
                 sign_ins: not_installed(),
             }
@@ -366,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_owner_sets_reports_at_once_and_a_workspaces_access_keeping_its_team_mark() {
+    async fn the_owner_sets_reports_at_once_and_a_workspaces_access() {
         let dir = TempDir::new().unwrap();
         let host = host(&dir, None);
         let owner = owner();
@@ -379,18 +377,9 @@ mod tests {
         );
         assert_eq!(reported.reports, Some(true));
         assert!(host.reporter.agreed());
-        let team = current(
-            set(MachineSettingsAction::SetAccess {
-                level: AccessLevel::Full,
-                team: Some(true),
-            })
-            .await
-            .unwrap(),
-        );
         let kept = current(
             set(MachineSettingsAction::SetAccess {
                 level: AccessLevel::ReadOnly,
-                team: None,
             })
             .await
             .unwrap(),
@@ -399,10 +388,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!((team.access, team.team), (AccessLevel::Full, true));
         assert_eq!(
-            (kept.access, kept.team, kept.reports),
-            (AccessLevel::ReadOnly, true, Some(true))
+            (kept.access, kept.reports),
+            (AccessLevel::ReadOnly, Some(true))
         );
         assert_eq!(off.request.as_str(), "r-2");
         assert_eq!(current(off).reports, Some(false));
@@ -475,7 +463,6 @@ mod tests {
             answer: MachineSettingsAnswerKind::Current(MachineSettings {
                 reports: Some(true),
                 access: AccessLevel::Full,
-                team: true,
                 shared: true,
                 sign_ins: vec![
                     sign_in(AgentKind::Claude, SignInState::SignedOut),
@@ -509,7 +496,6 @@ mod tests {
         .await;
         let level = MachineSettingsAction::SetAccess {
             level: AccessLevel::Newer,
-            team: Some(true),
         };
         let level = command(&host, &owner, told(level, "mc-1", Some(by("a-1")))).await;
 

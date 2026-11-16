@@ -654,7 +654,7 @@ mod tests {
                 .any(|envelope| envelope.message == follow(1))
         );
         let refused = Message::Error(ErrorBody {
-            code: code!("chat.unavailable"),
+            code: code!("worktree.busy"),
             retryable: true,
         });
         let ids: Vec<_> = commands.iter().map(|command| command.id).collect();
@@ -1247,7 +1247,7 @@ mod tests {
         let there = Member {
             workspace: other,
             id: id("m5"),
-            token_hash: [0; 32],
+            token: String::new(),
         };
         let mut call = prompt("r-3", "c-9", "Go", Some(&ada.machine));
         call.workspace = id("w9");

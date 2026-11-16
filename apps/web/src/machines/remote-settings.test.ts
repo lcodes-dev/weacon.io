@@ -10,7 +10,6 @@ const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
   reports: true,
   access: "ask_first",
-  team: false,
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
 

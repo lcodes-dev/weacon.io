@@ -66,8 +66,6 @@ mod tests {
             server()
                 .args(["serve", "--listen", &address, "--db"])
                 .arg(db.join("weacon.db"))
-                .arg("--secret")
-                .arg(db.join("secret"))
                 .env("WEACON_SENTRY_DSN", ""),
         );
 
@@ -99,8 +97,6 @@ mod tests {
             server()
                 .args(["serve", "--listen", "127.0.0.1:0", "--db"])
                 .arg(db.join("weacon.db"))
-                .arg("--secret")
-                .arg(db.join("secret"))
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap(),

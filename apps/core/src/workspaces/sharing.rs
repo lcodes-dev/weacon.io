@@ -120,7 +120,7 @@ mod tests {
         let workspaces = Workspaces::new(&dir, None);
         assert!(workspaces.shared().is_empty());
         let log = test_support::app(Some(&dir), None).log.clone();
-        super::super::store_access(&workspaces, &id("w2"), AccessLevel::Full, None, &log).unwrap();
+        super::super::store_access(&workspaces, &id("w2"), AccessLevel::Full, &log).unwrap();
 
         let on = share(&dir, "w1", true).unwrap();
         share(&dir, "w3", true).unwrap();
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(workspaces.shared(), [id("w3")]);
         assert_eq!(
             fs::read_to_string(dir.join("settings/w-w3.json")).unwrap(),
-            r#"{"access":"ask_first","team":false,"shared":true}"#
+            r#"{"access":"ask_first","shared":true}"#
         );
     }
 
@@ -145,10 +145,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let workspaces = Workspaces::new(&dir, None);
         let log = test_support::app(Some(&dir), None).log.clone();
-        let access = |level, team| {
-            super::super::store_access(&workspaces, &id("w1"), level, team, &log).unwrap()
-        };
-        access(AccessLevel::ReadOnly, None);
+        let access =
+            |level| super::super::store_access(&workspaces, &id("w1"), level, &log).unwrap();
+        access(AccessLevel::ReadOnly);
 
         let shared = store(&workspaces, &id("w1"), true, &log).unwrap();
 
@@ -156,8 +155,7 @@ mod tests {
             (shared.access, shared.shared),
             (AccessLevel::ReadOnly, true)
         );
-        assert!(access(AccessLevel::Full, None).shared);
-        assert!(access(AccessLevel::Full, Some(true)).shared);
+        assert!(access(AccessLevel::Full).shared);
     }
 
     #[tokio::test]
@@ -184,7 +182,7 @@ mod tests {
 
         let unshared = store(&workspaces, &id("w1"), false, &log).unwrap_err();
         let level = AccessLevel::Full;
-        let access = super::super::store_access(&workspaces, &id("w1"), level, None, &log);
+        let access = super::super::store_access(&workspaces, &id("w1"), level, &log);
 
         assert_eq!(unshared.code().as_str(), "share.not_saved");
         assert_eq!(access.unwrap_err().code().as_str(), "access.not_saved");

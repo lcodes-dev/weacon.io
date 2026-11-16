@@ -78,11 +78,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<(), Fault>
         Command::Doctor => doctor::run(app, &mut io::stdout().lock()),
         Command::Service(command) => service::run(app, command, env, &mut service::system),
         Command::Login { agent, workspace } => workspaces::login(app, agent, &workspace),
-        Command::Access {
-            workspace,
-            level,
-            team,
-        } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Access { workspace, level } => {
+            workspaces::access(app, &workspace, level, &mut io::stdout().lock())
+        }
         Command::Share { workspace, shared } => {
             workspaces::sharing::run(app, &workspace, shared, &mut io::stdout().lock())
         }

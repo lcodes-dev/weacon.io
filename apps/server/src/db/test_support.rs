@@ -135,9 +135,8 @@ async fn pair(
     owner: &weacon_protocol::MemberId,
 ) -> Result<bool, Fault> {
     let paired = sqlx::query(
-        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, machine_key,
-             token_hash, paired_at)
-         SELECT ?, account_id, 'Made-up machine', 'linux', '', randomblob(16), 0
+        "INSERT OR IGNORE INTO machines (machine_id, account_id, name, os, token, paired_at)
+         SELECT ?, account_id, 'Made-up machine', 'linux', hex(randomblob(16)), 0
          FROM members WHERE workspace_id = ? AND member_id = ?",
     )
     .bind(machine.as_str())
@@ -289,9 +288,8 @@ impl Workspace {
     /// Pairs `machine` to the account of `member`, as its own.
     pub(crate) async fn pair_for(&self, member: &str, machine: &str) {
         sqlx::query(
-            "INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash,
-                 paired_at)
-             SELECT ?, account_id, 'Made-up machine', 'linux', '', randomblob(16), 0
+            "INSERT INTO machines (machine_id, account_id, name, os, token, paired_at)
+             SELECT ?, account_id, 'Made-up machine', 'linux', hex(randomblob(16)), 0
              FROM members WHERE workspace_id = ? AND member_id = ?",
         )
         .bind(machine)

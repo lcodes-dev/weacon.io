@@ -139,11 +139,9 @@ impl Feed {
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
-            workspace,
-            token_hash,
-            ..
+            workspace, token, ..
         } = &self.member;
-        match workspace.session_member(token_hash, shared.now()).await {
+        match workspace.session_member(token, shared.now()).await {
             Ok(Some(_)) => Ok(()),
             Ok(None) => Err(Closed),
             Err(fault) => Err(feed_failed(shared, workspace.id(), &fault)),

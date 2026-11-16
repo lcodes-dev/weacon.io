@@ -5,7 +5,7 @@ import type { MachineSettings, Symbol as CodeSymbol } from "../src/protocol.ts";
 import { core, pair } from "./pairing.ts";
 import { serve, signIn } from "./server.ts";
 
-const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [] };
+const SETTINGS: MachineSettings = { access: "ask_first", sign_ins: [] };
 
 const SYMBOLS: CodeSymbol[] = [
   { repo: "garden", kind: "struct", name: "garden::Bed", path: "src/bed.rs", line: 3 },

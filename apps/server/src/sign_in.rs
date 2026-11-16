@@ -10,12 +10,12 @@ use weacon_protocol::{
     AccountSignInFinish, AccountSignInStart, AccountSignedIn, ChallengeId, SignInStarted, code,
 };
 
-use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie, token_hash};
+use crate::auth::{Sender, Session, Unproven, proof, sender, set_session_cookie};
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Attempt, NewChallenge};
 use crate::email::Email;
 use crate::http::{Body, cross_site, failure, invalid, not_found, unauthorized};
-use crate::secret::{random_failed, random_token};
+use crate::random::{random_failed, random_token};
 use crate::shared::Shared;
 use crate::workspaces;
 
@@ -119,7 +119,7 @@ pub(crate) async fn sign_out(
     headers: HeaderMap,
 ) -> Response {
     let ended = match proof(&method, &headers) {
-        Ok(token_hash) => shared.db.end_session(&token_hash).await,
+        Ok(token) => shared.db.end_session(token).await,
         // Nothing to end, but another site's page may not clear the cookie either.
         Err(Unproven::Missing) if sender(&headers) != Sender::OtherSite => Ok(()),
         Err(_) => return cross_site(),
@@ -147,7 +147,7 @@ async fn signed_in(
         email: &email,
         challenge: &body.challenge,
         code: &normalised(body.code.expose()),
-        token_hash: &token_hash(&token),
+        token: &token,
         now,
         token_expires_at: now.saturating_add(SESSION_LIFETIME),
         personal: &workspaces::personal()?,
@@ -218,8 +218,8 @@ mod tests {
             .await
             .unwrap();
         let ends = fixture.shared.now() + SESSION_LIFETIME;
-        let live = w1.session_member(&token_hash(token), ends - 1).await;
-        let ended = w1.session_member(&token_hash(token), ends).await;
+        let live = w1.session_member(token, ends - 1).await;
+        let ended = w1.session_member(token, ends).await;
 
         assert_eq!(started, "http/1.1 202 accepted");
         assert_eq!(to, "ada@example.com");

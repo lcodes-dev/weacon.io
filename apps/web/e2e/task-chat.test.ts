@@ -8,7 +8,7 @@ import { serveFeed } from "./feed.ts";
 import { type Served, serve, signIn } from "./server.ts";
 
 const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, paired_at: 1, connected: true };
-const SETTINGS: MachineSettings = { access: "ask_first", team: false, sign_ins: [{ agent: "claude", state: "signed_in" }] };
+const SETTINGS: MachineSettings = { access: "ask_first", sign_ins: [{ agent: "claude", state: "signed_in" }] };
 
 // The workspace's chats are `chats`, its owner's, on Studio, the person's one machine.
 async function standIn(page: Page, chats: () => Omit<ChatSummary, "owner" | "legs">[]): Promise<void> {

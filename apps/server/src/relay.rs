@@ -466,7 +466,6 @@ mod tests {
             answer: MachineSettingsAnswerKind::Current(MachineSettings {
                 reports: None,
                 access: AccessLevel::AskFirst,
-                team: false,
                 shared: false,
                 sign_ins: Vec::new(),
             }),

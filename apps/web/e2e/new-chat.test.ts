@@ -11,7 +11,6 @@ import { type Served, serve, signIn } from "./server.ts";
 const STUDIO = { id: "mc-1", name: "Studio", os: "macos" as const, paired_at: 1 };
 const SETTINGS: MachineSettings = {
   access: "ask_first",
-  team: false,
   sign_ins: [
     { agent: "claude", state: "signed_in" },
     { agent: "codex", state: "signed_out" },

@@ -33,6 +33,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::REQUESTS_GONE,
     steps::CHAT_LEGS,
     steps::SHARED_MACHINES,
+    steps::PLAIN_TOKENS,
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -221,14 +222,11 @@ mod tests {
                 "workspaces",
                 "members",
                 "accounts",
-                "sessions",
                 "tasks",
                 "task_versions",
                 "docs",
                 "doc_versions",
                 "doc_pins",
-                "machines",
-                "pairings",
                 "proposals",
                 "chats",
                 "chat_events",
@@ -240,7 +238,10 @@ mod tests {
                 "chat_tasks",
                 "invitations",
                 "chat_legs",
-                "shared_machines"
+                "shared_machines",
+                "sessions",
+                "machines",
+                "pairings"
             ]
         );
         for table in SERVER_WIDE {

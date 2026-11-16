@@ -16,9 +16,9 @@ mod http;
 mod links;
 mod pairing;
 mod proposals;
+mod random;
 mod relay;
 mod search;
-mod secret;
 mod shared;
 mod sharing;
 mod sign_in;
@@ -34,7 +34,6 @@ mod workspaces;
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -42,12 +41,11 @@ use std::time::SystemTime;
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use weacon_appkit::App;
-use weacon_observability::{Fault, Logger, json_lines};
+use weacon_observability::{Fault, json_lines};
 use weacon_protocol::code;
 
 use crate::cli::{Command, Serve};
 use crate::db::Db;
-use crate::secret::Secret;
 use crate::shared::Shared;
 
 /// How many wake-ups a feed may miss before it rereads the database.
@@ -93,17 +91,15 @@ fn main() -> ExitCode {
 
 /// Serves until Ctrl-C or the system asks the server to stop.
 async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
-    let Serve { listen, db, secret } = args;
+    let Serve { listen, db } = args;
     let signals = signals()?;
     let listener = bind(listen).await?;
-    let secret = open_secret(secret, app.log.clone()).await?;
     let db = Db::create(&db).await?;
     let shared = Shared {
         app: weacon_appkit::build(&app.version),
         log: app.log.clone(),
         reporter: Arc::clone(&app.reporter),
         db: db.clone(),
-        secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
         head_within: connections::HEAD_WITHIN,
         sockets: socket::TIMING,
@@ -128,12 +124,6 @@ fn signals() -> Result<weacon_appkit::Signals, Fault> {
         )
         .because(error)
     })
-}
-
-async fn open_secret(path: PathBuf, log: Logger) -> Result<Secret, Fault> {
-    tokio::task::spawn_blocking(move || Secret::open(&path, &log))
-        .await
-        .map_err(|error| app::panicked().because(error))?
 }
 
 async fn bind(listen: SocketAddr) -> Result<TcpListener, Fault> {

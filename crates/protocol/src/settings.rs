@@ -57,14 +57,8 @@ pub struct MachineSettingsCommand {
 pub enum MachineSettingsAction {
     /// Whether the machine sends error reports; for the whole machine, not one workspace.
     SetReports { send: bool },
-    /// What `workspace`'s agents may do on the machine, and whether other people are in it;
-    /// `team` is kept as it was when left out.
-    SetAccess {
-        level: AccessLevel,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[schemars(with = "bool")]
-        team: Option<bool>,
-    },
+    /// What `workspace`'s agents may do on the machine.
+    SetAccess { level: AccessLevel },
     /// Whether every member of `workspace` may call agents on the machine.
     SetShared { shared: bool },
     /// An action this build doesn't know, from a newer peer; only ever received.
@@ -110,8 +104,6 @@ pub struct MachineSettings {
     #[schemars(with = "bool")]
     pub reports: Option<bool>,
     pub access: AccessLevel,
-    /// Whether other people are in the workspace.
-    pub team: bool,
     /// Whether every member of the workspace may call agents on the machine.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared: bool,
@@ -200,7 +192,6 @@ mod tests {
         MachineSettings {
             reports,
             access: AccessLevel::AskFirst,
-            team: true,
             shared: false,
             sign_ins,
         }
@@ -225,7 +216,7 @@ mod tests {
     }
 
     #[test]
-    fn commands_set_reports_or_a_workspaces_access_keeping_the_team_mark_when_left_out() {
+    fn commands_set_reports_or_a_workspaces_access() {
         let action = |body: Value| stamped(wire("machine_settings_command", "action", body));
 
         travels(
@@ -234,15 +225,7 @@ mod tests {
         );
         travels(
             &command(MachineSettingsAction::SetAccess {
-                level: AccessLevel::Full,
-                team: Some(true),
-            }),
-            action(json!({ "kind": "set_access", "level": "full", "team": true })),
-        );
-        travels(
-            &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::ReadOnly,
-                team: None,
             }),
             action(json!({ "kind": "set_access", "level": "read_only" })),
         );
@@ -261,7 +244,7 @@ mod tests {
             },
         ];
         let body = |reports: Option<bool>| {
-            let mut body = json!({ "kind": "current", "access": "ask_first", "team": true,
+            let mut body = json!({ "kind": "current", "access": "ask_first",
                 "sign_ins": [{ "agent": "claude", "state": "signed_in" },
                              { "agent": "codex", "state": "not_installed" }] });
             if let Some(reports) = reports {
@@ -329,7 +312,7 @@ mod tests {
             wire(
                 "machine_settings_answer",
                 "answer",
-                json!({ "kind": "current", "access": "ask_first", "team": true, "shared": true,
+                json!({ "kind": "current", "access": "ask_first", "shared": true,
                         "sign_ins": [] }),
             ),
         );
@@ -388,12 +371,11 @@ mod tests {
             newer(
                 "machine_settings_command",
                 "action",
-                json!({ "kind": "set_access", "level": "sandboxed", "team": false })
+                json!({ "kind": "set_access", "level": "sandboxed" })
             ),
             Message::MachineSettingsCommand(MachineSettingsCommand {
                 action: MachineSettingsAction::SetAccess {
                     level: AccessLevel::Newer,
-                    team: Some(false)
                 },
                 ..
             })
@@ -402,7 +384,7 @@ mod tests {
 
     #[test]
     fn an_answer_with_anything_newer_in_it_parses_but_is_never_sent() {
-        let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "team": false, "sign_ins": sign_ins });
+        let current = |access: &str, sign_ins: Value| json!({ "kind": "current", "access": access, "sign_ins": sign_ins });
         let sign_in = |answer: MachineSettingsAnswerKind| match answer {
             MachineSettingsAnswerKind::Current(settings) => settings.sign_ins.first().cloned(),
             MachineSettingsAnswerKind::Repos { .. }
