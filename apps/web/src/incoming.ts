@@ -256,7 +256,8 @@ function isAgent(value: unknown): boolean {
   const agent = record(value);
   const owner = record(agent?.["owner"]);
   const known =
-    owner?.["kind"] === "shared" || (owner?.["kind"] === "member" && typeof owner["member"] === "string");
+    (owner?.["kind"] === "shared" && typeof owner["member"] === "string" && typeof owner["owner"] === "string") ||
+    (owner?.["kind"] === "member" && typeof owner["member"] === "string");
   return typeof agent?.["kind"] === "string" && known && (agent["machine"] === undefined || typeof agent["machine"] === "string");
 }
 

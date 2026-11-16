@@ -4,23 +4,24 @@ import { answered, useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { vendorName } from "../chat/label.ts";
 import { later } from "../connection.ts";
-import { current, repos } from "../machines/remote-settings.ts";
-import type { AgentKind, MachineId, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
+import { agents, repos } from "../machines/remote-settings.ts";
+import type { AgentKind, MachineId, RepoId } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Choice, KINDS, agentMissing, signedIn } from "./start.ts";
+import { type Callable, type Choice, KINDS, agentMissing, machineLabel, offeredAgents } from "./start.ts";
 
 /**
- * A person's pick of their own agent for a chat: one of `machines`, their own that run chats, a
- * repository that machine has for the workspace, and an agent signed in there for it. `choice` is
+ * A person's pick of their agent for a chat: one of `machines`, their own that run chats or one
+ * shared with the workspace, a repository that machine has for the workspace, and an agent signed
+ * in there for it. `choice` is
  * the pick once it is whole. Back from `away`, such as Settings, where an agent may have been
  * signed in, it asks the machine again.
  */
-export function useMyAgent(socket: WorkspaceSocket, machines: MachineSummary[], away: boolean) {
+export function useMyAgent(socket: WorkspaceSocket, machines: Callable[], away: boolean) {
   const [picked, setPicked] = useState<MachineId>();
   const machine = machines.find(({ id }) => id === picked) ?? machines[0];
   const id = machine?.id;
   const key = `${id} ${socket.workspace}`;
-  const settings = useLoaded(() => (id === undefined ? answered<MachineSettings | undefined>(undefined) : current(socket, id, later)), key);
+  const settings = useLoaded(() => (id === undefined ? answered<AgentKind[] | undefined>(undefined) : agents(socket, id, later)), key);
   const listed = useLoaded(() => (id === undefined ? answered<RepoId[]>([]) : repos(socket, id, later)), key);
   const back = useRef(away);
   useEffect(() => {
@@ -35,7 +36,7 @@ export function useMyAgent(socket: WorkspaceSocket, machines: MachineSummary[], 
   const shownRepos = listed.value;
   const chosenRepo = shownRepos?.find((one) => one === repo) ?? shownRepos?.[0];
   // Once the machine answers, only the agents signed in there for this workspace are offered.
-  const offered = signedIn(settings.value);
+  const offered = offeredAgents(settings.value);
   const chosenAgent = offered.find((kind) => kind === agent) ?? offered[0];
   const choice: Choice | undefined =
     machine === undefined || chosenRepo === undefined || chosenAgent === undefined ? undefined : { machine: machine.id, repo: chosenRepo, agent: chosenAgent };
@@ -54,7 +55,7 @@ export function MyAgentFields({ pick, workspace, openSettings }: { pick: ReturnT
         <select value={machine?.id} onChange={(event) => pick.setPicked(event.target.value)}>
           {machines.map((one) => (
             <option key={one.id} value={one.id}>
-              {one.name}
+              {machineLabel(one)}
             </option>
           ))}
         </select>
@@ -85,8 +86,14 @@ export function MyAgentFields({ pick, workspace, openSettings }: { pick: ReturnT
       )}
       {shownRepos?.length === 0 && (
         <p className="muted">
-          No repository is added on this machine for this workspace. Run <code>weacon repo add --workspace {workspace} &lt;name&gt; &lt;folder&gt;</code> on it,
-          then try again.{" "}
+          {machine?.own === false ? (
+            "Its owner hasn't added a repository on this machine for this workspace."
+          ) : (
+            <>
+              No repository is added on this machine for this workspace. Run <code>weacon repo add --workspace {workspace} &lt;name&gt; &lt;folder&gt;</code> on
+              it, then try again.
+            </>
+          )}{" "}
           <button type="button" onClick={() => void listed.load()}>
             Try again
           </button>
@@ -97,9 +104,13 @@ export function MyAgentFields({ pick, workspace, openSettings }: { pick: ReturnT
       {settings.value !== undefined && offered.length < KINDS.length && (
         <p className="muted">
           {offered.length === 0 && missing}{" "}
-          <button type="button" onClick={() => openSettings(machine?.id)}>
-            Sign in from Settings
-          </button>
+          {machine?.own === false ? (
+            offered.length === 0 && "Its owner signs agents in."
+          ) : (
+            <button type="button" onClick={() => openSettings(machine?.id)}>
+              Sign in from Settings
+            </button>
+          )}
         </p>
       )}
       {pick.choice !== undefined && <p className="muted">Type @ in your message to call it.</p>}

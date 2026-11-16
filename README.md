@@ -161,6 +161,7 @@ Open your workspace, then **Settings**, then the machine's **Settings**. There y
 
 - **Error reports**: off until you turn them on.
 - **Agent access**: what the workspace's agents may do on this machine: off, read only, ask first or full.
+- **Sharing**: whether every member of the workspace may call agents on this machine (see "A shared machine" below). Off until you turn it on.
 - **Sign-ins**: each agent's state. **Sign in** opens the vendor's own sign-in in a terminal sealed between the browser and your core. The server only relays bytes it can't read. But the server also serves the web app's code, so this trusts whoever runs the server; if you don't, sign in over SSH on the machine instead, with the command below.
 
 To sign in from a terminal, on the machine or over SSH, use the workspace's id, the `workspace=` part of the web app's address:
@@ -187,7 +188,7 @@ To call an agent, sign it in first, as in step 6, and give the workspace a repos
 
 The chat opens with your message at the top, under your name, and its task's title under the heading, linked to the task. A chat keeps the task it started with. When Claude Code starts in a chat that has a task, it is first given the flows pinned by the repository's Markdown docs whose words best match the task's title, then the map of its folder. When a message calls your agent, the server passes it to your machine, and the core starts the agent in a folder of its own for this chat. The agent's text appears under a label that names its owner and machine, such as "ada's Claude Code · Studio", as it is written, and each message replaces its pieces once it is complete. Live text is not yet proven with a real agent: if the pieces don't come, each message still appears once it is complete. In the left column, the chat shows who started it and what its latest agent is doing, such as **Waiting for a person**.
 
-Every member of the workspace can open the chat and write in it. Each person calls only their own agent, on their own machine: in a chat where you have none yet, choose **Add your agent**, pick the machine, the repository and the agent, then mention it. One agent works in a chat at a time: while someone else's is working or waiting for an answer, a call to yours is refused and your text stays in the box; plain messages always go. When you call your agent, it is also given what was written in the chat since your last call, by people and agents alike, each under its writer's name and marked as quoted text, never as instructions: the newest 16 KiB of it.
+Every member of the workspace can open the chat and write in it. Each person calls only their own agent, on their own machine or on one shared with the workspace: in a chat where you have none yet, choose **Add your agent**, pick the machine, the repository and the agent, then mention it. One agent works in a chat at a time: while someone else's is working or waiting for an answer, a call to yours is refused and your text stays in the box; plain messages always go. When you call your agent, it is also given what was written in the chat since your last call, by people and agents alike, each under its writer's name and marked as quoted text, never as instructions: the newest 16 KiB of it.
 
 When the agent asks to use a tool, the chat names the tool, such as "Asks to use Bash", and shows what it wants to do, with **Allow** and **Deny**; with the access level at ask first, it waits for its owner. Only the agent's owner can answer or stop it; everyone else reads whom it waits for, such as "Waiting for ada". For a shell command it shows the command; for a file it writes or edits, the file's path and the start of the new text; for any other tool, what the agent passed it. It shows the first 4,096 bytes and says when there was more. The server keeps the tool's name and this text with the prompt, so a reload, another device and the workspace's other members see them too. A password or a token in a command, or in the start of a file an agent writes, is kept and shown with it. Codex asks to change files without saying which, so that prompt doesn't show the change. This is not yet proven with a real agent. Once the agent has stopped running, you can carry the chat on, on the machine itself (step 8).
 
@@ -228,6 +229,32 @@ target/debug/weacon map search pairing code
 target/debug/weacon map hotspots
 target/debug/weacon map --root "$HOME/code/demo"
 ```
+
+### A shared machine
+
+A team can have an agent that every member of one workspace may call: a machine, typically a VPS, that its owner shares with that workspace. It is signed in with the workspace's own seat or API key, never a person's.
+
+The machine's owner sets it up on the machine itself, and Weacon touches none of it:
+
+1. Create an OS user for the shared agent and install `weacon` under it. Each person who also works on that machine runs their own core under their own OS user, with their own sign-ins.
+2. As that user, pair the core (step 5), give the workspace a repository, and sign the agent in for the workspace with the workspace's own seat or API key, through the vendor's own sign-in (step 6). No key passes through Weacon.
+3. Share the machine with the workspace: in the web app, open the machine's **Settings** and tick **Share this machine with this workspace**, or run this on the machine:
+
+```bash
+target/debug/weacon share <workspace id> on
+```
+
+The server lists the machine only in a workspace you are a member of.
+
+Using a seat or a key for a whole team this way must be allowed by the vendor's terms, which Weacon does not check.
+
+Every member of that workspace then finds the machine under **Machine** in **New chat** and **Add your agent**, marked "(shared)", with the repositories it has for the workspace and the agents signed in there. They see nothing else of it, and it shows in no other workspace. A member who picks it gets their own agent on it in that chat, in a folder of its own, and its messages are labelled as the shared agent's, such as "Shared Claude Code · Team VPS".
+
+- Anyone in the workspace can call it. The member who called it and the machine's owner can stop it.
+- Only the machine's owner answers its permission prompts. Everyone else, the caller too, reads whom it waits for, such as "Waiting for ada". The access level the owner set for the workspace applies as on any machine.
+- The caller reads their agent's changes. Its worktree, the machine's settings, its sign-ins and its terminals stay with the owner.
+- In one chat, a machine runs one member's agent: a second member who picks the same shared machine there is refused, and can call it from another chat.
+- `weacon share <workspace id> off`, the same switch in Settings, or unpairing the machine ends the sharing at once. The next call is refused, and the agents members had on that machine can't be called again in those chats; the chats stay.
 
 ### Stop, data and starting over
 

@@ -60,8 +60,9 @@ pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use hex::to_hex;
 pub use log::{ClientLog, Level, LogEvent};
 pub use machine::{
-    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineSummary, PairClaim,
-    PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,
+    MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineShares, MachineSummary,
+    PairClaim, PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted,
+    PairingId, SharedMachine, SharedMachineList,
 };
 pub use map::{MapAnswer, MapQuery, MapQueryKind};
 pub use mcp::{FlowArgs, MapArgs, McpCall, ProposeArgs, SearchArgs, SymbolArgs};
@@ -142,6 +143,7 @@ mod tests {
         generator.subschema_for::<PairClaim>();
         generator.subschema_for::<PairClaimed>();
         generator.subschema_for::<MachineList>();
+        generator.subschema_for::<SharedMachineList>();
         generator.subschema_for::<MemberList>();
         generator.subschema_for::<MemberCommand>();
         generator.subschema_for::<SearchQuery>();

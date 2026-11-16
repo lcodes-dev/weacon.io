@@ -37,7 +37,13 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await standIn(page, () => made.map(({ chat, task, text }) => ({ id: chat, title: text, task, state: "open", updated_at: 1 })));
   const answer = (asked: Envelope): Envelope[] => {
     if (asked.type === "machine_settings_query") {
-      const answer = asked.query.kind === "repos" ? { kind: "repos" as const, repos: ["garden"] } : { kind: "current" as const, ...SETTINGS };
+      const signedIn = SETTINGS.sign_ins.filter(({ state }) => state === "signed_in").map(({ agent }) => agent);
+      const answer =
+        asked.query.kind === "repos"
+          ? { kind: "repos" as const, repos: ["garden"] }
+          : asked.query.kind === "agents"
+            ? { kind: "agents" as const, agents: signedIn }
+            : { kind: "current" as const, ...SETTINGS };
       return [{ id: 0, type: "machine_settings_answer", request: asked.request, machine: asked.machine, workspace: asked.workspace, answer }];
     }
     if (asked.type === "chat_command" && asked.action.kind === "say" && asked.action.task !== undefined) {

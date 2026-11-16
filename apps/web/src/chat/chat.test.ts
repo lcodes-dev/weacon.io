@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { AgentRef, ChatEntry, ChatEvent, RunEvent, RunState } from "../protocol.ts";
-import { type Chat, type Item, type Run, answered, calling, commit, fromSnapshot, missing, older, stream, working } from "./chat.ts";
+import { type Chat, type Item, type Run, answered, calling, commit, fromSnapshot, missing, named, older, stream, working } from "./chat.ts";
 
 const at = (seq: number, event: ChatEvent): ChatEntry => ({ seq, event });
 const said = (seq: number, text: string) => at(seq, { kind: "prompt", request: `q-${seq}`, text });
@@ -188,7 +188,7 @@ test("a run that stops without finishing ends its turn, so its next one starts a
 });
 
 test("a status keeps the agent the run had when it names none", () => {
-  const agent = { kind: "claude" as const, owner: { kind: "shared" as const } };
+  const agent = { kind: "claude" as const, owner: { kind: "shared" as const, member: "m-2", owner: "m-1" } };
   const start = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "idle", agent }]]), waiting: [], events: [] });
   const next = commitAll(start, [status(1, "r-1", "running"), status(2, "r-3", "starting")]);
 
@@ -219,6 +219,25 @@ test("only a run of the reader's own agent, or one no one is named for, is their
   assert.equal(working(on(owned("m-2")), "m-1"), false);
   assert.equal(working(on(owned("m-2")), undefined), false);
   assert.equal(working(on(undefined), "m-1"), true);
+});
+
+test("a shared agent's run is its caller's and its machine's owner's to stop, and the owner's prompts to answer", () => {
+  const agent = { kind: "claude" as const, owner: { kind: "shared" as const, member: "m-2", owner: "m-1" } };
+  const chat = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "waiting", agent }]]), waiting: [], events: [] });
+
+  assert.deepEqual(
+    ["m-1", "m-2", "m-3", undefined].map((me) => working(chat, me)),
+    [true, true, false, false],
+  );
+  assert.deepEqual(
+    ["m-1", "m-2", "m-3", undefined].map((me) => named(chat, me)),
+    [true, true, false, false],
+  );
+  const own = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" } };
+  const mine = fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "waiting", agent: own }]]), waiting: [], events: [] });
+  assert.deepEqual([named(mine, "m-1"), named(mine, "m-2")], [true, false]);
+  // A run no one is named for names no one.
+  assert.equal(named(fromSnapshot({ seq: 0, runs: new Map([["r-1", { state: "waiting", agent: undefined }]]), waiting: [], events: [] }), "m-1"), false);
 });
 
 test("a chat is working while one of its runs starts, runs or waits", () => {
@@ -304,7 +323,7 @@ test("a run that isn't on a turn streams nothing, even a late piece of its text"
 });
 
 test("earlier runs take their agents from the statuses the log holds, by the snapshot or a window", () => {
-  const codex = { kind: "codex" as const, owner: { kind: "shared" as const }, machine: "team VPS" };
+  const codex = { kind: "codex" as const, owner: { kind: "shared" as const, member: "m-2", owner: "m-1" }, machine: "team VPS" };
   const claude = { kind: "claude" as const, owner: { kind: "member" as const, member: "m-1" }, machine: "laptop" };
   const named = (seq: number, run: string, state: RunState, agent: AgentRef) => at(seq, { kind: "run_status", status: { run, state, agent } });
   const snapshot = fromSnapshot({

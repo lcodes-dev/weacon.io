@@ -36,7 +36,7 @@ test("a prompt says why its answer may not have been taken", () => {
     answerProblem(settle(first, key, "a-1", "offline").get(key)),
     "The machine is offline, so the answer wasn't sent. Try again once it's back.",
   );
-  assert.equal(answerProblem(settle(first, key, "a-1", "detached").get(key)), "Your machine no longer has this chat, so it takes no answers.");
+  assert.equal(answerProblem(settle(first, key, "a-1", "detached").get(key)), "Your agent's machine no longer has this chat, so it takes no answers.");
   assert.equal(answerProblem(settle(first, key, "a-1", "unsure").get(key)), "No answer came. The answer may not have been sent.");
 });
 
@@ -44,7 +44,7 @@ test("Stop says why it may not have worked", () => {
   assert.equal(stopProblem("accepted"), undefined);
   assert.equal(stopProblem("refused"), "The agent wasn't stopped.");
   assert.equal(stopProblem("offline"), "The machine is offline, so the agent wasn't stopped. Try again once it's back.");
-  assert.equal(stopProblem("detached"), "Your machine no longer has this chat, so there's no agent to stop.");
+  assert.equal(stopProblem("detached"), "Your agent's machine no longer has this chat, so there's no agent to stop.");
   assert.equal(stopProblem("lost"), "The connection closed. The agent may not have stopped.");
   assert.equal(stopProblem("unsure"), "No answer came. The agent may not have stopped.");
 });

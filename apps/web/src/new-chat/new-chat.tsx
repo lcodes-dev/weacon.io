@@ -6,15 +6,15 @@ import { Composer } from "../composer/composer.tsx";
 import { agentItem } from "../composer/mentionables.ts";
 import type { Send } from "../composer/prompt.ts";
 import { newId } from "../ids.ts";
-import type { ChatId, MachineId, MachineSummary, TaskId, TaskRecord } from "../protocol.ts";
+import type { ChatId, MachineId, TaskId, TaskRecord } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { MyAgentFields, useMyAgent } from "./my-agent.tsx";
-import { type Readiness, missingText, startProblem } from "./start.ts";
+import { type Callable, type Readiness, missingText, startProblem } from "./start.ts";
 import { TaskField } from "./task-field.tsx";
 
 /**
  * Starts a chat by its first message, for one of `tasks` if the person picks one; `task` is
- * picked to begin with. With one of `machines`, the person's own that run chats, they also pick
+ * picked to begin with. With one of `machines`, their own or one shared with the workspace, they also pick
  * their agent in the chat, which a message that mentions it calls; `missing` says what calling
  * one lacks when there is none. Once the server takes the message, `started` hears the chat's
  * id; until then the box keeps the text.
@@ -34,7 +34,7 @@ export function NewChat({
   /** Whether the feed is up and takes commands. */
   live: boolean;
   away: boolean;
-  machines: MachineSummary[];
+  machines: Callable[];
   missing: ReactNode;
   started(chat: ChatId): void;
   /** Opens Settings, where the person signs an agent in on a machine, with `machine`'s own open. */

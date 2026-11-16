@@ -10,17 +10,18 @@ use tokio::time::{Instant, sleep, sleep_until, timeout, timeout_at};
 use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, Message, Outcome,
-    PROTOCOL, Receipt, Welcome, code,
+    AccountId, App, Capability, ChatCommand, Code, Envelope, ErrorBody, Hello, MachineShares,
+    Message, Outcome, PROTOCOL, Receipt, Welcome, WorkspaceId, code,
 };
 
-use self::asking::{Asking, asking};
+use self::asking::{Asking, asking, for_members};
 use self::chats::{ChatLink, LIVE, UPLOAD};
 use self::retry::Retry;
 use crate::chats::Chats;
 use crate::machine::{self, Paired};
 use crate::proposals;
 use crate::server::{Failure, Server, Socket};
+use crate::workspaces::sharing;
 
 /// What the core must be offered by the server to keep its connection.
 const CONNECT: Code = code!("machine.connect");
@@ -163,6 +164,7 @@ impl Uplink {
                 log.clone(),
             ),
             proposals: offers(PROPOSALS),
+            shared: None,
         };
         if self
             .serve(&mut socket, paired, from_daemon, &mut link)
@@ -190,25 +192,38 @@ impl Uplink {
         // Only what the server sends keeps the connection alive, and no send outlasts it.
         let mut quiet_at = Instant::now() + self.timing.quiet_within;
         let mut look_at = Instant::now() + self.timing.look_every;
+        // The server is told what the machine is shared with as the connection comes up, and
+        // again whenever that may have changed.
+        let mut look_at_shares = true;
         loop {
+            if std::mem::take(&mut look_at_shares)
+                && let Some(shares) = link.shares(&self.state_dir).await
+                && timeout_at(quiet_at, send(socket, &shares)).await.is_err()
+            {
+                return false;
+            }
             let reply = tokio::select! {
                 () = sleep_until(look_at) => {
                     if self.paired().await.as_ref() != Some(paired) {
                         return false;
                     }
                     look_at = Instant::now() + self.timing.look_every;
+                    look_at_shares = true;
                     None
                 }
                 frame = timeout_at(quiet_at, socket.next()) => {
                     let Ok(Some(Ok(frame))) = frame else { return false };
                     quiet_at = Instant::now() + self.timing.quiet_within;
-                    match self.answer(frame, &paired.owner, &mut link.chats) {
+                    match self.answer(frame, &paired.owner, &mut link.chats).await {
                         Step::Unpaired => return true,
                         Step::Reply(reply) => Some(*reply),
                         Step::Nothing => None,
                     }
                 }
-                Some(envelope) = from_daemon.recv() => link.offered(envelope, &self.to_daemon),
+                Some(envelope) = from_daemon.recv() => {
+                    look_at_shares = matches!(envelope.message, Message::MachineSettingsAnswer(_));
+                    link.offered(envelope, &self.to_daemon)
+                }
                 Some(up) = link.chats.next() => Some(up),
             };
             if let Some(envelope) = reply
@@ -247,9 +262,10 @@ impl Uplink {
 
 impl Uplink {
     /// What to do with a frame from the server. Only the machine's owner may ask it to act,
-    /// whatever the server allows, and a kind whose asker it can't find is refused; the rest
-    /// goes to the chats or the daemon.
-    fn answer(&self, frame: Wire, owner: &AccountId, chats: &mut ChatLink) -> Step {
+    /// whatever the server allows, but for what a member of a workspace the machine is shared
+    /// with may ask; a kind whose asker it can't find is refused. The rest goes to the chats
+    /// or the daemon.
+    async fn answer(&self, frame: Wire, owner: &AccountId, chats: &mut ChatLink) -> Step {
         let Wire::Text(text) = frame else {
             return Step::Nothing;
         };
@@ -262,7 +278,8 @@ impl Uplink {
             return Step::Unpaired;
         }
         let owners = match asking(&envelope.message) {
-            Asking::By(by) => by == Some(owner),
+            Asking::By(by) if by == Some(owner) => true,
+            Asking::By(by) => by.is_some() && self.shared_for(&envelope.message).await,
             Asking::NotAnAsk => true,
             Asking::Unknown => return reply(failure(envelope.id, code!("uplink.unknown"))),
         };
@@ -279,6 +296,16 @@ impl Uplink {
         match self.to_daemon.try_send(envelope) {
             Ok(()) => Step::Nothing,
             Err(_) => reply(for_now(id, code!("uplink.busy"))),
+        }
+    }
+}
+
+impl Uplink {
+    // Whether `message` is one a workspace's members may send, to a machine shared with it.
+    async fn shared_for(&self, message: &Message) -> bool {
+        match for_members(message) {
+            Some(workspace) => sharing::shares(&self.state_dir, workspace).await,
+            None => false,
         }
     }
 }
@@ -325,6 +352,8 @@ struct Link {
     chats: ChatLink,
     /// Whether the server offered [`PROPOSALS`].
     proposals: bool,
+    /// The workspaces it was last told the machine is shared with.
+    shared: Option<Vec<WorkspaceId>>,
 }
 
 impl Link {
@@ -337,6 +366,17 @@ impl Link {
         };
         drop(to_daemon.try_send(Envelope { id: 0, message }));
         None
+    }
+
+    /// The workspaces the machine is shared with, unless the server was last told the same.
+    async fn shares(&mut self, state_dir: &Path) -> Option<Envelope> {
+        let workspaces = sharing::shared(state_dir).await;
+        if self.shared.as_ref() == Some(&workspaces) {
+            return None;
+        }
+        self.shared = Some(workspaces.clone());
+        let message = Message::MachineShares(MachineShares { workspaces });
+        Some(Envelope { id: 0, message })
     }
 }
 
@@ -470,8 +510,22 @@ mod tests {
         }
     }
 
-    // A server that takes the socket, checks the hello and welcomes it with `offers`.
+    // A server that takes the socket, checks the hello and welcomes it with `offers`, past the
+    // core's word on what its machine is shared with.
     async fn welcoming(tls: &Tls, offers: &[Code]) -> Peer {
+        welcomed(tls, offers).await.0
+    }
+
+    // [`welcoming`], with what the core then says its machine is shared with.
+    async fn welcomed(tls: &Tls, offers: &[Code]) -> (Peer, Message) {
+        let mut peer = greeting(tls, offers).await;
+        let shares = heard(&mut peer).await;
+        assert!(matches!(shares, Message::MachineShares(_)), "{shares:?}");
+        (peer, shares)
+    }
+
+    // A server that takes the socket, checks the hello and welcomes it with `offers`.
+    async fn greeting(tls: &Tls, offers: &[Code]) -> Peer {
         let stream = tls.accept().await.unwrap();
         let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
         let Message::Hello(hello) = heard(&mut peer).await else {
@@ -759,10 +813,10 @@ mod tests {
     }
 
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
-    fn answered(link: &Uplink, message: Message) -> Option<String> {
+    async fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
         let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let reply = match link.answer(frame, &owner(), &mut chats) {
+        let reply = match link.answer(frame, &owner(), &mut chats).await {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
             Step::Reply(reply) => *reply,
@@ -770,10 +824,159 @@ mod tests {
         match reply {
             Envelope {
                 id: 9,
-                message: Message::Error(ErrorBody { code, .. }),
+                message:
+                    Message::Error(ErrorBody { code, .. })
+                    | Message::Receipt(Receipt {
+                        outcome: Outcome::Failed { code },
+                        ..
+                    }),
             } => Some(code.as_str().to_owned()),
             other => Some(format!("{other:?}")),
         }
+    }
+
+    // What the uplink answers each of `asks` with, in order.
+    async fn all_answered(link: &Uplink, asks: Vec<Message>) -> Vec<Option<String>> {
+        let mut answers = Vec::new();
+        for ask in asks {
+            answers.push(answered(link, ask).await);
+        }
+        answers
+    }
+
+    fn share(dir: &TempDir, workspace: &str, shared: bool) {
+        let workspaces = crate::workspaces::Workspaces::new(dir, None);
+        let workspace = WorkspaceId::try_from(workspace.to_owned()).unwrap();
+        sharing::store(&workspaces, &workspace, shared, &recording_logger().0).unwrap();
+    }
+
+    // What a member may ask of a machine shared with their workspace `workspace`, and an
+    // answer to a prompt, which they may not give.
+    fn members_asks(by: &AccountId, workspace: &str) -> Vec<Message> {
+        let asker = Asker {
+            account: by.clone(),
+            member: MemberId::try_from("m-2".to_owned()).unwrap(),
+        };
+        let workspace = WorkspaceId::try_from(workspace.to_owned()).unwrap();
+        let chat = |action| {
+            Message::ChatCommand(ChatCommand {
+                request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                workspace: workspace.clone(),
+                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
+                action,
+                by: Some(asker.clone()),
+            })
+        };
+        let settings = |query| {
+            Message::MachineSettingsQuery(MachineSettingsQuery {
+                request: RequestId::try_from("r-1".to_owned()).unwrap(),
+                machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
+                workspace: workspace.clone(),
+                query,
+                by: Some(asker.clone()),
+            })
+        };
+        let allow = weacon_protocol::PermissionAnswer {
+            run: "run-1".parse().unwrap(),
+            prompt: 1,
+            allow: true,
+        };
+        vec![
+            chat(crate::chats::test_support::prompt("r-1", "Hi").action),
+            chat(ChatAction::Interrupt),
+            settings(MachineSettingsQueryKind::Repos),
+            settings(MachineSettingsQueryKind::Agents),
+            chat(ChatAction::Permission { answer: allow }),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_member_of_a_workspace_the_machine_is_shared_with_calls_its_agents_and_no_more() {
+        let dir = TempDir::new().unwrap();
+        let (to_daemon, mut taken) = mpsc::channel(16);
+        let link = with_commands(&dir, to_daemon);
+        let member = AccountId::try_from("a-other".to_owned()).unwrap();
+        let chat_refused = Some("chat.not_owner".to_owned());
+        let refused = Some("machine.not_owner".to_owned());
+        let unshared = [
+            vec![chat_refused.clone(); 2],
+            vec![refused.clone(); 2],
+            vec![chat_refused.clone()],
+        ]
+        .concat();
+
+        let before = all_answered(&link, members_asks(&member, "w-1")).await;
+        share(&dir, "w-1", true);
+        let shared = all_answered(&link, members_asks(&member, "w-1")).await;
+        let elsewhere = all_answered(&link, members_asks(&member, "w-2")).await;
+        let owners_only = all_answered(&link, every_ask(Some(&member))).await;
+        share(&dir, "w-1", false);
+        let after = all_answered(&link, members_asks(&member, "w-1")).await;
+
+        assert_eq!(before, unshared);
+        // Only the machine's owner answers a prompt.
+        assert_eq!(shared, [None, None, None, None, chat_refused]);
+        assert_eq!(elsewhere, unshared);
+        // Of every other ask, a member reads a chat's changes and the state of its worktree.
+        let read = [vec![refused.clone(); 5], vec![None; 2], vec![refused]].concat();
+        assert_eq!(owners_only, read);
+        assert_eq!(after, unshared);
+        let passed = std::iter::from_fn(|| taken.try_recv().ok()).count();
+        assert_eq!(passed, 4);
+    }
+
+    #[tokio::test]
+    async fn the_server_is_told_what_the_machine_is_shared_with_as_it_connects_and_as_it_changes() {
+        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        share(&dir, "w-2", true);
+        let link = uplink(&dir);
+        let pairing = paired(&tls);
+        let (outgoing, mut from_daemon) = mpsc::channel(4);
+        let shares = |workspaces: &[&str]| {
+            Message::MachineShares(MachineShares {
+                workspaces: workspaces.iter().map(|id| id.parse().unwrap()).collect(),
+            })
+        };
+        let settings_answer = every_ask(Some(&owner())).remove(0);
+        let Message::MachineSettingsQuery(query) = settings_answer else {
+            panic!("not a settings query");
+        };
+        let changed = Envelope {
+            id: 5,
+            message: Message::MachineSettingsAnswer(weacon_protocol::MachineSettingsAnswer {
+                request: query.request,
+                machine: query.machine,
+                workspace: query.workspace,
+                answer: weacon_protocol::MachineSettingsAnswerKind::Repos { repos: Vec::new() },
+            }),
+        };
+        let serve = async {
+            let (mut peer, first) = welcomed(&tls, &[CONNECT]).await;
+            share(&dir, "w-1", true);
+            outgoing.send(changed.clone()).await.unwrap();
+            let answer = heard(&mut peer).await;
+            let second = heard(&mut peer).await;
+            // An answer that changes nothing tells the server nothing more.
+            outgoing.send(changed.clone()).await.unwrap();
+            let again = heard(&mut peer).await;
+            share(&dir, "w-2", false);
+            outgoing.send(changed.clone()).await.unwrap();
+            heard(&mut peer).await;
+            (first, answer, second, again, heard(&mut peer).await)
+        };
+
+        let (ended, heard) = tokio::join!(
+            link.connection(&pairing, &link.log, &mut from_daemon),
+            serve
+        );
+
+        assert_eq!(ended.unwrap(), Ended::Lost);
+        let (first, answer, second, again, third) = heard;
+        assert_eq!(first, shares(&["w-2"]));
+        assert_eq!(answer, changed.message);
+        assert_eq!(second, shares(&["w-1", "w-2"]));
+        assert_eq!(again, changed.message);
+        assert_eq!(third, shares(&["w-1"]));
     }
 
     #[tokio::test]
@@ -788,16 +991,10 @@ mod tests {
             retryable: true,
         });
 
-        let owners: Vec<_> = every_ask(Some(&owner()))
-            .into_iter()
-            .map(|ask| answered(&link, ask))
-            .collect();
-        let others: Vec<_> = [every_ask(Some(&stranger)), every_ask(None)]
-            .concat()
-            .into_iter()
-            .map(|ask| answered(&link, ask))
-            .collect();
-        let error = answered(&link, other_error.clone());
+        let owners = all_answered(&link, every_ask(Some(&owner()))).await;
+        let others = [every_ask(Some(&stranger)), every_ask(None)].concat();
+        let others = all_answered(&link, others).await;
+        let error = answered(&link, other_error.clone()).await;
         // A server that doesn't store chats' events may not follow one.
         let chat_query = answered(
             &link,
@@ -806,7 +1003,8 @@ mod tests {
                 chat: ChatId::try_from("c-1".to_owned()).unwrap(),
                 query: ChatQueryKind::Subscribe { after: 0 },
             }),
-        );
+        )
+        .await;
 
         assert_eq!(owners, vec![None; 8]);
         assert_eq!(others, vec![not_owner; 16]);
@@ -863,14 +1061,14 @@ mod tests {
         let (to_daemon, _taken) = mpsc::channel(1);
         let link = with_commands(&dir, to_daemon);
         let ask = || every_ask(Some(&owner())).remove(0);
-        assert_eq!(answered(&link, ask()), None);
+        assert_eq!(answered(&link, ask()).await, None);
 
         let frame = text(&Envelope {
             id: 9,
             message: ask(),
         });
         let mut chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats) else {
+        let Step::Reply(reply) = link.answer(frame, &owner(), &mut chats).await else {
             panic!("not refused");
         };
 
@@ -911,7 +1109,7 @@ mod tests {
         let pairing = paired(&tls);
 
         // The server goes once it has welcomed the core, which then mustn't stay.
-        let leaves = async { drop(welcoming(&tls, &[]).await) };
+        let leaves = async { drop(greeting(&tls, &[]).await) };
         let (unoffered, ()) = tokio::join!(once(&link, &pairing), leaves);
         let (unauthorized, ()) = tokio::join!(
             once(&link, &pairing),

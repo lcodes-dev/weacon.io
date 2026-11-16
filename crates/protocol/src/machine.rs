@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hex::hex_string;
 use crate::token::{checked_string, token_id};
-use crate::{AccountId, App, Capability, Secret};
+use crate::{AccountId, App, Capability, MemberId, Secret, WorkspaceId};
 
 token_id!(
     /// A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -161,6 +161,31 @@ pub struct MachineList {
     pub machines: Vec<MachineSummary>,
 }
 
+/// The workspaces a machine's owner shares it with, all of them each time, from a core to its
+/// server: when it connects, and when the set changes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MachineShares {
+    pub workspaces: Vec<WorkspaceId>,
+}
+
+/// A machine shared with a workspace, as each of its members sees it: `owner` is its owner's
+/// member there.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedMachine {
+    pub id: MachineId,
+    pub name: MachineName,
+    pub owner: MemberId,
+    /// Whether its core is connected now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub connected: bool,
+}
+
+/// The machines shared with a workspace, from the server to its members.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SharedMachineList {
+    pub machines: Vec<SharedMachine>,
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -176,6 +201,37 @@ mod tests {
 
     fn name(name: &str) -> MachineName {
         name.parse().unwrap()
+    }
+
+    #[test]
+    fn a_core_names_every_workspace_it_is_shared_with_and_members_see_a_shared_machine() {
+        let shares = crate::Envelope {
+            id: 3,
+            message: crate::Message::MachineShares(MachineShares {
+                workspaces: vec!["w-1".parse().unwrap()],
+            }),
+        };
+        let wire = json!({ "id": 3, "type": "machine_shares", "workspaces": ["w-1"] });
+        assert_eq!(serde_json::to_value(&shares).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<crate::Envelope>(wire).unwrap(),
+            shares
+        );
+        let list = SharedMachineList {
+            machines: vec![SharedMachine {
+                id: "mc-1".parse().unwrap(),
+                name: name("Team VPS"),
+                owner: "m-1".parse().unwrap(),
+                connected: true,
+            }],
+        };
+        let wire = json!({ "machines": [{ "id": "mc-1", "name": "Team VPS", "owner": "m-1",
+                                         "connected": true }] });
+        assert_eq!(serde_json::to_value(&list).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<SharedMachineList>(wire).unwrap(),
+            list
+        );
     }
 
     #[test]

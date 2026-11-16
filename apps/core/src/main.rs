@@ -85,6 +85,9 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<(), Fault>
             level,
             team,
         } => workspaces::access(app, &workspace, level, team, &mut io::stdout().lock()),
+        Command::Share { workspace, shared } => {
+            workspaces::sharing::run(app, &workspace, shared, &mut io::stdout().lock())
+        }
         Command::Pair { server, name, pin } => {
             pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
         }
