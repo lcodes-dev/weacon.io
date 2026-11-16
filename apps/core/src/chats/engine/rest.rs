@@ -70,12 +70,6 @@ impl<A: Agent> Engine<A> {
     // run, and an idle run active within `IDLE` starts again to resume its session; the others
     // sleep.
     pub(super) async fn reconcile(&mut self) {
-        let kept = self.runs.kept();
-        if kept > 0 {
-            let kept = u64::try_from(kept).unwrap_or(u64::MAX);
-            self.log
-                .warn("runs records kept unread", &[("count", kept.into())]);
-        }
         let now = self.now();
         let awake: Vec<(ChatKey, bool)> = self
             .runs
@@ -126,7 +120,6 @@ pub(super) fn chat_fields(key: &ChatKey, fault: &Fault) -> [(&'static str, Field
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{AgentKind, Outcome, RunEvent};
-    use weacon_testing::messages;
 
     use super::super::by_hand::{OnTurn, hear, launched, on_ask, on_turn};
     use super::*;
@@ -272,7 +265,6 @@ mod tests {
         for _ in 0..3 {
             launched(&mut on.engine).await;
         }
-        assert!(!messages(&on.bench.records).contains(&"runs records kept unread"));
 
         let first = prompt("r-1", "Hi").request;
         let ended = on.engine.open(&key()).await.unwrap().log.has_ended(&first);
