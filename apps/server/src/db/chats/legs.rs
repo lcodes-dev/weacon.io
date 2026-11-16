@@ -3,7 +3,9 @@
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
-use weacon_protocol::{AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId, RunId};
+use weacon_protocol::{
+    AgentKind, ChatId, MachineId, MachineName, MemberId, RepoId, RequestId, RunId,
+};
 
 use super::super::changes::Versioned;
 use super::{count, machine_not_found};
@@ -98,7 +100,7 @@ impl Workspace {
     pub(crate) async fn call_leg(
         &self,
         chat: &ChatId,
-        member: &MemberId,
+        (member, request): (&MemberId, &RequestId),
         new: &NewLeg<'_>,
         now: i64,
     ) -> Result<Option<Leg>, Fault> {
@@ -139,6 +141,8 @@ impl Workspace {
             return Ok(None);
         }
         self.lend_in(&mut transaction, chat, new.machine_id, member)
+            .await?;
+        self.asked_in(&mut transaction, chat, request, member)
             .await?;
         transaction.commit().await.map_err(failed)?;
         Ok(Some(leg))
@@ -354,12 +358,74 @@ impl Workspace {
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         let called = (&leg.machine, member);
-        // A turn someone else took since isn't given back, nor the leg they called.
+        // A turn someone else took since isn't given back, nor a leg that was handed on since.
         if self.uncall_in(&mut transaction, chat, called).await? {
-            self.lend_in(&mut transaction, chat, &leg.machine, &leg.member)
-                .await?;
+            sqlx::query(
+                "UPDATE chat_legs SET member_id = ?
+                 WHERE workspace_id = ? AND chat_id = ? AND machine_id = ? AND member_id = ?",
+            )
+            .bind(leg.member.as_str())
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .bind(leg.machine.as_str())
+            .bind(member.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
         }
         transaction.commit().await.map_err(failed)
+    }
+
+    /// Notes that `member` made the prompt `request` to `chat`, as the server took it.
+    pub(crate) async fn asked(
+        &self,
+        chat: &ChatId,
+        request: &RequestId,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        let mut writer = self.db.writer.acquire().await.map_err(failed)?;
+        self.asked_in(&mut writer, chat, request, member).await
+    }
+
+    async fn asked_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        request: &RequestId,
+        member: &MemberId,
+    ) -> Result<(), Fault> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO chat_calls (workspace_id, chat_id, request_id, member_id)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(request.as_str())
+        .bind(member.as_str())
+        .execute(connection)
+        .await
+        .map_err(failed)?;
+        Ok(())
+    }
+
+    /// Who made the prompt `request` to `chat`, if the server took it from a member.
+    pub(crate) async fn asker(
+        &self,
+        chat: &ChatId,
+        request: &RequestId,
+    ) -> Result<Option<MemberId>, Fault> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT member_id FROM chat_calls
+             WHERE workspace_id = ? AND chat_id = ? AND request_id = ?",
+        )
+        .bind(self.id.as_str())
+        .bind(chat.as_str())
+        .bind(request.as_str())
+        .fetch_optional(&self.db.readers)
+        .await
+        .map_err(failed)?
+        .map(stored)
+        .transpose()
     }
 
     async fn lend_in(
@@ -501,6 +567,8 @@ mod tests {
     use weacon_protocol::RunState;
     use weacon_testing::TempDir;
 
+    static R1: std::sync::LazyLock<RequestId> = std::sync::LazyLock::new(|| id("r-1"));
+
     use super::*;
     use crate::db::Incoming;
     use crate::db::test_support::{NOW, code, id, make, said, status};
@@ -523,8 +591,12 @@ mod tests {
         };
         let codex = AgentKind::Codex;
 
-        let first = one.call_leg(&chat, &bo, &on(&shelf, codex), NOW).await;
-        let held = one.call_leg(&chat, &bo, &on(&desk, codex), NOW + 1).await;
+        let first = one
+            .call_leg(&chat, (&bo, &*R1), &on(&shelf, codex), NOW)
+            .await;
+        let held = one
+            .call_leg(&chat, (&bo, &*R1), &on(&desk, codex), NOW + 1)
+            .await;
 
         assert_eq!(first.unwrap().unwrap().machine.as_str(), "mc-4");
         assert_eq!(held.unwrap(), None);
@@ -532,22 +604,30 @@ mod tests {
         // No one else's starts meanwhile either, but the same call may be made again.
         let adas = (&id::<MachineId>("mc-1"), &member_id("m1"));
         assert!(!one.call(&chat, adas, NOW + 1).await.unwrap());
-        let again = one.call_leg(&chat, &bo, &on(&shelf, codex), NOW + 1).await;
+        let again = one
+            .call_leg(&chat, (&bo, &*R1), &on(&shelf, codex), NOW + 1)
+            .await;
         assert!(again.unwrap().is_some());
         // Once the hold has run out, another leg is called, and one that took no prompt is
         // made again as its next call says.
         let later = NOW + 1 + CALL_SECS;
-        let other = one.call_leg(&chat, &bo, &on(&desk, codex), later).await;
+        let other = one
+            .call_leg(&chat, (&bo, &*R1), &on(&desk, codex), later)
+            .await;
         assert!(other.unwrap().is_some());
         let claude = on(&shelf, AgentKind::Claude);
-        let remade = one.call_leg(&chat, &bo, &claude, later + CALL_SECS).await;
+        let remade = one
+            .call_leg(&chat, (&bo, &*R1), &claude, later + CALL_SECS)
+            .await;
         assert_eq!(remade.unwrap().unwrap().agent, AgentKind::Claude);
         // One that was detached before it took a prompt stays so, and is never made again.
         let never = later + 3 * CALL_SECS;
         one.uncall(&chat, (&shelf, &bo)).await.unwrap();
         let gone = one.leg(&chat, &shelf).await.unwrap().unwrap();
         one.detach_leg(&chat, &gone).await.unwrap();
-        let ended = one.call_leg(&chat, &bo, &on(&shelf, codex), never).await;
+        let ended = one
+            .call_leg(&chat, (&bo, &*R1), &on(&shelf, codex), never)
+            .await;
         assert_eq!(code(&ended.unwrap_err()), "chat.detached");
     }
 
@@ -569,10 +649,10 @@ mod tests {
         };
 
         let (codex, stray) = (on(&desk, AgentKind::Codex), on(&adas, AgentKind::Codex));
-        let called = one.call_leg(&chat, &bo, &codex, NOW).await;
+        let called = one.call_leg(&chat, (&bo, &*R1), &codex, NOW).await;
         called.unwrap().unwrap();
         one.uncall(&chat, (&desk, &bo)).await.unwrap();
-        let stolen = one.call_leg(&chat, &bo, &stray, NOW).await;
+        let stolen = one.call_leg(&chat, (&bo, &*R1), &stray, NOW).await;
 
         assert_eq!(code(&stolen.unwrap_err()), "machine.not_found");
         let leg = one.leg(&chat, &desk).await.unwrap().unwrap();
@@ -590,10 +670,10 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        let stored = one.append_from((&desk, &bo), &chat, &[first]).await;
+        let stored = one.append_from((&desk, &bo), &bo, &chat, &[first]).await;
         assert_eq!(stored.unwrap(), 1);
         let claude = on(&desk, AgentKind::Claude);
-        let again = one.call_leg(&chat, &bo, &claude, NOW).await;
+        let again = one.call_leg(&chat, (&bo, &*R1), &claude, NOW).await;
         assert_eq!(again.unwrap().unwrap().agent, AgentKind::Codex);
         let kept = one.leg(&chat, &desk).await.unwrap().unwrap();
         assert_eq!((kept.agent, kept.core_seq), (AgentKind::Codex, 1));
@@ -622,25 +702,27 @@ mod tests {
         let (db, w1) = (one.db.clone(), [id("w1")]);
         let at = |calls: i64| NOW + calls * CALL_SECS;
 
-        let unshared = one.call_leg(&chat, &ada, &on_desk, at(1)).await;
+        let unshared = one.call_leg(&chat, (&ada, &*R1), &on_desk, at(1)).await;
         db.set_shares(&desk, &w1).await.unwrap();
-        one.call_leg(&chat, &ada, &on_desk, at(1)).await.unwrap();
+        one.call_leg(&chat, (&ada, &*R1), &on_desk, at(1))
+            .await
+            .unwrap();
         let event = status(RunState::Idle);
         let first = Incoming {
             core_seq: Some(1),
             event: &event,
             at: NOW,
         };
-        one.append_from((&desk, &ada), &chat, &[first])
+        one.append_from((&desk, &ada), &ada, &chat, &[first])
             .await
             .unwrap();
         let hers = one.leg(&chat, &desk).await.unwrap().unwrap();
         // His call of the same leg waits for hers, as anyone's would.
-        let held = one.call_leg(&chat, &bo, &on_desk, at(1)).await;
-        let his = one.call_leg(&chat, &bo, &on_desk, at(2)).await;
+        let held = one.call_leg(&chat, (&bo, &*R1), &on_desk, at(1)).await;
+        let his = one.call_leg(&chat, (&bo, &*R1), &on_desk, at(2)).await;
         db.set_shares(&desk, &[]).await.unwrap();
-        let ended = one.call_leg(&chat, &ada, &on_desk, at(3)).await;
-        let owners = one.call_leg(&chat, &bo, &on_desk, at(3)).await;
+        let ended = one.call_leg(&chat, (&ada, &*R1), &on_desk, at(3)).await;
+        let owners = one.call_leg(&chat, (&bo, &*R1), &on_desk, at(3)).await;
 
         assert_eq!(code(&unshared.unwrap_err()), "machine.not_found");
         assert_eq!((&hers.member, &hers.shared_by), (&ada, &Some(bo.clone())));
@@ -655,6 +737,33 @@ mod tests {
         assert_eq!(owners.unwrap(), Some(lent.clone()));
         assert_eq!(one.leg(&chat, &desk).await.unwrap(), Some(lent));
         assert_eq!(one.legs(&chat).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_call_taken_back_after_its_share_ended_leaves_the_leg_its_owners() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m3", "mc-3").await;
+        let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
+        let (name, desk) = (id("Bo's desk"), id::<MachineId>("mc-3"));
+        let on_desk = NewLeg {
+            machine_id: &desk,
+            machine: &name,
+            agent: AgentKind::Codex,
+            repo: None,
+        };
+        let db = one.db.clone();
+        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        let hers = (&ada, &*R1);
+        one.call_leg(&chat, hers, &on_desk, NOW).await.unwrap();
+        let again = one.call_leg(&chat, hers, &on_desk, NOW + 1).await.unwrap();
+
+        db.set_shares(&desk, &[]).await.unwrap();
+        one.uncall_leg(&chat, &again.unwrap(), &ada).await.unwrap();
+
+        let left = one.leg(&chat, &desk).await.unwrap().unwrap();
+        assert_eq!(left.member, bo);
     }
 
     #[tokio::test]
@@ -840,7 +949,10 @@ mod tests {
             agent: AgentKind::Claude,
             repo: None,
         };
-        one.call_leg(&chat, &bo, &leg, NOW).await.unwrap().unwrap();
+        one.call_leg(&chat, (&bo, &*R1), &leg, NOW)
+            .await
+            .unwrap()
+            .unwrap();
         let event = status(RunState::Idle);
         let at = |core_seq| Incoming {
             core_seq: Some(core_seq),
@@ -849,11 +961,14 @@ mod tests {
         };
 
         let stored = [
-            one.append_from((&hers, &ada), &chat, &[at(1), at(2)]).await,
-            one.append_from((&his, &bo), &chat, &[at(1)]).await,
+            one.append_from((&hers, &ada), &ada, &chat, &[at(1), at(2)])
+                .await,
+            one.append_from((&his, &bo), &bo, &chat, &[at(1)]).await,
             // A replay from one machine is skipped, whatever the other sent since.
-            one.append_from((&hers, &ada), &chat, &[at(2), at(3)]).await,
-            one.append_from((&his, &bo), &chat, &[at(1), at(2)]).await,
+            one.append_from((&hers, &ada), &ada, &chat, &[at(2), at(3)])
+                .await,
+            one.append_from((&his, &bo), &bo, &chat, &[at(1), at(2)])
+                .await,
         ];
 
         let seqs: Vec<_> = stored.into_iter().map(Result::unwrap).collect();
@@ -891,27 +1006,33 @@ mod tests {
             event: &event,
             at: NOW,
         };
-        one.append_from((&hers, &ada), &chat, &[at(1)])
+        one.append_from((&hers, &ada), &ada, &chat, &[at(1)])
             .await
             .unwrap();
         let adas = one.leg(&chat, &hers).await.unwrap().unwrap();
         let later = NOW + 2 * CALL_SECS;
 
-        let his = one.call_leg(&chat, &bo, &on_hers, later).await.unwrap();
+        let his = one
+            .call_leg(&chat, (&bo, &*R1), &on_hers, later)
+            .await
+            .unwrap();
         assert_eq!(his, Some(adas.clone()));
-        one.append_from((&hers, &bo), &chat, &[at(2)])
+        one.append_from((&hers, &bo), &bo, &chat, &[at(2)])
             .await
             .unwrap();
         // Named as hers, it is refused: the leg works for him now.
-        let stale = one.append_from((&hers, &ada), &chat, &[at(3)]).await;
+        let stale = one.append_from((&hers, &ada), &ada, &chat, &[at(3)]).await;
         assert_eq!(code(&stale.unwrap_err()), "chat.leg_called");
         // Ada's call while his holds the turn leaves the leg his.
-        let held = one.call_leg(&chat, &ada, &on_hers, later).await.unwrap();
+        let held = one
+            .call_leg(&chat, (&ada, &*R1), &on_hers, later)
+            .await
+            .unwrap();
         assert_eq!(held, None);
         let lent = one.leg_on(&chat, &hers).await.unwrap().unwrap();
         assert_eq!((lent.member, lent.number), (bo.clone(), adas.number));
         one.uncall_leg(&chat, &adas, &bo).await.unwrap();
-        one.append_from((&hers, &ada), &chat, &[at(3)])
+        one.append_from((&hers, &ada), &ada, &chat, &[at(3)])
             .await
             .unwrap();
 

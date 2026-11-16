@@ -173,6 +173,9 @@ impl Workspace {
 mod tests {
     use weacon_testing::TempDir;
 
+    static R1: std::sync::LazyLock<weacon_protocol::RequestId> =
+        std::sync::LazyLock::new(|| id("r-1"));
+
     use super::*;
     use crate::db::NewLeg;
     use crate::db::test_support::{NOW, id, make};
@@ -256,7 +259,9 @@ mod tests {
         let chat = id("c-1");
 
         let begun = db.set_shares(&desk, &[id("w1"), id("w-none")]).await;
-        let called = one.call_leg(&chat, &ada, &on_desk, NOW + 1_000).await;
+        let called = one
+            .call_leg(&chat, (&ada, &*R1), &on_desk, NOW + 1_000)
+            .await;
         called.unwrap().unwrap();
         // Saying the same again changes nothing.
         let same = db.set_shares(&desk, &[id("w1")]).await.unwrap();
@@ -304,7 +309,9 @@ mod tests {
             repo: None,
         };
         let (chat, adas) = (id("c-1"), member_id("m1"));
-        let called = one.call_leg(&chat, &adas, &on_shelf, NOW + 1_000).await;
+        let called = one
+            .call_leg(&chat, (&adas, &*R1), &on_shelf, NOW + 1_000)
+            .await;
         called.unwrap().unwrap();
         assert!(!detached(&one, "c-1", &shelf).await);
         one.leave(&member_id("m3")).await.unwrap();

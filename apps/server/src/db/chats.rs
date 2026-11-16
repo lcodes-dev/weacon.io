@@ -105,6 +105,12 @@ impl Workspace {
             return Ok(());
         }
         self.unlink_task(&mut transaction, chat).await?;
+        sqlx::query("DELETE FROM chat_calls WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
         sqlx::query("DELETE FROM chat_legs WHERE workspace_id = ? AND chat_id = ?")
             .bind(self.id.as_str())
             .bind(chat.as_str())
@@ -168,13 +174,14 @@ impl Workspace {
         self.append(transaction, chat, None, events).await
     }
 
-    /// [`Self::append`] for events `machine` sent as those of `member`, whom its leg of `chat`
-    /// works for, stored only while it holds that leg and still serves it, checked in the
-    /// transaction that stores them: otherwise `chat.not_found`, or `chat.leg_called` when the
-    /// leg works for someone else by now.
+    /// [`Self::append`] for events `machine` sent while its leg of `chat` works for `member`,
+    /// as those of `by`, stored only while it holds that leg and still serves it, checked in
+    /// the transaction that stores them: otherwise `chat.not_found`, or `chat.leg_called` when
+    /// the leg works for someone else by now.
     pub(crate) async fn append_from(
         &self,
         (machine, member): (&weacon_protocol::MachineId, &MemberId),
+        by: &MemberId,
         chat: &ChatId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
@@ -186,7 +193,7 @@ impl Workspace {
                 "The chat's agent there works for someone else now",
             ));
         }
-        self.append(transaction, chat, Some((member, machine)), events)
+        self.append(transaction, chat, Some((by, machine)), events)
             .await
     }
 

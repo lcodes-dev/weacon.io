@@ -4,8 +4,8 @@
 use weacon_model::chat_title;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentKind, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId, Message,
-    Outcome, Receipt, RunState, code,
+    AgentKind, Asker, ChatAction, ChatCommand, ChatEvent, ChatId, ChatTask, MachineId, MemberId,
+    Message, Outcome, Receipt, RequestId, RunState, code,
 };
 
 use super::admit::{Admitted, admit, not_owner};
@@ -192,9 +192,8 @@ async fn start(
         at: shared.now(),
     };
     workspace.add_chat(&chat).await?;
-    workspace
-        .call(&id, (&machine_id, &member.id), chat.at)
-        .await?;
+    let called = (&machine_id, &member.id);
+    first_call(workspace, &id, called, &command.request, chat.at).await?;
     let follow = link::follow(workspace.id(), &id, 0);
     if let Err(fault) = relay::command(shared, &machine_id, command, follow, back) {
         workspace.forget_chat(&id).await?;
@@ -211,6 +210,18 @@ async fn start(
     }
     shared.wake_feeds(workspace.id());
     Ok(())
+}
+
+// Takes a new chat's turn for its first prompt, `request`, and notes who made it.
+async fn first_call(
+    workspace: &Workspace,
+    id: &ChatId,
+    called: (&MachineId, &MemberId),
+    request: &RequestId,
+    at: i64,
+) -> Result<(), Fault> {
+    workspace.call(id, called, at).await?;
+    workspace.asked(id, request, called.1).await
 }
 
 // A prompt to a chat that is there: to its agent on the machine the prompt names, which the
@@ -240,7 +251,8 @@ async fn prompt(
         agent: agent.unwrap_or(AgentKind::Claude),
         repo: repo.as_ref(),
     };
-    let called = workspace.call_leg(&id, &member.id, &new, now).await?;
+    let asked = (&member.id, &command.request);
+    let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
     if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
         workspace.uncall_leg(&id, &leg, &member.id).await?;
@@ -1297,7 +1309,7 @@ mod tests {
         assert!(quotes_of(&sent(&mut two.adas)[0]).is_empty());
     }
 
-    fn author_of(event: &ChatEvent) -> Option<&weacon_protocol::MemberId> {
+    fn author_of(event: &ChatEvent) -> Option<&MemberId> {
         let ChatEvent::Prompt { author, .. } = event else {
             return None;
         };

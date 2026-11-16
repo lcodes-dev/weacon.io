@@ -241,7 +241,8 @@ mod tests {
                 "chat_tasks",
                 "invitations",
                 "shared_machines",
-                "chat_legs"
+                "chat_legs",
+                "chat_calls"
             ]
         );
         for table in SERVER_WIDE {
