@@ -49,10 +49,6 @@ impl AsyncWrite for Stream {
     }
 }
 
-/// Nothing to compare: the pipe's access list already admits only this user.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Owner;
-
 pub(crate) struct Listener {
     name: String,
     next: NamedPipeServer,
@@ -71,32 +67,6 @@ impl Listener {
 /// never inherits the handle, so it never keeps the lock.
 pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
     file.lock()
-}
-
-/// Removes `dir` and all it holds, read-only files too, which Windows won't delete as they are.
-pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
-    writable(dir)?;
-    fs::remove_dir_all(dir)
-}
-
-// A link is left as it is, so no file outside `dir` changes.
-fn writable(dir: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if kind.is_dir() {
-            writable(&entry.path())?;
-        } else if kind.is_file() {
-            let mut permissions = entry.metadata()?.permissions();
-            #[expect(
-                clippy::permissions_set_readonly_false,
-                reason = "Windows has no bit for others to write; only this flag stops the delete"
-            )]
-            permissions.set_readonly(false);
-            fs::set_permissions(entry.path(), permissions)?;
-        }
-    }
-    Ok(())
 }
 
 /// Bytes this user may still write on the disk holding `dir`.
@@ -132,6 +102,12 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Creates `dir` and makes it this user's alone, whatever it was.
+pub(crate) fn own_dir(dir: &Path) -> io::Result<()> {
+    fs::DirBuilder::new().recursive(true).create(dir)?;
+    make_private(dir)
+}
+
 /// Windows runs any file whose name ends in `.exe`.
 #[expect(
     clippy::unnecessary_wraps,
@@ -145,12 +121,6 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
     file.is_file()
 }
 
-/// Makes `dir`, the core's own folder, private to this user, whatever it inherited.
-pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
-    make_private(dir)?;
-    Ok(Some(Owner))
-}
-
 /// Listens on a pipe with a fresh random name that only this user can open, and writes the
 /// name to `path` for clients to find.
 pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
@@ -158,14 +128,4 @@ pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     let next = create_pipe(&name, true)?;
     weacon_appkit::write_whole(path, name.as_bytes())?;
     Ok(Listener { name, next })
-}
-
-pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
-    true
-}
-
-/// Lets other users into `dir`; false, since a test can't do that here.
-#[cfg(test)]
-pub(crate) const fn open_to_others(_: &Path) -> bool {
-    false
 }

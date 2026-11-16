@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use tokio::sync::{OnceCell, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::OnceCell;
 use tokio::time::MissedTickBehavior;
 use weacon_codemap::{Index, assemble};
 use weacon_observability::{Fault, Field, Logger};
@@ -38,8 +38,6 @@ const LIMIT: Duration = Duration::from_secs(30);
 const TOO_SLOW: &str = "The code map is still being read: try again shortly.\n";
 /// How often each watched worktree is checked for changes.
 const POLL: Duration = Duration::from_secs(5);
-/// How many calls at once, across every run, may read a worktree no watch has read yet.
-const READS_AT_ONCE: usize = 2;
 
 /// The stores the MCP's answers come from, opened when its watches start, once the daemon
 /// holds its state folder, so a second daemon that can't start changes nothing.
@@ -59,7 +57,6 @@ struct Stores {
     workspaces: Workspaces,
     /// The current index of each watched worktree, by its workspace and paths.
     live: Arc<Mutex<HashMap<Watched, Arc<Index>>>>,
-    reads: Arc<Semaphore>,
     /// Where each move of a repository's base is sent to be checked, if anywhere.
     moves: Option<Moves>,
 }
@@ -96,20 +93,13 @@ impl Maps {
     }
 
     /// The answer to `call` from the map of `grant`'s folder, whose repository its workspace
-    /// must have registered; "no map" otherwise, or when the map can't be read. `permit` is
-    /// held until the read ends, even after the call stops waiting for it.
-    pub(crate) async fn answer(
-        &self,
-        call: &McpCall,
-        grant: &Grant,
-        permit: OwnedSemaphorePermit,
-        log: &Logger,
-    ) -> String {
+    /// must have registered; "no map" otherwise, or when the map can't be read.
+    pub(crate) async fn answer(&self, call: &McpCall, grant: &Grant, log: &Logger) -> String {
         let (call, workspace, folder) =
             (call.clone(), grant.workspace.clone(), grant.folder.clone());
         let read =
             move |stores: Stores| async move { stores.answer(&call, workspace, folder).await };
-        match self.stored(read, permit, log).await {
+        match self.stored(read, log).await {
             Ok(Some(answer)) => answer,
             Ok(None) => NO_MAP.to_owned(),
             Err(TooSlow) => TOO_SLOW.to_owned(),
@@ -132,7 +122,6 @@ impl Maps {
     async fn stored<F>(
         &self,
         read: impl FnOnce(Stores) -> F + Send + 'static,
-        permit: OwnedSemaphorePermit,
         log: &Logger,
     ) -> Result<Option<String>, TooSlow>
     where
@@ -144,7 +133,6 @@ impl Maps {
         let reading_log = log.clone();
         // Its own task, so a read the limit cuts off still finishes and is stored for the next.
         let reading = tokio::spawn(async move {
-            let _permit = permit;
             let answer = read(stores).await;
             answer
                 .inspect_err(|fault| {
@@ -210,7 +198,6 @@ async fn open(
         git,
         workspaces: Workspaces::new(state_dir, path),
         live: Arc::default(),
-        reads: Arc::new(Semaphore::new(READS_AT_ONCE)),
     })
 }
 
@@ -258,11 +245,6 @@ impl Stores {
         if let Some(index) = live {
             return Ok(Some((watched, index)));
         }
-        let _read = self
-            .reads
-            .acquire()
-            .await
-            .map_err(|error| failed().because(error))?;
         let store = self.db.workspace(&watched.workspace);
         let main = watched.main.clone();
         let index = worktree_index(&store, &self.git, main, &watched.worktree).await?;
@@ -360,7 +342,6 @@ fn failed() -> Fault {
 mod tests {
     use std::fs;
 
-    use tokio::sync::Semaphore;
     use weacon_protocol::MapArgs;
     use weacon_testing::{TempDir, messages, recording_logger};
 
@@ -386,10 +367,6 @@ mod tests {
         Grant::new(workspace.clone(), run, claude, folder.to_owned())
     }
 
-    fn permit() -> OwnedSemaphorePermit {
-        Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap()
-    }
-
     #[tokio::test]
     async fn a_registered_repository_answers_from_its_stored_map() {
         let dir = TempDir::new().unwrap();
@@ -401,7 +378,7 @@ mod tests {
 
         let answer = setup
             .maps
-            .answer(&map(), &grant(&one, &main.join("src")), permit(), &log)
+            .answer(&map(), &grant(&one, &main.join("src")), &log)
             .await;
 
         assert!(answer.contains("fn marker::run"), "{answer}");
@@ -432,7 +409,7 @@ mod tests {
         let hotspots = McpCall::Hotspots(MapArgs::default());
         let ask = async |folder: &Path| {
             let grant = grant(&one, folder);
-            setup.maps.answer(&hotspots, &grant, permit(), &log).await
+            setup.maps.answer(&hotspots, &grant, &log).await
         };
 
         let title = "Hotspots: files that change often and that much depends on.\n";
@@ -452,13 +429,9 @@ mod tests {
         let (log, records) = recording_logger();
         let maps = &setup.maps;
 
-        let elsewhere = maps
-            .answer(&map(), &grant(&two, &main), permit(), &log)
-            .await;
+        let elsewhere = maps.answer(&map(), &grant(&two, &main), &log).await;
         let state = dir.join("state");
-        let no_repo = maps
-            .answer(&map(), &grant(&one, &state), permit(), &log)
-            .await;
+        let no_repo = maps.answer(&map(), &grant(&one, &state), &log).await;
 
         assert_eq!((elsewhere.as_str(), no_repo.as_str()), (NO_MAP, NO_MAP));
         assert!(!setup.stored(&two, &main).await);
@@ -483,7 +456,7 @@ mod tests {
         let (log, records) = recording_logger();
         let ask = async |call: McpCall, workspace: &WorkspaceId| {
             let grant = grant(workspace, &main);
-            setup.maps.answer(&call, &grant, permit(), &log).await
+            setup.maps.answer(&call, &grant, &log).await
         };
 
         assert_eq!(
@@ -558,40 +531,27 @@ mod tests {
         slow.limit = Duration::ZERO;
         let late = slow.symbols(&one, "run", &log).await.unwrap_err();
         assert_eq!(late.code().as_str(), "symbols.still_reading");
-        let stores = setup.maps.stores(&log).await.unwrap();
-        let held = Arc::clone(&stores.reads)
-            .acquire_many_owned(2)
-            .await
-            .unwrap();
-        let busy = setup.maps.symbols(&one, "run", &log).await.unwrap_err();
-        assert_eq!(busy.code().as_str(), "symbols.still_reading");
-        drop(held);
         let found = setup.maps.symbols(&one, "run", &log).await.unwrap();
         assert_eq!(found.len(), 1);
     }
 
     #[tokio::test]
-    async fn a_read_past_the_limit_keeps_its_slot_and_a_failed_one_is_logged() {
+    async fn a_read_past_the_limit_is_too_slow_and_a_failed_one_is_logged() {
         let dir = TempDir::new().unwrap();
         let mut setup = setup(&dir).await;
         let one = workspace("one");
         let main = crate_repo(&dir, "one");
         let (log, records) = recording_logger();
-        let calls = Arc::new(Semaphore::new(1));
         setup.maps.limit = Duration::ZERO;
         let list = setup.workspaces.root(&one).join("git/repos.json");
         fs::create_dir_all(list).unwrap();
 
-        let slot = Arc::clone(&calls).try_acquire_owned().unwrap();
-        let late = setup
-            .maps
-            .answer(&map(), &grant(&one, &main), slot, &log)
-            .await;
-        assert_eq!(calls.available_permits(), 0);
-        drop(calls.acquire().await.unwrap());
+        let late = setup.maps.answer(&map(), &grant(&one, &main), &log).await;
+        setup.maps.limit = LIMIT;
+        let failed = setup.maps.answer(&map(), &grant(&one, &main), &log).await;
 
-        assert_eq!(late, TOO_SLOW);
-        assert_eq!(messages(&records), ["mcp map failed"]);
+        assert_eq!((late.as_str(), failed.as_str()), (TOO_SLOW, NO_MAP));
+        assert!(messages(&records).contains(&"mcp map failed"));
     }
 
     #[tokio::test]
@@ -604,12 +564,7 @@ mod tests {
         let (log, _records) = recording_logger();
         let stores = setup.maps.stores(&log).await.unwrap();
         let mut watches = HashMap::new();
-        let ask = async || {
-            setup
-                .maps
-                .answer(&map(), &grant(&one, &main), permit(), &log)
-                .await
-        };
+        let ask = async || setup.maps.answer(&map(), &grant(&one, &main), &log).await;
         let runs = vec![(one.clone(), main.join("src")), (one.clone(), main.clone())];
         let check = async |watches: &mut HashMap<Watched, Watch<Repo>>, runs: Vec<_>| {
             let (found, failed) = stores.watched(runs).await;
@@ -732,7 +687,7 @@ mod tests {
 
         for _ in 0..2 {
             let answer = maps
-                .answer(&map(), &grant(&workspace("one"), &dir), permit(), &log)
+                .answer(&map(), &grant(&workspace("one"), &dir), &log)
                 .await;
             assert_eq!(answer, NO_MAP);
         }

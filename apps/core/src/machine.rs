@@ -124,16 +124,9 @@ pub(crate) async fn current(state_dir: &Path) -> Result<Paired, Fault> {
 /// When it can't be written.
 pub(crate) fn write(state_dir: &Path, paired: &Paired) -> Result<(), Fault> {
     let json = serde_json::to_vec_pretty(paired).map_err(|error| not_saved().because(error))?;
-    let private = platform::private_dir(state_dir)
-        .and_then(|()| platform::private_owner(state_dir))
-        .map_err(|error| not_saved().because(error))?;
-    if private.is_none() {
-        return Err(Fault::new(
-            code!("state.not_private"),
-            "Other users can reach the state folder; make it readable only by you",
-        ));
-    }
-    weacon_appkit::write_whole(&file(state_dir), &json).map_err(|error| not_saved().because(error))
+    platform::own_dir(state_dir).map_err(|error| not_saved().because(error))?;
+    weacon_appkit::write_private(&file(state_dir), &json)
+        .map_err(|error| not_saved().because(error))
 }
 
 /// Forgets `paired` once the server has said the machine is unpaired, unless another pairing
@@ -231,6 +224,19 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_pairing_is_written_for_its_user_alone_and_its_folder_made_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        write(&dir, &paired()).unwrap();
+
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!((mode(&dir), mode(&file(&dir))), (0o700, 0o600));
+    }
+
     #[test]
     fn a_key_gives_its_x25519_public_half_and_a_fingerprint_of_it() {
         let fingerprint = key().fingerprint();
@@ -283,20 +289,6 @@ mod tests {
         forget(&dir, &other_machine).unwrap();
 
         assert_eq!(read(&dir).unwrap(), Some(newer));
-    }
-
-    #[test]
-    fn a_pairing_is_kept_only_in_a_folder_others_cant_reach() {
-        let dir = TempDir::new().unwrap();
-        if !platform::open_to_others(&dir) {
-            return;
-        }
-
-        assert_eq!(
-            write(&dir, &paired()).unwrap_err().code().as_str(),
-            "state.not_private"
-        );
-        assert!(!file(&dir).exists());
     }
 
     #[test]

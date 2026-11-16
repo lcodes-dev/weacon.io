@@ -1,35 +1,26 @@
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
-use std::time::Instant;
 
-use weacon_appkit::Ending;
-use weacon_codemap::{ContractKind, Index, SourceFile, index};
+use weacon_codemap::{Index, SourceFile, index};
 use weacon_observability::Fault;
 use weacon_protocol::{FlowArgs, MapArgs, McpCall, SymbolArgs, WorkspaceId, code};
 
 use crate::app::App;
-use crate::cli::{ContractFilter, MapCommand, MapSubcommand};
+use crate::cli::{MapCommand, MapSubcommand};
 use crate::codemap::{LARGEST, SEARCHED, index_failed, read_failed};
 use crate::db::{BASE, Db, Layer, LocalRepo, Looking};
 use crate::git::Git;
 use crate::mcp::tools;
 
-/// Prints what the MCP's tools answer, or checks the repository's pins: `Findings` when one
-/// no longer matches.
-pub(crate) fn run(
-    app: &App,
-    command: MapCommand,
-    input: &mut impl Read,
-    out: &mut impl Write,
-) -> Result<Ending, Fault> {
+/// Prints what the MCP's tools answer.
+pub(crate) fn run(app: &App, command: MapCommand, out: &mut impl Write) -> Result<(), Fault> {
     let MapCommand {
         command,
         root,
         budget,
     } = command;
     let text = match command {
-        Some(MapSubcommand::CheckAnchors) => return check_anchors(app, &root, input, out),
         Some(MapSubcommand::Symbol { path }) => {
             answer(&McpCall::Symbol(SymbolArgs { path, budget }), &root)?
         }
@@ -39,15 +30,9 @@ pub(crate) fn run(
         }
         Some(MapSubcommand::Search { words }) => search(&root, &words.join(" "), budget)?,
         Some(MapSubcommand::Hotspots) => hotspots(app, budget, &root)?,
-        Some(MapSubcommand::Architecture) => answered(&root, budget, Index::architecture)?,
-        Some(MapSubcommand::Contracts { kind }) => {
-            let kind = kind.map(contract_kind);
-            answered(&root, budget, |map, budget| contracts(map, kind, budget))?
-        }
         None => answer(&McpCall::Map(MapArgs { budget }), &root)?,
     };
-    print(out, &text)?;
-    Ok(Ending::Done)
+    print(out, &text)
 }
 
 /// What the MCP's `hotspots` tool answers for `root`, weighed by the churn git counts there.
@@ -56,58 +41,6 @@ fn hotspots(app: &App, budget: Option<u32>, root: &Path) -> Result<String, Fault
     let churn = git.churn(root, tools::CHURN_COMMITS)?;
     let call = McpCall::Hotspots(MapArgs { budget });
     index_folder(root).map(|(map, _)| tools::answer_from(&call, &map, &churn))
-}
-
-const fn contract_kind(filter: ContractFilter) -> ContractKind {
-    match filter {
-        ContractFilter::Command => ContractKind::Command,
-        ContractFilter::Code => ContractKind::ErrorCode,
-        ContractFilter::Route => ContractKind::Route,
-        ContractFilter::Serde => ContractKind::Serde,
-        ContractFilter::Table => ContractKind::Table,
-        ContractFilter::McpTool => ContractKind::McpTool,
-    }
-}
-
-/// The code's contracts of `kind`, or of every kind, or a line saying it declares none.
-fn contracts(map: &Index, kind: Option<ContractKind>, budget: usize) -> String {
-    let listed = map.contracts(kind, budget);
-    if listed.is_empty() {
-        "No contracts.\n".to_owned()
-    } else {
-        listed
-    }
-}
-
-/// Prints each pin read from `input` that no longer matches the repository at `root`.
-fn check_anchors(
-    app: &App,
-    root: &Path,
-    input: &mut impl Read,
-    out: &mut impl Write,
-) -> Result<Ending, Fault> {
-    let mut pins = String::new();
-    input.read_to_string(&mut pins).map_err(|error| {
-        Fault::new(code!("map.input_failed"), "The anchors couldn't be read").because(error)
-    })?;
-    let started = Instant::now();
-    let (index, files) = index_folder(root)?;
-    let millis = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    app.log.info(
-        "map indexed",
-        &[("files", files.into()), ("ms", millis.into())],
-    );
-    let findings = index.check(&pins);
-    let report: String = findings
-        .iter()
-        .map(|finding| finding.to_string() + "\n")
-        .collect();
-    print(out, &report)?;
-    Ok(if findings.is_empty() {
-        Ending::Done
-    } else {
-        Ending::Findings
-    })
 }
 
 fn print(out: &mut impl Write, text: &str) -> Result<(), Fault> {
@@ -141,20 +74,6 @@ fn search(folder: &Path, words: &str, budget: Option<u32>) -> Result<String, Fau
         map.search(BASE, words, Looking::Everything, SEARCHED).await
     })?;
     Ok(tools::found(&hits, tools::budget(budget)))
-}
-
-/// What `answer` gives the index of `folder` within `budget`, or that it has no map; it blocks.
-fn answered(
-    folder: &Path,
-    budget: Option<u32>,
-    answer: impl FnOnce(&Index, usize) -> String,
-) -> Result<String, Fault> {
-    let (map, _) = index_folder(folder)?;
-    Ok(if map.crates.is_empty() {
-        tools::NO_MAP.to_owned()
-    } else {
-        answer(&map, tools::budget(budget))
-    })
 }
 
 /// [`answer`], or nothing when the folder has no code map.
@@ -245,38 +164,11 @@ mod tests {
         root
     }
 
-    fn check(root: &Path, pins: &str) -> (Result<Ending, Fault>, String) {
-        let mut out = Vec::new();
-        let command = MapCommand {
-            command: Some(MapSubcommand::CheckAnchors),
-            root: root.to_owned(),
-            budget: None,
-        };
-        let ending = run(&app(None, None), command, &mut pins.as_bytes(), &mut out);
-        (ending, String::from_utf8(out).unwrap())
-    }
-
     const CRATE: &[(&str, &str)] = &[
         ("a/Cargo.toml", "[package]\nname = \"a\"\n"),
         ("a/src/lib.rs", "mod m;\npub fn run() { m::go(); }\n"),
         ("a/src/m.rs", "pub fn go() {}\n"),
     ];
-
-    #[test]
-    fn prints_missing_changed_and_malformed_pins() {
-        let root = repo(CRATE);
-        let pins = "sym:a::m::go#0000000000000000\nsym:a::gone#0000000000000000\nnot a pin\n";
-        let (ending, found) = check(&root, pins);
-        assert_eq!(ending.unwrap(), Ending::Findings);
-        let lines: Vec<&str> = found.lines().collect();
-        assert_eq!(lines.len(), 3, "{found}");
-        assert!(lines[0].starts_with("changed sym:a::m::go#"), "{found}");
-        assert_eq!(lines[1..], ["missing sym:a::gone", "malformed line 3"]);
-
-        let current = lines[0].trim_start_matches("changed ");
-        let (ending, found) = check(&root, current);
-        assert_eq!((ending.unwrap(), found), (Ending::Done, String::new()));
-    }
 
     #[test]
     fn reads_only_crate_sources() {
@@ -340,8 +232,7 @@ mod tests {
             root: root.to_owned(),
             budget,
         };
-        let ending = run(&app(None, None), command, &mut io::empty(), &mut out);
-        assert_eq!(ending.unwrap(), Ending::Done);
+        run(&app(None, None), command, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     }
 
@@ -349,37 +240,11 @@ mod tests {
     fn each_view_prints_its_answer_and_the_tools_views_match_them() {
         let root = repo(CRATE);
         let empty = TempDir::new().unwrap();
-        let (index, _) = index_folder(&root).unwrap();
         let tool = |call: McpCall| answer(&call, &root).unwrap();
         let view = |root: &Path, view| printed(root, Some(view), None);
 
         let flows = tool(McpCall::Flow(FlowArgs::default()));
         assert_eq!(view(&root, MapSubcommand::Flows), flows);
-        assert_eq!(
-            view(&root, MapSubcommand::Architecture),
-            index.architecture(6000)
-        );
-        assert_eq!(
-            view(&root, MapSubcommand::Contracts { kind: None }),
-            "No contracts.\n"
-        );
-        let serde = repo(&[
-            ("Cargo.toml", "[package]\nname = \"a\"\n"),
-            ("src/lib.rs", "#[derive(Serialize)]\npub struct Reply;\n"),
-        ]);
-        let (declared, _) = index_folder(&serde).unwrap();
-        let contracts = declared.contracts(None, 6000);
-        assert!(!contracts.is_empty());
-        assert_eq!(
-            view(&serde, MapSubcommand::Contracts { kind: None }),
-            contracts
-        );
-        for subcommand in [
-            MapSubcommand::Architecture,
-            MapSubcommand::Contracts { kind: None },
-        ] {
-            assert_eq!(view(&empty, subcommand), "No code map for this folder.\n");
-        }
         let none = "Flows pinned in the docs: 0.\n";
         assert_eq!(view(&empty, MapSubcommand::Flows), none);
     }
@@ -405,7 +270,7 @@ mod tests {
                 root: root.to_owned(),
                 budget: None,
             };
-            run(app, command, &mut io::empty(), &mut out).map(|_| String::from_utf8(out).unwrap())
+            run(app, command, &mut out).map(|()| String::from_utf8(out).unwrap())
         };
         let title = "Hotspots: files that change often and that much depends on.\n";
 
@@ -425,54 +290,6 @@ mod tests {
         let stateless = hotspots(&root, &crate::test_support::app(None, None)).unwrap_err();
         assert_eq!(unrepo.code().as_str(), "git.failed");
         assert_eq!(stateless.code().as_str(), "state.unavailable");
-    }
-
-    #[test]
-    fn contracts_can_be_limited_to_one_kind() {
-        let lib = "#[derive(Serialize)]\npub struct Reply;\n#[tool]\nfn search() {}\n\
-                   fn fail() { code!(\"store.full\"); }\n\
-                   fn router() { r.route(\"/version\", get(v)); }\n\
-                   #[derive(Subcommand)]\nenum Command { Daemon }\n\
-                   const SQL: &str = \"CREATE TABLE notes (id INTEGER)\";\n";
-        let root = repo(&[
-            ("Cargo.toml", "[package]\nname = \"a\"\n"),
-            ("src/lib.rs", lib),
-        ]);
-        let kinds = [
-            (
-                ContractFilter::McpTool,
-                "mcp tool search  a::search  src/lib.rs:3",
-            ),
-            (
-                ContractFilter::Serde,
-                "serde a::Reply  a::Reply  src/lib.rs:2",
-            ),
-            (
-                ContractFilter::Code,
-                "code store.full  a::fail  src/lib.rs:5",
-            ),
-            (
-                ContractFilter::Route,
-                "route GET /version  a::router  src/lib.rs:6",
-            ),
-            (
-                ContractFilter::Command,
-                "command daemon  a::Command  src/lib.rs:8",
-            ),
-            (ContractFilter::Table, "table notes  a::SQL  src/lib.rs:9"),
-        ];
-        for (kind, listed) in kinds {
-            let view = MapSubcommand::Contracts { kind: Some(kind) };
-            assert_eq!(printed(&root, Some(view), None), format!("- {listed}\n"));
-        }
-        let none = repo(&[
-            ("Cargo.toml", "[package]\nname = \"a\"\n"),
-            ("src/lib.rs", "fn a() {}\n"),
-        ]);
-        let tools = MapSubcommand::Contracts {
-            kind: Some(ContractFilter::McpTool),
-        };
-        assert_eq!(printed(&none, Some(tools), None), "No contracts.\n");
     }
 
     #[test]
@@ -594,7 +411,7 @@ mod tests {
             budget: None,
         };
         let run = |command, out: &mut dyn Write| {
-            run(&app(None, None), command, &mut io::empty(), &mut &mut *out).unwrap_err()
+            run(&app(None, None), command, &mut &mut *out).unwrap_err()
         };
         let dir = TempDir::new().unwrap();
 
@@ -612,19 +429,5 @@ mod tests {
         let mut files = Vec::new();
         let error = source_files(&root, "", &mut files).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
-        let error = check(&root, "").0.unwrap_err();
-        assert_eq!(error.code().as_str(), "map.read_failed");
-    }
-
-    #[test]
-    fn fails_when_it_cant_read_or_print() {
-        let root = repo(CRATE);
-        let error =
-            check_anchors(&app(None, None), &root, &mut Broken, &mut Vec::new()).unwrap_err();
-        assert_eq!(error.code().as_str(), "map.input_failed");
-        let pins = "sym:a::gone#0000000000000000";
-        let error =
-            check_anchors(&app(None, None), &root, &mut pins.as_bytes(), &mut Broken).unwrap_err();
-        assert_eq!(error.code().as_str(), "map.output_failed");
     }
 }

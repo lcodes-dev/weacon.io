@@ -1,8 +1,7 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
-use clap::error::ErrorKind;
-use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::{AccessLevel, AgentKind, ChatId, RepoId, UpdateSchedule, WorkspaceId};
 use weacon_version::Version;
 
@@ -209,27 +208,6 @@ pub(crate) enum MapSubcommand {
     /// Print the text the MCP's `hotspots` tool answers: the files that change often and that
     /// much depends on.
     Hotspots,
-    /// Print the areas of the code and how they depend on one another.
-    Architecture,
-    /// Print the commands, routes and other contracts the code declares.
-    Contracts {
-        /// Only the contracts of this kind.
-        #[arg(long)]
-        kind: Option<ContractFilter>,
-    },
-    /// Read pinned anchors on stdin, one per line, and print those that no longer match.
-    CheckAnchors,
-}
-
-/// A kind of contract `map contracts` can be limited to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub(crate) enum ContractFilter {
-    Command,
-    Code,
-    Route,
-    Serde,
-    Table,
-    McpTool,
 }
 
 impl Cli {
@@ -291,17 +269,7 @@ pub(crate) fn parse<I: IntoIterator<Item = OsString>>(
 ) -> Result<Cli, clap::Error> {
     let mut command = Cli::command().version(version.with_commit());
     let matches = command.try_get_matches_from_mut(from_chrome(args.into_iter().collect()))?;
-    let cli = Cli::from_arg_matches(&matches)?;
-    if let Command::Map(MapCommand {
-        command: Some(MapSubcommand::CheckAnchors),
-        budget: Some(_),
-        ..
-    }) = cli.command
-    {
-        let refused = "only the map and `symbol` take --budget, not check-anchors";
-        return Err(command.error(ErrorKind::ArgumentConflict, refused));
-    }
-    Ok(cli)
+    Cli::from_arg_matches(&matches)
 }
 
 // Chrome starts a native host with the extension's origin as its first argument, and on
@@ -320,6 +288,8 @@ fn from_chrome(mut args: Vec<OsString>) -> Vec<OsString> {
 
 #[cfg(test)]
 mod tests {
+    use clap::error::ErrorKind;
+
     use super::*;
     use crate::reports::Answer;
     use crate::test_support::VERSION;
@@ -394,12 +364,11 @@ mod tests {
             let path = "a::b".to_owned();
             Some(MapSubcommand::Symbol { path })
         };
-        let check = || Some(MapSubcommand::CheckAnchors);
 
         let outline = map(&["--budget", "2000"]);
         let item = map(&["--root", "r", "symbol", "a::b", "--budget", "1500"]);
         let early = map(&["--budget", "1500", "symbol", "a::b"]);
-        let checked = map(&["check-anchors"]).unwrap();
+        let bare = map(&[]).unwrap();
 
         assert_eq!(outline, map_of(None, ".", Some(2000)));
         assert_eq!(item, map_of(symbol(), "r", Some(1500)));
@@ -408,23 +377,7 @@ mod tests {
             map(&["symbol", "a::b", "--root", "r"]),
             map_of(symbol(), "r", None)
         );
-        assert_eq!((checked.name(), checked.log_name()), ("map", "cli.log"));
-        assert_eq!(Some(checked), map_of(check(), ".", None));
-        assert_eq!(
-            map(&["--root", "/srv", "check-anchors"]),
-            map_of(check(), "/srv", None)
-        );
-        assert_eq!(
-            map(&["check-anchors", "--root", "/srv"]),
-            map_of(check(), "/srv", None)
-        );
-        for args in [
-            ["--budget", "3", "check-anchors"],
-            ["check-anchors", "--budget", "3"],
-        ] {
-            let refused = run(&[["weacon", "map"].as_slice(), &args].concat()).unwrap_err();
-            assert_eq!(refused.kind(), ErrorKind::ArgumentConflict);
-        }
+        assert_eq!((bare.name(), bare.log_name()), ("map", "cli.log"));
     }
 
     #[test]
@@ -434,8 +387,6 @@ mod tests {
         for (name, view) in [
             ("flows", MapSubcommand::Flows),
             ("hotspots", MapSubcommand::Hotspots),
-            ("architecture", MapSubcommand::Architecture),
-            ("contracts", MapSubcommand::Contracts { kind: None }),
         ] {
             let Some(Cli {
                 command: Command::Map(map),
@@ -446,16 +397,6 @@ mod tests {
             };
             assert_eq!((map.command, map.budget), (Some(view), Some(2000)));
         }
-        let Some(Cli {
-            command: Command::Map(tools),
-            ..
-        }) = map(&["contracts", "--kind", "mcp-tool"])
-        else {
-            panic!("contracts --kind")
-        };
-        let kind = Some(ContractFilter::McpTool);
-        assert_eq!(tools.command, Some(MapSubcommand::Contracts { kind }));
-        assert!(map(&["contracts", "--kind", "tool"]).is_none());
     }
 
     #[test]

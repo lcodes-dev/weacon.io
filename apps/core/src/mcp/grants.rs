@@ -1,13 +1,11 @@
 //! The tokens that let a run reach the core's MCP: one per run, kept only in memory.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
-use tokio::sync::Semaphore;
 use weacon_agents::AgentRun;
 use weacon_observability::Fault;
 use weacon_protocol::{
@@ -15,10 +13,6 @@ use weacon_protocol::{
 };
 
 use crate::chats::engine::agent::Agent;
-
-/// How many of a run's tool calls may be answered at once, so a looping agent can't hold the
-/// daemon's threads.
-pub(crate) const CALLS_AT_ONCE: usize = 2;
 
 /// A run's token, which it sends as `Authorization: Bearer <token>`.
 pub(crate) struct Token(String);
@@ -46,7 +40,6 @@ pub(crate) struct Grant {
     pub(crate) folder: PathBuf,
     /// The task of the run's chat, if it has one.
     pub(crate) task: Option<ChatTask>,
-    pub(crate) calls: Arc<Semaphore>,
     revoked: AtomicBool,
 }
 
@@ -63,7 +56,6 @@ impl Grant {
             agent,
             folder,
             task: None,
-            calls: Arc::new(Semaphore::new(CALLS_AT_ONCE)),
             revoked: AtomicBool::new(false),
         }
     }
@@ -79,11 +71,17 @@ impl Grant {
     }
 }
 
-type Held = Vec<([u8; 32], Arc<Grant>)>;
+type Held = HashMap<String, Arc<Grant>>;
 
-/// The tokens of the runs alive now, by their hash.
-#[derive(Clone, Debug, Default)]
+/// The tokens of the runs alive now.
+#[derive(Clone, Default)]
 pub(crate) struct Grants(Arc<Mutex<Held>>);
+
+impl fmt::Debug for Grants {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Grants(..)")
+    }
+}
 
 impl Grants {
     /// A new token for `grant`, which works until the [`Revoke`] is dropped.
@@ -93,27 +91,18 @@ impl Grants {
             Fault::new(code!("random.failed"), "The core couldn't get random bytes")
         })?;
         let token = Token(to_hex(&bytes));
-        let hash = hash(token.as_str());
-        self.held().push((hash, Arc::new(grant)));
+        self.held()
+            .insert(token.as_str().to_owned(), Arc::new(grant));
         let revoke = Revoke {
             grants: self.clone(),
-            hash,
+            token: token.as_str().to_owned(),
         };
         Ok((token, revoke))
     }
 
-    /// The grant of a live run's token. Every held hash is compared in constant time.
+    /// The grant of a live run's token.
     pub(crate) fn find(&self, token: &str) -> Option<Arc<Grant>> {
-        let hash = hash(token);
-        let held = self.held();
-        // Every hash is compared, so the time taken says nothing about which one matched.
-        held.iter().fold(None, |found, (held, grant)| {
-            if bool::from(held.ct_eq(&hash)) {
-                Some(Arc::clone(grant))
-            } else {
-                found
-            }
-        })
+        self.held().get(token).cloned()
     }
 
     /// How many tokens work now.
@@ -126,8 +115,8 @@ impl Grants {
     pub(crate) fn folders(&self) -> Vec<(WorkspaceId, PathBuf)> {
         let held = self.held();
         let folders = held
-            .iter()
-            .map(|(_, grant)| (grant.workspace.clone(), grant.folder.clone()));
+            .values()
+            .map(|grant| (grant.workspace.clone(), grant.folder.clone()));
         folders.collect()
     }
 
@@ -136,26 +125,24 @@ impl Grants {
     }
 }
 
-fn hash(token: &str) -> [u8; 32] {
-    Sha256::digest(token.as_bytes()).into()
-}
-
 /// Ends a token when dropped.
-#[derive(Debug)]
 pub(crate) struct Revoke {
     grants: Grants,
-    hash: [u8; 32],
+    token: String,
+}
+
+impl fmt::Debug for Revoke {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Revoke(..)")
+    }
 }
 
 impl Drop for Revoke {
     fn drop(&mut self) {
-        self.grants.held().retain(|(hash, grant)| {
-            let ends = *hash == self.hash;
-            if ends {
-                grant.revoked.store(true, Ordering::Relaxed);
-            }
-            !ends
-        });
+        let ended = self.grants.held().remove(&self.token);
+        if let Some(grant) = ended {
+            grant.revoked.store(true, Ordering::Relaxed);
+        }
     }
 }
 
