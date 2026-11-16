@@ -32,8 +32,7 @@ mod body;
 
 use answer::Failed;
 pub(crate) use answer::{
-    Refusals, Refused, cross_site, error, failure, invalid, not_found, report, too_many,
-    unauthorized,
+    Refusals, Refused, cross_site, error, failure, invalid, not_found, report, unauthorized,
 };
 use body::MAX_BODY;
 pub(crate) use body::{Body, Unreadable, parsed};
@@ -64,13 +63,14 @@ pub(crate) async fn serve(
     if let Ok(address) = listener.local_addr() {
         log.info("listening", &[("address", address.to_string().into())]);
     }
+    let head_within = shared.head_within;
     let router = router(shared);
     let (close, _) = watch::channel(());
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
             accepted = connections::accept(&listener, &log) => {
-                connections::serve(accepted, router.clone(), close.subscribe());
+                connections::serve(accepted, router.clone(), head_within, close.subscribe());
             }
             () = &mut shutdown => break,
         }
@@ -288,7 +288,7 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_waits_for_a_stalled_client_only_so_long() {
-        let server = start().await;
+        let server = start_with(|shared| shared.head_within = GRACE * 3).await;
         // The pools time out on a paused clock, so pause only after they're open.
         tokio::time::pause();
         let mut stalled = TcpStream::connect(server.running.address).await.unwrap();

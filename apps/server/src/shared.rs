@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
 use weacon_observability::{Clock, Logger, Reporter};
@@ -22,6 +22,8 @@ pub(crate) struct Shared {
     pub(crate) db: Db,
     pub(crate) secret: Arc<Secret>,
     pub(crate) clock: Arc<Clock>,
+    /// How long a connection may take to send a request's head, or sit idle between requests.
+    pub(crate) head_within: Duration,
     pub(crate) sockets: socket::Timing,
     /// The machines whose connections are open.
     pub(crate) links: Arc<Links>,

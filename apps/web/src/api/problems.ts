@@ -14,7 +14,6 @@ const PROBLEMS = new Map<Code, string>([
   ["invitation.exists", "That address is invited already."],
   ["invitation.not_found", "That invitation has ended."],
   ["pairing.not_found", "No machine is waiting under that code. Check it, or run weacon pair again."],
-  ["pairing.too_many", "Too many tries. Wait a while, then try again."],
   ["machine.not_found", "That machine isn't paired any more."],
   ["workspace.reconnecting", "The workspace is reconnecting. Try again in a moment."],
   ["machine.offline", "This machine isn't connected. Start Weacon on it, then try again."],

@@ -3,13 +3,15 @@ use std::time::Duration;
 
 use axum::Router;
 use hyper::server::conn::http1;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::service::TowerToHyperService;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
 use tokio::time::sleep;
 use weacon_observability::{Field, Logger};
 
+/// How long a connection may take to send a request's head, or sit idle between requests.
+pub(crate) const HEAD_WITHIN: Duration = Duration::from_secs(10);
 const ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
 /// The next connection.
@@ -44,8 +46,15 @@ fn broke_waiting(error: &io::Error) -> bool {
 
 /// Serves `router` to one connection in a task of its own, which holds `closing` until the
 /// connection closes; once `closing` changes, the connection ends after its open request.
-pub(crate) fn serve(stream: TcpStream, router: Router, mut closing: watch::Receiver<()>) {
+pub(crate) fn serve(
+    stream: TcpStream,
+    router: Router,
+    head_within: Duration,
+    mut closing: watch::Receiver<()>,
+) {
     let serving = http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(head_within)
         .serve_connection(TokioIo::new(stream), TowerToHyperService::new(router))
         .with_upgrades();
     drop(tokio::spawn(async move {
@@ -87,5 +96,25 @@ mod tests {
         assert_eq!(messages(&records), ["accept failed"]);
         let records = serde_json::to_string(&*records.lock().unwrap()).unwrap();
         assert!(!records.contains("MARKER"));
+    }
+
+    #[tokio::test]
+    async fn a_request_head_that_never_ends_closes_the_connection() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut slow = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let (_open, closing) = watch::channel(());
+        serve(stream, Router::new(), Duration::from_millis(50), closing);
+        slow.write_all(b"GET / HTTP/1.1\r\nhost: test\r\n")
+            .await
+            .unwrap();
+
+        // Hyper answers 408 or just hangs up; either way the connection ends.
+        let mut rest = Vec::new();
+        slow.read_to_end(&mut rest).await.unwrap();
     }
 }

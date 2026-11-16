@@ -19,7 +19,7 @@ use crate::auth::Session;
 use crate::auth::token_hash;
 use crate::codes::{new_code, normalised, shown};
 use crate::db::{Claim, Claiming, Confirmation, NewPairing};
-use crate::http::{Body, error, failure, not_found, too_many};
+use crate::http::{Body, error, failure, not_found};
 use crate::secret::random_token;
 use crate::shared::Shared;
 use crate::uplink;
@@ -50,13 +50,12 @@ pub(crate) async fn start(State(shared): State<Shared>, Body(body): Body<PairSta
         return error(StatusCode::BAD_REQUEST, code!("request.invalid"), false);
     }
     match started(&shared, &body).await {
-        Ok(Some(started)) => (StatusCode::CREATED, Json(started)).into_response(),
-        Ok(None) => too_many(code!("pairing.too_many")),
+        Ok(started) => (StatusCode::CREATED, Json(started)).into_response(),
         Err(fault) => failure(fault),
     }
 }
 
-async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted>, Fault> {
+async fn started(shared: &Shared, body: &PairStart) -> Result<PairStarted, Fault> {
     let (code, secret) = (new_code()?, random_token()?);
     let pairing = fresh(&new_id)?;
     let now = shared.now();
@@ -70,13 +69,13 @@ async fn started(shared: &Shared, body: &PairStart) -> Result<Option<PairStarted
         key: &body.key,
         expires_at,
     };
-    let recorded = shared.db.start_pairing(&new, now).await?;
-    Ok(recorded.then(|| PairStarted {
+    shared.db.start_pairing(&new, now).await?;
+    Ok(PairStarted {
         pairing,
         code: shown(&code).into(),
         secret: secret.into(),
         expires_at,
-    }))
+    })
 }
 
 /// `POST /api/machines/pair/lookup`: the machine waiting under a code, for the signed-in

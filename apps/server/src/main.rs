@@ -104,6 +104,7 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         db: db.clone(),
         secret: Arc::new(secret),
         clock: Arc::new(Box::new(SystemTime::now)),
+        head_within: connections::HEAD_WITHIN,
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         chats: chats::Hub::default(),
