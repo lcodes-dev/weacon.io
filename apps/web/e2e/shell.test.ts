@@ -590,8 +590,17 @@ test("with agents on two of a person's machines, Changes shows each one's, asked
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const file = (asked: Envelope) => (asked.type === "diff_query" && asked.machine === "mc-2" ? "src/desk.rs" : "src/laptop.rs");
-  const { sent } = await serveFeed(page, { also: ["diff.view"], answer: (asked) => [...snapshot(asked), ...changedFile(asked, file(asked))] });
+  // Each machine's agent changed one file of its own, two lines long.
+  const changed = (asked: Envelope): Envelope[] => {
+    if (asked.type !== "diff_query") {
+      return [];
+    }
+    const lines = ["jars", "tins"].map((text) => ({ op: "added" as const, text }));
+    const content = { kind: "text" as const, hunks: [{ old_start: 1, new_start: 1, lines }] };
+    const file = { path: asked.machine === "mc-2" ? "src/desk.rs" : "src/laptop.rs", change: { kind: "added" as const }, content };
+    return [{ id: asked.id, type: "diff_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "file", file, files: 1 } }];
+  };
+  const { sent } = await serveFeed(page, { also: ["diff.view", "workspace.chat_commands"], answer: (asked) => [...snapshot(asked), ...changed(asked)] });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { member } = await firstWorkspace(page);
@@ -608,11 +617,22 @@ test("with agents on two of a person's machines, Changes shows each one's, asked
   await page.getByText("src/laptop.rs").waitFor();
   const of = page.getByLabel("Changes of");
   assert.deepEqual(await of.getByRole("option").allInnerTexts(), ["Claude Code · laptop", "Claude Code · desk"]);
+  // A comment on the first agent's change is that agent's alone: it isn't there to send to the other.
+  const pane = page.locator(".chat-changes");
+  const row = await pane.locator(".line").first().boundingBox();
+  assert.ok(row !== null);
+  await page.mouse.click(row.x + 8, row.y + row.height / 2);
+  await pane.getByRole("textbox").fill("Why jars first?");
+  await pane.getByRole("button", { name: "Comment", exact: true }).click();
+  await pane.getByRole("button", { name: "Send review" }).waitFor();
   await of.selectOption("mc-2");
 
   // The other agent's changes replace the first one's, which are not shown as its own.
   await page.getByText("src/desk.rs").waitFor();
   assert.equal(await page.getByText("src/laptop.rs").count(), 0);
+  assert.equal(await pane.getByRole("button", { name: "Send review" }).count(), 0);
+  assert.equal(await pane.locator(".comment").count(), 0);
+  assert.equal(commands(sent).length, 0);
   const asked = sent.flatMap((envelope) => (envelope.type === "diff_query" ? [envelope.machine] : []));
   assert.deepEqual(asked, ["mc-1", "mc-2"]);
 });
