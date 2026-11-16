@@ -7,7 +7,7 @@ import { FAKE_CHAT, fakeServer, start, waitFor } from "./harness.ts";
 // The page the fake core opens a pull request on.
 const COMPARE = "https://github.com/example/shopping-list/compare/weacon-c-1?expand=1";
 
-test("the review bar says where the worktree stands, and Remove asks first, then Restore brings it back", { timeout: 180_000 }, async (t) => {
+test("the review bar says where the worktree stands, and Remove asks first", { timeout: 180_000 }, async (t) => {
   const harness = await start(fakeServer(1_000, 1), { query: FAKE_CHAT });
   t.after(() => harness.close());
   const { page } = harness;
@@ -22,15 +22,14 @@ test("the review bar says where the worktree stands, and Remove asks first, then
   await bar.getByRole("button", { name: "Remove" }).click();
   const confirm = bar.getByRole("group", { name: "Remove the worktree" });
   await confirm
-    .getByText("Remove this chat's worktree? Its uncommitted changes go with it to the Trash. Its branch stays, with commits that aren't pushed yet. You can restore it from here.")
+    .getByText("Remove this chat's worktree? Its uncommitted changes are deleted for good. Its branch stays, with commits that aren't pushed yet. The chat's next message checks it out again.")
     .waitFor();
   await confirm.getByRole("button", { name: "Remove" }).click();
-  await bar.getByText("The worktree is in the Trash.").waitFor();
-  await bar.getByRole("button", { name: "Restore" }).click();
-  await bar.getByText("Uncommitted changes · Commits not pushed").waitFor();
+  await bar.getByText("The worktree was removed. The chat's next message checks it out again.").waitFor();
+  assert.equal(await bar.getByRole("button", { name: "Remove" }).count(), 0);
 
   const actions = (harness.received() as Envelope[]).flatMap((sent) => (sent.type === "worktree_command" ? [sent.action.kind] : []));
-  assert.deepEqual(actions, ["open_terminal", "remove", "restore"]);
+  assert.deepEqual(actions, ["open_terminal", "remove"]);
 });
 
 test("Cancel leaves the worktree where it is", { timeout: 180_000 }, async (t) => {

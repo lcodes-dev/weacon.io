@@ -105,7 +105,6 @@ export function busy(worktree: Worktree): boolean {
 const PROBLEMS: Record<Ask["kind"], string> = {
   state: "The worktree's state didn't come. Try again.",
   remove: "The worktree wasn't removed.",
-  restore: "The worktree wasn't restored.",
   open_pull_request: "The pull request wasn't opened.",
   open_terminal: "The terminal didn't open. On a machine without a desktop terminal, run the line below there.",
 };
@@ -124,7 +123,7 @@ export function stateLine(standing: Standing): string {
       return "This chat has no worktree yet.";
     case "state": {
       if (standing.removed) {
-        return "The worktree is in the Trash.";
+        return "The worktree was removed. The chat's next message checks it out again.";
       }
       const parts = [standing.uncommitted && "Uncommitted changes", standing.unpushed && "Commits not pushed"].filter((part) => part !== false);
       return parts.length === 0 ? "Everything is committed and pushed." : parts.join(" · ");
@@ -136,8 +135,10 @@ export function stateLine(standing: Standing): string {
 export function removeQuestion(state: State): string {
   return [
     "Remove this chat's worktree?",
-    state.uncommitted ? "Its uncommitted changes go with it to the Trash." : "It goes to the Trash.",
+    state.uncommitted && "Its uncommitted changes are deleted for good.",
     state.unpushed ? "Its branch stays, with commits that aren't pushed yet." : "Its branch stays.",
-    "You can restore it from here.",
-  ].join(" ");
+    "The chat's next message checks it out again.",
+  ]
+    .filter((part) => part !== false)
+    .join(" ");
 }

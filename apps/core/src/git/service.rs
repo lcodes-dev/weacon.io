@@ -2,10 +2,8 @@
 //! and what a person asks of them. The daemon's clients are its owner's alone.
 
 use std::ffi::OsString;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::SystemTime;
+use std::sync::Arc;
 
 use tokio::sync::Semaphore;
 
@@ -20,13 +18,9 @@ use super::branch::{Draft, Gh};
 use super::chats::ChatRepo;
 use super::state::{Stores, hold_worktrees};
 use super::{Git, branch};
-use crate::platform::trash::Trashed;
 use crate::runs::ChatKey;
 use crate::terminals::{self, OpenTerminal};
 use crate::workspaces::Workspaces;
-
-/// Moves an item to the person's Trash; tests pass one of their own.
-pub(crate) type ToTrash = fn(&Path, SystemTime) -> io::Result<Trashed>;
 
 // At most this many calls run git at once; the rest wait their turn without a thread.
 const WORKERS: usize = 4;
@@ -48,11 +42,8 @@ struct Chat {
 struct Inner {
     workspaces: Workspaces,
     work_root: Option<PathBuf>,
-    to_trash: ToTrash,
     open_terminal: OpenTerminal,
     workers: Arc<Semaphore>,
-    // Held while a journal changes; it guards no data, so a panic under it leaves none broken.
-    journals: Mutex<()>,
 }
 
 impl Worktrees {
@@ -62,16 +53,13 @@ impl Worktrees {
         state_dir: &Path,
         path: Option<OsString>,
         work_root: Option<PathBuf>,
-        to_trash: ToTrash,
         open_terminal: OpenTerminal,
     ) -> Self {
         let inner = Inner {
             workspaces: Workspaces::new(state_dir, path),
             work_root,
-            to_trash,
             open_terminal,
             workers: Arc::new(Semaphore::new(WORKERS)),
-            journals: Mutex::new(()),
         };
         Self {
             inner: Arc::new(inner),
@@ -186,13 +174,7 @@ impl Inner {
             worktree,
             ..
         } = self.chat(workspace, chat)?;
-        if self
-            .stores(workspace)
-            .removed(git.clone())
-            .removed(chat)?
-            .is_some()
-        {
-            // What it holds stays as it was, in the Trash.
+        if !worktree.is_dir() {
             return Ok(WorktreeAnswerKind::State {
                 removed: true,
                 uncommitted: false,
@@ -220,25 +202,15 @@ impl Inner {
             return terminals::open_in_chat(self.work_root.as_deref(), &key, self.open_terminal);
         }
         let found = self.chat(workspace, chat)?;
-        let journal = self.stores(workspace).removed(found.git.clone());
-        let common_dir = found.git.common_dir(&found.repo_folder)?;
         match action {
             WorktreeAction::Remove => {
-                let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
-                // The Trash locks worktrees, which git can fail at while one is added.
+                let common_dir = found.git.common_dir(&found.repo_folder)?;
+                // Git can fail at changing a repository's worktrees while one is added.
                 let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
-                if journal.removed(chat)?.is_none() {
-                    let now = SystemTime::now();
-                    let to_trash = |path: &Path| (self.to_trash)(path, now);
-                    journal.remove(chat, &found.worktree, to_trash, now)?;
-                }
-                self.state(workspace, chat)
-            }
-            WorktreeAction::Restore => {
-                let _changing = self.journals.lock().unwrap_or_else(PoisonError::into_inner);
-                let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
-                if journal.removed(chat)?.is_some() {
-                    journal.restore(chat)?;
+                if found.worktree.is_dir() {
+                    found
+                        .git
+                        .remove_worktree(&found.repo_folder, &found.worktree)?;
                 }
                 self.state(workspace, chat)
             }
@@ -269,7 +241,7 @@ impl Inner {
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
         let config = self.workspaces.root(&record.workspace).join("gh");
-        let gh = Gh::find(self.workspaces.path(), config).map(|gh| gh.in_tree(git));
+        let gh = Gh::find(self.workspaces.path(), config);
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
                 base,
@@ -292,8 +264,7 @@ impl Inner {
         let work_root = self.work_root.as_deref().ok_or_else(none)?;
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
         let repo = stores.repo(&record.repo)?;
-        let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?
-            .in_tree(&repo.path, &worktree)?;
+        let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?;
         Ok(Chat {
             git,
             record,
@@ -336,7 +307,7 @@ fn failed() -> Fault {
 }
 
 /// Answers for a chat `c-1` in workspace `w-1` whose first prompt named a repository, with its
-/// worktree made and recorded under `dir`; its Trash is `dir/bin`.
+/// worktree made and recorded under `dir`.
 #[cfg(test)]
 pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf) {
     use weacon_protocol::RepoId;
@@ -356,17 +327,17 @@ pub(crate) fn with_chat(dir: &Path) -> (Worktrees, WorkspaceId, ChatId, PathBuf)
         .unwrap();
     let key = ChatKey::new(&workspace, &chat_id);
     let worktree = super::launch::chat_tree(&with_path, &work, &key, &site).unwrap();
-    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), bin, opened);
+    let worktrees = Worktrees::new(&state, std::env::var_os("PATH"), Some(work), opened);
     (worktrees, workspace, chat_id, worktree)
 }
 
 // Opens no terminal, but leaves what it was given beside the work folder's workspaces.
 #[cfg(test)]
-fn opened(folder: &Path, args: &[OsString]) -> io::Result<bool> {
+fn opened(folder: &Path, args: &[OsString]) -> std::io::Result<bool> {
     let work = folder
         .ancestors()
         .nth(2)
-        .ok_or(io::ErrorKind::InvalidInput)?;
+        .ok_or(std::io::ErrorKind::InvalidInput)?;
     let given: Vec<_> = std::iter::once(folder.as_os_str())
         .chain(args.iter().map(OsString::as_os_str))
         .collect();
@@ -375,17 +346,6 @@ fn opened(folder: &Path, args: &[OsString]) -> io::Result<bool> {
         given.join(std::ffi::OsStr::new("\n")).as_encoded_bytes(),
     )?;
     Ok(true)
-}
-
-// A Trash of the test's own: `bin` in the folder above `work/<workspace>/<chat>`.
-#[cfg(test)]
-fn bin(path: &Path, _: SystemTime) -> io::Result<Trashed> {
-    let dir = path.ancestors().nth(3).ok_or(io::ErrorKind::InvalidInput)?;
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin)?;
-    let item = bin.join(path.file_name().ok_or(io::ErrorKind::InvalidInput)?);
-    std::fs::rename(path, &item)?;
-    Ok(Trashed { item, info: None })
 }
 
 #[cfg(test)]
@@ -449,75 +409,6 @@ mod tests {
             };
             Ok(self.worktrees.command(command).await?.answer)
         }
-    }
-
-    // An agent points the worktree's `.git` file at a repository of its own, whose config runs a
-    // command whenever git reads a changed file.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_worktrees_git_file_is_never_followed() {
-        let bench = bench();
-        let (evil, marker) = (bench.dir.join("evil"), bench.dir.join("ran"));
-        let repo = bench.dir.join("repo");
-        fixture(
-            &bench.dir,
-            &bench.dir,
-            &[
-                "clone",
-                "--quiet",
-                repo.to_str().unwrap(),
-                evil.to_str().unwrap(),
-            ],
-        );
-        fs::write(evil.join(".git/info/attributes"), "* filter=evil\n").unwrap();
-        let clean = format!("touch '{}'; cat", marker.display());
-        fixture(&bench.dir, &evil, &["config", "filter.evil.clean", &clean]);
-        let points = format!("gitdir: {}\n", evil.join(".git").display());
-        fs::write(bench.worktree.join(".git"), points).unwrap();
-        fs::write(bench.worktree.join("README.md"), "# Changed\n").unwrap();
-
-        let changed = bench.changes().await.unwrap();
-
-        assert_eq!(changed.len(), 1, "{changed:?}");
-        assert_eq!(bench.state().await.unwrap(), state(false, true, false));
-        assert!(!marker.exists(), "the agent's filter ran");
-    }
-
-    // As git writes it with `worktree.useRelativePaths`: from its own folder, four below `dir`.
-    #[tokio::test]
-    async fn a_worktree_the_repository_names_relatively_is_found() {
-        let bench = bench();
-        let admins = fs::read_dir(bench.dir.join("repo/.git/worktrees")).unwrap();
-        let admin = admins.flatten().next().unwrap().path();
-        let below = bench
-            .worktree
-            .strip_prefix(&*bench.dir)
-            .unwrap()
-            .join(".git");
-        let relative = Path::new("../../../..").join(below);
-        fs::write(admin.join("gitdir"), format!("{}\n", relative.display())).unwrap();
-
-        assert_eq!(bench.state().await.unwrap(), state(false, false, false));
-    }
-
-    #[tokio::test]
-    async fn a_worktree_its_repository_doesnt_list_is_refused() {
-        let bench = bench();
-        fixture(
-            &bench.dir,
-            &bench.dir.join("repo"),
-            &[
-                "worktree",
-                "remove",
-                "--force",
-                bench.worktree.to_str().unwrap(),
-            ],
-        );
-        fs::create_dir_all(&bench.worktree).unwrap();
-
-        let error = bench.state().await.unwrap_err();
-
-        assert_eq!(code(&error), "worktree.unregistered");
     }
 
     fn one_line(text: String) -> DiffAnswer {
@@ -611,23 +502,6 @@ mod tests {
         assert_eq!(code(&bench.state().await.unwrap_err()), "worktree.failed");
     }
 
-    #[tokio::test]
-    async fn a_panic_while_a_journal_changed_breaks_no_later_change() {
-        let bench = bench();
-        let inner = Arc::clone(&bench.worktrees.inner);
-        std::thread::spawn(move || {
-            let _held = inner.journals.lock().unwrap();
-            panic!("poisons the lock");
-        })
-        .join()
-        .unwrap_err();
-
-        assert_eq!(
-            bench.act(Action::Remove).await.unwrap(),
-            state(true, false, false)
-        );
-    }
-
     fn state_query(bench: &Bench) -> WorktreeQuery {
         WorktreeQuery {
             request: request(),
@@ -674,7 +548,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_worktree_says_what_removing_it_would_set_aside() {
+    async fn a_worktree_says_what_removing_it_would_delete() {
         let bench = bench();
 
         assert_eq!(bench.state().await.unwrap(), state(false, false, false));
@@ -690,8 +564,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn removing_and_restoring_answer_with_where_the_worktree_stands() {
+    async fn removing_answers_with_where_the_worktree_stands_and_keeps_its_branch() {
         let bench = bench();
+        fs::write(bench.worktree.join("agent.txt"), "mine\n").unwrap();
 
         assert_eq!(
             bench.act(Action::Remove).await.unwrap(),
@@ -703,20 +578,15 @@ mod tests {
             state(true, false, false)
         );
         assert_eq!(bench.state().await.unwrap(), state(true, false, false));
-
-        assert_eq!(
-            bench.act(Action::Restore).await.unwrap(),
-            state(false, false, false)
-        );
-        assert!(bench.worktree.join("README.md").exists());
-        assert_eq!(
-            bench.act(Action::Restore).await.unwrap(),
-            state(false, false, false)
+        fixture(
+            &bench.dir,
+            &bench.dir.join("repo"),
+            &["rev-parse", "--verify", "refs/heads/weacon/c-1"],
         );
     }
 
     #[tokio::test]
-    async fn the_trash_moves_a_worktree_only_under_its_repositorys_hold() {
+    async fn a_worktree_is_removed_only_under_its_repositorys_hold() {
         let bench = bench();
         let lock = block_hold(&bench.dir);
 
@@ -726,11 +596,6 @@ mod tests {
         assert!(bench.worktree.join("README.md").exists());
         fs::remove_dir(&lock).unwrap();
         bench.act(Action::Remove).await.unwrap();
-        block_hold(&bench.dir);
-
-        let error = bench.act(Action::Restore).await.unwrap_err();
-
-        assert_eq!(code(&error), "git.hold_failed");
         assert!(!bench.worktree.exists());
     }
 
@@ -860,7 +725,7 @@ mod tests {
 
         let no_desktop = |_: &Path, _: &[OsString]| Ok(false);
         let (state, work) = (bench.dir.join("state"), bench.dir.join("work"));
-        let headless = Worktrees::new(&state, None, Some(work), bin, no_desktop);
+        let headless = Worktrees::new(&state, None, Some(work), no_desktop);
         let asked = WorktreeCommand {
             request: request(),
             workspace: bench.workspace.clone(),
@@ -870,9 +735,9 @@ mod tests {
         };
         let refused = headless.command(asked.clone()).await.unwrap_err();
         assert_eq!(code(&refused), "terminal.none");
-        let broken = |_: &Path, _: &[OsString]| Err(io::ErrorKind::NotFound.into());
+        let broken = |_: &Path, _: &[OsString]| Err(std::io::ErrorKind::NotFound.into());
         let (state, work) = (bench.dir.join("state"), bench.dir.join("work"));
-        let failing = Worktrees::new(&state, None, Some(work), bin, broken);
+        let failing = Worktrees::new(&state, None, Some(work), broken);
         assert_eq!(
             code(&failing.command(asked).await.unwrap_err()),
             "terminal.failed"

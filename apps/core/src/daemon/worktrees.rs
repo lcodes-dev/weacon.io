@@ -5,7 +5,6 @@ use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::path::Path;
-use std::time::SystemTime;
 
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
@@ -17,7 +16,6 @@ use super::Shared;
 use crate::chats::Places;
 use crate::git::service::Worktrees;
 use crate::platform;
-use crate::platform::trash::Trashed;
 use crate::session::Reply;
 
 /// Where replies that come after their request go, each with its request's envelope id.
@@ -28,7 +26,7 @@ pub(super) const LATE: usize = 64;
 
 pub(super) fn worktrees(state_dir: &Path, places: &Places) -> Worktrees {
     let (path, work_root) = (places.path.clone(), places.work_root.clone());
-    Worktrees::new(state_dir, path, work_root, to_trash, open_terminal)
+    Worktrees::new(state_dir, path, work_root, open_terminal)
 }
 
 // The terminal runs this very core, so it's the same build that answered.
@@ -44,10 +42,6 @@ fn open_terminal(folder: &Path, args: &[OsString]) -> io::Result<bool> {
     // Reaped once the terminal's own launcher exits, which may be when its window closes.
     std::thread::spawn(move || child.wait());
     Ok(true)
-}
-
-fn to_trash(path: &Path, now: SystemTime) -> io::Result<Trashed> {
-    platform::trash::trash(path, &|key| std::env::var_os(key), now)
 }
 
 /// Sends a chat's changes, one file to an answer. Each of these replies later, so none now.

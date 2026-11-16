@@ -52,7 +52,7 @@ test("each ask goes out as the protocol's query or command, under its id and req
 test("only an action, or the state Remove asks for, keeps the bar busy", () => {
   assert.equal(busy(asked(UNASKED, 3, { kind: "state" })), false);
   assert.equal(busy(asked(UNASKED, 3, { kind: "state", confirm: true })), true);
-  assert.equal(busy(asked(UNASKED, 3, { kind: "restore" })), true);
+  assert.equal(busy(asked(UNASKED, 3, { kind: "remove" })), true);
 });
 
 test("an older answer can't replace a newer one, and answers to nothing asked, or about another chat, change nothing", () => {
@@ -84,13 +84,13 @@ test("Remove confirms against the fresh state it asks for, and any newer state e
   assert.deepEqual(confirming.confirming, { kind: "state", removed: false, uncommitted: true, unpushed: false });
   assert.equal(cancelled(confirming).confirming, undefined);
   assert.equal(hear(asked(confirming, 5, { kind: "state" }), state("q-5", false)).confirming, undefined);
-  // A worktree already in the Trash has nothing to confirm.
+  // A worktree already removed has nothing to confirm.
   assert.equal(hear(asked(known, 6, { kind: "state", confirm: true }), state("q-6", true)).confirming, undefined);
 });
 
 test("the end of the connection drops what was asked and what was being confirmed, and keeps what is known", () => {
   const confirming = hear(asked(UNASKED, 3, { kind: "state", confirm: true }), state("q-3", false));
-  const out = asked(confirming, 4, { kind: "restore" });
+  const out = asked(confirming, 4, { kind: "remove" });
 
   assert.deepEqual(ended(out).pending, []);
   assert.equal(ended(out).confirming, undefined);
@@ -107,7 +107,7 @@ test("a chat with no worktree says so, and an action refused or unsent says what
     text: "The terminal didn't open. On a machine without a desktop terminal, run the line below there.",
   });
   assert.deepEqual(unsent(none, "remove").outcome, { kind: "problem", text: "The worktree wasn't removed. The connection is down." });
-  assert.equal(waiting(unsent(none, "remove"), { id: 5, request: "q-5", ask: "restore", confirm: false }).outcome, undefined);
+  assert.equal(waiting(unsent(none, "remove"), { id: 5, request: "q-5", ask: "remove", confirm: false }).outcome, undefined);
 });
 
 test("a pull request or a terminal says what came of it, with the page to open", () => {
@@ -134,15 +134,15 @@ test("the state line and Remove's question say what is there, what goes and what
   const at = (removed: boolean, uncommitted: boolean, unpushed: boolean) => ({ kind: "state" as const, removed, uncommitted, unpushed });
 
   assert.equal(stateLine({ kind: "unknown" }), "Checking the worktree.");
-  assert.equal(stateLine(at(true, true, true)), "The worktree is in the Trash.");
+  assert.equal(stateLine(at(true, true, true)), "The worktree was removed. The chat's next message checks it out again.");
   assert.equal(stateLine(at(false, true, true)), "Uncommitted changes · Commits not pushed");
   assert.equal(stateLine(at(false, false, true)), "Commits not pushed");
   assert.equal(stateLine(at(false, false, false)), "Everything is committed and pushed.");
   assert.equal(
     removeQuestion(at(false, true, true)),
-    "Remove this chat's worktree? Its uncommitted changes go with it to the Trash. Its branch stays, with commits that aren't pushed yet. You can restore it from here.",
+    "Remove this chat's worktree? Its uncommitted changes are deleted for good. Its branch stays, with commits that aren't pushed yet. The chat's next message checks it out again.",
   );
-  assert.equal(removeQuestion(at(false, false, false)), "Remove this chat's worktree? It goes to the Trash. Its branch stays. You can restore it from here.");
+  assert.equal(removeQuestion(at(false, false, false)), "Remove this chat's worktree? Its branch stays. The chat's next message checks it out again.");
 });
 
 test("asking the state again keeps the last action's outcome, and the next action clears it", () => {
@@ -151,7 +151,7 @@ test("asking the state again keeps the last action's outcome, and the next actio
 
   assert.deepEqual(asked(linked, 4, { kind: "state" }).outcome, linked.outcome);
   assert.equal(asked(linked, 5, { kind: "state", confirm: true }).outcome, undefined);
-  assert.equal(asked(linked, 6, { kind: "restore" }).outcome, undefined);
+  assert.equal(asked(linked, 6, { kind: "remove" }).outcome, undefined);
 });
 
 test("the resume line names the chat and its workspace", () => {
