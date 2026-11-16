@@ -27,11 +27,6 @@ pub(crate) fn chat_tree(
     if recorded.is_none() && folder.is_dir() && !folder.join(".git").exists() {
         return Ok(folder);
     }
-    // What an agent still running wrote where its worktree was removed goes, so it can be
-    // checked out again.
-    if recorded.is_some() && folder.is_dir() && !folder.join(".git").exists() {
-        std::fs::remove_dir_all(&folder).map_err(|error| super::taken().because(error))?;
-    }
     let found = stores.repo(repo)?;
     let git = Git::open(workspaces.state_dir(), workspaces.path())?;
     let _held = hold_worktrees(workspaces.state_dir(), &git.common_dir(&found.path)?)?;
@@ -239,14 +234,10 @@ mod tests {
             .remove_worktree(&bench.dir.join("repo"), &first)
             .unwrap();
         assert!(!first.exists());
-        // An agent still running wrote there since.
-        fs::create_dir_all(&first).unwrap();
-        fs::write(first.join("late.txt"), "late\n").unwrap();
 
         let again = bench.tree(&bench.site).unwrap();
 
         assert_eq!(again, first);
         assert!(again.join("agent.txt").exists());
-        assert!(!again.join("late.txt").exists());
     }
 }

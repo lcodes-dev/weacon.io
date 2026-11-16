@@ -106,6 +106,10 @@ test("a chat with no worktree says so, and an action refused or unsent says what
     kind: "problem",
     text: "The terminal didn't open. On a machine without a desktop terminal, run the line below there.",
   });
+  assert.deepEqual(hear(asked(none, 4, { kind: "remove" }), refused(4, "worktree.busy")).outcome, {
+    kind: "problem",
+    text: "Stop the agent first, then remove the worktree.",
+  });
   assert.deepEqual(unsent(none, "remove").outcome, { kind: "problem", text: "The worktree wasn't removed. The connection is down." });
   assert.equal(waiting(unsent(none, "remove"), { id: 5, request: "q-5", ask: "remove", confirm: false }).outcome, undefined);
 });

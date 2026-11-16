@@ -21,6 +21,7 @@ mod reads;
 pub(crate) mod repos;
 pub(crate) mod service;
 pub(crate) mod state;
+mod tree;
 
 // Variables that would point git at another repository, or stand in for `-c` options.
 const REDIRECTS: [&str; 9] = [
@@ -40,6 +41,8 @@ const REDIRECTS: [&str; 9] = [
 pub(crate) struct Git {
     program: PathBuf,
     no_hooks: PathBuf,
+    // Set for a chat's worktree, so its `.git` file is never followed.
+    folder: Option<PathBuf>,
 }
 
 /// One of a repository's working trees.
@@ -66,7 +69,11 @@ impl Git {
     /// repository's hooks.
     pub(crate) fn find(path: &OsStr, no_hooks: PathBuf) -> Option<Self> {
         let program = platform::find_program("git", path)?;
-        Some(Self { program, no_hooks })
+        Some(Self {
+            program,
+            no_hooks,
+            folder: None,
+        })
     }
 
     /// Git for this core: the first on `path`, with an empty hooks folder of its own in
@@ -238,16 +245,6 @@ impl Git {
         }
     }
 
-    /// The git folder that `repo` and every worktree of it share, as git names it.
-    pub(crate) fn common_dir(&self, repo: &Path) -> Result<PathBuf, Fault> {
-        let common = text(run(self.command(repo).args([
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ]))?)?;
-        Ok(PathBuf::from(common.trim_end()))
-    }
-
     /// Removes the worktree at `path` of `repo`, with whatever it holds; its branch stays.
     pub(crate) fn remove_worktree(&self, repo: &Path, path: &Path) -> Result<(), Fault> {
         absolute(&[repo, path])?;
@@ -258,11 +255,20 @@ impl Git {
         .map(drop)
     }
 
+    // Git run in `repo`; when this git has a worktree's git folder, with that folder and `repo`
+    // as its work tree.
     fn command(&self, repo: &Path) -> Command {
         let mut hooks = OsString::from("core.hooksPath=");
         hooks.push(&self.no_hooks);
         let mut command = Command::new(&self.program);
         command.arg("-C").arg(repo);
+        if let Some(dir) = &self.folder {
+            let mut git_dir = OsString::from("--git-dir=");
+            git_dir.push(dir);
+            let mut work_tree = OsString::from("--work-tree=");
+            work_tree.push(repo);
+            command.arg(git_dir).arg(work_tree);
+        }
         command
             .arg("-c")
             .arg(hooks)
@@ -561,6 +567,7 @@ mod tests {
         let git = Git {
             program: PathBuf::from("git"),
             no_hooks: PathBuf::from("/state/no-hooks"),
+            folder: None,
         };
         let command = git.command(Path::new("/src/site"));
 

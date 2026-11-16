@@ -9,13 +9,15 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    DiffQuery, Envelope, ErrorBody, Message, WorktreeAnswer, WorktreeCommand, WorktreeQuery,
+    DiffQuery, Envelope, ErrorBody, Message, RunState, WorktreeAction, WorktreeAnswer,
+    WorktreeCommand, WorktreeQuery, code,
 };
 
 use super::Shared;
 use crate::chats::Places;
 use crate::git::service::Worktrees;
 use crate::platform;
+use crate::runs::ChatKey;
 use crate::session::Reply;
 
 /// Where replies that come after their request go, each with its request's envelope id.
@@ -73,12 +75,28 @@ pub(super) fn query(shared: &Shared, id: u32, query: WorktreeQuery, late: &Late)
 }
 
 pub(super) fn command(shared: &Shared, id: u32, command: WorktreeCommand, late: &Late) -> Reply {
-    let worktrees = shared.worktrees.clone();
-    send(
-        shared,
-        id,
-        late,
-        async move { worktrees.command(command).await },
+    let (worktrees, chats) = (shared.worktrees.clone(), shared.chats.clone());
+    send(shared, id, late, async move {
+        if command.action == WorktreeAction::Remove {
+            let key = ChatKey::new(&command.workspace, &command.chat);
+            let listed = chats.list().await?;
+            let run = listed.iter().find(|chat| chat.key == key);
+            if run.is_some_and(|chat| on_a_turn(chat.run.as_ref())) {
+                return Err(Fault::new(
+                    code!("worktree.busy"),
+                    "Stop the chat's agent before removing its worktree",
+                ));
+            }
+        }
+        worktrees.command(command).await
+    })
+}
+
+// Whether a run is writing in its worktree, or about to.
+fn on_a_turn(run: Option<&RunState>) -> bool {
+    matches!(
+        run,
+        Some(RunState::Starting | RunState::Running | RunState::Waiting)
     )
 }
 
@@ -109,4 +127,20 @@ async fn refuse(log: &Logger, id: u32, fault: &Fault, late: &Late) {
         retryable: false,
     });
     let _closed = late.send(Envelope { id, message }).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_run_on_a_turn_keeps_its_worktree_from_being_removed() {
+        for state in [RunState::Starting, RunState::Running, RunState::Waiting] {
+            assert!(on_a_turn(Some(&state)), "{state:?}");
+        }
+        for state in [RunState::Idle, RunState::Sleeping, RunState::Ended] {
+            assert!(!on_a_turn(Some(&state)), "{state:?}");
+        }
+        assert!(!on_a_turn(None));
+    }
 }

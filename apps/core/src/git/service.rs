@@ -154,7 +154,7 @@ impl Inner {
             chat: query.chat.clone(),
             answer,
         };
-        if !there(&worktree) {
+        if !worktree.is_dir() {
             return Ok(vec![answer(DiffAnswerKind::Unchanged)]);
         }
         let base = git.base(&worktree, &record.start)?;
@@ -177,7 +177,7 @@ impl Inner {
             worktree,
             ..
         } = self.chat(workspace, chat)?;
-        if !there(&worktree) {
+        if !worktree.is_dir() {
             return Ok(WorktreeAnswerKind::State {
                 removed: true,
                 uncommitted: false,
@@ -210,7 +210,7 @@ impl Inner {
                 let common_dir = found.git.common_dir(&found.repo_folder)?;
                 // Git can fail at changing a repository's worktrees while one is added.
                 let _held = hold_worktrees(self.workspaces.state_dir(), &common_dir)?;
-                if there(&found.worktree) {
+                if found.worktree.is_dir() {
                     found
                         .git
                         .remove_worktree(&found.repo_folder, &found.worktree)?;
@@ -244,7 +244,7 @@ impl Inner {
         let branch = branch(&record.chat);
         git.push(worktree, &branch)?;
         let config = self.workspaces.root(&record.workspace).join("gh");
-        let gh = Gh::find(self.workspaces.path(), config);
+        let gh = Gh::find(self.workspaces.path(), config).map(|gh| gh.in_tree(git));
         if let Some(gh) = gh.filter(|gh| gh.signed_in(worktree)) {
             let draft = Draft {
                 base,
@@ -268,6 +268,12 @@ impl Inner {
         let worktree = crate::chats::chat_folder(work_root, workspace, chat);
         let repo = stores.repo(&record.repo)?;
         let git = Git::open(self.workspaces.state_dir(), self.workspaces.path())?;
+        // A worktree removed has no git folder to be told.
+        let git = if worktree.is_dir() {
+            git.in_tree(&repo.path, &worktree)?
+        } else {
+            git
+        };
         Ok(Chat {
             git,
             record,
@@ -293,12 +299,6 @@ fn fitted(mut answer: DiffAnswer) -> DiffAnswer {
         file.content = DiffContent::TooLarge;
     }
     answer
-}
-
-// Whether a worktree is at `folder`: one removed leaves none, or a folder without git's file
-// where an agent still running wrote since.
-fn there(folder: &Path) -> bool {
-    folder.join(".git").exists()
 }
 
 fn unknown() -> Fault {
@@ -418,6 +418,75 @@ mod tests {
             };
             Ok(self.worktrees.command(command).await?.answer)
         }
+    }
+
+    // An agent points the worktree's `.git` file at a repository of its own, whose config runs a
+    // command whenever git reads a changed file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_worktrees_git_file_is_never_followed() {
+        let bench = bench();
+        let (evil, marker) = (bench.dir.join("evil"), bench.dir.join("ran"));
+        let repo = bench.dir.join("repo");
+        fixture(
+            &bench.dir,
+            &bench.dir,
+            &[
+                "clone",
+                "--quiet",
+                repo.to_str().unwrap(),
+                evil.to_str().unwrap(),
+            ],
+        );
+        fs::write(evil.join(".git/info/attributes"), "* filter=evil\n").unwrap();
+        let clean = format!("touch '{}'; cat", marker.display());
+        fixture(&bench.dir, &evil, &["config", "filter.evil.clean", &clean]);
+        let points = format!("gitdir: {}\n", evil.join(".git").display());
+        fs::write(bench.worktree.join(".git"), points).unwrap();
+        fs::write(bench.worktree.join("README.md"), "# Changed\n").unwrap();
+
+        let changed = bench.changes().await.unwrap();
+
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(bench.state().await.unwrap(), state(false, true, false));
+        assert!(!marker.exists(), "the agent's filter ran");
+    }
+
+    // As git writes it with `worktree.useRelativePaths`: from its own folder, four below `dir`.
+    #[tokio::test]
+    async fn a_worktree_the_repository_names_relatively_is_found() {
+        let bench = bench();
+        let admins = fs::read_dir(bench.dir.join("repo/.git/worktrees")).unwrap();
+        let admin = admins.flatten().next().unwrap().path();
+        let below = bench
+            .worktree
+            .strip_prefix(&*bench.dir)
+            .unwrap()
+            .join(".git");
+        let relative = Path::new("../../../..").join(below);
+        fs::write(admin.join("gitdir"), format!("{}\n", relative.display())).unwrap();
+
+        assert_eq!(bench.state().await.unwrap(), state(false, false, false));
+    }
+
+    #[tokio::test]
+    async fn a_worktree_its_repository_doesnt_list_is_refused() {
+        let bench = bench();
+        fixture(
+            &bench.dir,
+            &bench.dir.join("repo"),
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                bench.worktree.to_str().unwrap(),
+            ],
+        );
+        fs::create_dir_all(&bench.worktree).unwrap();
+
+        let error = bench.state().await.unwrap_err();
+
+        assert_eq!(code(&error), "worktree.unregistered");
     }
 
     fn one_line(text: String) -> DiffAnswer {
@@ -591,15 +660,6 @@ mod tests {
             &bench.dir,
             &bench.dir.join("repo"),
             &["rev-parse", "--verify", "refs/heads/weacon/c-1"],
-        );
-        // An agent still running writes where its worktree was.
-        fs::create_dir_all(&bench.worktree).unwrap();
-        fs::write(bench.worktree.join("late.txt"), "late\n").unwrap();
-
-        assert_eq!(bench.state().await.unwrap(), state(true, false, false));
-        assert_eq!(
-            bench.act(Action::Remove).await.unwrap(),
-            state(true, false, false)
         );
         let changed = bench.changes().await.unwrap();
         assert!(matches!(changed.as_slice(), [DiffAnswerKind::Unchanged]));

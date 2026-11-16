@@ -55,7 +55,11 @@ export function answered(worktree: Worktree, ref: ChatRef, message: Extract<Inco
   }
   const rest = { ...worktree, pending: worktree.pending.filter((pending) => pending !== asked) };
   if (message.type === "error") {
-    return message.code === "worktree.none" ? stood(rest, asked, { kind: "none" }) : { ...rest, outcome: { kind: "problem", text: PROBLEMS[asked.ask] } };
+    if (message.code === "worktree.none") {
+      return stood(rest, asked, { kind: "none" });
+    }
+    const text = message.code === "worktree.busy" ? "Stop the agent first, then remove the worktree." : PROBLEMS[asked.ask];
+    return { ...rest, outcome: { kind: "problem", text } };
   }
   const { answer } = message;
   switch (answer.kind) {

@@ -114,13 +114,25 @@ pub(crate) struct Draft<'a> {
 pub(crate) struct Gh {
     program: PathBuf,
     config: PathBuf,
+    // The worktree's git folder, so the git gh runs never follows the worktree's `.git` file.
+    folder: Option<PathBuf>,
 }
 
 impl Gh {
     /// The first `gh` in `path`, a `PATH` value, using `config` for its sign-in.
     pub(crate) fn find(path: Option<&OsStr>, config: PathBuf) -> Option<Self> {
         let program = platform::find_program("gh", path.unwrap_or_default())?;
-        Some(Self { program, config })
+        Some(Self {
+            program,
+            config,
+            folder: None,
+        })
+    }
+
+    /// This gh, running git in a worktree with `git`'s own git folder for it.
+    pub(crate) fn in_tree(self, git: &Git) -> Self {
+        let folder = git.folder().map(Path::to_path_buf);
+        Self { folder, ..self }
     }
 
     /// Whether the workspace is signed in to GitHub with `gh`; only the answer is read.
@@ -200,6 +212,11 @@ impl Gh {
         // Nor another repository's state, which git's own variables would point it at.
         for name in GH_OVERRIDES.iter().chain(&REDIRECTS) {
             command.env_remove(name);
+        }
+        if let Some(folder) = &self.folder {
+            command
+                .env("GIT_DIR", folder)
+                .env("GIT_WORK_TREE", worktree);
         }
         command
     }
@@ -391,6 +408,7 @@ mod tests {
         let gh = Gh {
             program: PathBuf::from("gh"),
             config: PathBuf::from("/state/w-1/gh"),
+            folder: None,
         };
         let command = gh.command(Path::new("/trees/c-1"));
 
@@ -401,6 +419,32 @@ mod tests {
             assert!(envs.contains(&(name.as_ref(), None)), "{name}");
         }
         assert_eq!(command.get_current_dir(), Some(Path::new("/trees/c-1")));
+        let git = Git {
+            program: PathBuf::from("git"),
+            no_hooks: PathBuf::from("/state/no-hooks"),
+            folder: Some(PathBuf::from("/src/site/.git/worktrees/c-1")),
+        };
+        let told = Gh {
+            program: PathBuf::from("gh"),
+            config: PathBuf::from("/state/w-1/gh"),
+            folder: None,
+        }
+        .in_tree(&git);
+        let envs: Vec<(String, Option<String>)> = told
+            .command(Path::new("/trees/c-1"))
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|it| it.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&(
+            "GIT_DIR".to_owned(),
+            Some("/src/site/.git/worktrees/c-1".to_owned())
+        )));
+        assert!(envs.contains(&("GIT_WORK_TREE".to_owned(), Some("/trees/c-1".to_owned()))));
         let draft = Draft {
             base: "main",
             branch: "weacon/c-1",
@@ -438,6 +482,7 @@ esac
         let gh = Gh {
             program,
             config: config.clone(),
+            folder: None,
         };
         let draft = Draft {
             base: "main",
