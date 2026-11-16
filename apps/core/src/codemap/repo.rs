@@ -46,7 +46,7 @@ impl Source for Repo {
         self.git.changed(path, commit)
     }
 
-    /// Only a regular file of at most [`LARGEST`] bytes that isn't a link has text.
+    /// Only a regular file of at most [`LARGEST`] bytes reached through no link has text.
     fn text(&self, path: &Path, file: &str) -> Option<String> {
         let file = platform::open_beneath(path, file).ok()?;
         let about = file.metadata().ok()?;
@@ -178,7 +178,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn reads_no_link() {
+    fn reads_nothing_through_a_link() {
         use std::os::unix::fs::symlink;
         let dir = TempDir::new().unwrap();
         let path = repo(&dir);
@@ -195,7 +195,7 @@ mod tests {
         symlink(path.join("inside.md"), path.join("near.md")).unwrap();
 
         assert_eq!(source.text(&path, "inside.md").as_deref(), Some("inside"));
-        for file in ["link.md", "near.md", "docs"] {
+        for file in ["link.md", "docs/secret.md", "near.md", "docs"] {
             assert_eq!(source.text(&path, file), None, "{file}");
         }
     }

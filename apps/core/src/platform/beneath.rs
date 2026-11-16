@@ -4,11 +4,20 @@ use std::fs::{self, File};
 use std::io;
 use std::path::Path;
 
-/// The file at `relative` in `root`, opened to read; a link, a folder, a pipe and a path that
-/// isn't there are refused.
+/// The file at `relative`, a `/`-separated path, in `root`, opened to read; a link at any
+/// step below `root`, a folder, a pipe and a path that isn't there are refused.
 pub(crate) fn open_beneath(root: &Path, relative: &str) -> io::Result<File> {
-    let path = root.join(relative);
-    if !fs::symlink_metadata(&path)?.is_file() {
+    let mut path = root.to_path_buf();
+    let mut plain = false;
+    for part in relative.split('/') {
+        path.push(part);
+        let about = fs::symlink_metadata(&path)?;
+        if about.is_symlink() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        plain = about.is_file();
+    }
+    if !plain {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     File::open(path)
@@ -40,8 +49,24 @@ mod tests {
         assert_eq!(read(&dir, "a/c.md").as_deref(), Some("inside"));
         assert_eq!(read(&dir, "a"), None);
         assert_eq!(read(&dir, "a/x.md"), None);
-        if crate::platform::plant_link(&dir.join("a/c.md"), &dir.join("link.md")) {
+        let linked = crate::platform::plant_link(&dir.join("a/c.md"), &dir.join("link.md"))
+            && crate::platform::plant_link(&dir.join("a"), &dir.join("folder"));
+        if linked {
             assert_eq!(read(&dir, "link.md"), None);
+            assert_eq!(read(&dir, "folder/c.md"), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opens_no_pipe() {
+        let dir = TempDir::new().unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.join("pipe.md"))
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        open_beneath(&dir, "pipe.md").unwrap_err();
     }
 }
