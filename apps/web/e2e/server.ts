@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
-import type { Page } from "playwright-core";
+import type { BrowserContextOptions, Page } from "playwright-core";
 
 import { REPO, STARTUP_MS, open, waitFor } from "./harness.ts";
 
@@ -27,8 +27,8 @@ export type Served = {
 
 const cargo = (...args: string[]) => ["run", "--locked", "--quiet", "-p", "weacon-server", "--", ...args];
 
-/** Starts the server in a new folder and opens a page on it; on any failure, stops it and removes the folder. */
-export async function serve(): Promise<Served> {
+/** Starts the server in a new folder and opens a page on it, as `device` if one is given; on any failure, stops it and removes the folder. */
+export async function serve(device?: BrowserContextOptions): Promise<Served> {
   const dir = mkdtempSync(join(tmpdir(), "weacon-shell-"));
   const db = join(dir, "db");
   const child = spawn("cargo", cargo("serve", "--listen", "127.0.0.1:0", "--db", db, "--secret", join(dir, "key")), {
@@ -48,7 +48,7 @@ export async function serve(): Promise<Served> {
     }
     return address;
   };
-  const { page, stop } = await open(dir, child, ready, (address) => `http://${address}/`);
+  const { page, stop } = await open(dir, child, ready, (address) => `http://${address}/`, device);
   let taken = 0;
   // Sign-in mails only: an invitation's mail holds no code.
   const letters = () => records.filter((record) => record.msg === "mail printed" && record.subject === "Your Weacon sign-in code").slice(taken);

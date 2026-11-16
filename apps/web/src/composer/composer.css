@@ -83,3 +83,13 @@
 .composer .mentions [aria-selected="true"] {
   background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
+
+@media (max-width: 720px) {
+  .composer {
+    padding: 8px 12px;
+  }
+
+  .composer .field {
+    min-width: 0;
+  }
+}
