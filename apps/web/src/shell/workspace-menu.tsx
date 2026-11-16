@@ -7,19 +7,17 @@ import { Invitations } from "./invitations.tsx";
 
 /**
  * The foot of the sidebar: the open workspace, which opens a list of the person's other workspaces,
- * their invitations and New workspace, above who is signed in.
+ * their invitations and New workspace.
  */
 export function WorkspaceMenu({
   api,
   loaded,
   workspace,
-  email,
   choose,
 }: {
   api: Api;
   loaded: Loading<WorkspaceList>;
   workspace: WorkspaceSummary;
-  email: string;
   choose(id: WorkspaceId | undefined): void;
 }) {
   const [shown, setShown] = useState(false);
@@ -69,7 +67,6 @@ export function WorkspaceMenu({
         {workspace.name}
         {invitations.length > 0 && <span className="badge">{invitations.length}</span>}
       </button>
-      <p className="muted">{email}</p>
     </div>
   );
 }

@@ -62,16 +62,15 @@
   margin: 8px 16px;
 }
 
+/* Looks like a search field; on a narrow screen no keyboard opens the palette. */
 .palette-open {
-  display: none;
+  width: 100%;
+  text-align: left;
+  font-weight: 400;
+  color: var(--ink-3);
 }
 
 @media (max-width: 720px) {
-  .palette-open {
-    display: block;
-    margin: 12px 12px 0;
-  }
-
   .palette-backdrop {
     padding-top: calc(12px + env(safe-area-inset-top));
   }
