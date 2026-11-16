@@ -23,7 +23,6 @@ test("a proposal says what it is about, by the title it would have", () => {
     [{ about: { kind: "new_task", task: "t-3" }, change: { kind: "new_task", title: "Sift" } }, "New task “Sift”"],
     [{ about: { kind: "new_task", task: "t-2" } }, "Bake"],
     [{ about: { kind: "new_task", task: "t-9" } }, "New task"],
-    [{ about: { kind: "elsewhere" } as unknown as ProposalRecord["about"] }, "A change this app can't show"],
   ];
 
   for (const [part, expected] of cases) {
@@ -41,7 +40,6 @@ test("each task edit reads as a line", () => {
     [{ kind: "move" }, "Move it last"],
     [{ kind: "move", before: "t-2" }, "Move it before “Bake”"],
     [{ kind: "move", before: "t-9" }, "Move it"],
-    [{ kind: "split" } as unknown as TaskEditBody, "An edit this app can't show"],
   ];
 
   for (const [edit, expected] of cases) {
@@ -58,7 +56,6 @@ test("a decided proposal says how it ended and who decided, and a conflict what 
   assert.equal(stateText(at({ state: "rejected", by: "m-9" }), names), "Rejected by a member");
   assert.equal(stateText(at({ state: "superseded" }), names), "Replaced by a newer edit");
   assert.equal(stateText(at({ state: "withdrawn" }), names), "Withdrawn");
-  assert.equal(stateText(at({ state: "deferred" }), names), "Closed");
   assert.match(conflictText({ outcome: "doc_conflict", hunks: [], title: true, anchors: false }) ?? "", /^The doc changed/);
   assert.match(conflictText({ outcome: "task_conflict", edits: [] }) ?? "", /^The task changed/);
   assert.equal(conflictText({ outcome: "accepted", version: 2 }), undefined);
@@ -83,13 +80,11 @@ test("each anchor a move changed says what it was and is, and the ask names the 
   const anchors = [
     { pin, change: { kind: "changed", was: "fn a::go  a.rs:1", now: "fn a::go  a.rs:4" } },
     { pin, change: { kind: "gone", was: "fn a::go  a.rs:1" } },
-    { pin, change: { kind: "moved" } as unknown as { kind: "gone"; was: string } },
   ] as const;
 
   assert.deepEqual(anchors.map(staleText), [
     "sym:a::go changed. It was “fn a::go  a.rs:1”, and is now “fn a::go  a.rs:4”.",
     "sym:a::go is gone. It was “fn a::go  a.rs:1”.",
-    "sym:a::go changed.",
   ]);
   assert.equal(
     askText({ kind: "needs_update", doc: "d-1", base: 2, anchors: [] }),

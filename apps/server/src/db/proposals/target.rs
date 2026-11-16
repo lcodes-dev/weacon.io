@@ -3,8 +3,8 @@ use sqlx::SqliteConnection;
 use weacon_model::{DocText, Revision, TaskEdit, Title, reanchored};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    AnchorChange, Code, DocContent, DocId, MachineId, ProposalChange, StaleAnchor, TaskEditBody,
-    TaskId, TaskStatus, code,
+    Code, DocContent, DocId, MachineId, ProposalChange, StaleAnchor, TaskEditBody, TaskId,
+    TaskStatus, code,
 };
 
 use super::super::{Workspace, version_number};
@@ -68,7 +68,6 @@ impl Workspace {
                 self.stale_target(transaction, (doc, *base), anchors, machine)
                     .await
             }
-            ProposalChange::Newer => Err(invalid()),
         }
     }
 
@@ -121,8 +120,7 @@ impl Workspace {
         let pins = was.text.anchors().map_or(&[][..], |anchors| &anchors.pins);
         let own = own.unwrap_or_default();
         let pinned = |stale: &StaleAnchor| pins.contains(&stale.pin) || own.contains(&stale.pin);
-        let known = |stale: &StaleAnchor| pinned(stale) && stale.change != AnchorChange::Newer;
-        if anchors.is_empty() || !anchors.iter().all(known) {
+        if anchors.is_empty() || !anchors.iter().all(pinned) {
             return Err(invalid());
         }
         Ok(Target {
@@ -195,14 +193,12 @@ pub(super) fn doc_text(content: &DocContent) -> Result<DocText, Fault> {
     text.map_err(|_| invalid())
 }
 
-/// The model's edit for one a proposal may carry: a title or a status this build knows.
+/// The model's edit for one a proposal may carry: a title or a status.
 pub(super) fn proposable(edit: TaskEditBody) -> Option<TaskEdit> {
     match edit {
         TaskEditBody::Title { title } => Title::try_from(title).ok().map(TaskEdit::Title),
-        TaskEditBody::Status { status } if status != TaskStatus::Newer => {
-            Some(TaskEdit::Status(status))
-        }
-        TaskEditBody::Status { .. } | TaskEditBody::Move { .. } | TaskEditBody::Newer => None,
+        TaskEditBody::Status { status } => Some(TaskEdit::Status(status)),
+        TaskEditBody::Move { .. } => None,
     }
 }
 

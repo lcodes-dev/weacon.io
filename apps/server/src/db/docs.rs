@@ -251,7 +251,7 @@ pub(super) fn refused(error: ReviseError) -> Fault {
     }
 }
 
-/// An author from a newer peer, which this build can't store.
+/// An author this build can't store.
 fn unknown() -> Fault {
     Fault::new(
         code!("doc.unknown_value"),

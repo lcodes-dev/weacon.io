@@ -38,7 +38,7 @@ impl Workspace {
         .bind(self.id.as_str())
         .bind(task.id.as_str())
         .bind(task.title.as_str())
-        .bind(status_text(task.status)?)
+        .bind(status_text(task.status))
         .bind(task.order.as_str())
         .bind(version_number(task.version, last_version)?)
         .execute(&mut *transaction)
@@ -136,7 +136,7 @@ impl Workspace {
              WHERE workspace_id = ? AND task_id = ?",
         )
         .bind(edited.title.as_str())
-        .bind(status_text(edited.status)?)
+        .bind(status_text(edited.status))
         .bind(edited.order.as_str())
         .bind(version_number(edited.version, last_version)?)
         .bind(self.id.as_str())
@@ -206,12 +206,11 @@ pub(super) fn refused(error: EditError) -> Fault {
             code!("task.stale"),
             "The task has changed since it was read",
         ),
-        EditError::UnknownStatus => unknown_value(),
         EditError::LastVersion => last_version(),
     }
 }
 
-/// A status or an author from a newer peer, which this build can't store.
+/// An author this build can't store.
 fn unknown_value() -> Fault {
     Fault::new(
         code!("task.unknown_value"),
@@ -226,12 +225,11 @@ fn last_version() -> Fault {
     )
 }
 
-fn status_text(status: TaskStatus) -> Result<&'static str, Fault> {
+const fn status_text(status: TaskStatus) -> &'static str {
     match status {
-        TaskStatus::Todo => Ok("todo"),
-        TaskStatus::InProgress => Ok("in_progress"),
-        TaskStatus::Done => Ok("done"),
-        TaskStatus::Newer => Err(unknown_value()),
+        TaskStatus::Todo => "todo",
+        TaskStatus::InProgress => "in_progress",
+        TaskStatus::Done => "done",
     }
 }
 
@@ -525,36 +523,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn values_this_build_cant_store_are_refused() {
+    async fn a_task_past_the_last_version_a_row_holds_cant_be_added() {
         let dir = TempDir::new().unwrap();
         let (one, _) = two_teams(&dir).await;
         let task = new_task("t1", "Write", "V");
         one.add_task(&task, &by("m1")).await.unwrap();
-        let newer = Task {
-            status: TaskStatus::Newer,
-            ..new_task("t2", "Read", "W")
-        };
         let too_far = Task {
             version: Revision::new(u64::MAX),
             ..new_task("t3", "Read", "X")
         };
 
-        let edited = one
-            .edit_task(
-                &task.id,
-                Revision::FIRST,
-                TaskEdit::Status(TaskStatus::Newer),
-                &by("m1"),
-            )
-            .await
-            .unwrap_err();
-        let added = one.add_task(&newer, &by("m1")).await.unwrap_err();
         let last = one.add_task(&too_far, &by("m1")).await.unwrap_err();
 
-        assert_eq!(code(&edited), "task.unknown_value");
-        assert_eq!(code(&added), "task.unknown_value");
         assert_eq!(code(&last), "task.last_version");
-        assert_eq!(author_columns(&Author::Newer), None);
         assert_eq!(one.tasks().await.unwrap(), [task]);
     }
 

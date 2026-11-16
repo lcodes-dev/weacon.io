@@ -67,7 +67,6 @@ pub(crate) async fn change(
             let tasks = member.workspace.tasks().await?;
             TaskEdit::Order(place(&tasks, Some(&id), before.as_ref())?)
         }
-        TaskEditBody::Newer => return Err(invalid().into()),
     };
     let attribution = Attribution::by(member.id.clone(), shared.now());
     let read_at = Revision::new(body.version);
@@ -403,7 +402,7 @@ mod tests {
         let head = format!("POST /api/workspaces/w1/tasks/{}", write.id.as_str());
         let (status, body) = ada.send(&head, later).await;
         assert_eq!(status, "http/1.1 400 bad request");
-        assert_eq!(error_code(&body), "task.unknown_value");
+        assert_eq!(error_code(&body), "task.invalid");
         assert_eq!(ada.list().await, [write]);
     }
 

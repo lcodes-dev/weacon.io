@@ -3796,14 +3796,10 @@
       ]
     },
     "ProposalVerdict": {
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "accept",
-            "reject"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "accept",
+        "reject"
       ]
     },
     "Quote": {
@@ -4916,15 +4912,11 @@
     },
     "TaskStatus": {
       "description": "How far along a task is.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "todo",
-            "in_progress",
-            "done"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "todo",
+        "in_progress",
+        "done"
       ]
     },
     "TerminalAction": {

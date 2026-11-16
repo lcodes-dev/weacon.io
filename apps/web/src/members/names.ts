@@ -16,7 +16,5 @@ export function authorText(author: Author, names: Names): string {
       return names.get(author.member) ?? "A member";
     case "agent":
       return label(author.agent, names, author.owner);
-    default:
-      return "Someone";
   }
 }

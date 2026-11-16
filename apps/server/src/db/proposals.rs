@@ -553,13 +553,6 @@ mod tests {
                 edits(vec![TaskEditBody::Move { before: None }]),
                 "proposal.invalid",
             ),
-            (edits(vec![TaskEditBody::Newer]), "proposal.invalid"),
-            (
-                edits(vec![TaskEditBody::Status {
-                    status: TaskStatus::Newer,
-                }]),
-                "proposal.invalid",
-            ),
             (unpinned, "proposal.invalid"),
             (
                 ProposalChange::NewTask {
@@ -567,7 +560,6 @@ mod tests {
                 },
                 "proposal.invalid",
             ),
-            (ProposalChange::Newer, "proposal.invalid"),
         ];
         for (change, refused) in refusals {
             let fault = one

@@ -102,7 +102,6 @@ async fn proposed(
         ProposalAction::Withdraw { proposal } => {
             workspace.withdraw(&proposal, &machine.id, &member).await?;
         }
-        ProposalAction::Newer => return Err(invalid()),
     }
     shared.wake_feeds(workspace.id());
     Ok(())
@@ -154,7 +153,6 @@ async fn answer(
             }
             Ok(ProposalAnswerKind::Doc { doc })
         }
-        ProposalQueryKind::Newer => Err(invalid()),
     }
 }
 
@@ -167,8 +165,7 @@ fn one_docs_anchors(proposals: &[Batched]) -> bool {
         }
         ProposalChange::TaskEdit { .. }
         | ProposalChange::NewDoc { .. }
-        | ProposalChange::NewTask { .. }
-        | ProposalChange::Newer => None,
+        | ProposalChange::NewTask { .. } => None,
     };
     let docs: Option<Vec<DocId>> = proposals.iter().map(doc).collect();
     docs.is_some_and(|docs| {

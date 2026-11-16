@@ -62,7 +62,6 @@ async fn decide(
             workspace.reject(&id, &member.id).await?;
             ProposalOutcome::Rejected
         }
-        ProposalVerdict::Newer => return Err(invalid().into()),
     };
     if matches!(
         outcome,
