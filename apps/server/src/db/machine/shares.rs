@@ -40,6 +40,22 @@ impl Db {
             .await
             .map_err(failed)?;
         }
+        // What other members ran on it where it is no longer shared can't be called again, even
+        // if it is shared there once more.
+        sqlx::query(
+            "UPDATE chat_legs SET detached = 1
+             WHERE machine_id = ?1
+                 AND NOT EXISTS (SELECT 1 FROM shared_machines AS s
+                     WHERE s.workspace_id = chat_legs.workspace_id AND s.machine_id = ?1)
+                 AND NOT EXISTS (SELECT 1 FROM members AS m
+                     JOIN machines AS d ON d.account_id = m.account_id
+                     WHERE m.workspace_id = chat_legs.workspace_id
+                         AND m.member_id = chat_legs.member_id AND d.machine_id = ?1)",
+        )
+        .bind(machine.as_str())
+        .execute(&mut *transaction)
+        .await
+        .map_err(failed)?;
         transaction.commit().await.map_err(failed)
     }
 }
@@ -158,6 +174,51 @@ mod tests {
         db.set_shares(&bos, &[]).await.unwrap();
         assert!(one.shared_machines().await.unwrap().is_empty());
         assert_eq!(one.callable(&ada, &bos).await.unwrap(), None);
+    }
+
+    async fn detached(
+        workspace: &Workspace,
+        chat: &str,
+        member: &weacon_protocol::MemberId,
+    ) -> bool {
+        let leg = workspace.leg(&id(chat), member).await.unwrap().unwrap();
+        leg.detached
+    }
+
+    #[tokio::test]
+    async fn ending_a_share_detaches_the_other_members_agents_for_good_and_never_the_owners() {
+        use crate::db::NewLeg;
+        use crate::db::test_support::{NOW, make};
+
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        one.pair_for("m3", "mc-3").await;
+        let (db, desk) = (&one.db, id::<MachineId>("mc-3"));
+        let (ada, bo) = (member_id("m1"), member_id("m3"));
+        let name = id("Bo's desk");
+        let on_desk = NewLeg {
+            machine_id: &desk,
+            machine: &name,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: None,
+        };
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        make(&one, "c-2", "m3", NOW).await.unwrap();
+        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        let later = NOW + 1_000;
+        one.set_leg(&id("c-1"), &ada, &on_desk, later)
+            .await
+            .unwrap();
+        one.set_leg(&id("c-2"), &bo, &on_desk, later).await.unwrap();
+        // Saying the same again changes nothing.
+        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+        let kept = detached(&one, "c-1", &ada).await;
+        db.set_shares(&desk, &[]).await.unwrap();
+        db.set_shares(&desk, &[id("w1")]).await.unwrap();
+
+        assert!(!kept);
+        assert!(detached(&one, "c-1", &ada).await);
+        assert!(!detached(&one, "c-2", &bo).await);
     }
 
     #[tokio::test]
