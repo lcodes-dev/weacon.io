@@ -28,19 +28,13 @@ export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, 
     };
   }, [link, live]);
   const askable = chatRef !== undefined && machine !== undefined && live && offered;
-  // Another agent's changes are asked for afresh, never shown as this one's.
-  const [asked, setAsked] = useState(machine);
-  if (asked !== machine) {
-    setAsked(machine);
-    setChanges(NO_CHANGES);
-  }
   useEffect(() => {
     if (shown && askable && needsAsking(changes)) {
       const { query, changes: asked } = ask(link.nextId(), newId(), { ...chatRef, machine }, changes);
       setChanges(asked);
       link.send(query);
     }
-    // Only showing them, another agent and the link coming back ask; a failed answer waits for one of those.
-  }, [shown, askable, machine]);
+    // Only showing them and the link coming back ask; a failed answer waits for one of those.
+  }, [shown, askable]);
   return { changes, askable };
 }

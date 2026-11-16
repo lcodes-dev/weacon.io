@@ -105,7 +105,7 @@ impl Workspace {
         let mut transaction = self.db.write().await?;
         sqlx::query(
             "DELETE FROM chat_legs WHERE workspace_id = ?1 AND chat_id = ?2 AND machine_id = ?3
-                 AND core_seq = 0
+                 AND core_seq = 0 AND detached = 0
                  AND NOT EXISTS (SELECT 1 FROM chats WHERE workspace_id = ?1 AND chat_id = ?2
                      AND called_at > ?4 - ?5)",
         )
@@ -542,6 +542,13 @@ mod tests {
         let claude = on(&shelf, AgentKind::Claude);
         let remade = one.call_leg(&chat, &bo, &claude, later + CALL_SECS).await;
         assert_eq!(remade.unwrap().unwrap().agent, AgentKind::Claude);
+        // One that was detached before it took a prompt stays so, and is never made again.
+        let never = later + 3 * CALL_SECS;
+        one.uncall(&chat, (&shelf, &bo)).await.unwrap();
+        let gone = one.leg(&chat, &shelf).await.unwrap().unwrap();
+        one.detach_leg(&chat, &gone).await.unwrap();
+        let ended = one.call_leg(&chat, &bo, &on(&shelf, codex), never).await;
+        assert_eq!(code(&ended.unwrap_err()), "chat.detached");
     }
 
     #[tokio::test]

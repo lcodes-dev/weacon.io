@@ -586,6 +586,37 @@ test("open changes cut short by a lost connection are asked for again once it is
   await page.getByText("src/pantry.rs").waitFor();
 });
 
+test("with agents on two of a person's machines, Changes shows each one's, asked of its own machine", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  const file = (asked: Envelope) => (asked.type === "diff_query" && asked.machine === "mc-2" ? "src/desk.rs" : "src/laptop.rs");
+  const { sent } = await serveFeed(page, { also: ["diff.view"], answer: (asked) => [...snapshot(asked), ...changedFile(asked, file(asked))] });
+  await signIn(served);
+  await page.getByRole("button", { name: "Personal" }).waitFor();
+  const { member } = await firstWorkspace(page);
+  agentOwner = member;
+  const machine = (id: string, name: string) => ({ id, name, os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true });
+  const machines = { machines: [machine("mc-1", "laptop"), machine("mc-2", "desk")] };
+  await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(machines) }));
+  const legs = machines.machines.map(({ id, name }) => ({ member, machine: name, machine_id: id, agent: "claude" as const, detached: false }));
+  await listChats(page, () => ({ chats: [{ id: "c-1", title: "Sort the pantry", owner: member, legs, state: "open", updated_at: 1 }] }));
+  await page.getByRole("button", { name: "Personal" }).click();
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.getByText("src/laptop.rs").waitFor();
+  const of = page.getByLabel("Changes of");
+  assert.deepEqual(await of.getByRole("option").allInnerTexts(), ["Claude Code · laptop", "Claude Code · desk"]);
+  await of.selectOption("mc-2");
+
+  // The other agent's changes replace the first one's, which are not shown as its own.
+  await page.getByText("src/desk.rs").waitFor();
+  assert.equal(await page.getByText("src/laptop.rs").count(), 0);
+  const asked = sent.flatMap((envelope) => (envelope.type === "diff_query" ? [envelope.machine] : []));
+  assert.deepEqual(asked, ["mc-1", "mc-2"]);
+});
+
 // A worktree as a core answers it: c-1's has uncommitted work, any other chat has none yet.
 function worktreeServer(asked: Envelope): Envelope[] {
   if (asked.type !== "worktree_query") {
