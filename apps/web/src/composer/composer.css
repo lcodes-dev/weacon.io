@@ -121,3 +121,13 @@
   outline-offset: 2px;
   border-radius: 6px;
 }
+
+@media (max-width: 720px) {
+  .composer {
+    padding: 8px 12px;
+  }
+
+  .composer .field {
+    min-width: 0;
+  }
+}

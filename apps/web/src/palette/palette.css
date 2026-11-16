@@ -61,3 +61,22 @@
 .palette p {
   margin: 8px 16px;
 }
+
+.palette-open {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .palette-open {
+    display: block;
+    margin: 12px 12px 0;
+  }
+
+  .palette-backdrop {
+    padding-top: calc(12px + env(safe-area-inset-top));
+  }
+
+  .palette {
+    max-height: 70dvh;
+  }
+}
