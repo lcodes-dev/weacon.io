@@ -31,6 +31,7 @@ pub(super) enum Ask {
         oneshot::Sender<Result<Option<ChatAnswerKind>, Fault>>,
     ),
     List(oneshot::Sender<Vec<Listed>>),
+    Rest(ChatKey, oneshot::Sender<Result<(), Fault>>),
     /// A client hung up.
     Left,
 }
@@ -126,6 +127,15 @@ impl Chats {
         answered.await.map_err(|_| stopped())
     }
 
+    /// Stops the chat's agent between turns, so its next prompt starts it again in its folder;
+    /// `worktree.busy` while it is on a turn.
+    pub(crate) async fn rest(&self, key: ChatKey) -> Result<(), Fault> {
+        let (answer, answered) = oneshot::channel();
+        let ask = Ask::Rest(key, answer);
+        self.asks.send(ask).await.map_err(|_| stopped())?;
+        answered.await.map_err(|_| stopped())?
+    }
+
     /// Tells the engine a client hung up, so a chat it held goes on at once.
     pub(crate) async fn left(&self) {
         drop(self.asks.send(Ask::Left).await);
@@ -169,6 +179,10 @@ impl<A: Agent> Engine<A> {
             }
             Ask::List(answer) => {
                 drop(answer.send(self.listed()));
+                None
+            }
+            Ask::Rest(key, answer) => {
+                drop(answer.send(self.rest(&key).await));
                 None
             }
             Ask::Left => {
