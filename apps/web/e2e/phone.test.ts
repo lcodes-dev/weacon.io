@@ -207,6 +207,14 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   await page.goBack();
   await nav.getByText("Run the parser tests").waitFor();
 
+  // Each kind of control the list shows takes a thumb.
+  await thumbSized(page, sections.getByRole("button", { name: "Tasks" }), "a section tab");
+  await thumbSized(page, nav.getByRole("button", { name: /Run the parser tests/ }), "a chat row");
+  await thumbSized(page, nav.getByRole("button", { name: "New chat" }), "New chat");
+  await thumbSized(page, page.getByRole("button", { name: "Search" }), "Search");
+  await thumbSized(page, page.getByRole("button", { name: "Sign out" }), "Sign out");
+  await thumbSized(page, page.getByRole("button", { name: "Settings", exact: true }), "Settings");
+
   // Search, which a phone has no key for, opens from the list.
   await page.getByRole("button", { name: "Search" }).tap();
   const search = page.getByRole("dialog", { name: "Search" });

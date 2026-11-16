@@ -420,6 +420,11 @@
     width: auto;
   }
 
+  .sections button,
+  .chats li button {
+    min-height: 44px;
+  }
+
   .workspace-menu .current {
     min-height: 44px;
   }
