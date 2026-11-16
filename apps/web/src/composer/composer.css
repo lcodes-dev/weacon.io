@@ -3,13 +3,24 @@
   display: none;
 }
 
+/* One rounded card holds the box, its mentions, Send and the hint. */
 .composer {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: flex-end;
-  padding: 8px 16px 12px;
-  border-top: 1px solid var(--line);
+  box-sizing: border-box;
+  width: calc(100% - 36px);
+  max-width: 800px;
+  margin: 0 auto 14px;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--field);
+  border-radius: 12px;
+}
+
+.composer:focus-within {
+  border-color: var(--violet);
 }
 
 .composer textarea {
@@ -18,8 +29,10 @@
   resize: vertical;
   position: relative;
   padding: 6px 10px;
-  /* The field behind shows through, with the backdrop's mentions. */
+  /* The card shows through, with the backdrop's mentions. */
   background: transparent;
+  border-color: transparent;
+  outline: none;
 }
 
 .composer .hint {
@@ -32,8 +45,6 @@
 .composer .field {
   flex: 1;
   display: grid;
-  background: var(--surface);
-  border-radius: 8px;
 }
 
 .composer .field > * {
@@ -69,7 +80,7 @@
   padding: 4px 0;
   list-style: none;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .composer .mentions li {
@@ -80,12 +91,17 @@
 }
 
 .composer .mentions [aria-selected="true"] {
-  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  background: var(--violet-soft);
 }
 
 @media (max-width: 720px) {
+  /* Flush with the foot of the screen, under the thumb. */
   .composer {
+    width: 100%;
+    margin: 0;
     padding: 8px 12px;
+    border-width: 1px 0 0;
+    border-radius: 0;
   }
 
   .composer .field {

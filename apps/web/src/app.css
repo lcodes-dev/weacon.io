@@ -269,23 +269,14 @@ dd {
 
 
 .row {
-  max-width: 72ch;
+  box-sizing: border-box;
+  max-width: 760px;
   margin: 0 auto 12px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   /* Rows out of view skip layout and paint, so a long run stays smooth without dropping them. */
   content-visibility: auto;
   contain-intrinsic-size: auto 48px;
-}
-
-.tool,
-.finished {
-  color: var(--ink-2);
-  font-size: 13px;
-}
-
-.tool.failed {
-  color: var(--accent);
 }
 
 .text > p,

@@ -2,8 +2,9 @@
   content-visibility: auto;
   margin-bottom: 16px;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   overflow: hidden;
+  background: var(--surface);
 }
 
 .diff h2 {
@@ -14,7 +15,10 @@
   padding: 8px 12px;
   min-height: 24px;
   align-items: center;
-  font-size: 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-2);
+  background: var(--surface-2);
   border-bottom: 1px solid var(--line);
 }
 
@@ -30,7 +34,7 @@
 
 .diff .lines {
   overflow-x: auto;
-  font: 13px/20px var(--mono);
+  font: 11.5px/20px var(--mono);
 }
 
 .diff .note,
@@ -110,10 +114,10 @@
   margin: 4px 12px 8px 12ch;
   padding: 8px 12px;
   max-width: 72ch;
-  font: 14px/1.5 system-ui, sans-serif;
+  font: 13px/1.5 system-ui, sans-serif;
   white-space: normal;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg);
 }
 
