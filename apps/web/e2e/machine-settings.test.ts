@@ -93,7 +93,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await settings.getByRole("button", { name: "Turn off" }).click();
   await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
   await settings.getByText("On.", { exact: true }).waitFor();
-  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, reports: true, sign_ins: [] });
+  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", reports: true, sign_ins: [] });
 });
 
 test("a machine paired with a workspace open shows its settings at once, to ask about error reports", { timeout: 600_000 }, async (t) => {
