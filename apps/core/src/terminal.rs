@@ -10,8 +10,8 @@ use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    AgentKind, Bytes, Code, Envelope, TerminalAction, TerminalCommand, TerminalEvent, TerminalId,
-    TerminalUpdate, WorkspaceId, code,
+    AgentKind, Bytes, Code, Envelope, Message, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalUpdate, WorkspaceId, code,
 };
 
 use crate::workspaces::Workspaces;
@@ -82,7 +82,7 @@ impl Terminals {
             (TerminalAction::Close, Some(open)) => open.inputs = None,
             // Answering would tell the browser its terminal closed while it still runs.
             (TerminalAction::Open { .. }, Some(_)) => {}
-            _ => self.refuse(command, code!("terminal.unknown")).await,
+            _ => self.refuse(command, code!("terminal.unknown")),
         }
     }
 
@@ -98,14 +98,14 @@ impl Terminals {
             .values()
             .any(|open| open.workspace == command.workspace && open.agent == agent);
         if busy {
-            return self.refuse(command, code!("terminal.busy")).await;
+            return self.refuse(command, code!("terminal.busy"));
         }
         let log = self.log.child(&ids(&command.terminal, &command.workspace));
         let session = match self.session(&command, agent, size).await {
             Ok(session) => session,
             Err(fault) => {
                 log.warn("terminal refused", &[("err", Field::error(&fault))]);
-                return self.refuse(command, fault.code().clone()).await;
+                return self.refuse(command, fault.code().clone());
             }
         };
         let (inputs, received) = mpsc::channel(WAITING);
@@ -147,13 +147,16 @@ impl Terminals {
         })
     }
 
-    async fn refuse(&self, command: TerminalCommand, code: Code) {
+    // Never waits for room: the uplink waits on these terminals when its connection ends, and
+    // nothing takes what they send until the next one.
+    fn refuse(&self, command: TerminalCommand, code: Code) {
         let closed = TerminalUpdate {
             terminal: command.terminal,
             workspace: command.workspace,
             event: TerminalEvent::Closed { code: Some(code) },
         };
-        drop(session::send(&self.updates, closed).await);
+        let message = Message::Terminal(closed);
+        drop(self.updates.try_send(Envelope { id: 0, message }));
     }
 }
 
@@ -278,7 +281,7 @@ mod tests {
 
     fn event_of(envelope: Envelope) -> TerminalEvent {
         assert_eq!(envelope.id, 0);
-        let weacon_protocol::Message::Terminal(update) = envelope.message else {
+        let Message::Terminal(update) = envelope.message else {
             panic!("{:?}", envelope.message);
         };
         update.event
@@ -333,6 +336,24 @@ mod tests {
             logged.contains("terminal opened") && logged.contains("terminal closed"),
             "{logged}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_refusal_never_waits_for_room() {
+        let mut machine = machine();
+        let (full, _never_read) = mpsc::channel(1);
+        full.try_send(Envelope {
+            id: 0,
+            message: Message::Unknown,
+        })
+        .unwrap();
+        machine.terminals.updates = full;
+
+        let refusing = machine
+            .terminals
+            .handle(command("t-9", TerminalAction::Close));
+
+        timeout(Duration::from_secs(10), refusing).await.unwrap();
     }
 
     #[tokio::test]
