@@ -10,7 +10,7 @@ use weacon_observability::Fault;
 use weacon_protocol::{ChatId, ChatState, ChatTask, MemberId, RunState, RunStatus, code};
 
 pub(super) use events::Row;
-pub(crate) use events::{Incoming, chat_quota_full, turns};
+pub(crate) use events::{Incoming, chat_full, turns};
 pub(crate) use legs::{Leg, NewLeg, detached};
 pub(crate) use quotes::Said;
 pub(crate) use runs::Snapshot;

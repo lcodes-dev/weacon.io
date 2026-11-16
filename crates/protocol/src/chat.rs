@@ -302,7 +302,7 @@ pub struct ChatLeg {
 pub enum ChatState {
     /// Its workspace's members can write in it.
     Open,
-    /// Its workspace has no room for more of its events, so it takes none until it has.
+    /// It has too many prompts waiting, so it takes no more events.
     Full,
     /// A state this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]

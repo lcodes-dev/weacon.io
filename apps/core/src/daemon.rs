@@ -7,17 +7,14 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
-use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{App, Envelope, LineDecoder, Message, code, encode_line};
 
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
-use crate::disk;
 use crate::git::service::Worktrees;
 use crate::mcp;
-use crate::memory;
 use crate::outside::Outside;
 use crate::picks::Picks;
 use crate::platform::{self, Listener, Stream};
@@ -30,8 +27,7 @@ mod worktrees;
 
 pub(crate) const READ_CHUNK: usize = 8192;
 pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
-const DISK_CHECK: Duration = Duration::from_mins(1);
-const MEMORY_SAMPLE: Duration = Duration::from_mins(5);
+const PICKS_SWEEP: Duration = Duration::from_mins(1);
 
 // Removes the socket a daemon that stopped left behind, if there is one.
 fn remove_stale(socket: &Path) -> io::Result<()> {
@@ -59,7 +55,6 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
-            app.spawn.clone(),
             Places {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
@@ -98,8 +93,6 @@ pub(crate) struct Daemon {
     listener: Listener,
     socket: PathBuf,
     shared: Shared,
-    disk: disk::Watch,
-    memory: memory::Watch,
     engine: JoinHandle<()>,
     uplink: JoinSet<()>,
     /// What the MCP and the map's watches propose, until the uplink takes it.
@@ -114,7 +107,6 @@ impl Daemon {
     pub(crate) fn start(
         state_dir: &Path,
         app: App,
-        spawn: SpawnPolicy,
         mut places: Places,
         log: Logger,
     ) -> Result<Self, Fault> {
@@ -140,7 +132,7 @@ impl Daemon {
         let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
         places.mcp = Some(mcp.clone());
         let worktrees = worktrees::worktrees(state_dir, &places);
-        let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
+        let (chats, engine) = chats::start(state_dir, places, app.clone(), log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         log.info("daemon started", &[]);
         Ok(Self {
@@ -159,8 +151,6 @@ impl Daemon {
                 maps,
                 log,
             },
-            disk: disk::Watch::new(state_dir.to_owned(), platform::free_space),
-            memory: memory::Watch::new(platform::processes),
             mcp: mcp_server,
             _lock: lock,
         })
@@ -169,18 +159,12 @@ impl Daemon {
     /// Serves clients until `shutdown` finishes, then closes every connection and the socket.
     pub(crate) async fn serve(mut self, shutdown: impl Future<Output = ()>) {
         let mut clients = JoinSet::new();
-        let mut disk_check = tokio::time::interval(DISK_CHECK);
-        let mut memory_sample = tokio::time::interval(MEMORY_SAMPLE);
+        let mut picks_sweep = tokio::time::interval(PICKS_SWEEP);
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
                 () = &mut shutdown => break,
-                _ = disk_check.tick() => {
-                    route::sweep(&self.shared).await;
-                    self.disk.check(&self.shared.log).await;
-                    self.shared.chats.disk_full(self.disk.level() == disk::Level::Full);
-                }
-                _ = memory_sample.tick(), if platform::PROCESSES => self.memory.record(&self.shared.log).await,
+                _ = picks_sweep.tick() => route::sweep(&self.shared).await,
                 accepted = self.listener.accept() => match accepted {
                     Ok(stream) => self.admit(stream, &mut clients),
                     Err(error) => {
@@ -344,15 +328,7 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(
-            dir,
-            build(&VERSION),
-            SpawnPolicy::default(),
-            Places::default(),
-            log,
-        )?;
-        // The machine's own disk may be nearly full; a test reads its disk from a fake.
-        daemon.disk = disk::Watch::new(dir.to_path_buf(), |_| Ok(8 << 30));
+        let mut daemon = Daemon::start(dir, build(&VERSION), Places::default(), log)?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();
@@ -392,77 +368,6 @@ mod tests {
         }
         let reader = lines.into_inner().into_inner();
         (replies, reader.unsplit(writer))
-    }
-
-    // Waits for `message`, since the disk is read on another thread; bounded so a miss fails.
-    async fn logs(records: &Records, message: &str) {
-        logs_times(records, message, 1).await;
-    }
-
-    async fn logs_times(records: &Records, message: &str, times: usize) {
-        let count = || {
-            messages(records)
-                .iter()
-                .filter(|logged| **logged == message)
-                .count()
-        };
-        let logged = async {
-            while count() < times {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        };
-        timeout(Duration::from_secs(5), logged).await.unwrap();
-    }
-
-    // Reads the free space the test wrote into the folder.
-    fn free_in_file(dir: &Path) -> io::Result<u64> {
-        let free = fs::read_to_string(dir.join("free"))?;
-        free.parse().map_err(io::Error::other)
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn the_disk_is_checked_at_start_and_again_each_minute() {
-        use crate::chats::test_support::bench;
-
-        let dir = TempDir::new().unwrap();
-        fs::write(dir.join("free"), "0").unwrap();
-        let watched = dir.to_path_buf();
-        let bench = bench();
-        let chats = bench.chats.clone();
-        let running = start_as(&dir, |daemon| {
-            daemon.disk = disk::Watch::new(watched, free_in_file);
-            daemon.shared.chats = chats;
-        })
-        .unwrap();
-
-        logs(&running.records, "disk full").await;
-        logs(&bench.records, "turns paused").await;
-        fs::write(dir.join("free"), (8_u64 << 30).to_string()).unwrap();
-        tokio::time::sleep(DISK_CHECK).await;
-        logs(&running.records, "disk ok").await;
-        logs(&bench.records, "turns resumed").await;
-        let records = running.stop().await;
-
-        let disk: Vec<_> = messages(&records)
-            .into_iter()
-            .filter(|message| message.starts_with("disk "))
-            .collect();
-        assert_eq!(disk, ["disk full", "disk ok"]);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn memory_is_sampled_at_start_and_every_five_minutes() {
-        if !platform::PROCESSES {
-            return;
-        }
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-
-        logs(&running.records, "memory sampled").await;
-        tokio::time::sleep(MEMORY_SAMPLE).await;
-        logs_times(&running.records, "memory sampled", 2).await;
-
-        running.stop().await;
     }
 
     async fn connect(socket: &Path) -> impl AsyncRead + AsyncWrite + Unpin + use<> {

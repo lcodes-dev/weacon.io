@@ -16,16 +16,15 @@ mod queries;
 mod rest;
 mod said;
 mod turns;
-mod unwritten;
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
-    AgentSession, ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId,
-    RunState, RunStatus, code,
+    ChatEntry, ChatEvent, ChatUpdate, Message, Outcome, Receipt, RequestId, RunId, RunState,
+    RunStatus, code,
 };
 
 use self::agent::{Agent, FromRun, Order};
@@ -34,7 +33,7 @@ pub(crate) use self::handle::Chats;
 use self::launch::Launched;
 pub(crate) use self::launch::{Host, RunAs};
 use self::named::{about, chat_about, failed};
-use self::pending::{PendingEnd, PendingInterrupt};
+use self::pending::PendingInterrupt;
 pub(crate) use self::queries::Listed;
 use super::feed::{Client, Subscriber};
 use super::log::ChatLog;
@@ -63,13 +62,8 @@ struct Chat {
     orders: Option<mpsc::UnboundedSender<Order>>,
     /// The run whose agent is starting, off the engine's loop.
     launching: Option<RunId>,
-    /// A run let go after a failed write whose agent is still starting.
-    let_go: Option<RunId>,
-    pending_end: Option<PendingEnd>,
     /// Interrupts committed or tried and not yet sent, each bound to the turn it stops.
     pending_interrupts: Vec<PendingInterrupt>,
-    /// The agent's session when the runs journal couldn't save it.
-    pending_session: Option<AgentSession>,
     /// The local client carrying the chat on by hand: no turn starts while it holds it.
     held: Option<Client>,
 }
@@ -82,19 +76,12 @@ impl Chat {
         self.held.take_if(|holder| holder.is_gone()).is_some()
     }
 
-    // Whether an agent is starting for the chat, even one let go after a failed write.
-    const fn is_starting(&self) -> bool {
-        self.launching.is_some() || self.let_go.is_some()
-    }
-
     // Whether nothing needs the chat open.
     fn is_unused(&self) -> bool {
         self.orders.is_none()
-            && !self.is_starting()
+            && self.launching.is_none()
             && self.pending_interrupts.is_empty()
             && self.subscribers.is_empty()
-            && self.pending_end.is_none()
-            && self.pending_session.is_none()
             && self.held.is_none()
     }
 }
@@ -107,9 +94,6 @@ pub(crate) struct Engine<A> {
     asked: mpsc::Receiver<Ask>,
     incoming: mpsc::Receiver<FromRun>,
     says: mpsc::Sender<FromRun>,
-    /// The disk's state as last logged; turns wait on `disk`, never on this.
-    disk_full: bool,
-    disk: watch::Receiver<bool>,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -125,7 +109,6 @@ impl<A: Agent> Engine<A> {
         let (asks, asked) = mpsc::channel(ASKS);
         let (says, incoming) = mpsc::channel(SAYS);
         let (starts, started) = mpsc::unbounded_channel();
-        let (disk_full, disk) = watch::channel(false);
         let engine = Self {
             runs,
             workspaces,
@@ -134,13 +117,11 @@ impl<A: Agent> Engine<A> {
             asked,
             incoming,
             says,
-            disk_full: false,
-            disk,
             starts,
             started,
             log,
         };
-        (Chats::new(asks, disk_full), engine)
+        (Chats::new(asks), engine)
     }
 
     /// Serves until every [`Chats`] is dropped; the agents stop with it.
@@ -162,11 +143,6 @@ impl<A: Agent> Engine<A> {
                     None => return self.log.info("engine stopped", &[]),
                 },
                 Some(said) = self.incoming.recv() => self.take_said(said).await,
-                Ok(()) = self.disk.changed() => {
-                    let full = *self.disk.borrow_and_update();
-                    self.set_disk_full(full).await;
-                    continue;
-                }
                 Some(launched) = self.started.recv() => self.take_launched(launched).await,
             };
             self.close_if_unused(&key);
@@ -314,10 +290,7 @@ impl<A: Agent> Engine<A> {
                 subscribers: Vec::new(),
                 orders: None,
                 launching: None,
-                let_go: None,
-                pending_end: None,
                 pending_interrupts: Vec::new(),
-                pending_session: None,
                 held: None,
             })),
         }
@@ -793,25 +766,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_full_disk_queues_prompts_and_starts_their_turns_once_it_has_room() {
-        let mut bench = bench();
-        let mut pushes = watch(&bench).await;
-        bench.chats.disk_full(true);
-
-        bench.command(prompt("r-1", "Hi")).await.unwrap();
-        let accepted = pushed(&mut pushes, 2).await;
-        assert_eq!(accepted, ["1 prompt r-1 Hi", "2 receipt r-1 accepted"]);
-        assert!(soon(bench.started.recv()).await.is_none());
-
-        bench.chats.disk_full(false);
-        let mut started = soon(bench.started.recv()).await.unwrap();
-        let told = soon(started.told.recv()).await;
-        assert_eq!(told, Some(Told::Send("Hi".to_owned())));
-        let running = pushed(&mut pushes, 2).await;
-        assert_eq!(running, ["3 run-1 is Starting", "4 run-1 is Running"]);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn an_interrupt_sent_while_the_agent_starts_stops_the_turn_it_was_starting_for() {
         let mut bench = bench();
         let release = bench.hold_next_start();
@@ -830,30 +784,6 @@ mod tests {
             told,
             [Some(Told::Send("Hi".to_owned())), Some(Told::Interrupt)]
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_full_disk_is_heard_even_when_the_engine_is_busy() {
-        let (mut bench, engine) = parts();
-        let (anyone, _pushes) = client(1);
-        // Enough queries to fill the engine's queue before it serves.
-        let ask = |chats: Chats, anyone: Client| async move {
-            let snapshot = query("c-2", ChatQueryKind::Snapshot);
-            chats.query(snapshot, &anyone).await
-        };
-        let asked: Vec<_> = (0..ASKS)
-            .map(|_| tokio::spawn(ask(bench.chats.clone(), anyone.clone())))
-            .collect();
-        tokio::task::yield_now().await;
-
-        bench.chats.disk_full(true);
-        tokio::spawn(engine.serve());
-        for asked in asked {
-            asked.await.unwrap().unwrap();
-        }
-
-        bench.command(prompt("r-1", "Hi")).await.unwrap();
-        assert!(soon(bench.started.recv()).await.is_none());
     }
 
     #[tokio::test(start_paused = true)]

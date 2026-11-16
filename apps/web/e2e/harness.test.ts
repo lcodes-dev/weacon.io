@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { once } from "node:events";
 import { test } from "node:test";
 
-import { firstLine, start } from "./harness.ts";
+import { firstLine, open, start, waitFor } from "./harness.ts";
 
 // Each child is read as soon as it starts, as `start` does.
 const child = (script: string) => spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
@@ -37,4 +39,21 @@ test("a server that never starts is stopped and its folder removed", async () =>
   }
   assert.equal(server.signalCode, "SIGTERM");
   assert.equal(existsSync(folder), false);
+});
+
+test("a route still answering when its test stops fails nothing after it", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "weacon-harness-"));
+  const { page, stop } = await open(dir, child("console.log('ready'); setInterval(() => {}, 1000)"), (server) => firstLine(server, 10_000), () => "about:blank");
+  let answering = false;
+  await page.route("**/slow", async (route) => {
+    answering = true;
+    // Asks the page something before it answers, which fails once the page is closed.
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 60_000)));
+    await route.fulfill({ status: 200, body: "late" });
+  });
+  void page.evaluate(() => void fetch("http://weacon.invalid/slow").catch(() => undefined)).catch(() => undefined);
+  await waitFor(() => answering);
+
+  // The runner fails a test that leaves a rejection no one handles.
+  await stop();
 });

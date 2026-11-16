@@ -1,8 +1,6 @@
 //! The clients' way to the engine, and how the engine answers them.
 
-use std::sync::Arc;
-
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot};
 use weacon_observability::Fault;
 use weacon_protocol::{ChatAnswerKind, ChatCommand, ChatQuery, code};
 
@@ -15,8 +13,6 @@ use crate::chats::feed::Client;
 #[derive(Clone, Debug)]
 pub(crate) struct Chats {
     asks: mpsc::Sender<Ask>,
-    /// Whether the disk is full; it holds the latest, so no note is ever lost.
-    disk_full: Arc<watch::Sender<bool>>,
 }
 
 pub(super) enum Ask {
@@ -37,9 +33,8 @@ fn stopped() -> Fault {
 }
 
 impl Chats {
-    pub(super) fn new(asks: mpsc::Sender<Ask>, disk_full: watch::Sender<bool>) -> Self {
-        let disk_full = Arc::new(disk_full);
-        Self { asks, disk_full }
+    pub(super) const fn new(asks: mpsc::Sender<Ask>) -> Self {
+        Self { asks }
     }
 
     /// Acts on `command` from `client`. Its receipts are events in the chat's log; an error
@@ -86,13 +81,6 @@ impl Chats {
     pub(crate) async fn left(&self) {
         drop(self.asks.send(Ask::Left).await);
     }
-
-    /// Tells the engine whether the disk is full: while it is, prompts are queued and no new
-    /// turn starts. Never waits, and only a change wakes the engine.
-    pub(crate) fn disk_full(&self, full: bool) {
-        self.disk_full
-            .send_if_modified(|was| std::mem::replace(was, full) != full);
-    }
 }
 
 impl<A: Agent> Engine<A> {
@@ -102,13 +90,13 @@ impl<A: Agent> Engine<A> {
             Ask::Command(command, client, answer) => {
                 let key = ChatKey::new(&command.workspace, &command.chat);
                 let done = self.command_from(&key, *command, &client).await;
-                drop(answer.send(self.checked(&key, done).await));
+                drop(answer.send(done));
                 Some(key)
             }
             Ask::Query(query, client, answer) => {
                 let key = ChatKey::new(&query.workspace, &query.chat);
                 let answered = self.query(&key, query.query, &client).await;
-                drop(answer.send(self.checked(&key, answered).await));
+                drop(answer.send(answered));
                 Some(key)
             }
             Ask::List(answer) => {

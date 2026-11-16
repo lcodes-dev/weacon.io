@@ -7,11 +7,10 @@ use axum::extract::State;
 use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use axum::routing::get;
-use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
 use weacon_protocol::{
-    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineId, MachineName, Message, code,
+    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineName, Message, code,
 };
 
 use crate::auth::Machine;
@@ -31,20 +30,18 @@ pub(crate) fn routes() -> Router<Shared> {
     Router::new().route("/api/machines/connect", get(connect))
 }
 
-/// `GET /api/machines/connect`: a paired machine's WebSocket, open until the machine is
-/// unpaired, its core goes, or the server stops.
+/// `GET /api/machines/connect`: a paired machine's WebSocket, open until its core goes, the
+/// server stops, or a ping finds the machine unpaired.
 pub(crate) async fn connect(
     State(shared): State<Shared>,
     machine: Machine,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    let unpaired = shared.unpaired.subscribe();
     let log = shared
         .log
         .child(&[("machine_id", machine.id.as_str().into())]);
     let link = Link {
         machine,
-        unpaired,
         log,
         gone: false,
         connected: false,
@@ -58,7 +55,6 @@ pub(crate) async fn connect(
 
 struct Link {
     machine: Machine,
-    unpaired: Receiver<MachineId>,
     log: Logger,
     /// Set once the machine is found unpaired, and not when it couldn't be looked up.
     gone: bool,
@@ -162,12 +158,6 @@ async fn run(
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
         tokio::select! {
-            unpaired = link.unpaired.recv() => match unpaired {
-                Ok(id) if id != link.machine.id => {}
-                // A notice missed is checked against the database.
-                Ok(_) | Err(RecvError::Lagged(_)) => link.paired(shared).await?,
-                Err(RecvError::Closed) => return Err(Closed),
-            },
             () = pings.due() => pings.ping(socket, link.paired(shared)).await?,
             relayed = attached.incoming.recv() => {
                 let relayed = relayed.ok_or(Closed)?;
@@ -355,17 +345,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpairing_a_machine_ends_its_connection_at_once() {
-        let fixture = Fixture::new().await;
+    async fn a_connection_ends_at_its_next_ping_once_the_machine_is_gone() {
+        let mut fixture = Fixture::new().await;
+        fixture.pinging();
         let server = fixture.run().await;
         let (paired, mut client) = connected(server.address, &fixture).await;
         let path = format!(
             "DELETE /api/machines/{}",
             paired.machine["id"].as_str().unwrap()
         );
+        // The client reads on, so it answers every ping until then.
+        let unpair = ask(server.address, &path, &paired.proof, "");
 
-        let (unpaired, _) = ask(server.address, &path, &paired.proof, "").await;
-        let said = next(&mut client).await;
+        let ((unpaired, _), said) = tokio::join!(unpair, next(&mut client));
         let ended = ends(&mut client).await;
         let again = open(server.address, CONNECT_PATH, &paired.token).await;
 
@@ -373,32 +365,6 @@ mod tests {
         assert_eq!(said, refusal(code!("machine.unpaired")));
         assert!(ended);
         assert_eq!(upgrade_status(again), 401);
-    }
-
-    #[tokio::test]
-    async fn a_connection_ends_at_its_next_ping_once_the_machine_is_gone() {
-        let mut fixture = Fixture::new().await;
-        fixture.pinging();
-        let server = fixture.run().await;
-        let (paired, mut client) = connected(server.address, &fixture).await;
-        // Unpaired without a notice, as by another server, while the client reads on, so it
-        // answers every ping until then.
-        let unpair = async {
-            let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
-            let account = session["account"].as_str().unwrap().to_owned();
-            let account = AccountId::try_from(account).unwrap();
-            fixture
-                .shared
-                .db
-                .unpair(&account, &paired.machine_id())
-                .await
-        };
-
-        let (unpaired, said) = tokio::join!(unpair, next(&mut client));
-
-        assert!(unpaired.unwrap());
-        assert_eq!(said, refusal(code!("machine.unpaired")));
-        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -497,23 +463,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn another_machines_unpairing_leaves_a_connection_open() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let (_, mut client) = connected(server.address, &fixture).await;
-        let other = MachineId::try_from("other".to_owned()).unwrap();
-
-        fixture.shared.unpaired.send(other).unwrap();
-
-        assert!(pongs(&mut client).await);
-    }
-
-    #[tokio::test]
     async fn a_machines_chat_events_are_stored_in_the_order_they_come() {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let (paired, mut client) = connected(server.address, &fixture).await;
-        let machine: MachineId = serde_json::from_value(paired.machine["id"].clone()).unwrap();
+        let machine: weacon_protocol::MachineId =
+            serde_json::from_value(paired.machine["id"].clone()).unwrap();
         let workspace = fixture.shared.db.workspace(&id("w1")).await.unwrap();
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&machine).await;

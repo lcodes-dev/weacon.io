@@ -17,8 +17,8 @@ pub(crate) mod test_support;
 mod workspace;
 
 pub(crate) use chats::{
-    Chat, Incoming, Leg, NewChat, NewLeg, Said, Snapshot, chat_not_found, chat_quota_full,
-    detached, machine_not_found, turns,
+    Chat, Incoming, Leg, NewChat, NewLeg, Said, Snapshot, chat_full, chat_not_found, detached,
+    machine_not_found, turns,
 };
 pub(crate) use tasks::{no_room, task_not_found};
 

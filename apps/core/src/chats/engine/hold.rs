@@ -43,9 +43,8 @@ impl<A: Agent> Engine<A> {
                 "Someone else carries this chat on by hand already",
             ));
         }
-        // A live run, a starting one or a session still to save would race the hand's agent.
-        let busy = chat.orders.is_some() || chat.is_starting();
-        if busy || chat.pending_session.is_some() {
+        // A live run or a starting one would race the hand's agent.
+        if chat.orders.is_some() || chat.launching.is_some() {
             return Err(Fault::new(
                 code!("chat.busy"),
                 "The chat's agent is running here; carry on once it sleeps",
@@ -101,8 +100,7 @@ impl<A: Agent> Engine<A> {
             .collect();
         for key in released {
             self.log.info("chat released", &chat_about(&key));
-            let advanced = self.advance(&key).await;
-            if let Some(fault) = self.unlogged(&key, None, advanced).await {
+            if let Err(fault) = self.advance(&key).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -194,17 +192,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_hold_is_refused_while_a_session_waits_to_be_saved() {
-        let (_bench, mut engine) = parts();
-        engine.open(&key()).await.unwrap().pending_session = Some(session());
-        let (holder, _pushes) = client(1);
-
-        let refused = engine.command_from(&key(), hold("h-1"), &holder).await;
-
-        assert_eq!(code_of(refused), "chat.busy");
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn a_turn_the_journal_kept_with_no_run_left_doesnt_stop_a_hold() {
         let (_bench, mut engine) = parts();
         engine
@@ -246,7 +233,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_chat_no_one_holds_queues_more_than_a_held_one() {
         let bench = bench();
-        bench.chats.disk_full(true);
+        let _slow = bench.hold_next_start();
 
         for at in 0..=HELD_QUEUE {
             let asked = prompt(&format!("r-{at}"), "More");

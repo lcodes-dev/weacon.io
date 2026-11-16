@@ -10,8 +10,8 @@ use super::{Chat, ChatKey, Engine, about, chat_about};
 pub(super) const IDLE: u64 = 30 * 60;
 
 impl<A: Agent> Engine<A> {
-    // Stops each agent idle for `IDLE`, never on a turn, while a person is asked something or
-    // while a write is owed. Its session stays, so the chat's next prompt resumes it.
+    // Stops each agent idle for `IDLE`, never on a turn or while a person is asked something.
+    // Its session stays, so the chat's next prompt resumes it.
     pub(super) async fn sleep_idle(&mut self) {
         // The backstop for a connection whose end wasn't reported.
         self.close_unused().await;
@@ -23,8 +23,7 @@ impl<A: Agent> Engine<A> {
             .map(|(key, _)| key.clone())
             .collect();
         for key in idle {
-            let slept = self.sleep(&key).await;
-            if let Some(fault) = self.unlogged(&key, None, slept).await {
+            if let Err(fault) = self.sleep(&key).await {
                 self.log.warn("run not stopped", &chat_fields(&key, &fault));
             }
             self.close_if_unused(&key);
@@ -39,7 +38,6 @@ impl<A: Agent> Engine<A> {
             && chat.launching.is_none()
             && record.turn.is_none()
             && chat.log.runs().waiting().is_empty()
-            && chat.pending_end.is_none()
             && record.active_at.saturating_add(IDLE) <= now
     }
 
@@ -68,37 +66,6 @@ impl<A: Agent> Engine<A> {
         self.set_state(key, &run, RunState::Sleeping).await
     }
 
-    // Every `false` lets the chats with prompts queued go on: the disk may have filled and
-    // cleared before the engine looked.
-    pub(super) async fn set_disk_full(&mut self, full: bool) {
-        match (std::mem::replace(&mut self.disk_full, full), full) {
-            (false, true) => self.log.warn("turns paused", &[]),
-            (true, false) => self.log.info("turns resumed", &[]),
-            _ => {}
-        }
-        if !full {
-            self.go_on().await;
-        }
-    }
-
-    // Lets every chat with prompts queued go on, where nothing else holds its turns back.
-    pub(super) async fn go_on(&mut self) {
-        let queued: Vec<ChatKey> = self
-            .runs
-            .records()
-            .filter(|record| !record.queue.is_empty())
-            .map(|record| record.key.clone())
-            .collect();
-        for key in queued {
-            let advanced = self.advance(&key).await;
-            if let Some(fault) = self.unlogged(&key, None, advanced).await {
-                self.log
-                    .warn("chat not picked up", &chat_fields(&key, &fault));
-            }
-            self.close_if_unused(&key);
-        }
-    }
-
     // After a restart: a turn cut off ends `unknown` and its run sleeps, queued prompts get a new
     // run, and an idle run active within `IDLE` starts again to resume its session; the others
     // sleep.
@@ -125,8 +92,7 @@ impl<A: Agent> Engine<A> {
             })
             .collect();
         for (key, recent) in awake {
-            let picked = self.pick_up(&key, recent).await;
-            if let Some(fault) = self.unlogged(&key, None, picked).await {
+            if let Err(fault) = self.pick_up(&key, recent).await {
                 self.log
                     .warn("chat not picked up", &chat_fields(&key, &fault));
             }
@@ -168,34 +134,6 @@ mod tests {
         FakeAgent, Told, chat, key, parts, prompt, run, session, soon,
     };
     use crate::runs::Queued;
-
-    #[tokio::test(start_paused = true)]
-    async fn a_disk_full_and_clear_again_before_the_engine_looks_still_starts_the_queued_turn() {
-        let (bench, mut engine) = parts();
-        bench.chats.disk_full(true);
-        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
-        bench.chats.disk_full(false);
-
-        engine.set_disk_full(false).await;
-
-        launched(&mut engine).await;
-        assert!(!messages(&bench.records).contains(&"turns resumed"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn only_a_change_of_the_disk_is_logged() {
-        let (bench, mut engine) = parts();
-
-        for full in [true, true, false, false, true] {
-            engine.set_disk_full(full).await;
-        }
-
-        let turns: Vec<_> = messages(&bench.records)
-            .into_iter()
-            .filter(|message| message.starts_with("turns "))
-            .collect();
-        assert_eq!(turns, ["turns paused", "turns resumed", "turns paused"]);
-    }
 
     // Makes chat `c-1`'s last turn start or end `ago` seconds before now.
     async fn active_ago(engine: &mut Engine<FakeAgent>, ago: u64) {

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
-use weacon_agents::SpawnPolicy;
 use weacon_appkit::{RotatingFile, root_logger};
 use weacon_observability::{Deliver, Fault, Field, Level, Logger, Reports, Sink, json_lines, tee};
 use weacon_protocol::code;
@@ -23,7 +22,6 @@ pub(crate) struct App {
     /// Where chats' working folders go, apart from the state.
     pub(crate) work_root: Option<PathBuf>,
     pub(crate) log_file: Option<PathBuf>,
-    pub(crate) spawn: SpawnPolicy,
     /// The person's `PATH`, where their agents' programs are found.
     pub(crate) path: Option<OsString>,
     /// The person's own agent folders, for the sessions they ran outside Weacon.
@@ -74,7 +72,6 @@ impl App {
             },
             work_root: platform::work_root(setup.env),
             log_file,
-            spawn: platform::spawn_policy(setup.env),
             path: (setup.env)("PATH"),
             outside: Outside::new(platform::agent_homes(setup.env), state_dir.as_deref()),
             state_dir,

@@ -50,33 +50,20 @@ impl<A: Agent> Engine<A> {
             .is_some_and(|chat| chat.launching.is_some())
     }
 
-    // Saves the session the chat's next run resumes; one that can't be saved yet is kept, and
-    // saved before that run starts.
+    // Saves the session the chat's next run resumes.
     pub(super) async fn keep_session(
         &mut self,
         key: &ChatKey,
         session: AgentSession,
     ) -> Result<(), Fault> {
-        let given = session.clone();
-        let kept = self
-            .runs
-            .update(key, |record| record.session = Some(given))
-            .await;
-        self.open(key).await?.pending_session = kept.is_err().then_some(session);
-        kept
-    }
-
-    async fn save_pending_session(&mut self, key: &ChatKey) -> Result<(), Fault> {
-        match self.open(key).await?.pending_session.take() {
-            Some(session) => self.keep_session(key, session).await,
-            None => Ok(()),
-        }
+        self.runs
+            .update(key, |record| record.session = Some(session))
+            .await
     }
 
     // Starts the chat's agent as a new run, resuming its session when it has one. The agent
     // starts off the engine's loop, which `finish_launch` then takes up.
     pub(super) async fn launch(&mut self, key: &ChatKey) -> Result<(), Fault> {
-        self.save_pending_session(key).await?;
         let kind = self.runs.of(key).ok_or_else(not_started)?.agent;
         // Read first, so a log that can't be opened leaves no run begun.
         let log = &self.open(key).await?.log;
@@ -103,20 +90,21 @@ impl<A: Agent> Engine<A> {
         Ok(())
     }
 
+    // Takes up an agent started, or not, off the loop; the chat it is about.
+    pub(super) async fn take_launched(&mut self, launched: Launched<A>) -> ChatKey {
+        let (key, run) = (launched.key.clone(), launched.run.clone());
+        if let Err(fault) = self.finish_launch(launched).await {
+            self.log
+                .error("run start not handled", &failed(&key, &run, &fault));
+        }
+        key
+    }
+
     // Attaches a started agent and gives it the chat's next turn; one that didn't start fails
-    // the queue. An agent for a run the chat no longer waits for is let go.
+    // the queue.
     pub(super) async fn finish_launch(&mut self, launched: Launched<A>) -> Result<(), Fault> {
         let Launched { key, run, agent } = launched;
-        let chat = self.open(&key).await?;
-        // Let go after a failed write, it is dropped; the chat's prompts may go on now.
-        if chat.let_go.take_if(|let_go| *let_go == run).is_some() {
-            drop(agent);
-            return self.advance(&key).await;
-        }
-        if chat.launching.as_ref() != Some(&run) {
-            return Ok(());
-        }
-        chat.launching = None;
+        self.open(&key).await?.launching = None;
         match agent {
             Ok(agent) => {
                 self.attach(&key, &run, agent).await?;
@@ -152,13 +140,14 @@ impl<A: Agent> Engine<A> {
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{Outcome, RunEvent};
+    use weacon_testing::messages;
 
     use super::super::agent::Said;
     use super::super::by_hand::{hear, launched, on_turn, until_deaf};
-    use crate::chats::test_support::{key, prompt, run, session, soon};
+    use crate::chats::test_support::{key, parts, prompt, run, session, soon};
 
     #[tokio::test(start_paused = true)]
-    async fn a_session_the_journal_couldnt_save_is_resumed_by_the_next_run() {
+    async fn a_session_the_journal_couldnt_save_is_lost_and_the_next_run_starts_a_new_one() {
         let mut on = on_turn().await;
         let path = on.engine.runs.jam();
         let started = RunEvent::Started { session: session() };
@@ -166,7 +155,7 @@ mod tests {
         assert_eq!(lost.unwrap_err().code().as_str(), "runs.not_saved");
         on.engine.runs.unjam(path);
 
-        // The agent exits and nobody watches: the chat stays open for its session.
+        // The agent exits and nobody watches.
         drop((on.agent, on.pushes));
         let exited = Said::Exited(None);
         on.engine.hear(&key(), &run("run-1"), exited).await.unwrap();
@@ -178,7 +167,22 @@ mod tests {
 
         let next = soon(on.bench.started.recv()).await.unwrap();
         assert_eq!(next.run_as.run, run("run-2"));
-        assert_eq!(next.run_as.session, Some(session()));
+        assert_eq!(next.run_as.session, None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_run_whose_start_cant_be_logged_is_logged_once_as_an_error_and_keeps_its_agent() {
+        let (bench, mut engine) = parts();
+        engine.command(&key(), prompt("r-1", "Hi")).await.unwrap();
+        engine.open(&key()).await.unwrap().log.jam();
+
+        let launched = soon(engine.started.recv()).await.unwrap();
+        assert_eq!(engine.take_launched(launched).await, key());
+
+        assert!(engine.is_live(&key()));
+        let logged = messages(&bench.records);
+        let errors = logged.iter().filter(|msg| **msg == "run start not handled");
+        assert_eq!(errors.count(), 1, "{logged:?}");
     }
 
     #[tokio::test(start_paused = true)]

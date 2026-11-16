@@ -44,9 +44,8 @@ pub(crate) async fn store(
         Ok(Stored::Dropped) => {}
         Ok(Stored::Refused) => shared.log.warn("chat upload refused", &fields),
         Err(fault) => {
-            // A chat a limit just filled is news to the list.
-            let full = [code!("chat.quota_full"), code!("chat.too_many_waiting")];
-            if full.contains(fault.code()) {
+            // A chat its waiting prompts just filled is news to the list.
+            if *fault.code() == code!("chat.too_many_waiting") {
                 shared.wake_feeds(&workspace);
             }
             let fields = [&fields[..], &[("err", Field::error(&fault))]].concat();
@@ -281,22 +280,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_the_quota_fills_wakes_the_workspaces_feeds() {
-        let fixture = Fixture::new().await;
-        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
-        ada.member.workspace.fill_quota().await;
-        let mut feeds = shared.changes.subscribe();
-
-        store(shared, &ada.machine, update("w1", "c-1", 1, said("a")))
-            .await
-            .unwrap();
-
-        assert_eq!(feeds.try_recv().unwrap(), id::<WorkspaceId>("w1"));
-        let logged = crate::test_support::messages(&fixture.records);
-        assert!(logged.contains(&"chat upload failed"), "{logged:?}");
-    }
-
-    #[tokio::test]
     async fn a_failed_store_closes_the_link_and_keeps_the_chats_place() {
         let fixture = Fixture::new().await;
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
@@ -311,7 +294,7 @@ mod tests {
         failed.unwrap_err();
         assert_eq!(core_seq(workspace, "c-1").await, 1);
         // Refused for good, not failed: the link goes on.
-        workspace.fill_quota().await;
+        workspace.fill_chat("c-1").await;
         store(shared, &ada.machine, update("w1", "c-1", 3, said("c")))
             .await
             .unwrap();

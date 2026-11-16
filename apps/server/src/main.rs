@@ -109,7 +109,6 @@ async fn serve(app: &App, args: Serve) -> Result<(), Fault> {
         sockets: socket::TIMING,
         changes: broadcast::channel(CHANGES).0,
         chats: chats::Hub::default(),
-        unpaired: broadcast::channel(CHANGES).0,
         links: Arc::default(),
         relay: Arc::default(),
         terminals: Arc::default(),

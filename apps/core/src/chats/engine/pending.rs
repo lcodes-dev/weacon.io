@@ -1,13 +1,6 @@
-//! What the engine still owes a chat after a write that failed or was cut short.
+//! An interrupt the engine still owes a chat's turn.
 
-use weacon_protocol::{Outcome, RequestId};
-
-/// The outcome a turn's run reported, when the turn's receipt couldn't be written.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct PendingEnd {
-    pub(super) turn: RequestId,
-    pub(super) outcome: Outcome,
-}
+use weacon_protocol::RequestId;
 
 /// An interrupt not yet sent, and the turn it stops.
 #[derive(Debug, PartialEq, Eq)]
