@@ -39,6 +39,8 @@ pub(crate) const SEEDED: u64 = 69;
 pub(crate) struct FakeChat {
     workspace: WorkspaceId,
     chat: ChatId,
+    /// The client's own member, who writes every message and prompt.
+    member: MemberId,
     entries: Vec<ChatEntry>,
     subscription: Option<u32>,
     /// Runs a person stopped, whose recording plays no further.
@@ -51,12 +53,13 @@ impl FakeChat {
         let mut fake = Self {
             workspace: WorkspaceId::try_from("w-1".to_owned())?,
             chat: ChatId::try_from("c-1".to_owned())?,
+            member: MemberId::try_from("m-1".to_owned())?,
             entries: Vec::new(),
             subscription: None,
             stopped: Vec::new(),
         };
         let (mine, shared) = (run("r-1")?, run("r-2")?);
-        let member = MemberId::try_from("m-1".to_owned())?;
+        let member = fake.member.clone();
         fake.prompt("q-0", FIRST)?;
         fake.start(
             &shared,
@@ -209,7 +212,12 @@ impl FakeChat {
             },
         });
         match action {
+            ChatAction::Say { text, .. } => self.commit(ChatEvent::Message {
+                author: self.member.clone(),
+                text: text.clone(),
+            }),
             ChatAction::Prompt { text, agent, .. } => self.commit(ChatEvent::Prompt {
+                author: Some(self.member.clone()),
                 request: request.clone(),
                 text: text.clone(),
                 repo: None,
@@ -282,6 +290,7 @@ impl FakeChat {
     fn prompt(&mut self, request: &str, text: &str) -> Result<(), String> {
         let request = RequestId::try_from(request.to_owned())?;
         self.commit(ChatEvent::Prompt {
+            author: Some(self.member.clone()),
             request,
             text: text.to_owned(),
             repo: None,
