@@ -62,8 +62,8 @@ impl Db {
             .map_err(failed)?;
         sqlx::query(
             "INSERT INTO sign_in_challenges
-                 (challenge_id, email, code, expires_at, attempts, mailed)
-             VALUES (?, ?, ?, ?, 0, 1)",
+                 (challenge_id, email, code, expires_at, attempts)
+             VALUES (?, ?, ?, ?, 0)",
         )
         .bind(new.id.as_str())
         .bind(new.email.as_str())

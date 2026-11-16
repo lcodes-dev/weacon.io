@@ -87,9 +87,8 @@ impl Workspace {
         }
         sqlx::query(
             "INSERT INTO proposals (workspace_id, proposal_id, kind, doc_id, task_id, new_id, base,
-                 change, change_hash, snapshot, bytes, author_member, agent, machine_id, state,
-                 at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 change, change_hash, snapshot, author_member, agent, machine_id, state, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(self.id.as_str())
         .bind(proposed.id.as_str())
@@ -101,7 +100,6 @@ impl Workspace {
         .bind(&change)
         .bind(hash.as_slice())
         .bind(&target.snapshot)
-        .bind(0_i64)
         .bind(proposed.owner.as_str())
         .bind(agent)
         .bind(proposed.machine.as_str())
