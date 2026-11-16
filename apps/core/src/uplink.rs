@@ -1021,10 +1021,11 @@ mod tests {
             // An answer that changes nothing tells the server nothing more.
             outgoing.send(changed.clone()).await.unwrap();
             let again = heard(&mut peer).await;
+            // The look after that answer may still be reading, and so see this change first.
             share(&dir, "w-2", false);
             outgoing.send(changed.clone()).await.unwrap();
-            heard(&mut peer).await;
-            (first, answer, second, again, heard(&mut peer).await)
+            let last = [heard(&mut peer).await, heard(&mut peer).await];
+            (first, answer, second, again, last)
         };
 
         let (ended, heard) = tokio::join!(
@@ -1033,12 +1034,12 @@ mod tests {
         );
 
         assert_eq!(ended.unwrap(), Ended::Lost);
-        let (first, answer, second, again, third) = heard;
+        let (first, answer, second, again, last) = heard;
         assert_eq!(first, shares(&["w-2"]));
         assert_eq!(answer, changed.message);
         assert_eq!(second, shares(&["w-1", "w-2"]));
         assert_eq!(again, changed.message);
-        assert_eq!(third, shares(&["w-1"]));
+        assert!(last.contains(&changed.message) && last.contains(&shares(&["w-1"])));
     }
 
     #[tokio::test]

@@ -243,7 +243,7 @@ mod tests {
     const SHOWN: &[u8] = b"MARKER-SHOWN-5d2";
 
     fn bytes(raw: &[u8]) -> Bytes {
-        Bytes::new(raw.to_vec()).unwrap()
+        Bytes::new(raw.to_vec())
     }
 
     fn id<T: TryFrom<String, Error = String>>(text: &str) -> T {

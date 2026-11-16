@@ -14,13 +14,8 @@ use std::sync::{Arc, Mutex};
 use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 use tokio::task;
-use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-use windows_sys::Win32::System::Console::{
-    COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON, ResizePseudoConsole,
-};
-use windows_sys::Win32::System::Threading::{
-    GetExitCodeProcess, INFINITE, TerminateProcess, WaitForSingleObject,
-};
+use windows_sys::Win32::System::Console::{COORD, ClosePseudoConsole, CreatePseudoConsole, HPCON};
+use windows_sys::Win32::System::Threading::{INFINITE, TerminateProcess, WaitForSingleObject};
 
 use super::{CHUNK, WAITING, output};
 use crate::terminal::{Event, Size};
@@ -79,17 +74,6 @@ impl Pty {
         task::spawn_blocking(move || input.write_all(&data))
             .await
             .map_err(io::Error::other)?
-    }
-
-    pub(crate) fn resize(&self, size: Size) -> io::Result<()> {
-        self.console.with_open(|handle| {
-            // SAFETY: the console stays open while `with_open` holds its lock.
-            let resized = unsafe { ResizePseudoConsole(handle, coord(size)) };
-            if resized < 0 {
-                return Err(failed(resized));
-            }
-            Ok(())
-        })
     }
 }
 
@@ -150,7 +134,7 @@ impl Console {
     }
 }
 
-// Sends the output and then how the program ended. The output ends only when the console
+// Sends the output and then that the program ended. The output ends only when the console
 // closes, which happens once the program has ended.
 async fn supervise(
     process: Arc<OwnedHandle>,
@@ -161,12 +145,10 @@ async fn supervise(
 ) {
     let sender = events.clone();
     let pump = task::spawn_blocking(move || pump(reader, &sender, stopped));
-    let success = task::spawn_blocking(move || ended_well(&process))
-        .await
-        .unwrap_or(false);
+    drop(task::spawn_blocking(move || wait(&process)).await);
     drop(task::spawn_blocking(move || console.close()).await);
     drop(pump.await);
-    drop(events.send(Event::Exited { success }).await);
+    drop(events.send(Event::Exited).await);
 }
 
 // Keeps reading once nobody listens, or once the terminal is dropped, so the console can still
@@ -190,13 +172,11 @@ fn pump(mut reader: PipeReader, events: &mpsc::Sender<Event>, mut stopped: watch
     }
 }
 
-fn ended_well(process: &OwnedHandle) -> bool {
-    let mut code = 1;
-    // SAFETY: the handle is open for both calls, and `code` is room for the exit code.
+// Returns once the program has ended.
+fn wait(process: &OwnedHandle) {
+    // SAFETY: the handle is open for the call.
     unsafe {
-        WaitForSingleObject(process.as_raw_handle(), INFINITE) == WAIT_OBJECT_0
-            && GetExitCodeProcess(process.as_raw_handle(), &raw mut code) != 0
-            && code == 0
+        WaitForSingleObject(process.as_raw_handle(), INFINITE);
     }
 }
 

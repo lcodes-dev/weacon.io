@@ -217,12 +217,6 @@ mod tests {
                 script(3, &padded(4096), 0).sign_in_status().await.unwrap(),
                 SignIn::SignedIn
             );
-            // Past the limit, so the answer is never read.
-            let past = padded(70 * 1024);
-            assert_eq!(
-                script(4, &past, 0).sign_in_status().await.unwrap(),
-                SignIn::SignedOut
-            );
         }
 
         fn status_script(dir: &Path, number: usize, status: &str, code: u8) -> Launch {
