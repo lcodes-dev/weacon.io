@@ -1,9 +1,9 @@
 import "./chat.css";
 
-import { type Answering, answerProblem, askText, toolName } from "./asks.ts";
+import { type Answering, answerProblem, askText, toolName, wantsShown } from "./asks.ts";
 import type { Ask } from "./chat.ts";
 
-/** A permission prompt: the tool the agent asks to use, and Allow and Deny while it waits, for whoever may answer. */
+/** A permission prompt: the tool the agent asks to use and, while it waits, what the tool wants, with Allow and Deny for whoever may answer. */
 export function AskView({
   ask,
   answering,
@@ -15,9 +15,12 @@ export function AskView({
 }) {
   const sending = answering !== undefined && answering.settled === undefined;
   const problem = answerProblem(answering);
+  const wants = wantsShown(ask);
   return (
     <div className={ask.state === "open" ? "row ask open" : "row ask"} role="group" aria-label={`Use ${toolName(ask.tool)}?`}>
       <span>{askText(ask)}</span>
+      {wants !== undefined && <pre className="wants">{wants.text}</pre>}
+      {wants?.more !== undefined && <span className="cut">{wants.more}</span>}
       {ask.state === "open" && onAnswer !== undefined && (
         <span className="choices">
           <button type="button" disabled={sending} onClick={() => onAnswer(true)}>

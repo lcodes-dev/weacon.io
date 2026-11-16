@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { type Answers, answerProblem, askKey, askText, sending, settle, settleAnswer, stopProblem } from "./asks.ts";
+import { type Answers, answerProblem, askKey, askText, sending, settle, settleAnswer, stopProblem, wantsShown } from "./asks.ts";
 
 const key = askKey("r-1", 2);
 const mine = (allow: boolean) => ({ run: "r-1", prompt: 2, allow });
@@ -97,4 +97,13 @@ test("a prompt names its tool, and says a tool when the name wasn't kept", () =>
   assert.equal(askText({ state: "closed", tool: "" }), "Asked to use a tool");
   assert.equal(askText({ state: "allowed", tool: "" }), "Allowed");
   assert.equal(askText({ state: "denied", tool: "" }), "Denied");
+});
+
+test("a waiting prompt shows what its tool wants and says when it was cut, and an answered one shows neither", () => {
+  assert.deepEqual(wantsShown({ state: "open", wants: { text: "cargo test" } }), { text: "cargo test", more: undefined });
+  assert.deepEqual(wantsShown({ state: "open", wants: { text: "cargo", cut: true } }), { text: "cargo", more: "The rest is too long to show." });
+  assert.equal(wantsShown({ state: "open", wants: undefined }), undefined);
+  for (const state of ["closed", "allowed", "denied"] as const) {
+    assert.equal(wantsShown({ state, wants: { text: "cargo test", cut: true } }), undefined);
+  }
 });

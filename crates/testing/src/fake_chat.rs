@@ -951,6 +951,7 @@ mod tests {
                 prompt: 7,
                 tool: "Edit".to_owned(),
                 input: Value::Null,
+                wants: None,
             }),
         );
         let (seq, runs, waiting) = snapshot(&mut fake);
@@ -979,6 +980,7 @@ mod tests {
                 prompt: 2,
                 tool: "Edit".to_owned(),
                 input: Value::Null,
+                wants: None,
             },
             RunEvent::Finished {
                 outcome: Outcome::Completed,

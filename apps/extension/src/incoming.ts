@@ -39,6 +39,11 @@ function isTexts(value: unknown): boolean {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
+function isWants(value: unknown): boolean {
+  const wants = record(value);
+  return text(wants, "text") && (wants?.["cut"] === undefined || typeof wants["cut"] === "boolean");
+}
+
 function isSeq(value: unknown, least: number): value is number {
   return Number.isSafeInteger(value) && (value as number) >= least;
 }
@@ -124,7 +129,7 @@ function isRunEvent(value: unknown): boolean {
     case "tool_done":
       return text(event, "call") && typeof event["failed"] === "boolean";
     case "permission_asked":
-      return text(event, "run") && isSeq(event["prompt"], 0) && text(event, "tool");
+      return text(event, "run") && isSeq(event["prompt"], 0) && text(event, "tool") && (event["wants"] === undefined || isWants(event["wants"]));
     case "permission_withdrawn":
       return text(event, "run") && isSeq(event["prompt"], 0);
     case "permission_answered": {

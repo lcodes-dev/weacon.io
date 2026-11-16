@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::process::Command;
-use weacon_protocol::{AccessLevel, AgentSession, App};
+use weacon_protocol::{AccessLevel, AgentSession, App, Wants};
 
 pub(crate) use wire::{Wire, answer, prompt, read};
 
@@ -35,23 +35,43 @@ pub(crate) const VENDOR: Vendor = Vendor {
 /// The folders and files under home that hold its sign-in.
 pub(crate) const CREDENTIALS: [&str; 2] = [".claude", ".claude.json"];
 
-/// The tools that only change files, and the input naming each one's file.
-const FILE_TOOLS: [(&str, &str); 4] = [
-    ("Edit", "file_path"),
-    ("MultiEdit", "file_path"),
-    ("NotebookEdit", "notebook_path"),
-    ("Write", "file_path"),
+/// The tools that only change files, the input naming each one's file, and the one holding
+/// its new text.
+const FILE_TOOLS: [(&str, &str, &str); 4] = [
+    ("Edit", "file_path", "new_string"),
+    ("MultiEdit", "file_path", "new_string"),
+    ("NotebookEdit", "notebook_path", "new_source"),
+    ("Write", "file_path", "content"),
 ];
 
 /// Whether `tool` only changes a file.
 fn changes_file(tool: &str) -> bool {
-    FILE_TOOLS.iter().any(|(name, _)| *name == tool)
+    FILE_TOOLS.iter().any(|(name, ..)| *name == tool)
 }
 
 /// The file a prompt for `tool` would change, when it only changes a file.
 pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
-    let (_, key) = FILE_TOOLS.iter().find(|(name, _)| *name == tool)?;
+    let (_, key, _) = FILE_TOOLS.iter().find(|(name, ..)| *name == tool)?;
     input.get(key)?.as_str().map(PathBuf::from)
+}
+
+/// What a prompt for `tool` shows of `input`: Bash's command, a changed file's path and the
+/// start of its new text, or any other input as compact JSON; nothing when there is none.
+pub(crate) fn wants(tool: &str, input: &Value) -> Option<Wants> {
+    let text = |key: &str| input.get(key).and_then(Value::as_str);
+    if tool == "Bash"
+        && let Some(command) = text("command")
+    {
+        return Some(Wants::of(command));
+    }
+    let file = FILE_TOOLS.iter().find(|(name, ..)| *name == tool);
+    if let Some((_, path, change)) = file
+        && let Some(path) = text(path)
+    {
+        let lines: Vec<&str> = [Some(path), text(change)].into_iter().flatten().collect();
+        return Some(Wants::of(&lines.join("\n")));
+    }
+    (!input.is_null()).then(|| Wants::of(&input.to_string()))
 }
 
 /// Where a run, and the hooks it runs, find its token for the core's MCP.
@@ -100,7 +120,7 @@ fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
         "default",
     ]);
     if launch.access == AccessLevel::ReadOnly {
-        let tools = FILE_TOOLS.map(|(tool, _)| tool);
+        let tools = FILE_TOOLS.map(|(tool, ..)| tool);
         command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
     }
     if let Some(hook) = &launch.hook {
@@ -617,5 +637,62 @@ mod tests {
         ] {
             assert_eq!(changed_file(tool, &input), None, "{tool} {input}");
         }
+    }
+
+    fn shown(tool: &str, input: &Value) -> Option<String> {
+        wants(tool, input).map(|wants| wants.text)
+    }
+
+    #[test]
+    fn a_prompt_shows_bashs_command_and_a_changed_files_path_and_new_text() {
+        let command = json!({ "command": "cargo test", "description": "Tests" });
+        assert_eq!(shown("Bash", &command).as_deref(), Some("cargo test"));
+        let write = json!({ "file_path": "README.md", "content": "# Parser\nFast." });
+        assert_eq!(
+            shown("Write", &write).as_deref(),
+            Some("README.md\n# Parser\nFast.")
+        );
+        let edit = json!({ "file_path": "src/lexer.rs", "old_string": "a", "new_string": "b" });
+        assert_eq!(shown("Edit", &edit).as_deref(), Some("src/lexer.rs\nb"));
+        let cell = json!({ "notebook_path": "plot.ipynb", "new_source": "show()" });
+        assert_eq!(
+            shown("NotebookEdit", &cell).as_deref(),
+            Some("plot.ipynb\nshow()")
+        );
+        // Its edits are a list, so only the path is shown.
+        let edits = json!({ "file_path": "src/lexer.rs", "edits": [{ "new_string": "b" }] });
+        assert_eq!(shown("MultiEdit", &edits).as_deref(), Some("src/lexer.rs"));
+    }
+
+    #[test]
+    fn any_other_input_is_shown_as_compact_json_cut_to_size_and_none_as_nothing() {
+        let fetch = json!({ "url": "https://example.com", "depth": 2 });
+        assert_eq!(
+            shown("WebFetch", &fetch).as_deref(),
+            Some(r#"{"depth":2,"url":"https://example.com"}"#)
+        );
+        // Only Bash's command and a file tool's own path are picked out.
+        let deploy = json!({ "command": "now" });
+        assert_eq!(
+            shown("Deploy", &deploy).as_deref(),
+            Some(r#"{"command":"now"}"#)
+        );
+        let odd = json!({ "notebook_path": "a" });
+        assert_eq!(
+            shown("Write", &odd).as_deref(),
+            Some(r#"{"notebook_path":"a"}"#)
+        );
+        assert_eq!(
+            shown("Bash", &json!({ "command": 7 })).as_deref(),
+            Some(r#"{"command":7}"#)
+        );
+        assert_eq!(wants("WebFetch", &Value::Null), None);
+
+        let long = json!({ "command": "x".repeat(weacon_protocol::WANTS_MAX + 1) });
+        let cut = wants("Bash", &long).unwrap();
+        assert_eq!(
+            (cut.text.len(), cut.cut),
+            (weacon_protocol::WANTS_MAX, true)
+        );
     }
 }

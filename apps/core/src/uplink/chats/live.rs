@@ -1,5 +1,5 @@
 //! What a chat's viewers need of its runs as they happen, which the server passes on and never
-//! keeps: text as it is written, and the tool a permission prompt names.
+//! keeps: text as it is written.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -31,21 +31,17 @@ impl Live {
         }
     }
 
-    /// Takes note of the run `update` is about, and gives what goes up live beside it: the
-    /// tool a permission prompt names, which the stored event leaves out.
-    pub(super) fn saw(&mut self, update: &ChatUpdate) -> Option<Envelope> {
-        let key = ChatKey::new(&update.workspace, &update.chat);
-        let (run, asked) = match &update.entry.event {
-            ChatEvent::RunStatus { status } => (&status.run, None),
-            ChatEvent::Run { update: run } => (&run.run, named(&run.event)),
+    /// Takes note of the run `update` is about.
+    pub(super) fn saw(&mut self, update: &ChatUpdate) {
+        let run = match &update.entry.event {
+            ChatEvent::RunStatus { status } => &status.run,
+            ChatEvent::Run { update: run } => &run.run,
             ChatEvent::Prompt { .. }
             | ChatEvent::OutsidePrompt { .. }
             | ChatEvent::Receipt { .. }
-            | ChatEvent::Newer => return None,
+            | ChatEvent::Newer => return,
         };
-        self.remember(run, &key);
-        let event = asked?;
-        self.up(&key, run.clone(), event, update.entry.seq)
+        self.remember(run, &ChatKey::new(&update.workspace, &update.chat));
     }
 
     /// `pushed`, a run's update, as it goes up live: text as it is written, after `came`, the
@@ -54,17 +50,12 @@ impl Live {
         if !matches!(pushed.event, RunEvent::TextDelta { .. }) {
             return None;
         }
-        let key = self.runs.get(&pushed.run)?.clone();
-        let after = came.get(&key).copied().unwrap_or_default();
-        self.up(&key, pushed.run, pushed.event, after)
-    }
-
-    fn up(&self, key: &ChatKey, run: RunId, event: RunEvent, after: u64) -> Option<Envelope> {
+        let key = self.runs.get(&pushed.run)?;
         let live = ChatLive {
             workspace: key.workspace.clone(),
             chat: key.chat.clone(),
-            update: RunUpdate { run, event },
-            after: Some(after),
+            update: pushed,
+            after: Some(came.get(key).copied().unwrap_or_default()),
         };
         self.on.then_some(Envelope {
             id: 0,
@@ -85,25 +76,8 @@ impl Live {
     }
 }
 
-// A permission prompt's event with only what a viewer needs: its tool's name, never its input.
-fn named(event: &RunEvent) -> Option<RunEvent> {
-    let RunEvent::PermissionAsked {
-        run, prompt, tool, ..
-    } = event
-    else {
-        return None;
-    };
-    Some(RunEvent::PermissionAsked {
-        run: run.clone(),
-        prompt: *prompt,
-        tool: tool.clone(),
-        input: serde_json::Value::Null,
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
     use weacon_protocol::{ChatEntry, RunState, RunStatus};
 
     use super::*;
@@ -129,15 +103,6 @@ mod tests {
         ChatEvent::RunStatus { status }
     }
 
-    fn ask(tool: &str, input: serde_json::Value) -> RunEvent {
-        RunEvent::PermissionAsked {
-            run: id("run-1"),
-            prompt: 1,
-            tool: tool.to_owned(),
-            input,
-        }
-    }
-
     fn delta(run: &str) -> RunUpdate {
         RunUpdate {
             run: id(run),
@@ -147,12 +112,12 @@ mod tests {
         }
     }
 
-    fn up(chat: &str, event: RunEvent, after: u64) -> Envelope {
+    fn up(chat: &str, run: &str, event: RunEvent, after: u64) -> Envelope {
         let live = ChatLive {
             workspace: id("w1"),
             chat: id(chat),
             update: RunUpdate {
-                run: id("run-1"),
+                run: id(run),
                 event,
             },
             after: Some(after),
@@ -164,36 +129,36 @@ mod tests {
     }
 
     #[test]
-    fn text_being_written_and_a_prompts_tool_go_up_live_named_by_their_chat_and_nothing_else() {
+    fn text_being_written_goes_up_live_named_by_its_runs_chat_and_nothing_else() {
         let mut live = Live::new(true);
         let came = HashMap::from([(ChatKey::new(&id("w1"), &id("c-1")), 7)]);
         assert_eq!(live.of(delta("run-1"), &came), None);
 
-        assert_eq!(live.saw(&update("c-1", started("run-1"))), None);
-        let asked = ChatEvent::Run {
-            update: RunUpdate {
-                run: id("run-1"),
-                event: ask("Bash", json!({ "command": "MARKER" })),
-            },
-        };
-
-        assert_eq!(
-            live.of(delta("run-1"), &came),
-            Some(up("c-1", delta("run-1").event, 7))
-        );
-        assert_eq!(live.of(delta("run-2"), &came), None);
+        live.saw(&update("c-1", started("run-1")));
         let said = RunUpdate {
-            run: id("run-1"),
+            run: id("run-2"),
             event: RunEvent::Text {
                 text: "Done".to_owned(),
             },
         };
-        assert_eq!(live.of(said, &came), None);
-        let beside = live.saw(&update("c-1", asked));
+        assert_eq!(live.of(delta("run-2"), &came), None);
+        live.saw(&update(
+            "c-2",
+            ChatEvent::Run {
+                update: said.clone(),
+            },
+        ));
+
         assert_eq!(
-            beside,
-            Some(up("c-1", ask("Bash", serde_json::Value::Null), 1))
+            live.of(delta("run-1"), &came),
+            Some(up("c-1", "run-1", delta("run-1").event, 7))
         );
+        // A chat none of whose events went up yet is after nothing.
+        assert_eq!(
+            live.of(delta("run-2"), &came),
+            Some(up("c-2", "run-2", delta("run-2").event, 0))
+        );
+        assert_eq!(live.of(said, &came), None);
     }
 
     #[test]

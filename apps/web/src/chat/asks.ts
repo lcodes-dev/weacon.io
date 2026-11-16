@@ -86,7 +86,7 @@ export function answerProblem(answering: Answering | undefined): string | undefi
   return answering?.settled === undefined ? undefined : settledText(answering.settled, ANSWER);
 }
 
-/** What a permission prompt says; a stored chat keeps no tool names, so one may be missing. */
+/** What a permission prompt says; one stored before prompts kept their tools names none. */
 export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
   switch (state) {
     case "open":
@@ -98,6 +98,14 @@ export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
     case "denied":
       return tool === "" ? "Denied" : `Denied ${tool}`;
   }
+}
+
+/** What a waiting prompt shows of what its tool wants, and whether more was left out; nothing once it no longer waits. */
+export function wantsShown({ state, wants }: Pick<Ask, "state" | "wants">): { text: string; more: string | undefined } | undefined {
+  if (state !== "open" || wants === undefined) {
+    return undefined;
+  }
+  return { text: wants.text, more: wants.cut === true ? "The rest is too long to show." : undefined };
 }
 
 /** The tool a prompt names, or "a tool" when its name wasn't kept. */

@@ -6,7 +6,7 @@ mod wire;
 use tokio::process::Command;
 use weacon_protocol::{AgentSession, App};
 
-pub(crate) use wire::{Wire, answer};
+pub(crate) use wire::{Wire, answer, wants};
 
 use crate::launch::{Launch, OtherSignIns};
 use crate::vendor::Vendor;

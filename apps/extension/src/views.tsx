@@ -84,6 +84,8 @@ function Row({ line, answer }: { line: Line; answer: (line: Extract<Line, { kind
           <p>
             The agent asks to use <code>{line.tool === "" ? "a tool" : line.tool}</code>.
           </p>
+          {line.state === "open" && line.wants !== undefined && <pre className="wants">{line.wants.text}</pre>}
+          {line.state === "open" && line.wants?.cut === true && <p className="quiet">The rest is too long to show.</p>}
           {line.state === "open" ? (
             <p className="actions">
               <button type="button" onClick={() => answer(line, true)}>
