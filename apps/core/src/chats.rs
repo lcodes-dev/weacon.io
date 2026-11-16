@@ -93,7 +93,7 @@ fn prepared(roots: &Workspaces, places: &Places, run_as: &RunAs) -> Result<Launc
     let work_root = places.work_root.as_deref().ok_or_else(folder_failed)?;
     let cwd = chat_folder(work_root, &run_as.key.workspace, &run_as.key.chat);
     let mut launch = roots.launch(&run_as.key.workspace, run_as.agent, cwd)?;
-    launch.plugin = places.plugin.as_ref().and_then(Plugin::folder);
+    launch.plugin = places.plugin.as_ref().map(Plugin::folder);
     if run_as.agent == AgentKind::Codex
         && let Some(plugin) = &places.plugin
     {
@@ -293,7 +293,12 @@ mod tests {
         platform::plant_program(&dir.join("bin"), "claude", 0o755);
         platform::plant_program(&dir.join("bin"), "codex", 0o755);
         let (log, _records) = recording_logger();
-        let plugin = Plugin::at(&dir.join("state"), Path::new("/opt/weacon"), &VERSION, &log);
+        let plugin = Plugin::at(
+            &dir.join("state"),
+            Path::new("/opt/weacon"),
+            VERSION.version,
+            &log,
+        );
         let places = Places {
             path: Some(dir.join("bin").into_os_string()),
             work_root: Some(dir.join("Weacon")),

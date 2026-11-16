@@ -65,7 +65,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
-                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
+                plugin: None,
             },
             app.log.clone(),
         )?;
@@ -139,6 +139,8 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
+        // Only under the lock: another daemon's runs may be reading its own.
+        places.plugin = crate::integrations::Plugin::new(state_dir, &app.version, &log);
         let (proposals, proposing) = proposals::channel();
         let maps = mcp::Maps::new(state_dir, &places).proposing(proposals);
         let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
@@ -559,6 +561,10 @@ mod tests {
         let second = start(&dir).err().unwrap();
 
         assert_eq!(second.code().as_str(), "daemon.running");
+        let hooks = dir.join("claude-plugin/hooks/hooks.json");
+        fs::write(&hooks, "the first daemon's").unwrap();
+        start(&dir).err().unwrap();
+        assert_eq!(fs::read_to_string(&hooks).unwrap(), "the first daemon's");
         ask(&first.socket).await.unwrap();
         first.stop().await;
     }
