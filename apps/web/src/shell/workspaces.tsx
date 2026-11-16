@@ -22,6 +22,7 @@ import { ChatTaskLink } from "./chat-task-link.tsx";
 import { owns } from "./chat-list.ts";
 import { ChatsNav } from "./chats.tsx";
 import { useFeed, useReloadOn } from "./feed-hooks.ts";
+import { Departures } from "./departures.ts";
 import { Frame } from "./frame.tsx";
 import { Landing } from "./landing.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
@@ -78,27 +79,21 @@ export function Workspaces({
     setNotice(text);
     void loaded.load();
   };
-  // The one the person chose to leave or was told they are out of, whose refusals that follow are
-  // no news: the list, reloaded since, no longer names it.
-  const departed = useRef<WorkspaceId>(undefined);
+  const [departures] = useState(() => new Departures());
+  useEffect(() => departures.listed(list?.map(({ id }) => id) ?? []), [list]);
   useEffect(() => {
-    if (left !== undefined && left.workspace !== departed.current) {
+    if (left !== undefined && departures.leave(left.workspace)) {
       const name = list?.find(({ id }) => id === left.workspace)?.name;
       leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
-      departed.current = left.workspace;
     }
   }, [left]);
-  // A workspace opened again is one the person is back in, so leaving it is news once more.
   const pick = (id: WorkspaceId | undefined) => {
-    if (id === departed.current) {
-      departed.current = undefined;
-    }
     setNotice(undefined);
     choose(id);
   };
   const menu = workspace !== undefined && <WorkspaceMenu api={api} loaded={loaded} workspace={workspace} email={email} choose={pick} />;
   const opened = workspace !== undefined && socket !== undefined ? { workspace, socket, left: (text: string) => {
-          departed.current = workspace.id;
+          departures.leave(workspace.id);
           leave(text);
         },
       } : undefined;
