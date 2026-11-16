@@ -3,7 +3,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::sync::broadcast;
 use weacon_observability::{Clock, Logger, Reporter};
-use weacon_protocol::{App, MachineId, WorkspaceId};
+use weacon_protocol::{App, WorkspaceId};
 
 use crate::chats;
 use crate::db::Db;
@@ -31,8 +31,6 @@ pub(crate) struct Shared {
     pub(crate) relay: Arc<Relay>,
     /// The sign-in terminals open now.
     pub(crate) terminals: Arc<Terminals>,
-    /// Which machine was just unpaired, for its open connection.
-    pub(crate) unpaired: broadcast::Sender<MachineId>,
     /// Which workspace just changed, for the feeds.
     pub(crate) changes: broadcast::Sender<WorkspaceId>,
     pub(crate) chats: chats::Hub,

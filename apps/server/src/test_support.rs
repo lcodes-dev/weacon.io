@@ -99,7 +99,6 @@ impl Fixture {
             })),
             changes: broadcast::channel(16).0,
             chats: crate::chats::Hub::default(),
-            unpaired: broadcast::channel(16).0,
             links: Arc::default(),
             relay: Arc::default(),
             terminals: Arc::default(),
