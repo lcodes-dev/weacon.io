@@ -108,5 +108,5 @@ test("a prompt that carried a picked element shows the note of it", () => {
   const pick = { url: "http://localhost:3000/", title: "Home", selector: "main > button" };
   const chat = fromSnapshot({ seq: 1, runs: new Map(), waiting: [], events: [{ seq: 1, event: { kind: "prompt", request: "q-1", text: "Make it blue", pick } }] });
 
-  assert.deepEqual(lines(chat), [{ key: "p1", kind: "prompt", text: "Make it blue", pick }]);
+  assert.deepEqual(lines(chat), [{ key: "p1", kind: "prompt", text: "Make it blue", author: undefined, pick }]);
 });
