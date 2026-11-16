@@ -538,20 +538,16 @@ mod tests {
             agent: AgentKind::Codex,
             repo: None,
         };
-        let shared_with = |workspaces: &'static [&str]| {
-            let workspaces: Vec<_> = workspaces.iter().copied().map(id).collect();
-            let (db, desk) = (one.db.clone(), desk.clone());
-            async move { db.set_shares(&desk, &workspaces).await.unwrap() }
-        };
+        let (db, w1) = (one.db.clone(), [id("w1")]);
 
         let later = NOW + 2 * CALL_SECS;
         let unshared = one.set_leg(&chat, &ada, &on_desk, later).await;
-        shared_with(&["w1"]).await;
+        db.set_shares(&desk, &w1).await.unwrap();
         one.set_leg(&chat, &ada, &on_desk, later).await.unwrap();
         let sharer = one.leg(&chat, &ada).await.unwrap().unwrap().shared_by;
-        shared_with(&[]).await;
+        db.set_shares(&desk, &[]).await.unwrap();
         let second = one.set_leg(&chat, &bo, &on_desk, later).await;
-        shared_with(&["w1"]).await;
+        db.set_shares(&desk, &w1).await.unwrap();
 
         assert_eq!(code(&unshared.unwrap_err()), "machine.not_found");
         assert_eq!(sharer, Some(bo.clone()));
