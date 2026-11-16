@@ -111,7 +111,6 @@ mod tests {
             "https://public@sentry.example.com/42",
             "weacon/0.1.0",
             "weacon-core@0.1.0+1a2b3c4",
-            "/home/ada",
         )
         .ok()
     }
