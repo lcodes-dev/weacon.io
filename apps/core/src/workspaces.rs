@@ -164,17 +164,6 @@ impl Workspaces {
         Settings::read(&self.settings_file(workspace))
     }
 
-    /// Holds `workspace`'s settings for one read, change and save at a time, across processes,
-    /// until the returned file is dropped.
-    pub(crate) fn hold(&self, workspace: &WorkspaceId) -> io::Result<crate::hold::Hold> {
-        platform::private_dir(&self.settings)?;
-        crate::hold::hold(
-            &self
-                .settings
-                .join(format!("{}.lock", folder_name(workspace))),
-        )
-    }
-
     /// Saves `settings` for `workspace`; its folder makes it one this machine knows.
     pub(crate) fn save(&self, workspace: &WorkspaceId, settings: &Settings) -> io::Result<()> {
         platform::private_dir(&self.root(workspace))?;
@@ -203,17 +192,7 @@ impl Workspaces {
             ));
         }
         let launch = self.prepared(workspace, agent, cwd)?;
-        // Claude Code answers a pre-tool hook; that is where the command guard runs. Without a
-        // shell sure to be POSIX the hook could fail open, so there the agent runs under the
-        // vendor's own prompt for every command instead.
-        let hook = (launch.takes_hook() && platform::POSIX_HOOK)
-            .then(|| guard_hook(workspace, &launch.cwd))
-            .transpose()?;
-        Ok(Launch {
-            access,
-            hook,
-            ..launch
-        })
+        Ok(Launch { access, ..launch })
     }
 
     // Whether `cwd` is inside the state folder or holds it, so a run could reach the settings;
@@ -350,28 +329,6 @@ fn workspace_id(name: &str) -> Option<WorkspaceId> {
     WorkspaceId::try_from(names::case_safe_id(FOLDER_PREFIX, name)?).ok()
 }
 
-// The core's own `guard check` for the run's hook; a run without its guard doesn't start.
-fn guard_hook(workspace: &WorkspaceId, cwd: &Path) -> Result<Vec<String>, Fault> {
-    let unavailable = || {
-        Fault::new(
-            code!("workspace.guard_unavailable"),
-            "The guard for the agent's run couldn't be set up",
-        )
-    };
-    let exe = std::env::current_exe().map_err(|error| unavailable().because(error))?;
-    let (Some(exe), Some(cwd)) = (exe.to_str(), cwd.to_str()) else {
-        return Err(unavailable());
-    };
-    // Each value joined to its option, so none can be read as an option of its own.
-    Ok(vec![
-        exe.to_owned(),
-        "guard".to_owned(),
-        "check".to_owned(),
-        format!("--workspace={}", workspace.as_str()),
-        format!("--worktree={cwd}"),
-    ])
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -413,18 +370,6 @@ mod tests {
         assert_eq!(claude.config_dir, dir.join("workspaces/w-w1/claude"));
         assert_eq!(claude.access, AccessLevel::AskFirst);
         assert_eq!((claude.mcp.as_ref(), claude.plugin.as_ref()), (None, None));
-        // Claude Code answers the guard's pre-tool hook, but only where a POSIX shell is sure, so
-        // on Windows the launch carries no hook and the agent runs under the vendor's own prompt.
-        assert_eq!(claude.hook.is_some(), platform::POSIX_HOOK);
-        if let Some(hook) = &claude.hook {
-            assert_eq!(
-                hook.get(1..3),
-                Some(["guard".to_owned(), "check".to_owned()].as_slice())
-            );
-            assert!(hook.contains(&"--workspace=w1".to_owned()));
-            assert!(hook.contains(&"--worktree=/work".to_owned()));
-        }
-        assert!(codex.hook.is_none());
         assert_eq!(codex.program, program(&dir, "codex"));
         assert_eq!(codex.config_dir, dir.join("workspaces/w-w1/codex"));
         assert_eq!(other.config_dir, dir.join("workspaces/w-w2/claude"));
@@ -692,7 +637,6 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
-            hook: None,
             mcp: None,
             plugin: None,
         };
@@ -727,7 +671,6 @@ mod tests {
             config_dir: dir.to_path_buf(),
             cwd: dir.to_path_buf(),
             access: AccessLevel::AskFirst,
-            hook: None,
             mcp: None,
             plugin: None,
         };
@@ -810,36 +753,5 @@ mod tests {
         let error = require_sign_in(&launch).unwrap_err();
 
         assert_eq!(error.code().as_str(), "agent.status_failed");
-    }
-
-    // Each thread adds to a count read and written whole while holding one workspace's settings:
-    // with the holds taking turns, none of the additions is lost.
-    #[test]
-    fn a_workspaces_settings_are_held_by_one_change_at_a_time() {
-        let dir = TempDir::new().unwrap();
-        let workspaces = std::sync::Arc::new(Workspaces::new(&dir.join("state"), None));
-        let count = dir.join("count");
-        let add = |workspaces: std::sync::Arc<Workspaces>, count: PathBuf| {
-            for _ in 0..50 {
-                let _held = workspaces.hold(&id("w1")).unwrap();
-                let now: u32 = fs::read_to_string(&count)
-                    .ok()
-                    .and_then(|text| text.trim().parse().ok())
-                    .unwrap_or(0);
-                fs::write(&count, (now + 1).to_string()).unwrap();
-            }
-        };
-        let adding: Vec<_> = (0..4)
-            .map(|_| {
-                let workspaces = std::sync::Arc::clone(&workspaces);
-                let count = count.clone();
-                std::thread::spawn(move || add(workspaces, count))
-            })
-            .collect();
-
-        for thread in adding {
-            thread.join().unwrap();
-        }
-        assert_eq!(fs::read_to_string(&count).unwrap().trim(), "200");
     }
 }

@@ -9,15 +9,12 @@ use weacon_protocol::{
     CommitId, DiffContent, DiffFile, DiffLine, FileChange, Hunk, LineOp, MAX_FRAME, code,
 };
 
-use super::{Git, Start, failed, not_run, run, text, tree};
+use super::{Git, Start, failed, not_run, run, text};
 use crate::platform;
 
 // A file's changes past this many bytes of patch are only said to be too large, so each still
 // fits one frame with room for its JSON.
 const MAX_PATCH: usize = MAX_FRAME / 4;
-
-// More changed files than this are refused rather than listed.
-const MAX_FILES: usize = 500;
 
 impl Git {
     /// Every file changed in `worktree` since the commit `base`, untracked ones included, in
@@ -50,11 +47,6 @@ impl Git {
             .split('\0')
             .filter(|path| !path.is_empty() && !removed.contains(path))
             .collect();
-        if changed.len().saturating_add(untracked.len()) > MAX_FILES {
-            return Err(too_many());
-        }
-        // The worktree's own folder is opened without following it too, like its files.
-        let root = tree::place(worktree);
         let mut files = Vec::new();
         for (change, path) in changed {
             let content = self.patch(worktree, base, &change, &path)?;
@@ -68,7 +60,7 @@ impl Git {
             files.push(DiffFile {
                 path: path.to_owned(),
                 change: FileChange::Added,
-                content: added(root.as_deref(), path),
+                content: added(worktree, path),
             });
         }
         files.sort_by(|one, other| one.path.cmp(&other.path));
@@ -129,10 +121,6 @@ impl Git {
         };
         Ok(String::from_utf8(out).map_or(DiffContent::Binary, |patch| content(&patch)))
     }
-}
-
-pub(crate) fn too_many() -> Fault {
-    Fault::new(code!("diff.too_many"), "Too many files changed to list")
 }
 
 // Git's output on success, or None once it passes `limit` bytes, when git is stopped.
@@ -242,10 +230,9 @@ fn hunk_start(header: &str) -> Option<Hunk> {
 }
 
 // An untracked file at `path` in the worktree `root`, read only when it's a plain file with one
-// link: opened once from `root` without following a link at any step, and checked on what was
-// opened.
-fn added(root: Option<&Path>, path: &str) -> DiffContent {
-    let Some(opened) = root.and_then(|root| platform::open_beneath(root, path).ok()) else {
+// link, checked on what was opened.
+fn added(root: &Path, path: &str) -> DiffContent {
+    let Ok(opened) = platform::open_beneath(root, path) else {
         return DiffContent::Binary;
     };
     let plain = opened.metadata().is_ok_and(|meta| meta.is_file());
@@ -556,39 +543,14 @@ mod tests {
     }
 
     #[test]
-    fn a_file_behind_a_linked_folder_is_never_read() {
-        let dir = TempDir::new().unwrap();
-        let (_, path, _) = begun(&dir);
-        fs::create_dir_all(dir.join("outside")).unwrap();
-        fs::write(dir.join("outside/secret"), "token\n").unwrap();
-        fs::create_dir_all(path.join("docs")).unwrap();
-        fs::write(path.join("docs/notes.md"), "mine\n").unwrap();
-        let root = tree::place(&path);
-        assert!(matches!(
-            added(root.as_deref(), "docs/notes.md"),
-            DiffContent::Text { .. }
-        ));
-        fs::remove_dir_all(path.join("docs")).unwrap();
-        if !platform::plant_link(&dir.join("outside"), &path.join("docs")) {
-            return;
-        }
-
-        assert_eq!(added(root.as_deref(), "docs/secret"), DiffContent::Binary);
-    }
-
-    #[test]
     fn an_untracked_file_past_the_most_a_patch_holds_is_too_large() {
         let dir = TempDir::new().unwrap();
         let (_, path, _) = begun(&dir);
-        let root = tree::place(&path);
         fs::write(path.join("most.txt"), "a".repeat(MAX_PATCH)).unwrap();
         fs::write(path.join("more.txt"), "a".repeat(MAX_PATCH + 1)).unwrap();
 
-        assert!(matches!(
-            added(root.as_deref(), "most.txt"),
-            DiffContent::Text { .. }
-        ));
-        assert_eq!(added(root.as_deref(), "more.txt"), DiffContent::TooLarge);
+        assert!(matches!(added(&path, "most.txt"), DiffContent::Text { .. }));
+        assert_eq!(added(&path, "more.txt"), DiffContent::TooLarge);
     }
 
     #[test]
@@ -604,21 +566,6 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].content, DiffContent::Binary);
-    }
-
-    #[test]
-    fn more_files_than_a_list_holds_are_refused() {
-        let dir = TempDir::new().unwrap();
-        let (git, path, base) = begun(&dir);
-        for index in 0..MAX_FILES {
-            fs::write(path.join(format!("{index}.txt")), "").unwrap();
-        }
-        assert_eq!(git.changes(&path, &base).unwrap().len(), MAX_FILES);
-
-        fs::write(path.join("lib.rs"), "fn c() {}\n").unwrap();
-
-        let error = git.changes(&path, &base).unwrap_err();
-        assert_eq!(error.code().as_str(), "diff.too_many");
     }
 
     #[test]

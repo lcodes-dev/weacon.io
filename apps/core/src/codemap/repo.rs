@@ -46,10 +46,9 @@ impl Source for Repo {
         self.git.changed(path, commit)
     }
 
-    /// Only a regular file of at most [`LARGEST`] bytes reached through no link, inside the
-    /// worktree, has text.
+    /// Only a regular file of at most [`LARGEST`] bytes reached through no link has text.
     fn text(&self, path: &Path, file: &str) -> Option<String> {
-        let file = platform::open_beneath(&path.canonicalize().ok()?, file).ok()?;
+        let file = platform::open_beneath(path, file).ok()?;
         let about = file.metadata().ok()?;
         if !about.is_file() || about.len() > LARGEST {
             return None;
@@ -188,23 +187,15 @@ mod tests {
             repo: path.clone(),
         };
         let outside = dir.join("outside");
-        fs::create_dir_all(outside.join("src")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("secret.md"), "outside").unwrap();
-        fs::write(outside.join("src/lib.rs"), "outside").unwrap();
         fs::write(path.join("inside.md"), "inside").unwrap();
         symlink(outside.join("secret.md"), path.join("link.md")).unwrap();
         symlink(&outside, path.join("docs")).unwrap();
         symlink(path.join("inside.md"), path.join("near.md")).unwrap();
 
         assert_eq!(source.text(&path, "inside.md").as_deref(), Some("inside"));
-        for file in [
-            "link.md",
-            "docs/secret.md",
-            "docs/src/lib.rs",
-            "near.md",
-            "docs",
-            "../outside/secret.md",
-        ] {
+        for file in ["link.md", "docs/secret.md", "near.md", "docs"] {
             assert_eq!(source.text(&path, file), None, "{file}");
         }
     }

@@ -14,7 +14,6 @@ use weacon_testing::{Failure, replay};
 
 use crate::Launch;
 use crate::access::Rules;
-use crate::guard::Context;
 use crate::run::Run;
 use crate::wire::Wire;
 
@@ -183,32 +182,7 @@ pub(crate) fn launch(agent: AgentKind, program: impl Into<PathBuf>, dir: &Path) 
         config_dir: dir.join("config"),
         cwd: dir.to_path_buf(),
         access: AccessLevel::AskFirst,
-        hook: None,
         mcp: None,
         plugin: None,
-    }
-}
-
-// A chat's worktree beside its main checkout, a home with an agent's credentials, and
-// Weacon's state.
-pub(crate) fn guard_context(dir: &Path) -> Context {
-    for folder in [
-        "main",
-        "wt/src",
-        "home/.claude",
-        "home/.codex",
-        "state/settings",
-    ] {
-        std::fs::create_dir_all(dir.join(folder)).unwrap();
-    }
-    Context {
-        cwd: dir.join("wt"),
-        worktree: dir.join("wt"),
-        main_checkout: Some(dir.join("main")),
-        home: Some(dir.join("home")),
-        weacon: vec![dir.join("state")],
-        credentials: vec![dir.join("home/.claude"), dir.join("home/.codex")],
-        cdpath: false,
-        additions: vec![vec!["terraform".to_owned(), "destroy".to_owned()]],
     }
 }
