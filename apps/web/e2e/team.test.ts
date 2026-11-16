@@ -67,7 +67,14 @@ test("an owner invites someone, who signs in and joins, leaves, joins again and 
   await row.getByRole("button", { name: "Remove" }).click();
   await row.getByText("Past member").waitFor();
 
-  // Back in after leaving, bo is told of the removal like anyone.
-  await bo.getByText("You're no longer a member of Crew.").waitFor();
+  // Back in after leaving, bo is told of the removal like anyone: when the feed ends, or else at
+  // their next request, which opening Tasks makes.
+  const told = bo.getByText("You're no longer a member of Crew.");
+  const tasks = bo.getByRole("button", { name: "Tasks" });
+  await told.or(tasks).first().waitFor();
+  if (!(await told.isVisible())) {
+    await tasks.click({ timeout: 5_000 }).catch(() => {});
+  }
+  await told.waitFor();
   assert.equal(await bo.getByRole("heading", { name: "Crew" }).count(), 0);
 });
