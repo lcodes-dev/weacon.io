@@ -26,4 +26,6 @@ await build({
   },
   logLevel: "warning",
 });
-copyFileSync(new URL("src/index.html", root), new URL("index.html", dist));
+for (const file of ["index.html", "icon.svg"]) {
+  copyFileSync(new URL(`src/${file}`, root), new URL(file, dist));
+}

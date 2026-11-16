@@ -7,6 +7,7 @@ import type { ChatLeg } from "../protocol.ts";
 import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
 import { useSocketFor } from "../shell/workspace-socket.ts";
+import { ThemeSwitch } from "../theme-switch.tsx";
 
 const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "workspace.chats", "workspace.chat_commands", "worktree.manage", "worktree.open_terminal"] };
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
@@ -57,9 +58,12 @@ export function ChatPage({ url, chatRef }: { url: string; chatRef: ChatRef | und
     <div className="app">
       <header>
         <span className="status">{statusText(status)}</span>
-        <button type="button" onClick={() => setSettings(!settings)}>
-          {settings ? "Back" : "Settings"}
-        </button>
+        <span className="end">
+          <button type="button" onClick={() => setSettings(!settings)}>
+            {settings ? "Back" : "Settings"}
+          </button>
+          <ThemeSwitch />
+        </span>
       </header>
       <main>
         <div className={settings ? "pane away" : "pane"}>

@@ -268,7 +268,7 @@ test("Settings shows the account and this build, and signs out from there", { ti
   await page.getByRole("heading", { name: "Account" }).waitFor();
   assert.equal(await email.innerText(), EMAIL);
   await page.getByRole("heading", { name: "About" }).waitFor();
-  assert.deepEqual(await page.locator("header button").allInnerTexts(), ["Back"]);
+  assert.deepEqual(await page.locator("header .who button").allInnerTexts(), ["Back"]);
   assert.equal(await page.locator("header .who .muted").count(), 0);
   assert.equal(await page.getByRole("heading", { name: "Workspaces" }).isVisible(), false);
   await page.getByRole("button", { name: "Back" }).click();

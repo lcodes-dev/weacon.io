@@ -1,23 +1,7 @@
-.diff {
-  --added: #e6f4ea;
-  --removed: #fdecea;
-  --gutter: #f6f7f8;
-  --marked: #fff3c4;
-}
-
-@media (prefers-color-scheme: dark) {
-  .diff {
-    --added: #17311f;
-    --removed: #3a1c1c;
-    --gutter: #1d2025;
-    --marked: #3d3414;
-  }
-}
-
 .diff .file {
   content-visibility: auto;
   margin-bottom: 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -31,11 +15,11 @@
   min-height: 24px;
   align-items: center;
   font-size: 14px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 
 .diff .path {
-  font-family: ui-monospace, monospace;
+  font-family: var(--mono);
   overflow-wrap: anywhere;
 }
 
@@ -46,7 +30,7 @@
 
 .diff .lines {
   overflow-x: auto;
-  font: 13px/20px ui-monospace, monospace;
+  font: 13px/20px var(--mono);
 }
 
 .diff .note,
@@ -58,8 +42,8 @@
 
 .diff .note {
   padding-left: 12px;
-  color: var(--muted);
-  background: var(--gutter);
+  color: var(--ink-2);
+  background: var(--surface-2);
 }
 
 .diff .line {
@@ -95,8 +79,8 @@
 .diff .line::after {
   padding-right: 1ch;
   text-align: right;
-  color: var(--muted);
-  background: var(--gutter);
+  color: var(--ink-2);
+  background: var(--surface-2);
   user-select: none;
 }
 
@@ -110,11 +94,11 @@
 
 .diff .line[data-mark="commented"]::before,
 .diff .line[data-mark="commented"]::after {
-  background: var(--marked);
+  background: var(--warn-soft);
 }
 
 .diff .line[data-mark="selected"] {
-  background: var(--marked);
+  background: var(--warn-soft);
 }
 
 .diff .line::before,
@@ -128,7 +112,7 @@
   max-width: 72ch;
   font: 14px/1.5 system-ui, sans-serif;
   white-space: normal;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--bg);
 }
@@ -146,11 +130,6 @@
   box-sizing: border-box;
   width: 100%;
   min-height: 5em;
-  font: inherit;
-  color: inherit;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
 }
 
 .diff .comment .actions {
@@ -177,7 +156,7 @@
   gap: 8px;
   align-items: center;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 
 @media (max-width: 720px) {

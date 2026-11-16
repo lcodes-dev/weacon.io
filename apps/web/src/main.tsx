@@ -5,8 +5,11 @@ import "./app.css";
 import { ChatPage } from "./chat-page/chat-page.tsx";
 import { chatRefOf } from "./chat-ref.ts";
 import { fakeServerUrl } from "./server.ts";
+import { STORE } from "./shell/last-workspace.ts";
 import { Shell } from "./shell/shell.tsx";
+import { keptTheme, showTheme } from "./theme.ts";
 
+showTheme(document.documentElement, keptTheme(STORE));
 const fake = fakeServerUrl(window.location);
 const root = document.getElementById("root");
 if (root !== null) {

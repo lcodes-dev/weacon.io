@@ -55,7 +55,7 @@ install_on() {
 }
 
 # The web app's built files, as apps/server/build.rs embeds them.
-web_files=(index.html app.js app.css)
+web_files=(index.html app.js app.css icon.svg)
 
 # Starts the server on a free port and checks it serves each built file of the web app.
 check_serves() {

@@ -138,6 +138,7 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   assert.equal(await page.getByRole("heading", { name: "Personal" }).count(), 0);
   assert.equal(await toChats.count(), 0);
   await thumbSized(page, page.getByRole("button", { name: "Workspace: Personal" }), "the workspace selector");
+  await thumbSized(page, page.getByRole("button", { name: "Switch to light" }), "the theme switch");
   await fits(page, "the chat list");
   const workspace = new URL(page.url()).searchParams.get("workspace");
   assert.ok(workspace !== null);
