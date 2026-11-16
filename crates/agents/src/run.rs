@@ -10,7 +10,6 @@ use weacon_protocol::{AgentSession, Outcome, PermissionAnswer, RunEvent, RunId, 
 
 use crate::access::{Decision, Rules};
 use crate::lines::Lines;
-use crate::spawn::SpawnPolicy;
 use crate::wire::{Asked, Effect, Wire};
 
 // Far above any real line; a longer one is skipped rather than held in memory.
@@ -51,17 +50,14 @@ enum Turn {
     Interrupting,
 }
 
-/// Starts `command` under `policy` as run `id`, speaking `wire`, answering the prompts `rules`
-/// decide.
+/// Starts `command` as run `id`, speaking `wire`, answering the prompts `rules` decide.
 pub(crate) fn spawn(
     mut command: Command,
-    policy: &SpawnPolicy,
     id: RunId,
     wire: Wire,
     rules: Rules,
 ) -> Result<AgentRun, Fault> {
     let not_started = || Fault::new(code!("agent.not_started"), "The agent couldn't start");
-    policy.apply(&mut command);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -69,7 +65,6 @@ pub(crate) fn spawn(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| not_started().because(error))?;
-    policy.adjust(&child);
     let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
         return Err(not_started());
     };

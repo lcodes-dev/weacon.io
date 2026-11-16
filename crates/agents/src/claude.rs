@@ -188,7 +188,6 @@ mod tests {
         use weacon_testing::platform::write_program;
 
         use crate::run::AgentRun;
-        use crate::spawn::SpawnPolicy;
         use crate::test_support::{OTHER_SESSION, SESSION, app, run_id, started};
 
         // Scripts stand in for `claude auth status`, printing `status` and exiting `code`.
@@ -239,15 +238,13 @@ mod tests {
             }
         }
 
-        // A `claude` that notes its arguments, reads one line, starts a tool that notes what it
-        // inherited, then prints its workspace's session.
+        // A `claude` that notes its arguments, reads one line, then prints its workspace's
+        // session.
         fn fake_claude(dir: &Path) -> PathBuf {
             let program = dir.join("claude");
             write_program(
                 &program,
                 "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CLAUDE_CONFIG_DIR/args\"\nread -r line\n\
-                 sh -c 'cat /proc/self/oom_score_adj; echo \"$CARGO_BUILD_JOBS $CLAUDE_CONFIG_DIR\"' \
-                 > \"$CLAUDE_CONFIG_DIR/tool\" 2>/dev/null\n\
                  cat \"$CLAUDE_CONFIG_DIR/session\"\n",
             )
             .unwrap();
@@ -294,15 +291,10 @@ mod tests {
             let second = workspace(&dir, "second", OTHER_SESSION);
 
             let (first_events, second_events) = tokio::join!(
-                events(
-                    first
-                        .start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
-                        .unwrap()
-                ),
+                events(first.start(&app(), run_id("run-1"), None).unwrap()),
                 events(
                     second
                         .start(
-                            &SpawnPolicy::default(),
                             &app(),
                             run_id("run-1"),
                             Some(&AgentSession::try_from(SESSION.to_owned()).unwrap())
@@ -319,43 +311,6 @@ mod tests {
             let args = |name| fs::read_to_string(dir.join(name).join("args")).unwrap();
             assert!(!args("first").contains("--resume"));
             assert!(args("second").ends_with(&format!("--resume\n{SESSION}\n")));
-        }
-
-        #[cfg(target_os = "linux")]
-        #[tokio::test]
-        async fn tools_inherit_the_policy_but_never_a_changed_config() {
-            use std::collections::BTreeMap;
-
-            let dir = TempDir::new().unwrap();
-            fake_claude(&dir);
-            let claude = workspace(&dir, "first", SESSION);
-            // Writing its own score back shows whether this procfs takes scores at all.
-            let own = fs::read_to_string("/proc/self/oom_score_adj").ok();
-            let adjustable = own
-                .as_ref()
-                .is_some_and(|own| fs::write("/proc/self/oom_score_adj", own).is_ok());
-            let policy = SpawnPolicy {
-                env: BTreeMap::from([
-                    ("CARGO_BUILD_JOBS".into(), "3".into()),
-                    ("CLAUDE_CONFIG_DIR".into(), "/elsewhere".into()),
-                ]),
-                // The highest score, so it raises whatever the test process has.
-                oom_score_adj: adjustable.then_some(1000),
-            };
-
-            events(
-                claude
-                    .start(&policy, &app(), run_id("run-1"), None)
-                    .unwrap(),
-            )
-            .await;
-
-            let tool = fs::read_to_string(dir.join("first/tool")).unwrap();
-            let config = dir.join("first");
-            let raised = String::from("1000\n");
-            let score = adjustable.then_some(raised).or(own);
-            let expected = format!("{}3 {}\n", score.unwrap_or_default(), config.display());
-            assert_eq!(tool, expected);
         }
     }
 

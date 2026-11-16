@@ -6,7 +6,6 @@ use weacon_protocol::AgentKind;
 mod beneath;
 mod chrome;
 mod programs;
-mod spawn_policy;
 mod terminal_app;
 #[cfg(unix)]
 mod unix;
@@ -18,7 +17,6 @@ pub(crate) use chrome::{CHROME_HOST, register_chrome_host};
 pub(crate) use programs::find_program;
 #[cfg(test)]
 pub(crate) use programs::{plant_link, plant_program};
-pub(crate) use spawn_policy::spawn_policy;
 pub(crate) use terminal_app::terminal_in;
 #[cfg(unix)]
 pub(crate) use unix::*;

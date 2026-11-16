@@ -14,7 +14,6 @@ use weacon_protocol::{AccessLevel, AgentKind, AgentSession, App, RunId, code};
 use crate::access::Rules;
 use crate::platform;
 use crate::run::{self, AgentRun};
-use crate::spawn::SpawnPolicy;
 use crate::terminal::{Events, Size, Terminal};
 use crate::vendor::{Vendor, unknown, vendor};
 
@@ -90,14 +89,13 @@ impl Launch {
         })
     }
 
-    /// Starts the agent under `policy`, resuming `session` when given. `app` is Weacon's own
-    /// build, for agents that record their client.
+    /// Starts the agent, resuming `session` when given. `app` is Weacon's own build, for agents
+    /// that record their client.
     ///
     /// # Errors
     /// When this build doesn't know the agent, or its program can't be started.
     pub fn start(
         &self,
-        policy: &SpawnPolicy,
         app: &App,
         run: RunId,
         session: Option<&AgentSession>,
@@ -112,7 +110,7 @@ impl Launch {
                 .unwrap_or(&self.config_dir)
                 .to_path_buf(),
         };
-        run::spawn(command, policy, run, wire, rules)
+        run::spawn(command, run, wire, rules)
     }
 
     /// Runs the vendor's own status command and reads how it exits and, for Claude, only where
@@ -306,7 +304,7 @@ mod tests {
     }
 
     fn start(launch: &Launch) -> Result<AgentRun, Fault> {
-        launch.start(&SpawnPolicy::default(), &app(), run_id("run-1"), None)
+        launch.start(&app(), run_id("run-1"), None)
     }
 
     const SESSION: &str = "0b7c6a52-3f1e-4d2a-9c8b-5e4f3a2b1c0d";
