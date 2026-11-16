@@ -232,7 +232,8 @@ async fn leg_for(
         *by == member.id && from.shared.now().saturating_sub(*at) < CALL_SECS
     });
     match fixed {
-        Some(leg) if leg.core_seq > 0 => named(&leg)
+        // One that took no prompt yet stays too, unless this prompt names a machine.
+        Some(leg) if leg.core_seq > 0 || machine.is_none() => named(&leg)
             .then_some(leg)
             .ok_or_else(crate::db::machine_fixed),
         Some(leg) if calling && !named(&leg) => Err(crate::db::machine_fixed()),
@@ -812,6 +813,11 @@ mod tests {
         let mine = prompt("r-5", "c-1", "And mine", Some(&grace.machine));
         two.ask(grace, mine).await.unwrap();
         assert_eq!(sent(&mut two.graces).len(), 2);
+        // Before her machine's first word, a prompt that names none still goes to it.
+        two.ask(grace, prompt("r-6", "c-1", "And more", None))
+            .await
+            .unwrap();
+        assert_eq!(sent(&mut two.graces).len(), 2);
     }
 
     #[tokio::test]
@@ -837,7 +843,9 @@ mod tests {
             .unwrap();
         assert!(sent(&mut two.graces).is_empty());
         assert_eq!(sent(&mut two.adas).len(), 4);
-        two.up(ada, 3, status(RunState::Idle)).await;
+        // Her queued turn starts, then ends.
+        two.up(ada, 3, status(RunState::Running)).await;
+        two.up(ada, 4, status(RunState::Idle)).await;
         two.ask(grace, mine()).await.unwrap();
         assert_eq!(sent(&mut two.graces).len(), 2);
     }
@@ -857,7 +865,8 @@ mod tests {
         assert!(sent(&mut two.graces).is_empty());
         // Her own next one still goes, and her run's first word ends the wait for it.
         two.ask(ada, hers()).await.unwrap();
-        two.up(ada, 1, status(RunState::Idle)).await;
+        two.up(ada, 1, status(RunState::Running)).await;
+        two.up(ada, 2, status(RunState::Idle)).await;
         drop(std::mem::replace(
             &mut two.graces,
             attach(&two.fixture.shared, grace, &["machine.connect"]),
@@ -879,7 +888,8 @@ mod tests {
             .await
             .unwrap();
         two.up(ada, 1, prompted("r-4", "Fix it")).await;
-        two.up(ada, 2, status(RunState::Idle)).await;
+        two.up(ada, 2, status(RunState::Running)).await;
+        two.up(ada, 3, status(RunState::Idle)).await;
         sent(&mut two.adas);
 
         two.ask(ada, prompt("r-6", "c-1", "And now?", None))
@@ -954,7 +964,8 @@ mod tests {
         let mine = prompt("r-5", "c-1", "And mine", Some(&grace.machine));
         two.ask(grace, mine).await.unwrap();
         two.up(grace, 1, prompted("r-5", "And mine")).await;
-        two.up(grace, 2, status(RunState::Idle)).await;
+        two.up(grace, 2, status(RunState::Running)).await;
+        two.up(grace, 3, status(RunState::Idle)).await;
         let thanks = prompt("r-8", "c-1", "Thanks", None);
         two.ask(ada, thanks).await.unwrap();
 

@@ -62,7 +62,9 @@ function newChatServer(chats: Chats): (asked: Envelope, opened: number, reply: (
     const text = chats.made.get(asked.chat) ?? "";
     const { workspace, chat } = asked;
     if (asked.query.kind === "snapshot") {
-      const events = [{ seq: 1, event: { kind: "prompt" as const, request: "q-1", text } }];
+      // Its first words are a prompt when they called the agent, else a message to the chat.
+      const event = chats.called.has(chat) ? { kind: "prompt" as const, request: "q-1", text } : { kind: "message" as const, author: "m-1", text };
+      const events = [{ seq: 1, event }];
       return [{ id: asked.id, type: "chat_answer", workspace, chat, answer: { kind: "snapshot", seq: 1, runs: [], waiting: [], events } }];
     }
     if (asked.query.kind === "subscribe" && asked.query.after === 1 && chats.called.has(chat)) {

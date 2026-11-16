@@ -87,8 +87,21 @@ impl ChatRuns {
         self.waiting.iter().map(|waits| waits.seq).collect()
     }
 
-    // Another run's prompts can no longer be answered, nor its own once it stops working.
+    // Another run's prompts can no longer be answered, nor its own once it stops working. A
+    // run that isn't working, as an idle one going to sleep, takes nothing from the one that is.
     fn status(&mut self, status: &RunStatus) {
+        let working = |state| {
+            matches!(
+                state,
+                RunState::Starting | RunState::Running | RunState::Waiting | RunState::Newer
+            )
+        };
+        let latest = self.run.as_ref();
+        if latest.is_some_and(|latest| latest.run != status.run && working(latest.state))
+            && !working(status.state)
+        {
+            return;
+        }
         let may_ask = matches!(
             status.state,
             RunState::Running | RunState::Waiting | RunState::Newer
@@ -193,6 +206,35 @@ mod tests {
             .zip(events)
             .map(|(seq, event)| ChatEntry { seq, event })
             .collect()
+    }
+
+    #[test]
+    fn a_run_that_isnt_working_takes_nothing_from_the_one_that_is() {
+        let mut runs = ChatRuns::fold(&log(vec![
+            status("run-1", RunState::Idle),
+            status("run-2", RunState::Running),
+            asks("run-2", 1),
+            status("run-2", RunState::Waiting),
+            // The first run's process stops while the second waits for its answer.
+            status("run-1", RunState::Sleeping),
+        ]));
+
+        assert_eq!(runs.run().map(|latest| latest.run.as_str()), Some("run-2"));
+        assert!(runs.waits(&run("run-2"), 1));
+        // Once the second is done, the first's next word counts again, as a new turn's does.
+        for (seq, event) in [
+            (6, status("run-2", RunState::Idle)),
+            (7, status("run-1", RunState::Sleeping)),
+        ] {
+            runs.apply(&ChatEntry { seq, event });
+        }
+        assert_eq!(runs.run().map(|latest| latest.run.as_str()), Some("run-1"));
+        let mut runs = ChatRuns::fold(&log(vec![status("run-1", RunState::Running)]));
+        runs.apply(&ChatEntry {
+            seq: 2,
+            event: status("run-2", RunState::Starting),
+        });
+        assert_eq!(runs.run().map(|latest| latest.run.as_str()), Some("run-2"));
     }
 
     #[test]

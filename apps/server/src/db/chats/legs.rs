@@ -481,8 +481,13 @@ mod tests {
         assert!(one.call(&chat, &bo, NOW + 1 + CALL_SECS).await.unwrap());
         one.uncall(&chat, &bo).await.unwrap();
         assert!(one.call(&chat, &ada, NOW + 3 + CALL_SECS).await.unwrap());
-        // Her run's status ends the hold; anything else of hers doesn't.
-        for (event, held) in [(said("Hi"), true), (status(RunState::Running), false)] {
+        // Her run at work ends the hold; an earlier run of hers going idle doesn't.
+        let reports = [
+            (said("Hi"), true),
+            (status(RunState::Idle), true),
+            (status(RunState::Running), false),
+        ];
+        for (event, held) in reports {
             let incoming = Incoming {
                 core_seq: None,
                 event: &event,

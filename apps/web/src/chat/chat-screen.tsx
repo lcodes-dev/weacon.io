@@ -61,7 +61,6 @@ export function ChatScreen({
   at?: number | undefined;
 }) {
   const [shown, setShown] = useState<"run" | "changes">("run");
-  const [adding, setAdding] = useState(false);
   const access = useChatAccess(link);
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
@@ -138,22 +137,15 @@ export function ChatScreen({
           agent={leg?.detached === false ? agentItem(leg.agent) : undefined}
           calling={calling(chat, me)}
         />
-      ) : adding ? (
-        <FirstCall link={link} machines={machines} missing={missing} openSettings={openSettings} away={away} send={commands.send} blocked={why} />
       ) : (
-        <>
-          <button type="button" className="add-agent" onClick={() => setAdding(true)}>
-            Add your agent
-          </button>
-          <Composer send={commands.send()} blocked={why} hidden={false} agent={undefined} calling={false} />
-        </>
+        <FirstCall link={link} machines={machines} missing={missing} openSettings={openSettings} away={away} send={commands.send} blocked={why} />
       )}
     </div>
   );
 }
 
-// The message box of a member who is picking their own agent for the chat: until the chat has
-// it, each call names the pick.
+// The message box of a member with no agent in the chat yet, who may pick theirs: until the chat
+// has it, each call names the pick. The box stays as the fields open, so what is typed does.
 function FirstCall({
   link,
   machines,
@@ -171,11 +163,20 @@ function FirstCall({
   send(first?: Choice): Send;
   blocked: string | undefined;
 }) {
-  const pick = useMyAgent(link, machines, away);
+  const [adding, setAdding] = useState(false);
+  // Nothing is asked of a machine until the person asks for their agent.
+  const pick = useMyAgent(link, adding ? machines : [], away);
+  const fields = machines.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
   return (
     <>
-      {machines.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing}
-      <Composer send={send(pick.choice)} blocked={why} hidden={false} agent={pick.choice && agentItem(pick.choice.agent)} calling />
+      {adding ? (
+        fields
+      ) : (
+        <button type="button" className="add-agent" onClick={() => setAdding(true)}>
+          Add your agent
+        </button>
+      )}
+      <Composer send={send(pick.choice)} blocked={why} hidden={false} agent={pick.choice && agentItem(pick.choice.agent)} calling={adding} />
     </>
   );
 }
