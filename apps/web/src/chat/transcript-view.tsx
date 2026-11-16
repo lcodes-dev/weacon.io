@@ -140,6 +140,7 @@ function LineView({ line, formatted, answering, landed }: { line: Line; formatte
     case "prompt":
       return (
         <div className={landed ? "row prompt landed" : "row prompt"} data-key={line.key}>
+          {line.author !== undefined && <span className="author">{line.author}</span>}
           {line.text}
         </div>
       );

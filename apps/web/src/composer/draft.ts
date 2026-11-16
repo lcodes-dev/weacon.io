@@ -1,5 +1,5 @@
-/** Someone or something a message can mention. The kinds aren't settled, so `kind` is open. */
-export type MentionItem = { kind: string; id: string; label: string };
+/** An agent a message can mention, which calls it. */
+export type MentionItem = { id: string; label: string };
 
 /** A picked item, kept as the text `@label` at `[start, end)` of the draft. */
 export type Mention = { start: number; end: number; item: MentionItem };

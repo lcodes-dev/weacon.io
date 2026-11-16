@@ -315,6 +315,12 @@ const AGENTS: [(AgentKind, &str); 2] = [
     (AgentKind::Codex, "Codex"),
 ];
 
+/// What people call `agent`'s vendor's program; "Agent" for one this build doesn't know.
+pub(crate) fn vendor_name(agent: AgentKind) -> &'static str {
+    let named = AGENTS.iter().find(|(kind, _)| *kind == agent);
+    named.map_or("Agent", |(_, name)| name)
+}
+
 /// What a workspace's folders are called, wherever they are.
 pub(crate) fn folder_name(workspace: &WorkspaceId) -> String {
     names::case_safe_name(FOLDER_PREFIX, workspace.as_str())

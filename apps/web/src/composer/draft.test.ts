@@ -3,8 +3,8 @@ import { test } from "node:test";
 
 import { type Draft, EMPTY_DRAFT, type MentionItem, editDraft, pickMention, query } from "./draft.ts";
 
-const jun: MentionItem = { kind: "person", id: "m-1", label: "Jun Sato" };
-const codex: MentionItem = { kind: "agent", id: "a-1", label: "Codex" };
+const jun: MentionItem = { id: "m-1", label: "Jun Sato" };
+const codex: MentionItem = { id: "a-1", label: "Codex" };
 
 // "hi @Jun Sato and @Codex ok"
 const both: Draft = {

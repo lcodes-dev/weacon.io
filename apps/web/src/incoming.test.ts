@@ -134,6 +134,7 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
   const good = [
     said.event,
     { kind: "outside_prompt", text: "Hi" },
+    { kind: "message", author: "m-1", text: "Hi" },
     { kind: "receipt", receipt: { request: "q-1", state: "accepted" } },
     { kind: "run", update: { run: "r-1", event: { event: "text", text: "Hello." } } },
     { kind: "run_status", status: { run: "r-1", state: "idle" } },
@@ -144,6 +145,7 @@ test("a chat's events pass with the fields this app reads, and a newer kind keep
     { kind: 3 },
     { kind: "prompt", text: "Hi" },
     { kind: "outside_prompt" },
+    { kind: "message", text: "Hi" },
     { kind: "receipt", receipt: {} },
     { kind: "run", update: { event: { event: "text", text: "x" } } },
     { kind: "run", update: { run: "r-1", event: { event: "text" } } },

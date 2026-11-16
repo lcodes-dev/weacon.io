@@ -39,6 +39,28 @@ test("a chat's lines are its prompts and its turns under their labels, with prom
   assert.deepEqual(lines(chat).at(-1), { key: "t2-r-1.a1", kind: "ask", run: "r-1", ask: { prompt: 1, tool: "Bash", at: 1, state: "open" } });
 });
 
+test("what a person wrote, to the chat or to their agent, shows under their name", () => {
+  const chat = chatOf(
+    [
+      { seq: 2, event: { kind: "message", author: "m-2", text: "Morning" } },
+      { seq: 3, event: { kind: "prompt", request: "q-3", text: "@Claude Code fix it", author: "m-1" } },
+      { seq: 4, event: { kind: "outside_prompt", text: "From a terminal" } },
+    ],
+    4,
+  );
+  const names = new Map([
+    ["m-1", "ada"],
+    ["m-2", "grace"],
+  ]);
+
+  assert.deepEqual(lines(chat, names), [
+    { key: "p2", kind: "prompt", text: "Morning", author: "grace" },
+    { key: "p3", kind: "prompt", text: "@Claude Code fix it", author: "ada" },
+    { key: "p4", kind: "prompt", text: "From a terminal", author: undefined },
+  ]);
+  assert.equal(lineAt(chat, 2), "p2");
+});
+
 test("lines keep their keys as older events load before them and as text commits", () => {
   const chat = chatOf([said(3, "Hi")], 3);
   const streaming = stream(chat, "r-1", { event: "text_delta", text: "Hel" });

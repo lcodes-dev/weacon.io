@@ -1,9 +1,7 @@
 import { type KeyboardEvent, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
 import "./composer.css";
-import { NO_ATTACHMENTS, attachFiles, removeAttachment, settled } from "./attachments.ts";
 import { type Draft, EMPTY_DRAFT, type MentionItem, type Placed, editDraft, pickMention, query } from "./draft.ts";
-import { AttachButton, Files, useFileDrop } from "./files.tsx";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
 import type { Lates, Send, Sent } from "./prompt.ts";
@@ -12,7 +10,8 @@ import { useSend } from "./send.ts";
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
  * text until the server accepts it, and says so when it doesn't, as `explain` words it; a late
- * receipt settles it.
+ * receipt settles it. Typing `@` offers `agent`, the writer's own in this chat, and a message that
+ * mentions it calls it.
  */
 export function Composer({
   send,
@@ -20,12 +19,14 @@ export function Composer({
   hidden,
   lates,
   explain,
+  agent,
 }: {
   send: Send;
   blocked: string | undefined;
   hidden: boolean;
   lates: Lates;
   explain?: (sent: Sent) => string | undefined;
+  agent: MentionItem | undefined;
 }) {
   const [placed, setPlaced] = useState<Placed>({ draft: EMPTY_DRAFT, caret: 0 });
   const [active, setActive] = useState(0);
@@ -37,15 +38,13 @@ export function Composer({
     (sent) => setPlaced((now) => (now.draft.text === sent ? { draft: EMPTY_DRAFT, caret: 0 } : now)),
     explain,
   );
-  const [files, setFiles] = useState(NO_ATTACHMENTS);
   const box = useRef<HTMLTextAreaElement>(null);
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
-  const options = offered(at, dismissed, sending);
-  const unsent = files.attachments.length > 0 ? "Files can't be sent yet; remove them to send the message" : undefined;
-  const hint = problem ?? blocked ?? files.refused ?? unsent;
-  const ready = !sending && unsent === undefined && blocked === undefined && draft.text.trim() !== "";
+  const options = offered(at, dismissed, sending, agent);
+  const hint = problem ?? blocked;
+  const ready = !sending && blocked === undefined && draft.text.trim() !== "";
 
   useLayoutEffect(() => {
     const element = box.current;
@@ -66,8 +65,6 @@ export function Composer({
       await deliver(draft.text, draft.text);
     }
   };
-  const attach = (added: File[]) => setFiles((before) => attachFiles(before, added));
-  const drop = useFileDrop(attach);
   const choose = (item: MentionItem | undefined) => {
     if (at !== undefined && item !== undefined) {
       place(pickMention(draft, at, item));
@@ -97,7 +94,6 @@ export function Composer({
     <form
       className="composer"
       hidden={hidden}
-      {...drop}
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -117,7 +113,6 @@ export function Composer({
           readOnly={sending}
           onChange={(event) => {
             place(editDraft(draft, event.target.value, event.target.selectionEnd, (event.nativeEvent as InputEvent).isComposing));
-            setFiles(settled);
             clear();
           }}
           onSelect={(event) => {
@@ -128,21 +123,11 @@ export function Composer({
           }}
           onScroll={(event) => backdrop.current?.scrollTo(0, event.currentTarget.scrollTop)}
           onKeyDown={keyDown}
-          onPaste={(event) => {
-            // Office apps put a picture of copied text beside the text itself; the text wins.
-            const pasted = event.clipboardData.types.includes("text/plain") ? [] : [...event.clipboardData.files];
-            if (pasted.length > 0) {
-              event.preventDefault();
-              attach(pasted);
-            }
-          }}
         />
       </div>
-      <AttachButton attach={attach} />
       <button type="submit" disabled={!ready}>
         Send
       </button>
-      {files.attachments.length > 0 && <Files attachments={files.attachments} remove={(id) => setFiles((before) => removeAttachment(before, id))} />}
       {options.length > 0 && <Options options={options} active={active} choose={choose} />}
       {hint !== undefined && <p className="hint muted">{hint}</p>}
     </form>
@@ -176,7 +161,7 @@ function Options({
   choose: (item: MentionItem) => void;
 }) {
   return (
-    <ul className="mentions" id="mentions" role="listbox" aria-label="People and agents">
+    <ul className="mentions" id="mentions" role="listbox" aria-label="Your agent">
       {options.map((item, index) => (
         <li
           key={item.id}
@@ -188,7 +173,7 @@ function Options({
           onClick={() => choose(item)}
         >
           {item.label}
-          <span className="muted">{item.kind === "agent" ? "Agent" : "Person"}</span>
+          <span className="muted">Your agent</span>
         </li>
       ))}
     </ul>
