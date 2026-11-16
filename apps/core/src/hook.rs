@@ -168,7 +168,6 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use weacon_agents::SpawnPolicy;
     use weacon_protocol::{AgentKind, ChatTask, RunId, WorkspaceId};
     use weacon_testing::{TempDir, recording_logger};
 
@@ -240,9 +239,8 @@ mod tests {
         started: &std::sync::mpsc::Sender<crate::mcp::Mcp>,
         stopped: tokio::sync::oneshot::Receiver<()>,
     ) {
-        let spawn = SpawnPolicy::default();
         runtime().unwrap().block_on(async {
-            let daemon = Daemon::start(state, build(&VERSION), spawn, places, log).unwrap();
+            let daemon = Daemon::start(state, build(&VERSION), places, log).unwrap();
             started.send(daemon.mcp().clone()).unwrap();
             daemon.serve(async { drop(stopped.await) }).await;
         });

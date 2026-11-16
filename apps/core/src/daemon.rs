@@ -7,7 +7,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
-use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{App, Envelope, LineDecoder, Message, code, encode_line};
@@ -56,7 +55,6 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
         let mut daemon = Daemon::start(
             state_dir,
             build(&app.version),
-            app.spawn.clone(),
             Places {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
@@ -109,7 +107,6 @@ impl Daemon {
     pub(crate) fn start(
         state_dir: &Path,
         app: App,
-        spawn: SpawnPolicy,
         mut places: Places,
         log: Logger,
     ) -> Result<Self, Fault> {
@@ -135,7 +132,7 @@ impl Daemon {
         let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
         places.mcp = Some(mcp.clone());
         let worktrees = worktrees::worktrees(state_dir, &places);
-        let (chats, engine) = chats::start(state_dir, places, app.clone(), spawn, log.clone())?;
+        let (chats, engine) = chats::start(state_dir, places, app.clone(), log.clone())?;
         let listener = platform::bind(&socket).map_err(failed)?;
         log.info("daemon started", &[]);
         Ok(Self {
@@ -331,13 +328,7 @@ mod tests {
     // Starts a daemon, letting `change` adjust it before it serves.
     fn start_as(dir: &Path, change: impl FnOnce(&mut Daemon)) -> Result<Running, Fault> {
         let (log, records) = recording_logger();
-        let mut daemon = Daemon::start(
-            dir,
-            build(&VERSION),
-            SpawnPolicy::default(),
-            Places::default(),
-            log,
-        )?;
+        let mut daemon = Daemon::start(dir, build(&VERSION), Places::default(), log)?;
         change(&mut daemon);
         let socket = daemon.socket.clone();
         let (stop, stopped) = oneshot::channel();

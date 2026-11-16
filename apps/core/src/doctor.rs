@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::Path;
 
-use weacon_agents::{Launch, SpawnPolicy};
+use weacon_agents::Launch;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::code;
 
@@ -66,24 +66,11 @@ fn report(app: &App) -> String {
     let on = app.reporter.is_on() && app.reporter.agreed();
     let reports = if on { "on" } else { "off" };
     format!(
-        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n{}",
+        "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n",
         app.version.with_commit(),
         path(app.state_dir.as_deref()),
         path(app.log_file.as_deref()),
-        agent_tools(&app.spawn),
     )
-}
-
-fn agent_tools(policy: &SpawnPolicy) -> String {
-    let Some(score) = policy.oom_score_adj else {
-        return String::new();
-    };
-    let vars: Vec<_> = policy
-        .env
-        .iter()
-        .map(|(key, value)| format!(" {}={}", key.display(), value.display()))
-        .collect();
-    format!("Agent tools: OOM score {score}{}\n", vars.concat())
 }
 
 #[cfg(test)]
@@ -179,23 +166,6 @@ mod tests {
             "{without_consent}"
         );
         assert!(report(&app).contains("Error reports: on\n"));
-    }
-
-    #[test]
-    fn prints_how_agent_tools_start() {
-        let mut app = app(Some("/srv"), Some("/srv/logs/weacon.log"));
-        app.spawn = SpawnPolicy {
-            env: [
-                ("GOMAXPROCS".into(), "2".into()),
-                ("CARGO_BUILD_JOBS".into(), "2".into()),
-            ]
-            .into(),
-            oom_score_adj: Some(500),
-        };
-
-        assert!(report(&app).ends_with(
-            "Error reports: off\nAgent tools: OOM score 500 CARGO_BUILD_JOBS=2 GOMAXPROCS=2\n"
-        ));
     }
 
     #[test]

@@ -292,7 +292,7 @@ mod tests {
     mod with_a_program {
         use std::time::Duration;
 
-        use weacon_agents::{Launch, SpawnPolicy};
+        use weacon_agents::Launch;
         use weacon_protocol::{AccessLevel, AgentKind, Outcome};
         use weacon_testing::TempDir;
         use weacon_testing::platform::write_program;
@@ -331,9 +331,7 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
             };
             let run = crate::chats::test_support::run("run-1");
             let app = weacon_appkit::build(&VERSION);
-            let mut agent = launch
-                .start(&SpawnPolicy::default(), &app, run.clone(), None)
-                .unwrap();
+            let mut agent = launch.start(&app, run.clone(), None).unwrap();
             let answer = PermissionAnswer {
                 run,
                 prompt: 1,

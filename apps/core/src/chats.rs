@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use weacon_agents::{Launch, SpawnPolicy};
+use weacon_agents::Launch;
 use weacon_observability::{Fault, Logger};
 use weacon_protocol::{AgentKind, App, ChatId, RepoId, WorkspaceId, code};
 
@@ -41,7 +41,7 @@ pub(crate) struct Places {
 }
 
 /// The clients' way to the chats in `state_dir`, and the engine to run behind it, which starts
-/// each agent under `policy` with its workspace's own sign-in, in a folder under `places`.
+/// each agent with its workspace's own sign-in, in a folder under `places`.
 ///
 /// # Errors
 /// When the journal of runs can't be read.
@@ -49,14 +49,13 @@ pub(crate) fn start(
     state_dir: &Path,
     places: Places,
     app: App,
-    policy: SpawnPolicy,
     log: Logger,
 ) -> Result<(Chats, Engine<Granted>), Fault> {
     let runs = Runs::load(state_dir)?;
     let workspaces = Workspaces::new(state_dir, places.path.clone());
     let roots = workspaces.clone();
     let host = Host {
-        launch: Arc::new(move |run_as: &RunAs| launch(&roots, &places, &policy, &app, run_as)),
+        launch: Arc::new(move |run_as: &RunAs| launch(&roots, &places, &app, run_as)),
         now: unix_now,
     };
     Ok(Engine::new(runs, workspaces, host, log))
@@ -67,7 +66,6 @@ pub(crate) fn start(
 fn launch(
     roots: &Workspaces,
     places: &Places,
-    policy: &SpawnPolicy,
     app: &App,
     run_as: &RunAs,
 ) -> Result<Granted, Fault> {
@@ -80,7 +78,7 @@ fn launch(
         run_as.repo.as_ref(),
     )?;
     let (launch, revoke) = mcp::grant(places.mcp.as_ref(), launch, run_as)?;
-    let agent = launch.start(policy, app, run_as.run.clone(), run_as.session.as_ref())?;
+    let agent = launch.start(app, run_as.run.clone(), run_as.session.as_ref())?;
     Ok(Granted {
         agent,
         _revoke: revoke,
@@ -271,7 +269,7 @@ mod tests {
         let run = |bin: &str| {
             let places = places(bin);
             let roots = Workspaces::new(&dir.join("state"), places.path.clone());
-            launch(&roots, &places, &SpawnPolicy::default(), &app, &run_as)
+            launch(&roots, &places, &app, &run_as)
         };
 
         let agent = run("bin").unwrap();
@@ -349,7 +347,7 @@ mod tests {
             plugin: None,
         };
         let state = dir.join("state");
-        let (chats, engine) = start(&state, places, app, SpawnPolicy::default(), log).unwrap();
+        let (chats, engine) = start(&state, places, app, log).unwrap();
         tokio::spawn(engine.serve());
         // No agent on the path: checked before the chat's folder is made, so none is.
         let (watcher, mut pushes) = client(16);

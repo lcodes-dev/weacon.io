@@ -48,7 +48,6 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         state_dir: state_dir.map(Path::to_path_buf),
         work_root: None,
         log_file: log_file.map(Path::to_path_buf),
-        spawn: weacon_agents::SpawnPolicy::default(),
         path: None,
         outside: crate::outside::Outside::default(),
     }
