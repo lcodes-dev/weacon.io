@@ -264,6 +264,17 @@ impl Workspace {
             .unwrap();
     }
 
+    /// Keeps `status`, a run's status as JSON, as `chat`'s latest.
+    pub(crate) async fn set_run_status(&self, chat: &ChatId, status: &str) {
+        sqlx::query("UPDATE chats SET run_status = ? WHERE workspace_id = ? AND chat_id = ?")
+            .bind(status)
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&self.db.writer)
+            .await
+            .unwrap();
+    }
+
     /// Has every leg's machine have sent its log's first entry, as one that took a prompt has.
     pub(crate) async fn legs_took_prompts(&self) {
         sqlx::query("UPDATE chat_legs SET core_seq = max(core_seq, 1) WHERE workspace_id = ?")

@@ -111,8 +111,9 @@ pub(crate) const REQUESTS_GONE: &str = "
 DROP TABLE chat_requests;
 ";
 
-/// Each member's own agent in a chat, in place of a chat's one machine, and whose machine sent
-/// each event. An event's place in its machine's log is kept by the leg alone from here on, as
+/// Each member's own agent in a chat, in place of a chat's one machine, with the last of the
+/// chat it was given as quotes; whose machine sent each event; and who last called their agent
+/// in a chat, and when, until that agent's run reports. An event's place in its machine's log is kept by the leg alone from here on, as
 /// two machines' places collide.
 pub(crate) const CHAT_LEGS: &str = "
 CREATE TABLE chat_legs (
@@ -125,6 +126,7 @@ CREATE TABLE chat_legs (
     repo TEXT,
     core_seq INTEGER NOT NULL DEFAULT 0,
     detached INTEGER NOT NULL DEFAULT 0,
+    quoted_seq INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (workspace_id, chat_id, member_id),
     FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
     FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)
@@ -133,13 +135,13 @@ CREATE TABLE chat_legs (
 CREATE INDEX chat_legs_machine ON chat_legs (workspace_id, machine_id);
 
 INSERT INTO chat_legs (workspace_id, chat_id, member_id, machine_id, machine_name, agent, repo,
-    core_seq, detached)
+    core_seq, detached, quoted_seq)
 SELECT c.workspace_id, c.chat_id, c.owner_member, c.machine_id, c.machine_name,
     COALESCE((SELECT json_extract(e.body, '$.agent') FROM chat_events AS e
         WHERE e.workspace_id = c.workspace_id AND e.chat_id = c.chat_id AND json_valid(e.body)
             AND json_extract(e.body, '$.kind') = 'prompt'
         ORDER BY e.seq LIMIT 1), 'claude'),
-    c.repo, c.core_seq, c.state = 'detached'
+    c.repo, c.core_seq, c.state = 'detached', c.seq
 FROM chats AS c;
 
 UPDATE chats SET state = 'open' WHERE state = 'detached';
@@ -149,6 +151,8 @@ ALTER TABLE chats DROP COLUMN machine_id;
 ALTER TABLE chats DROP COLUMN machine_name;
 ALTER TABLE chats DROP COLUMN repo;
 ALTER TABLE chats DROP COLUMN core_seq;
+ALTER TABLE chats ADD COLUMN called_by TEXT;
+ALTER TABLE chats ADD COLUMN called_at INTEGER;
 
 ALTER TABLE chat_events ADD COLUMN member_id TEXT;
 

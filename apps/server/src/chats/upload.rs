@@ -376,7 +376,7 @@ mod tests {
             tool: String::new(),
             input: Value::Null,
         };
-        let stored = crate::chats::test_support::core_named(&stored);
+        let stored = core_named(&stored);
         assert_eq!(stored, [run(blank), said("MARKER-TEXT")]);
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();
         assert!(!logged.contains("chat upload refused"), "{logged}");
@@ -460,6 +460,7 @@ mod tests {
             repo: None,
             core_seq: 0,
             detached: false,
+            quoted_seq: 0,
             number: 1,
         }
     }

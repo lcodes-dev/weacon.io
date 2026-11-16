@@ -143,6 +143,11 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
+        // Its run has reported, so the run's own state holds the chat's turn from here.
+        let reports = |row: &Row<'_>| matches!(row.event, ChatEvent::RunStatus { .. });
+        if let Some(member) = from.filter(|_| rows.iter().any(reports)) {
+            self.uncall_in(transaction, chat, member).await?;
+        }
         self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
         let turn = rows.iter().rfind(|row| turns(row.event)).map(|row| row.at);

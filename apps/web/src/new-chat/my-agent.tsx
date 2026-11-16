@@ -7,7 +7,7 @@ import { later } from "../connection.ts";
 import { current, repos } from "../machines/remote-settings.ts";
 import type { AgentKind, MachineId, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
 import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
-import { type Choice, agentMissing, signedIn } from "./start.ts";
+import { type Choice, KINDS, agentMissing, signedIn } from "./start.ts";
 
 /**
  * A person's pick of their own agent for a chat: one of `machines`, their own that run chats, a
@@ -94,7 +94,7 @@ export function MyAgentFields({ pick, workspace, openSettings }: { pick: ReturnT
       )}
       {listed.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
-      {settings.value !== undefined && offered.length < 2 && (
+      {settings.value !== undefined && offered.length < KINDS.length && (
         <p className="muted">
           {offered.length === 0 && missing}{" "}
           <button type="button" onClick={() => openSettings(machine?.id)}>

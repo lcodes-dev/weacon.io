@@ -63,7 +63,8 @@ export function agentMissing({ repos, agent }: Picked): string | undefined {
   return agent ? undefined : "No agent is signed in for this workspace on this machine.";
 }
 
-const KINDS: AgentKind[] = ["claude", "codex"];
+/** Every agent a person can sign in. */
+export const KINDS: AgentKind[] = ["claude", "codex"];
 
 /** The agents a person can pick: every one until the machine answers, then those signed in there for the workspace. */
 export function signedIn(settings: MachineSettings | undefined): AgentKind[] {

@@ -1,4 +1,4 @@
-//! What was said in a chat since a member last prompted their agent there.
+//! What was said in a stretch of a chat, for a member's agent to read as quotes.
 
 use futures_util::TryStreamExt as _;
 use weacon_observability::Fault;
@@ -20,12 +20,14 @@ pub(crate) struct Said {
 type SaidRow = (String, Option<String>, Option<String>, Option<String>);
 
 impl Workspace {
-    /// What `chat`'s people and the agents of its other members said after `member`'s last
-    /// prompt there, the newest first, until `enough` says so of what it was handed.
-    pub(crate) async fn said_since(
+    /// What `chat`'s people and the agents of its other members said after its event `after`
+    /// and up to `upto`, but for what `member` asked of their own agent and it answered, the
+    /// newest first, until `enough` says so of what it was handed.
+    pub(crate) async fn said_between(
         &self,
         chat: &ChatId,
         member: &MemberId,
+        (after, upto): (u64, u64),
         mut enough: impl FnMut(&Said) -> bool,
     ) -> Result<Vec<Said>, Fault> {
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
@@ -34,14 +36,14 @@ impl Workspace {
              LEFT JOIN chat_legs AS l ON l.workspace_id = e.workspace_id
                  AND l.chat_id = e.chat_id AND l.member_id = e.member_id
              WHERE e.workspace_id = ?1 AND e.chat_id = ?2 AND e.member_id IS NOT ?3
-                 AND e.seq > (SELECT COALESCE(MAX(p.seq), 0) FROM chat_events AS p
-                     WHERE p.workspace_id = ?1 AND p.chat_id = ?2 AND p.member_id = ?3
-                         AND json_extract(p.body, '$.kind') = 'prompt')
+                 AND e.seq > ?4 AND e.seq <= ?5
              ORDER BY e.seq DESC",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(member.as_str())
+        .bind(super::number(after)?)
+        .bind(super::number(upto)?)
         .fetch(&mut *reader);
         let mut said = Vec::new();
         while let Some(row) = rows.try_next().await.map_err(failed)? {
@@ -137,8 +139,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn what_was_said_since_a_members_last_prompt_is_read_newest_first_in_its_workspace_only()
-    {
+    async fn what_was_said_in_a_stretch_of_a_chat_is_read_newest_first_in_its_workspace_only() {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
@@ -150,13 +151,17 @@ mod tests {
         says(&one, message("m3", "Thanks")).await;
         says(&one, message("m1", "Sure")).await;
 
-        let for_ada = one.said_since(&chat, &ada, |_| false).await.unwrap();
-        let for_bo = one.said_since(&chat, &bo, |_| false).await.unwrap();
-        let newest = one.said_since(&chat, &bo, |_| true).await.unwrap();
-        let elsewhere = two.said_since(&chat, &member_id("m2"), |_| false).await;
+        let all = (0, 5);
+        let for_ada = one.said_between(&chat, &ada, all, |_| false).await;
+        let for_bo = one.said_between(&chat, &bo, all, |_| false).await.unwrap();
+        let newest = one.said_between(&chat, &bo, all, |_| true).await.unwrap();
+        let middle = one.said_between(&chat, &bo, (1, 3), |_| false).await;
+        let m2 = member_id("m2");
+        let elsewhere = two.said_between(&chat, &m2, all, |_| false);
 
         // Her agent has her prompt and its own answer; her own message it hasn't.
-        assert_eq!(texts(&for_ada), ["Sure", "Thanks"]);
+        assert_eq!(texts(&for_ada.unwrap()), ["Sure", "Thanks", "Before"]);
+        assert_eq!(texts(&middle.unwrap()), ["Fixed.", "Fix it"]);
         assert_eq!(
             texts(&for_bo),
             ["Sure", "Thanks", "Fixed.", "Fix it", "Before"]
@@ -167,6 +172,6 @@ mod tests {
         let asked = for_bo.iter().find(|one| one.text == "Fix it").unwrap();
         assert_eq!((&asked.member, &asked.agent), (&ada, &None));
         assert_eq!(texts(&newest), ["Sure"]);
-        assert!(elsewhere.unwrap().is_empty());
+        assert!(elsewhere.await.unwrap().is_empty());
     }
 }

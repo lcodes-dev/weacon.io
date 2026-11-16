@@ -11,12 +11,14 @@ use crate::db::{Said, Workspace};
 /// The most bytes the quotes on one prompt take as JSON: 16 KiB.
 pub(crate) const QUOTED_MAX: usize = 16 << 10;
 
-/// What `chat`'s people and its other members' agents said since `member` last prompted
-/// theirs there, the oldest first: as much of the newest as fits [`QUOTED_MAX`].
-pub(crate) async fn since(
+/// What `chat`'s people and its other members' agents said after its event `after` and up to
+/// `upto`, for `member`'s agent, the oldest first: as much of the newest as fits
+/// [`QUOTED_MAX`].
+pub(crate) async fn between(
     workspace: &Workspace,
     chat: &ChatId,
     member: &MemberId,
+    stretch: (u64, u64),
 ) -> Result<Vec<Quote>, Fault> {
     let names = crate::workspaces::names(&workspace.members().await?);
     let mut read = 0_usize;
@@ -24,7 +26,8 @@ pub(crate) async fn since(
         read = read.saturating_add(one.text.len());
         read >= QUOTED_MAX
     };
-    let said = workspace.said_since(chat, member, enough).await?;
+    let said = workspace.said_between(chat, member, stretch, enough);
+    let said = said.await?;
     let quotes = said.into_iter().map(|one| quote(one, &names));
     Ok(fit(quotes.collect(), QUOTED_MAX))
 }

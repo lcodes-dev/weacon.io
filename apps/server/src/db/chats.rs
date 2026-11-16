@@ -11,7 +11,7 @@ use weacon_protocol::{ChatId, ChatState, ChatTask, MemberId, RunState, RunStatus
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
-pub(crate) use legs::{Leg, NewLeg, machine_fixed};
+pub(crate) use legs::{CALL_SECS, Leg, NewLeg, machine_fixed};
 pub(crate) use quotes::Said;
 pub(crate) use runs::Snapshot;
 
@@ -39,11 +39,22 @@ pub(crate) struct Chat {
     pub(crate) seq: u64,
     /// Whether its first words were taken, which is when the feed heard of it.
     pub(crate) made: bool,
+    /// Who last called their agent in it, and when, until that agent's run reports.
+    pub(crate) called: Option<(MemberId, i64)>,
     /// The task it was made for, with its title as it then was.
     pub(crate) task: Option<ChatTask>,
 }
 
-type ChatRow = (String, String, i64, bool, Option<String>, Option<String>);
+type ChatRow = (
+    String,
+    String,
+    i64,
+    bool,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 
 impl Workspace {
     /// Makes the chat `chat` before its first words are stored or sent: feeds hear of it once
@@ -105,15 +116,18 @@ impl Workspace {
             return Ok(());
         }
         self.unlink_task(&mut transaction, chat).await?;
-        for table in ["chat_legs", "chats"] {
-            let delete = format!("DELETE FROM {table} WHERE workspace_id = ? AND chat_id = ?");
-            sqlx::query(sqlx::AssertSqlSafe(delete))
-                .bind(self.id.as_str())
-                .bind(chat.as_str())
-                .execute(&mut *transaction)
-                .await
-                .map_err(failed)?;
-        }
+        sqlx::query("DELETE FROM chat_legs WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
+        sqlx::query("DELETE FROM chats WHERE workspace_id = ? AND chat_id = ?")
+            .bind(self.id.as_str())
+            .bind(chat.as_str())
+            .execute(&mut *transaction)
+            .await
+            .map_err(failed)?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -133,7 +147,7 @@ impl Workspace {
         sqlx::query_as::<_, ChatRow>(
             "SELECT owner_member, state, seq, EXISTS (SELECT 1 FROM changes
                  AS h WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id),
-                 t.task_id, t.title
+                 t.task_id, t.title, called_by, called_at
              FROM chats AS c LEFT JOIN chat_tasks AS t USING (workspace_id, chat_id)
              WHERE workspace_id = ? AND chat_id = ?",
         )
@@ -142,8 +156,9 @@ impl Workspace {
         .fetch_optional(&self.db.readers)
         .await
         .map_err(failed)?
-        .map(|(owner, state, seq, made, task, title)| {
+        .map(|(owner, state, seq, made, task, title, by, at)| {
             Ok(Chat {
+                called: by.map(stored).transpose()?.zip(at),
                 owner: stored(owner)?,
                 state: stored_state(&state)?,
                 seq: count(seq)?,
@@ -292,6 +307,7 @@ mod tests {
             state: ChatState::Open,
             seq: 0,
             made: true,
+            called: None,
             task: None,
         };
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), Some(chat));

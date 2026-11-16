@@ -160,6 +160,7 @@ mod tests {
             state,
             seq: 3,
             made: true,
+            called: None,
             task: None,
         }
     }
