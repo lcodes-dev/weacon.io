@@ -1,12 +1,9 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub(crate) use tokio::net::UnixStream as Stream;
-
-/// The user a client must be.
-pub(crate) type Owner = u32;
 
 pub(crate) struct Listener(tokio::net::UnixListener);
 
@@ -105,28 +102,11 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
         } == 0
 }
 
-/// The user that owns `dir`, when only that user can reach it.
-pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
-    let metadata = fs::metadata(dir)?;
-    let private = metadata.is_dir() && weacon_appkit::is_private(&metadata) == Some(true);
-    Ok(private.then(|| metadata.uid()))
-}
-
 /// Listens on a socket at `path` that only this user can open.
 pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     let listener = tokio::net::UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(Listener(listener))
-}
-
-pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
-    stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
-}
-
-/// Lets other users into `dir`; true, since here they can be.
-#[cfg(test)]
-pub(crate) fn open_to_others(dir: &Path) -> bool {
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).is_ok()
 }
 
 #[cfg(test)]

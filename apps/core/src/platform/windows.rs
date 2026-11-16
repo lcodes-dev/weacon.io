@@ -49,10 +49,6 @@ impl AsyncWrite for Stream {
     }
 }
 
-/// Nothing to compare: the pipe's access list already admits only this user.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Owner;
-
 pub(crate) struct Listener {
     name: String,
     next: NamedPipeServer,
@@ -122,14 +118,10 @@ pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
     Ok(available)
 }
 
-/// Creates `dir`, making it private if it's new; parents get the access they inherit.
+/// Creates `dir` and makes it private; parents get the access they inherit.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
-    let new = !dir.exists();
     fs::DirBuilder::new().recursive(true).create(dir)?;
-    if new {
-        make_private(dir)?;
-    }
-    Ok(())
+    make_private(dir)
 }
 
 /// Windows runs any file whose name ends in `.exe`.
@@ -145,12 +137,6 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
     file.is_file()
 }
 
-/// Makes `dir`, the core's own folder, private to this user, whatever it inherited.
-pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
-    make_private(dir)?;
-    Ok(Some(Owner))
-}
-
 /// Listens on a pipe with a fresh random name that only this user can open, and writes the
 /// name to `path` for clients to find.
 pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
@@ -158,14 +144,4 @@ pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     let next = create_pipe(&name, true)?;
     weacon_appkit::write_whole(path, name.as_bytes())?;
     Ok(Listener { name, next })
-}
-
-pub(crate) const fn is_owner(_: &Stream, _: Owner) -> bool {
-    true
-}
-
-/// Lets other users into `dir`; false, since a test can't do that here.
-#[cfg(test)]
-pub(crate) const fn open_to_others(_: &Path) -> bool {
-    false
 }
