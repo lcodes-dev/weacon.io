@@ -1,35 +1,28 @@
 import { type Sent, sentProblem } from "../composer/prompt.ts";
 import type { AgentKind, MachineId, MachineName, MachineSummary, RepoId, SharedMachine } from "../protocol.ts";
-import { lacks } from "../machines/core.ts";
 import { type Subject, settledText } from "../receipts.ts";
 
 /** A machine a person may call an agent on: one of their `own`, or one `shared` with the workspace, which may be both. */
 export type Callable = { id: MachineId; name: MachineName; own: boolean; shared: boolean };
 
 /** Whether a person can call an agent: on which machines, or what is missing first. */
-export type Readiness = { kind: "ready"; machines: Callable[] } | { kind: "unserved" | "unpaired" | "offline" | "outdated" };
+export type Readiness = { kind: "ready"; machines: Callable[] } | { kind: "unpaired" | "offline" };
 
-/** The machines to call an agent on: the person's own `machines` that run chats, then the connected ones others share with the workspace. */
+/** The machines to call an agent on: the person's own `machines` that are connected, then the connected ones others share with the workspace. */
 export function callable(machines: MachineSummary[], shared: SharedMachine[]): Callable[] {
-  const usable = machines.filter((machine) => machine.connected === true && !lacks(machine, "chat.serve"));
+  const usable = machines.filter((machine) => machine.connected === true);
   const own = usable.map(({ id, name }) => ({ id, name, own: true, shared: shared.some((one) => one.id === id) }));
   const others = shared.filter((one) => one.connected === true && !machines.some(({ id }) => id === one.id));
   return [...own, ...others.map(({ id, name }) => ({ id, name, own: false, shared: true }))];
 }
 
-/** Where a person who may send (`sends`) stands on calling an agent, with their own `machines` and those `shared` with the workspace. */
-export function readiness(sends: boolean, machines: MachineSummary[], shared: SharedMachine[] = []): Readiness {
-  if (!sends) {
-    return { kind: "unserved" };
-  }
+/** Where a person stands on calling an agent, with their own `machines` and those `shared` with the workspace. */
+export function readiness(machines: MachineSummary[], shared: SharedMachine[] = []): Readiness {
   const usable = callable(machines, shared);
   if (usable.length > 0) {
     return { kind: "ready", machines: usable };
   }
-  if (machines.length === 0) {
-    return { kind: "unpaired" };
-  }
-  return { kind: machines.some((machine) => machine.connected === true) ? "outdated" : "offline" };
+  return { kind: machines.length === 0 ? "unpaired" : "offline" };
 }
 
 /**
@@ -37,14 +30,12 @@ export function readiness(sends: boolean, machines: MachineSummary[], shared: Sh
  * workspace, which might say otherwise, aren't known.
  */
 export function onceSharedKnown(ready: Readiness | undefined, sharedKnown: boolean): Readiness | undefined {
-  return sharedKnown || ready?.kind === "ready" || ready?.kind === "unserved" ? ready : undefined;
+  return sharedKnown || ready?.kind === "ready" ? ready : undefined;
 }
 
 const MISSING: Record<Exclude<Readiness["kind"], "ready">, string> = {
-  unserved: "This server can't take messages yet.",
   unpaired: "Pair a machine in Settings to call your own agent.",
   offline: "Your machine is offline. Start Weacon on it to call your agent.",
-  outdated: "Your machine's weacon is too old to run chats. Update it to call your agent.",
 };
 
 /** What is missing to call an agent, in one line. */

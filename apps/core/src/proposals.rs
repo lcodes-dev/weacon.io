@@ -16,9 +16,9 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, Envelope, MAX_PROPOSAL, Message, Outcome, ProposalAction, ProposalAnswer,
-    ProposalAnswerKind, ProposalChange, ProposalCommand, ProposalId, ProposalQuery,
-    ProposalQueryKind, Receipt, RequestId, WorkspaceId, code, to_hex,
+    Code, Envelope, MAX_PROPOSAL, Message, Outcome, ProposalAction, ProposalAnswerKind,
+    ProposalChange, ProposalCommand, ProposalId, ProposalQuery, ProposalQueryKind, RequestId,
+    WorkspaceId, code, to_hex,
 };
 
 /// How many asks wait for the uplink to take them.
@@ -167,23 +167,6 @@ fn request_of(message: &Message) -> Option<&RequestId> {
         return Some(&answer.request);
     }
     None
-}
-
-/// The refusal that answers `message`, if it is an ask of [`serve`]'s, from a server that
-/// doesn't take proposals.
-pub(crate) fn unoffered(message: &Message) -> Option<Message> {
-    let code = code!("proposal.unsupported");
-    if let Message::ProposalCommand(command) = message {
-        let request = command.request.clone();
-        let outcome = Outcome::Failed { code };
-        return Some(Message::Receipt(Receipt { request, outcome }));
-    }
-    let Message::ProposalQuery(query) = message else {
-        return None;
-    };
-    let answer = ProposalAnswerKind::Failed { code };
-    let request = query.request.clone();
-    Some(Message::ProposalAnswer(ProposalAnswer { request, answer }))
 }
 
 /// Whether the server's `message` answers an ask of [`serve`]'s.
@@ -420,19 +403,7 @@ mod tests {
         assert_eq!(id("run-1", &task()).as_str().len(), 37);
         let fault = proposal_id(&workspace(), "run-1", &large).unwrap_err();
         assert_eq!(fault.code(), &code!("proposal.too_large"));
-        assert!(!answers(&Message::Unknown) && unoffered(&Message::Unknown).is_none());
-        let command = Message::ProposalCommand(ProposalCommand {
-            request: "r".parse().unwrap(),
-            workspace: workspace(),
-            action: propose(),
-        });
-        let refused = Message::Receipt(Receipt {
-            request: "r".parse().unwrap(),
-            outcome: Outcome::Failed {
-                code: code!("proposal.unsupported"),
-            },
-        });
-        assert_eq!(unoffered(&command), Some(refused));
+        assert!(!answers(&Message::Unknown));
     }
 
     #[test]

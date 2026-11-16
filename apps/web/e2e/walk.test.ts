@@ -57,7 +57,7 @@ test("a person walks a whole chat on their machine's own core: calls to their ag
   assert.equal(await page.getByText("Allowed Bash", { exact: true }).count(), 1);
 
   await page.getByRole("button", { name: "Changes" }).click();
-  await page.getByRole("region", { name: "Worktree" }).getByRole("button", { name: "Open terminal" }).waitFor();
+  await page.getByRole("region", { name: "Worktree" }).waitFor();
   await page.getByRole("button", { name: "Back" }).click();
 
   const box = page.getByRole("combobox", { name: "Message" });

@@ -12,7 +12,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, duplex};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_tungstenite::tungstenite::{self, Message as Frame};
-use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Message, code};
+use weacon_protocol::{Code, Envelope, ErrorBody, Message, code};
 
 use crate::Failure;
 use crate::fake_chat::FakeChat;
@@ -21,23 +21,14 @@ use crate::recording::envelope_text;
 use crate::replay::{BUFFER, play};
 use crate::{fake_core, fake_diff, fake_symbols};
 
-const OFFERED: &[Capability] = &[
-    Capability::new(code!("workspace.chats")),
-    Capability::new(code!("workspace.chat_commands")),
-    Capability::new(code!("diff.view")),
-    Capability::new(code!("worktree.manage")),
-    Capability::new(code!("symbols.search")),
-];
-
 /// Plays `recording` to the client on `stream`, waiting `pace` after each message, and appends
-/// each text frame the client sends after its hello to `received`, one per line. It offers
-/// `workspace.chats` and `workspace.chat_commands`, committing a receipt that accepts each
-/// command to the chat, `diff.view`, `worktree.manage` and `symbols.search`; it refuses a
-/// message it doesn't know.
+/// each text frame the client sends after its hello to `received`, one per line. It serves a
+/// chat, committing a receipt that accepts each command to it, a diff, a worktree and a search
+/// of the code; it refuses a message it doesn't know.
 ///
 /// # Errors
-/// When the handshake fails, the client's first frame isn't a hello on this protocol that offers
-/// `run.stream`, or the connection fails.
+/// When the handshake fails, the client's first frame isn't a hello on this protocol, or the
+/// connection fails.
 pub async fn serve(
     stream: impl AsyncRead + AsyncWrite + Unpin,
     recording: String,
@@ -49,7 +40,7 @@ pub async fn serve(
     let hello = next_text(&mut frames)
         .await?
         .ok_or("the client left before its hello")?;
-    let answer = fake_core::answer(&hello, OFFERED)?;
+    let answer = fake_core::answer(&hello)?;
     let welcomed = matches!(answer.message, Message::Welcome(_));
     sink.send(Frame::text(envelope_text(&answer)?)).await?;
     if !welcomed {
@@ -245,7 +236,7 @@ mod tests {
     }
 
     fn hello(protocol: u32) -> Frame {
-        let hello = client_hello(1, protocol, [code!("run.stream")]);
+        let hello = client_hello(1, protocol);
         Frame::text(envelope_text(&hello).unwrap())
     }
 
@@ -297,17 +288,6 @@ mod tests {
         served.await.unwrap().unwrap();
 
         assert_eq!(welcome[0]["type"], "welcome");
-        assert_eq!(
-            welcome[0]["capabilities"],
-            json!([
-                "run.stream",
-                "workspace.chats",
-                "workspace.chat_commands",
-                "diff.view",
-                "worktree.manage",
-                "symbols.search"
-            ])
-        );
         assert_eq!(streamed, expected);
         assert_eq!(fs::read_to_string(&received).unwrap(), format!("{other}\n"));
     }

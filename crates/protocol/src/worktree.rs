@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Asker, ChatId, DownloadUrl, MachineId, RequestId, WorkspaceId};
 
-/// From a client to a core that offers `worktree.manage`: a question about a chat's worktree.
-/// The answer is a [`WorktreeAnswer`] that echoes `request`.
+/// From a client to a core: a question about a chat's worktree. The answer is a [`WorktreeAnswer`]
+/// that echoes `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeQuery {
     pub request: RequestId,
@@ -29,10 +29,10 @@ pub enum WorktreeQueryKind {
     State,
 }
 
-/// From a client to a core that offers `worktree.manage`: what a person asks of a chat's
-/// worktree. The core acts only for someone who may act on the chat, and a client asks the
-/// person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
-/// echoes `request`: the worktree's state after `remove`, which a repeated one answers too.
+/// From a client to a core: what a person asks of a chat's worktree. The core acts only for someone
+/// who may act on the chat, and a client asks the person before `remove`, whatever the access
+/// level. The answer is a [`WorktreeAnswer`] that echoes `request`: the worktree's state after
+/// `remove`, which a repeated one answers too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeCommand {
     pub request: RequestId,
@@ -63,8 +63,7 @@ pub enum WorktreeAction {
     OpenTerminal,
 }
 
-/// From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a
-/// [`WorktreeCommand`].
+/// From the core to a client, in answer to a [`WorktreeQuery`] or a [`WorktreeCommand`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeAnswer {
     pub request: RequestId,

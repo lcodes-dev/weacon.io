@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use tokio::sync::{broadcast, mpsc};
-use weacon_protocol::{AccountId, Capability, Envelope, MachineId};
+use weacon_protocol::{AccountId, Envelope, MachineId};
 
 /// How many messages wait for a machine's connection to take them.
 pub(crate) const QUEUE: usize = 64;
@@ -21,7 +21,6 @@ pub(crate) struct Links {
 struct Open {
     /// The only sender to its connection, so replacing it ends that connection.
     to_machine: mpsc::Sender<Envelope>,
-    offers: Vec<Capability>,
     owner: AccountId,
 }
 
@@ -56,19 +55,13 @@ impl Default for Links {
 }
 
 impl Links {
-    /// Opens `connected`'s machine, whose core `offers` these capabilities, and tells the
-    /// subscribers; a newer connection of the same machine takes over from an older one, whose
-    /// `incoming` then ends.
-    pub(crate) fn open(
-        self: &Arc<Self>,
-        connected: Connected,
-        offers: Vec<Capability>,
-    ) -> Attached {
+    /// Opens `connected`'s machine and tells the subscribers; a newer connection of the same
+    /// machine takes over from an older one, whose `incoming` then ends.
+    pub(crate) fn open(self: &Arc<Self>, connected: Connected) -> Attached {
         let (to_machine, incoming) = mpsc::channel(QUEUE);
         let ours = to_machine.downgrade();
         let open = Open {
             to_machine,
-            offers,
             owner: connected.owner.clone(),
         };
         self.lock().insert(connected.machine.clone(), open);
@@ -83,18 +76,12 @@ impl Links {
         }
     }
 
-    /// Sends `envelope` to `machine` over its open connection, if its core offers `needs`.
+    /// Sends `envelope` to `machine` over its open connection.
     ///
     /// # Errors
-    /// [`Offline`] when it isn't connected, its core doesn't offer `needs`, or its queue is
-    /// full.
-    pub(crate) fn send(
-        &self,
-        machine: &MachineId,
-        needs: &Capability,
-        envelope: Envelope,
-    ) -> Result<(), Offline> {
-        self.send_all(machine, needs, vec![envelope])
+    /// [`Offline`] when it isn't connected or its queue is full.
+    pub(crate) fn send(&self, machine: &MachineId, envelope: Envelope) -> Result<(), Offline> {
+        self.send_all(machine, vec![envelope])
     }
 
     /// [`Self::send`] for each of `envelopes`, in order: all of them, or none.
@@ -104,14 +91,10 @@ impl Links {
     pub(crate) fn send_all(
         &self,
         machine: &MachineId,
-        needs: &Capability,
         envelopes: Vec<Envelope>,
     ) -> Result<(), Offline> {
         let open = self.lock();
-        let link = open
-            .get(machine)
-            .filter(|link| link.offers.contains(needs))
-            .ok_or(Offline)?;
+        let link = open.get(machine).ok_or(Offline)?;
         // Only a holder of this lock sends, so the room seen here stays for each send.
         if link.to_machine.capacity() < envelopes.len() {
             return Err(Offline);
@@ -177,7 +160,7 @@ impl Drop for Attached {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Message, code};
+    use weacon_protocol::Message;
 
     use super::*;
 
@@ -199,28 +182,22 @@ mod tests {
         }
     }
 
-    fn settings() -> Capability {
-        Capability::new(code!("machine.settings"))
-    }
-
     fn sent(links: &Links, to: &str, id: u32) -> Result<(), Offline> {
-        links.send(&machine(to), &settings(), envelope(id))
+        links.send(&machine(to), envelope(id))
     }
 
     #[test]
-    fn only_an_open_machine_that_offers_what_a_message_needs_is_sent_it() {
+    fn only_an_open_machine_is_sent_a_message() {
         let links = Arc::new(Links::default());
         let mut subscriber = links.connected();
 
         let not_yet = sent(&links, "mc-1", 1);
-        let mut attached = links.open(connected("mc-1"), vec![settings()]);
-        let mut bare = links.open(connected("mc-2"), Vec::new());
+        let mut attached = links.open(connected("mc-1"));
+        let _other = links.open(connected("mc-2"));
 
         assert_eq!(not_yet, Err(Offline));
         assert_eq!(sent(&links, "mc-1", 2), Ok(()));
         assert_eq!(attached.incoming.try_recv().unwrap(), envelope(2));
-        assert_eq!(sent(&links, "mc-2", 3), Err(Offline));
-        bare.incoming.try_recv().unwrap_err();
         assert_eq!(sent(&links, "mc-3", 4), Err(Offline));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-1"));
         assert_eq!(subscriber.try_recv().unwrap(), connected("mc-2"));
@@ -229,15 +206,15 @@ mod tests {
     #[test]
     fn messages_sent_together_all_go_or_none_does() {
         let links = Arc::new(Links::default());
-        let mut attached = links.open(connected("mc-1"), vec![settings()]);
+        let mut attached = links.open(connected("mc-1"));
         for id in 1..u32::try_from(QUEUE).unwrap() {
             sent(&links, "mc-1", id).unwrap();
         }
         let both = || vec![envelope(100), envelope(101)];
 
-        let refused = links.send_all(&machine("mc-1"), &settings(), both());
+        let refused = links.send_all(&machine("mc-1"), both());
         attached.incoming.try_recv().unwrap();
-        let taken = links.send_all(&machine("mc-1"), &settings(), both());
+        let taken = links.send_all(&machine("mc-1"), both());
 
         assert_eq!(refused, Err(Offline));
         assert_eq!(taken, Ok(()));
@@ -249,8 +226,8 @@ mod tests {
     #[test]
     fn the_machines_connected_now_are_listed_and_one_closed_is_gone() {
         let links = Arc::new(Links::default());
-        let mut one = links.open(connected("mc-1"), vec![settings()]);
-        let _two = links.open(connected("mc-2"), vec![settings()]);
+        let mut one = links.open(connected("mc-1"));
+        let _two = links.open(connected("mc-2"));
 
         links.close(&machine("mc-1"));
 
@@ -277,8 +254,8 @@ mod tests {
     fn a_newer_connection_takes_over_and_an_older_one_leaving_keeps_it() {
         let links = Arc::new(Links::default());
 
-        let mut older = links.open(connected("mc-1"), vec![settings()]);
-        let newer = links.open(connected("mc-1"), vec![settings()]);
+        let mut older = links.open(connected("mc-1"));
+        let newer = links.open(connected("mc-1"));
         let replaced = older.incoming.try_recv();
         drop(older);
         let still = sent(&links, "mc-1", 1);
@@ -293,7 +270,7 @@ mod tests {
     #[test]
     fn a_machine_that_doesnt_keep_up_is_offline_until_it_does() {
         let links = Arc::new(Links::default());
-        let mut attached = links.open(connected("mc-1"), vec![settings()]);
+        let mut attached = links.open(connected("mc-1"));
 
         let queued: Vec<_> = (0..=QUEUE)
             .map(|id| sent(&links, "mc-1", u32::try_from(id).unwrap()))

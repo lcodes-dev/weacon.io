@@ -1,40 +1,14 @@
 use weacon_protocol::{App, Capability, Code, Envelope, ErrorBody, FrameError, Message, code};
 
-/// What the daemon offers its clients; each feature adds its capability here.
-pub(crate) const CAPABILITIES: &[Capability] = &[
-    Capability::new(code!("element.pick")),
-    Capability::new(code!("chat.send")),
-    Capability::new(code!("chat.events")),
-    Capability::new(code!("chat.agent")),
-    Capability::new(code!("run.stream")),
-    Capability::new(code!("machine.connect")),
-    Capability::new(code!("chat.serve")),
-    Capability::new(code!("chat.live")),
-    Capability::new(code!("machine.settings")),
-    Capability::new(code!("sessions.read")),
-    Capability::new(code!("diff.view")),
-    Capability::new(code!("worktree.manage")),
-    Capability::new(code!("repo.list")),
-    Capability::new(code!("chat.hold")),
-    Capability::new(code!("terminal.sign_in")),
-    Capability::new(code!("map.read")),
-    Capability::new(code!("symbols.search")),
-    Capability::new(code!("workspace.proposals")),
-];
-
-/// What the core offers its server: all of [`CAPABILITIES`], and opening terminals where
-/// there is a desktop terminal.
+/// What the core says it does, to its server: opening terminals, where there is a desktop
+/// terminal.
 pub(crate) fn offered(
     state_dir: &std::path::Path,
     env: crate::platform::Env<'_>,
 ) -> Vec<Capability> {
     let terminal = crate::terminals::offered(state_dir, env);
     let open_terminal = Capability::new(code!("worktree.open_terminal"));
-    CAPABILITIES
-        .iter()
-        .cloned()
-        .chain(terminal.then_some(open_terminal))
-        .collect()
+    terminal.then_some(open_terminal).into_iter().collect()
 }
 
 /// One client's place in the conversation with the daemon.
@@ -84,8 +58,7 @@ impl Session {
         let id = envelope.id;
         match (self.greeted, envelope.message) {
             (false, Message::Hello(hello)) => {
-                let capabilities = CAPABILITIES.to_vec();
-                let message = hello.answer(app.clone(), capabilities);
+                let message = hello.answer(app.clone());
                 self.greeted = matches!(message, Message::Welcome(_));
                 Reply {
                     envelope: Some(Envelope { id, message }),
@@ -120,16 +93,15 @@ mod tests {
         let path = dir.join("bin");
         let desktop = test_support::env(&[("PATH", path.to_str().unwrap()), ("DISPLAY", ":0")]);
         let open_terminal = Capability::new(code!("worktree.open_terminal"));
-        assert_eq!(offered(&dir, &test_support::env(&[])), CAPABILITIES);
-        let offers = offered(&dir, &desktop);
-        assert_eq!(offers.split_last(), Some((&open_terminal, CAPABILITIES)));
+        assert_eq!(offered(&dir, &test_support::env(&[])), []);
+        assert_eq!(offered(&dir, &desktop), [open_terminal]);
     }
 
     #[test]
     fn a_matching_hello_is_welcomed_once() {
         let mut session = Session::default();
-        let welcome = session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
-        let again = session.answer(Ok(client_hello(2, PROTOCOL, [])), &build(&VERSION));
+        let welcome = session.answer(Ok(client_hello(1, PROTOCOL)), &build(&VERSION));
+        let again = session.answer(Ok(client_hello(2, PROTOCOL)), &build(&VERSION));
 
         assert_eq!(
             welcome,
@@ -138,26 +110,6 @@ mod tests {
                     id: 1,
                     message: Message::Welcome(Welcome {
                         app: build(&VERSION),
-                        capabilities: vec![
-                            Capability::new(code!("element.pick")),
-                            Capability::new(code!("chat.send")),
-                            Capability::new(code!("chat.events")),
-                            Capability::new(code!("chat.agent")),
-                            Capability::new(code!("run.stream")),
-                            Capability::new(code!("machine.connect")),
-                            Capability::new(code!("chat.serve")),
-                            Capability::new(code!("chat.live")),
-                            Capability::new(code!("machine.settings")),
-                            Capability::new(code!("sessions.read")),
-                            Capability::new(code!("diff.view")),
-                            Capability::new(code!("worktree.manage")),
-                            Capability::new(code!("repo.list")),
-                            Capability::new(code!("chat.hold")),
-                            Capability::new(code!("terminal.sign_in")),
-                            Capability::new(code!("map.read")),
-                            Capability::new(code!("symbols.search")),
-                            Capability::new(code!("workspace.proposals")),
-                        ],
                     }),
                 }),
                 close: false,
@@ -171,7 +123,7 @@ mod tests {
     #[test]
     fn another_protocol_is_refused_and_hung_up_on() {
         let mut session = Session::default();
-        let reply = session.answer(Ok(client_hello(1, PROTOCOL + 1, [])), &build(&VERSION));
+        let reply = session.answer(Ok(client_hello(1, PROTOCOL + 1)), &build(&VERSION));
 
         assert_eq!(error_code(&reply), Some("protocol.unsupported"));
         assert!(reply.close);
@@ -197,7 +149,7 @@ mod tests {
     #[test]
     fn after_the_hello_unknown_messages_get_an_error_and_errors_get_nothing() {
         let mut session = Session::default();
-        session.answer(Ok(client_hello(1, PROTOCOL, [])), &build(&VERSION));
+        session.answer(Ok(client_hello(1, PROTOCOL)), &build(&VERSION));
         let unknown = session.answer(
             Ok(Envelope {
                 id: 5,

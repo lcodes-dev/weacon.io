@@ -456,7 +456,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         let first = with_codex(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)));
         let (taken, mut answers) = asked(&ada, shared, first).await;
@@ -528,7 +528,7 @@ mod tests {
         let by = weacon_model::Attribution::by(ada.member.id.clone(), NOW);
         let task = crate::test_support::new_task("t-1", "Speed up the build", "a");
         workspace.add_task(&task, &by).await.unwrap();
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(shared, &ada);
         let first = |request| for_task(prompt(request, "c-1", "Fix it", Some(&ada.machine)), "t-1");
 
         asked(&ada, shared, first("r-1")).await.0.unwrap();
@@ -570,7 +570,7 @@ mod tests {
         let elsewhere = crate::test_support::new_task("t-1", "Plan the trip", "a");
         let by = weacon_model::Attribution::by(id("m9"), NOW);
         other.add_task(&elsewhere, &by).await.unwrap();
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         let foreign = for_task(prompt("r-1", "c-1", "Fix it", Some(&ada.machine)), "t-1");
         let (refused, _answers) = asked(&ada, shared, foreign).await;
@@ -586,7 +586,7 @@ mod tests {
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         ada.member.workspace.break_changes().await;
-        let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let (taken, mut answers) = asked(&ada, shared, first).await;
@@ -606,7 +606,7 @@ mod tests {
             let ada = ada(&fixture).await;
             let workspace = &ada.member.workspace;
             workspace.break_calls(turn).await;
-            let mut attached = attach(shared, &ada, &["machine.connect", "chat.serve"]);
+            let mut attached = attach(shared, &ada);
 
             let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
             let (refused, _answers) = asked(&ada, shared, first).await;
@@ -623,13 +623,11 @@ mod tests {
         let fixture = Fixture::new().await;
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
-        let mut attached = attach(shared, &ada, &["machine.connect"]);
 
         let first = prompt("r-1", "c-1", "Fix it", Some(&ada.machine));
         let (refused, _answers) = asked(&ada, shared, first).await;
 
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
-        assert!(sent(&mut attached).is_empty());
         let workspace = &ada.member.workspace;
         assert_eq!(workspace.chat(&id("c-1")).await.unwrap(), None);
         make(workspace, "c-1", "m1", NOW).await.unwrap();
@@ -637,7 +635,6 @@ mod tests {
         workspace.legs_took_prompts().await;
         let (refused, _answers) = asked(&ada, shared, go("r-2", &ada)).await;
         assert_eq!(refused.unwrap_err().code().as_str(), "machine.offline");
-        assert!(sent(&mut attached).is_empty());
     }
 
     #[tokio::test]
@@ -649,7 +646,7 @@ mod tests {
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         workspace.legs_took_prompts().await;
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         let (one, mut first) = asked(&ada, shared, go("r-2", &ada)).await;
         let (two, mut second) = asked(&ada, shared, go("r-3", &ada)).await;
@@ -742,7 +739,7 @@ mod tests {
         let workspace = &ada.member.workspace;
         let other = id("w9");
         let other = shared.db.create_workspace(&other, "Other").await.unwrap();
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada);
         let mut notices = shared.chats.notices();
 
         let first = say("r-1", "c-1", "MARKER-MORNING\nand more");
@@ -829,9 +826,8 @@ mod tests {
         async fn new() -> Self {
             let fixture = Fixture::new().await;
             let (ada, grace) = (ada(&fixture).await, grace(&fixture).await);
-            let offers = ["chat.serve"];
-            let adas = attach(&fixture.shared, &ada, &offers);
-            let graces = attach(&fixture.shared, &grace, &offers);
+            let adas = attach(&fixture.shared, &ada);
+            let graces = attach(&fixture.shared, &grace);
             let two = Self {
                 fixture,
                 ada,
@@ -939,10 +935,7 @@ mod tests {
         two.ask(ada, hers("r-7")).await.unwrap();
         two.up(ada, 1, status(RunState::Running)).await;
         two.up(ada, 2, status(RunState::Idle)).await;
-        drop(std::mem::replace(
-            &mut two.graces,
-            attach(&two.fixture.shared, grace, &["machine.connect"]),
-        ));
+        two.fixture.shared.links.close(&grace.machine);
         let unsent = two.ask(grace, mine()).await;
         assert_eq!(unsent.unwrap_err().code().as_str(), "machine.offline");
         two.ask(ada, go("r-6", ada)).await.unwrap();
@@ -1071,7 +1064,7 @@ mod tests {
         make(workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.move_chats_to(&ada.machine).await;
         workspace.legs_took_prompts().await;
-        let mut serving = attach(shared, &ada, &["chat.serve"]);
+        let mut serving = attach(shared, &ada);
         for action in [ChatAction::Hold, ChatAction::Release] {
             let mut command = prompt("r-2", "c-1", "Go", None);
             command.action = action;

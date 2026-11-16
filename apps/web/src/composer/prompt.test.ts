@@ -6,13 +6,12 @@ import { Receipts } from "../receipts.ts";
 import { chatCommand } from "../chat/commands.ts";
 import { type Sent, blocked, deliverPrompt, notingPlain, sentProblem } from "./prompt.ts";
 
-test("the box sends only to a chat, on a live connection to a server that takes messages", () => {
+test("the box sends only to a chat, on a live connection", () => {
   const chatRef = { workspace: "w-1", chat: "c-1" };
 
-  assert.equal(blocked(true, chatRef, true), undefined);
-  assert.equal(blocked(true, undefined, true), "Pick a chat to send to.");
-  assert.equal(blocked(true, chatRef, false), "This server can't take messages yet.");
-  assert.equal(blocked(false, chatRef, true), "Messages send once the server is connected.");
+  assert.equal(blocked(true, chatRef), undefined);
+  assert.equal(blocked(true, undefined), "Pick a chat to send to.");
+  assert.equal(blocked(false, chatRef), "Messages send once the server is connected.");
 });
 
 test("a prompt is sent and waits for its receipt, unless it is over the server's limit", async () => {

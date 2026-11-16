@@ -178,10 +178,10 @@ mod tests {
         ask(who.address, &format!("GET {path}"), &who.proof(), "").await
     }
 
-    async fn feed(address: SocketAddr, token: &str, workspace: &str, offers: &[&str]) -> Socket {
+    async fn feed(address: SocketAddr, token: &str, workspace: &str) -> Socket {
         let path = format!("/api/workspaces/{workspace}/feed");
         let mut socket = open(address, &path, token).await.unwrap();
-        say(&mut socket, offers).await;
+        say(&mut socket).await;
         assert!(matches!(next(&mut socket).await, Message::Welcome(_)));
         socket
     }
@@ -268,8 +268,7 @@ mod tests {
     async fn an_invited_address_signs_in_takes_it_up_and_the_workspace_hears_it() {
         let fixture = Fixture::new().await;
         let (server, ada, crew) = crew(&fixture).await;
-        let offers = ["workspace.feed"];
-        let mut ada_feed = feed(server.address, &ada.token, &crew, &offers).await;
+        let mut ada_feed = feed(server.address, &ada.token, &crew).await;
         let joined = change(&mut ada_feed).await;
         assert!(matches!(joined, WorkspaceChange::MemberJoined { .. }));
 

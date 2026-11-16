@@ -9,7 +9,6 @@ import { Problem } from "../api/problem.tsx";
 import { type LinkSocket, terminalLink } from "../terminal/link.ts";
 import { TerminalView } from "../terminal/terminal-view.tsx";
 import type { MachineSocket } from "./ask-machine.ts";
-import { isOutdated } from "./core.ts";
 import { change, current } from "./remote-settings.ts";
 
 const LEVELS: Array<[AccessLevel, string]> = [
@@ -30,8 +29,6 @@ type Props = {
   machine: MachineSummary;
   socket: MachineSocket & LinkSocket;
   later: Later;
-  /** Whether the server relays sign-in terminals. */
-  relays: boolean;
   /** Whether other people are in the workspace, once its members are known. */
   team: boolean | undefined;
 };
@@ -40,7 +37,7 @@ type Props = {
  * What one of the person's machines keeps for the open workspace, asked of its core: what the
  * workspace's agents may do there, and whether they are signed in.
  */
-export function MachineSettingsView({ machine, socket, later, relays, team }: Props) {
+export function MachineSettingsView({ machine, socket, later, team }: Props) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
   const [signingIn, setSigningIn] = useState<AgentKind>();
   const changing = useAsk();
@@ -53,7 +50,6 @@ export function MachineSettingsView({ machine, socket, later, relays, team }: Pr
   return (
     <section aria-label={`${machine.name} settings`}>
       <h3>{machine.name}</h3>
-      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports, so some settings may not reach it.</p>}
       {settings.loading && <p className="muted">Loading</p>}
       {settings.problem !== undefined && <Problem text={settings.problem} retry={() => void settings.load()} />}
       {shown !== undefined && (
@@ -62,7 +58,7 @@ export function MachineSettingsView({ machine, socket, later, relays, team }: Pr
           busy={changing.busy}
           set={set}
           team={team === true}
-          signIn={relays && signingIn === undefined ? setSigningIn : undefined}
+          signIn={signingIn === undefined ? setSigningIn : undefined}
         />
       )}
       {changing.problem !== undefined && <p role="alert">{changing.problem}</p>}

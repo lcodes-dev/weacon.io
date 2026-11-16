@@ -418,8 +418,13 @@ async function firstWorkspace(page: Page): Promise<{ id: string; member: string 
 }
 
 // Signs in and opens the first workspace, whose chats are `chats`, each started by `owner` of its
-// member, whose own agent runs in it.
-async function openChats(served: Served, chats: Array<{ id: string; title: string }>, owner: (member: string) => string): Promise<string> {
+// member, whose own agent runs in it, on a machine whose core `offers` to open terminals.
+async function openChats(
+  served: Served,
+  chats: Array<{ id: string; title: string }>,
+  owner: (member: string) => string,
+  offers = ["worktree.open_terminal"],
+): Promise<string> {
   const { page } = served;
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
@@ -427,7 +432,7 @@ async function openChats(served: Served, chats: Array<{ id: string; title: strin
   agentOwner = owner(member);
   if (agentOwner === member) {
     // Their agent's machine is one of their own.
-    const laptop = { id: "mc-1", name: "laptop", os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true };
+    const laptop = { id: "mc-1", name: "laptop", os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true, offers };
     await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [laptop] }) }));
   }
   await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), legs: [{ member: owner(member), machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open" as const, updated_at: 1 })) }));
@@ -441,7 +446,7 @@ test("a chat where a person has their agent shows its transcript and prompts, an
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  const { sent } = await serveFeed(page, { answer: chatServer });
   const workspace = await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member);
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
 
@@ -481,7 +486,7 @@ test("a chat where only someone else has an agent takes a person's messages, wit
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  const { sent } = await serveFeed(page, { answer: chatServer });
   await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
 
@@ -509,7 +514,7 @@ test("picking another chat shows that one, and sends only to it", { timeout: 600
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: chatServer });
+  const { sent } = await serveFeed(page, { answer: chatServer });
   await openChats(
     served,
     [
@@ -554,7 +559,6 @@ test("open changes cut short by a lost connection are asked for again once it is
   const { page } = served;
   // The first socket sends one of the two files, then drops; the next sends both.
   const { sent } = await serveFeed(page, {
-    also: ["diff.view"],
     answer: (asked, nth) => [...snapshot(asked), ...changedFile(asked, "src/pantry.rs"), ...(nth > 1 ? changedFile(asked, "src/shelves.rs") : [])],
     drop: (asked, nth) => nth === 1 && asked.type === "diff_query",
   });
@@ -581,7 +585,7 @@ test("with agents on two of a person's machines, Changes shows each one's, asked
     const file = { path: asked.machine === "mc-2" ? "src/desk.rs" : "src/laptop.rs", change: { kind: "added" as const }, content };
     return [{ id: asked.id, type: "diff_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer: { kind: "file", file, files: 1 } }];
   };
-  const { sent } = await serveFeed(page, { also: ["diff.view", "workspace.chat_commands"], answer: (asked) => [...snapshot(asked), ...changed(asked)] });
+  const { sent } = await serveFeed(page, { answer: (asked) => [...snapshot(asked), ...changed(asked)] });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { member } = await firstWorkspace(page);
@@ -630,13 +634,11 @@ function worktreeServer(asked: Envelope): Envelope[] {
   return [{ id: asked.id, type: "worktree_answer", workspace: asked.workspace, chat: asked.chat, request: asked.request, answer }];
 }
 
-const WORKTREES = ["diff.view", "worktree.manage"];
-
 test("a person with their agent in a chat gets its worktree's bar, with its title to start a pull request and a terminal where offered", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  await serveFeed(page, { answer: worktreeServer });
   await openChats(
     served,
     [
@@ -663,11 +665,25 @@ test("a person with their agent in a chat gets its worktree's bar, with its titl
   assert.equal((await bar.boundingBox())?.height, withButtons);
 });
 
+test("a worktree on a machine that doesn't open terminals has no Open terminal button", { timeout: 600_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const { page } = served;
+  await serveFeed(page, { answer: worktreeServer });
+  await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], (member) => member, []);
+  await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
+  await page.getByRole("button", { name: "Changes" }).click();
+  const bar = page.getByRole("region", { name: "Worktree" });
+
+  await bar.getByRole("button", { name: "Open pull request" }).waitFor();
+  assert.equal(await bar.getByRole("button", { name: "Open terminal" }).count(), 0);
+});
+
 test("a chat where only someone else has an agent offers no changes or worktree, and asks nothing of them", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: WORKTREES, answer: worktreeServer });
+  const { sent } = await serveFeed(page, { answer: worktreeServer });
   await openChats(served, [{ id: "c-1", title: "Sort the pantry" }], () => "m-someone-else");
   await nav(page).getByRole("button", { name: /Sort the pantry/ }).click();
   await page.getByRole("button", { name: "Add your agent" }).waitFor();
@@ -687,7 +703,6 @@ test("the worktree's state is asked again on each opening of the changes, and af
   // The first ask fails, the next finds no worktree yet, and every later one finds the one made since.
   let asked = 0;
   await serveFeed(page, {
-    also: WORKTREES,
     answer: (envelope) => {
       if (envelope.type !== "worktree_query") {
         return snapshot(envelope);
@@ -721,7 +736,6 @@ test("a pull request's draft stays until the core opens it, and its answer comes
   let tries = 0;
   let later: (() => void) | undefined;
   await serveFeed(page, {
-    also: WORKTREES,
     answer: (asked, _nth, reply) => {
       if (asked.type !== "worktree_command") {
         return worktreeServer(asked);
@@ -784,7 +798,7 @@ test("⌘K searches the open workspace, and choosing a hit goes to its place", {
     ];
     return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) });
   });
-  await serveFeed(page, { also: ["workspace.search"] });
+  await serveFeed(page);
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   await page.getByRole("navigation", { name: "Chats" }).getByText("Merge the shopping lists").waitFor();
@@ -827,7 +841,7 @@ test("the palette keeps focus on its input and the chosen hit in view", { timeou
   await listChats(page, () => ({ chats: [] }));
   const hits = Array.from({ length: 20 }, (_, n) => ({ kind: "task", task: `t-${n}`, title: `Buy milk ${n}`, snippet: { text: "milk", marks: [{ start: 0, end: 4 }] } }));
   await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits }) }));
-  await serveFeed(page, { also: ["workspace.search"] });
+  await serveFeed(page);
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).click();
   // The palette opens only in an open workspace.
@@ -852,36 +866,4 @@ test("the palette keeps focus on its input and the chosen hit in view", { timeou
   }
   await page.keyboard.press("Escape");
   await search.waitFor({ state: "detached" });
-});
-
-test("the palette's symbols go once the server stops offering symbol search", { timeout: 600_000 }, async (t) => {
-  const served = await serve();
-  t.after(() => served.close());
-  const { page } = served;
-  const core = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
-  const studio = { id: "mc-1", name: "Studio", os: "linux", paired_at: 1, core, connected: true };
-  await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [studio] }) }));
-  await page.route("**/api/workspaces/*/search", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ hits: [] }) }));
-  const symbol = { repo: "garden", kind: "fn" as const, name: "garden::plant", path: "src/lib.rs", line: 8 };
-  const feed = await serveFeed(page, {
-    also: (opened) => ["workspace.search", ...(opened === 1 ? ["symbols.search"] : [])],
-    answer: (sent) =>
-      sent.type === "symbols_query"
-        ? [{ id: sent.id, type: "symbols_answer", request: sent.request, machine: sent.machine, workspace: sent.workspace, answer: { kind: "found", symbols: [symbol], more: false } }]
-        : [],
-  });
-  await signIn(served);
-  await page.getByRole("button", { name: "Personal" }).click();
-  // The palette opens only in an open workspace.
-  await page.getByRole("heading", { name: "Personal" }).waitFor();
-
-  await page.keyboard.press("ControlOrMeta+k");
-  const search = page.getByRole("dialog", { name: "Search" });
-  await search.getByRole("combobox", { name: "Search" }).fill("plant");
-  const group = search.getByRole("group", { name: "Symbols" });
-  await group.getByRole("option").first().waitFor();
-  // The feed that comes back after this one no longer offers symbol search.
-  await feed.closeLatest();
-  await group.waitFor({ state: "detached" });
-  assert.equal(await search.count(), 1);
 });

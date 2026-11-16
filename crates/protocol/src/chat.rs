@@ -13,8 +13,8 @@ token_id!(
     "not a chat id"
 );
 
-/// What a person says in a chat or asks of their agent there, from a client to the server or to
-/// a core that offers `chat.send`. A receipt under `request` answers it.
+/// What a person says in a chat or asks of their agent there, from a client to the server or to a
+/// core. A receipt under `request` answers it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatCommand {
     pub request: RequestId,
@@ -73,11 +73,11 @@ pub enum ChatAction {
     Permission { answer: PermissionAnswer },
     /// Stops the turn that is running.
     Interrupt,
-    /// Holds the chat for a person carrying its session on by hand: while the connection that
-    /// sent it is open, no run starts and prompts queue. Sent by a local client under
-    /// `chat.hold`, never through the server.
+    /// Holds the chat for a person carrying its session on by hand: while the connection that sent
+    /// it is open, no run starts and prompts queue. Sent by a local client, never through the
+    /// server.
     Hold,
-    /// Ends this connection's hold, under `chat.hold`; queued prompts then go on.
+    /// Ends this connection's hold; queued prompts then go on.
     Release,
 }
 
@@ -111,8 +111,8 @@ pub struct ChatTask {
     pub title: String,
 }
 
-/// A committed event of a chat, from the core to a client that subscribed under `chat.events`.
-/// Text deltas are never committed; they arrive only as run updates.
+/// A committed event of a chat, from the core to a client that subscribed. Text deltas are never
+/// committed; they arrive only as run updates.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatUpdate {
     pub workspace: WorkspaceId,
@@ -120,9 +120,8 @@ pub struct ChatUpdate {
     pub entry: ChatEntry,
 }
 
-/// A run's update that a viewer of its chat needs and no one stores: text as it is written.
-/// From a core to the server, and from the server to the feeds that follow the chat, each
-/// under `chat.live`.
+/// A run's update that a viewer of its chat needs and no one stores: text as it is written. From a
+/// core to the server, and from the server to the feeds that follow the chat.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatLive {
     pub workspace: WorkspaceId,
@@ -189,8 +188,8 @@ pub enum ChatEvent {
     },
 }
 
-/// A question about a chat's log, from a client to a core that offers `chat.events`. The answer
-/// is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+/// A question about a chat's log, from a client to a core. The answer is a [`ChatAnswer`], or for
+/// `subscribe` the [`ChatUpdate`]s themselves.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatQuery {
     pub workspace: WorkspaceId,
@@ -214,8 +213,7 @@ pub enum ChatQueryKind {
     },
 }
 
-/// The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client
-/// that has `chat.events`.
+/// The core's answer to a [`ChatQuery`], or its word that the client missed events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatAnswer {
     pub workspace: WorkspaceId,
@@ -290,8 +288,7 @@ pub enum ChatState {
     Full,
 }
 
-/// A workspace's chats, from the server, to clients that have the capability
-/// `workspace.chats`.
+/// A workspace's chats, from the server to clients.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatList {
     pub chats: Vec<ChatSummary>,

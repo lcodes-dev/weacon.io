@@ -9,7 +9,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio_tungstenite::connect_async;
     use tokio_tungstenite::tungstenite::Message;
-    use weacon_protocol::{PROTOCOL, code};
+    use weacon_protocol::PROTOCOL;
     use weacon_testing::TempDir;
     use weacon_testing::fake_core::client_hello;
 
@@ -33,9 +33,7 @@ mod tests {
     }
 
     async fn welcome(url: &str) -> serde_json::Value {
-        let hello = client_hello(1, PROTOCOL, [code!("run.stream")])
-            .to_json()
-            .unwrap();
+        let hello = client_hello(1, PROTOCOL).to_json().unwrap();
         let (mut client, _) = connect_async(url).await.unwrap();
         client
             .send(Message::text(String::from_utf8(hello).unwrap()))

@@ -3,10 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::RequestId;
 
-/// An element someone picked in Chrome, from the extension to a core that offers `element.pick`,
-/// which keeps it on the machine for a prompt that names its `request`. The
-/// sender cuts the HTML short and shrinks the screenshot so the message fits in one frame.
-/// Everything in it comes from the page, so it is untrusted.
+/// An element someone picked in Chrome, from the extension to a core, which keeps it on the machine
+/// for a prompt that names its `request`. The sender cuts the HTML short and shrinks the screenshot
+/// so the message fits in one frame. Everything in it comes from the page, so it is untrusted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Pick {
     pub request: RequestId,

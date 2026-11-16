@@ -4,33 +4,22 @@
 use std::collections::{HashMap, VecDeque};
 
 use weacon_protocol::{
-    ChatEvent, ChatLive, ChatUpdate, Code, Envelope, Message, RunEvent, RunId, RunUpdate, code,
+    ChatEvent, ChatLive, ChatUpdate, Envelope, Message, RunEvent, RunId, RunUpdate,
 };
 
 use crate::runs::ChatKey;
 
-/// What a server offers when it passes a chat's live updates on to its viewers.
-pub(in crate::uplink) const LIVE: Code = code!("chat.live");
 /// The most runs whose chat is remembered; the oldest is let go first.
 const RUNS_MAX: usize = 1024;
 
 /// The chats of the runs whose events went up, so their live updates can name their chat.
 #[derive(Debug, Default)]
 pub(super) struct Live {
-    on: bool,
     runs: HashMap<RunId, ChatKey>,
     order: VecDeque<RunId>,
 }
 
 impl Live {
-    /// Sends live updates up only when `on`, as the server offered [`LIVE`].
-    pub(super) fn new(on: bool) -> Self {
-        Self {
-            on,
-            ..Self::default()
-        }
-    }
-
     /// Takes note of the run `update` is about.
     pub(super) fn saw(&mut self, update: &ChatUpdate) {
         let run = match &update.entry.event {
@@ -57,7 +46,7 @@ impl Live {
             update: pushed,
             after: Some(came.get(key).copied().unwrap_or_default()),
         };
-        self.on.then_some(Envelope {
+        Some(Envelope {
             id: 0,
             message: Message::ChatLive(live),
         })
@@ -130,7 +119,7 @@ mod tests {
 
     #[test]
     fn text_being_written_goes_up_live_named_by_its_runs_chat_and_nothing_else() {
-        let mut live = Live::new(true);
+        let mut live = Live::default();
         let came = HashMap::from([(ChatKey::new(&id("w1"), &id("c-1")), 7)]);
         assert_eq!(live.of(delta("run-1"), &came), None);
 
@@ -162,12 +151,8 @@ mod tests {
     }
 
     #[test]
-    fn nothing_goes_up_live_to_a_server_that_doesnt_pass_it_on_and_old_runs_are_let_go() {
-        let mut off = Live::new(false);
-        off.saw(&update("c-1", started("run-1")));
-        assert_eq!(off.of(delta("run-1"), &HashMap::new()), None);
-
-        let mut live = Live::new(true);
+    fn old_runs_are_let_go() {
+        let mut live = Live::default();
         for n in 0..=RUNS_MAX {
             live.saw(&update("c-1", started(&format!("run-{n}"))));
         }

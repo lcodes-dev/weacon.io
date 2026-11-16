@@ -10,8 +10,7 @@ use weacon_appkit::build;
 use weacon_client::Connection;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
-    App as Build, Capability, Envelope, MapArgs, MapQuery, MapQueryKind, McpCall, Message, Secret,
-    code,
+    App as Build, Envelope, MapArgs, MapQuery, MapQueryKind, McpCall, Message, Secret, code,
 };
 
 use crate::app::{App, runtime};
@@ -24,7 +23,6 @@ const SESSION_START: MapArgs = MapArgs { budget: Some(4000) };
 const LIMIT: Duration = Duration::from_secs(5);
 /// The core's share of [`LIMIT`], so a map it is still reading leaves time to index here.
 const CORE_LIMIT: Duration = Duration::from_secs(2);
-const MAP_READ: Capability = Capability::new(code!("map.read"));
 
 /// How a hook finds its folder's map: from its run's core when it has one, else by `index`,
 /// within `limit` in all.
@@ -118,11 +116,7 @@ impl Hook {
 
 impl Core {
     async fn stored(&self, folder: &str) -> Result<Option<String>, Fault> {
-        let (welcome, mut connection) =
-            Connection::open(&self.socket, self.me.clone(), Vec::new()).await?;
-        if !welcome.capabilities.contains(&MAP_READ) {
-            return Ok(None);
-        }
+        let (_, mut connection) = Connection::open(&self.socket, self.me.clone()).await?;
         let query = MapQuery {
             token: self.token.clone(),
             folder: folder.to_owned(),

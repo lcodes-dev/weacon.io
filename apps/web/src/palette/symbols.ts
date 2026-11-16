@@ -1,23 +1,13 @@
-import type { Later, WebCapability } from "../connection.ts";
+import type { Later } from "../connection.ts";
 import type { MachineId, MachineSummary, Symbol as CodeSymbol } from "../protocol.ts";
 import type { Answer } from "../api/api.ts";
 import { type MachineSocket, askMachine } from "../machines/ask-machine.ts";
-import { lacks } from "../machines/core.ts";
 
-/** What a core offers to search its code. */
-export const SYMBOLS: WebCapability = "symbols.search";
-
-/** The machine the palette asks for symbols: the open chat's when it offers them, else the first that does. */
+/** The machine the palette asks for symbols: the open chat's when it is connected, else the first that is. */
 export function searcher(machines: readonly MachineSummary[], chatMachine: MachineId | undefined): MachineId | undefined {
-  const offering = machines.filter(offers);
-  return (offering.find((machine) => machine.id === chatMachine) ?? offering[0])?.id;
+  const connected = machines.filter((machine) => machine.connected === true);
+  return (connected.find((machine) => machine.id === chatMachine) ?? connected[0])?.id;
 }
-
-/**
- * Whether `machine` searches its code now: connected, with a core that said what it offers and
- * didn't leave out symbol search.
- */
-const offers = (machine: MachineSummary) => machine.connected === true && machine.core !== undefined && !lacks(machine, SYMBOLS);
 
 /** The items of the open workspace's code on `machine` that match `words`, best first. */
 export function symbols(socket: MachineSocket, machine: MachineId, words: string, later: Later): Promise<Answer<CodeSymbol[]>> {

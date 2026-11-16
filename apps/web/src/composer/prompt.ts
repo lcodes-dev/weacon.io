@@ -45,12 +45,9 @@ export function sentProblem(sent: Sent): string | undefined {
 }
 
 /** Why the box can't send to `chatRef` now, or `undefined` when it can. */
-export function blocked(live: boolean, chatRef: ChatRef | undefined, sends: boolean): string | undefined {
+export function blocked(live: boolean, chatRef: ChatRef | undefined): string | undefined {
   if (chatRef === undefined) {
     return "Pick a chat to send to.";
   }
-  if (!live) {
-    return "Messages send once the server is connected.";
-  }
-  return sends ? undefined : "This server can't take messages yet.";
+  return live ? undefined : "Messages send once the server is connected.";
 }

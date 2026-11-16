@@ -21,7 +21,6 @@ test("frames that aren't messages are dropped", () => {
 
 test("only the messages this app acts on pass, each with the fields it reads", () => {
   const good = [
-    { id: 1, type: "welcome", app, capabilities: ["run.stream"] },
     { id: 1, type: "welcome", app },
     { id: 4, type: "error", code: "request.conflict", retryable: false },
     { id: 4, type: "receipt", request: "r-1", state: "accepted" },
@@ -44,7 +43,6 @@ test("only the messages this app acts on pass, each with the fields it reads", (
     { id: 0, type: "newer" },
     { type: "receipt", request: "r-1", state: "accepted" },
     { id: 1, type: "welcome", app: { name: "x" } },
-    { id: 1, type: "welcome", app, capabilities: [3] },
     { id: 4, type: "error" },
     { id: 4, type: "receipt", state: "accepted" },
     { id: 4, type: "receipt", request: "r-1" },

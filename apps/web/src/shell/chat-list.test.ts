@@ -24,15 +24,24 @@ test("a chat that takes no prompts says why", () => {
 test("a person's agents in a chat are those on machines they may call, whoever called each last, their own first", () => {
   const leg = (member: string, detached = false) => ({ member, machine_id: `mc-${member}`, machine: "laptop", agent: "claude" as const, detached });
   const shared = { ...chat("c-1", 10), legs: [leg("m-1"), leg("m-2"), leg("m-4", true)] };
-  const on = (own: string[], others: string[]) => reached(own, others, shared).map((one) => [one.leg.member, one.own, one.shared]);
+  const on = (own: string[], others: string[]) => reached(own, others, shared, []).map((one) => [one.leg.member, one.own, one.shared]);
 
   assert.deepEqual(on(["mc-m-2"], []), [["m-2", true, false]]);
   // One of their own that they share is both, and comes once.
   assert.deepEqual(on(["mc-m-2"], ["mc-m-1", "mc-m-2"]), [["m-2", true, true], ["m-1", false, true]]);
   // An agent that can never run again isn't one to call.
   assert.deepEqual(on(["mc-m-3", "mc-m-4"], []), []);
-  assert.deepEqual(reached(["mc-m-1"], [], undefined), []);
-  assert.deepEqual(reached(["mc-m-1"], [], chat("c-2", 10)), []);
+  assert.deepEqual(reached(["mc-m-1"], [], undefined, []), []);
+  assert.deepEqual(reached(["mc-m-1"], [], chat("c-2", 10), []), []);
+});
+
+test("an agent's machine opens terminals only when it is one of those that do", () => {
+  const leg = (member: string) => ({ member, machine_id: `mc-${member}`, machine: "laptop", agent: "claude" as const, detached: false });
+  const both = { ...chat("c-1", 10), legs: [leg("m-1"), leg("m-2")] };
+  const terminals = (opening: string[]) => reached(["mc-m-1", "mc-m-2"], [], both, opening).map((one) => one.terminal);
+
+  assert.deepEqual(terminals(["mc-m-2"]), [false, true]);
+  assert.deepEqual(reached(["mc-m-1"], [], both, []).map((one) => one.terminal), [false]);
 });
 
 test("a chat's row names who started it once known, and why it takes no messages", () => {

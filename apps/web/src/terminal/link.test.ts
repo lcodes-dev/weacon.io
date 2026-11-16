@@ -65,7 +65,7 @@ test("the terminal hears its connection is lost when it ends or another takes it
   const quiet = new WorkspaceSocket("w-1");
   const send = () => {};
   for (const socket of [ended, replaced, quiet]) {
-    socket.attach(send, ["terminal.relay"]);
+    socket.attach(send);
   }
   const lost: string[] = [];
   terminalLink(ended).lost(() => lost.push("ended"));
@@ -73,7 +73,7 @@ test("the terminal hears its connection is lost when it ends or another takes it
   const stop = terminalLink(quiet).lost(() => lost.push("quiet"));
 
   ended.attach(undefined);
-  replaced.attach(() => {}, ["terminal.relay"]);
+  replaced.attach(() => {});
   stop();
   quiet.attach(undefined);
 

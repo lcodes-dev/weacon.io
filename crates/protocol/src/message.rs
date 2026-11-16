@@ -10,8 +10,8 @@ use crate::{
     WorktreeCommand, WorktreeQuery, code,
 };
 
-/// The protocol version this build speaks. Only a breaking change raises it; peers must match
-/// it exactly and check each other's capabilities for everything else.
+/// The protocol version this build speaks. Only a breaking change raises it; peers must match it
+/// exactly.
 pub const PROTOCOL: u32 = 1;
 
 /// One message on the wire. A reply carries the `id` of the request it answers.
@@ -70,6 +70,7 @@ pub enum Message {
 pub struct Hello {
     pub protocol: u32,
     pub app: App,
+    /// What a core does only on some machines, said to its server.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<Capability>,
 }
@@ -78,8 +79,6 @@ pub struct Hello {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Welcome {
     pub app: App,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<Capability>,
 }
 
 /// A program, such as `weacon-core`, and the exact build it is.
@@ -99,12 +98,11 @@ pub struct ErrorBody {
 }
 
 impl Hello {
-    /// A [`Welcome`] from `app` with its `capabilities` on the same protocol, else the error
-    /// `protocol.unsupported`.
+    /// A [`Welcome`] from `app` on the same protocol, else the error `protocol.unsupported`.
     #[must_use]
-    pub fn answer(&self, app: App, capabilities: Vec<Capability>) -> Message {
+    pub fn answer(&self, app: App) -> Message {
         if self.protocol == PROTOCOL {
-            Message::Welcome(Welcome { app, capabilities })
+            Message::Welcome(Welcome { app })
         } else {
             Message::Error(ErrorBody {
                 code: code!("protocol.unsupported"),
@@ -157,12 +155,10 @@ mod tests {
                     id: 1,
                     message: Message::Welcome(Welcome {
                         app: app("weacon-core"),
-                        capabilities: capabilities(&["chat.send"]),
                     }),
                 },
                 json!({ "id": 1, "type": "welcome",
-                        "app": { "name": "weacon-core", "version": "0.1.0", "commit": "1a2b3c4" },
-                        "capabilities": ["chat.send"] }),
+                        "app": { "name": "weacon-core", "version": "0.1.0", "commit": "1a2b3c4" } }),
             ),
             (
                 Envelope {
@@ -204,31 +200,30 @@ mod tests {
         )
         .unwrap();
 
-        let newer: Envelope =
+        let core: Envelope =
             serde_json::from_value(json!({ "id": 5, "type": "hello", "protocol": 1,
-            "app": { "name": "weacon-extension", "version": "9.0.0", "commit": "1a2b3c4" },
-            "capabilities": ["chat.send", "future.thing"] }))
+            "app": { "name": "weacon-core", "version": "9.0.0", "commit": "1a2b3c4" },
+            "capabilities": ["worktree.open_terminal"] }))
             .unwrap();
 
         assert_eq!(unknown.message, Message::Unknown);
         assert!(matches!(extra.message, Message::Error(_)));
         assert!(
-            matches!(newer.message, Message::Hello(hello) if hello.capabilities == capabilities(&["chat.send", "future.thing"]))
+            matches!(core.message, Message::Hello(hello) if hello.capabilities == capabilities(&["worktree.open_terminal"]))
         );
     }
 
     #[test]
     fn a_matching_hello_is_welcomed_and_any_other_refused() {
         assert_eq!(
-            hello(PROTOCOL).answer(app("weacon-core"), capabilities(&["element.pick"])),
+            hello(PROTOCOL).answer(app("weacon-core")),
             Message::Welcome(Welcome {
                 app: app("weacon-core"),
-                capabilities: capabilities(&["element.pick"]),
             })
         );
         for protocol in [PROTOCOL - 1, PROTOCOL + 1] {
             assert_eq!(
-                hello(protocol).answer(app("weacon-core"), capabilities(&["element.pick"])),
+                hello(protocol).answer(app("weacon-core")),
                 Message::Error(ErrorBody {
                     code: code!("protocol.unsupported"),
                     retryable: false,

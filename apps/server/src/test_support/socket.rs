@@ -30,10 +30,11 @@ pub(crate) async fn open(
     connect_async(request).await.map(|(client, _)| client)
 }
 
-pub(crate) async fn say(client: &mut Socket, capabilities: &[&str]) {
-    say_as(client, PROTOCOL, capabilities).await;
+pub(crate) async fn say(client: &mut Socket) {
+    say_as(client, PROTOCOL, &[]).await;
 }
 
+/// A hello on `protocol`, as from a core that offers `capabilities`.
 pub(crate) async fn say_as(client: &mut Socket, protocol: u32, capabilities: &[&str]) {
     let hello = Message::Hello(Hello {
         protocol,

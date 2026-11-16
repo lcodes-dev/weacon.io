@@ -6,10 +6,10 @@ import { problemText } from "../api/problems.ts";
 import { later } from "../connection.ts";
 import type { MachineId, SearchHit, Symbol as CodeSymbol, WorkspaceId } from "../protocol.ts";
 import type { Place } from "../shell/place.ts";
-import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
+import { type WorkspaceSocket, useWelcomed } from "../shell/workspace-socket.ts";
 import { composing, picker } from "../composer/keys.ts";
 import { type Listed, listed, opensPalette, parts } from "./hits.ts";
-import { SYMBOLS, place, searcher, symbols } from "./symbols.ts";
+import { place, searcher, symbols } from "./symbols.ts";
 import "./palette.css";
 
 type Props = {
@@ -119,7 +119,7 @@ function Search({ api, workspace, socket, chatMachine, close, go }: Omit<Props, 
         <input
           ref={input}
           aria-label="Search"
-          placeholder={coded.offered ? "Search tasks, docs, chats and code" : "Search tasks, docs and chats"}
+          placeholder="Search tasks, docs, chats and code"
           role="combobox"
           aria-expanded={count > 0}
           aria-controls="palette-hits"
@@ -215,11 +215,11 @@ const symbolKey = (symbol: CodeSymbol) => `symbol:${symbol.repo}:${symbol.name}:
 
 /**
  * The symbols on the person's machine that match `text`, once its answer is for that text; none
- * while no machine of theirs offers them. `settled` once nothing is left to wait for.
+ * while no machine of theirs is connected. `settled` once nothing is left to wait for.
  */
 function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: MachineId | undefined, text: string) {
-  const offered = useOffers(socket, SYMBOLS);
-  // Undefined until the machines are listed, null when none of them offers symbols.
+  const welcomed = useWelcomed(socket);
+  // Undefined until the machines are listed, null when none of them is connected.
   const [machine, setMachine] = useState<MachineId | null | undefined>(undefined);
   // Why the machines couldn't be listed; the palette lists them again when it next opens.
   const [unlisted, setUnlisted] = useState<string | undefined>(undefined);
@@ -227,35 +227,31 @@ function useSymbols(api: Api, socket: WorkspaceSocket, chatMachine: MachineId | 
   const [loader] = useState(() => new Loader<Coded>(setCoded));
   useEffect(() => {
     let live = true;
-    if (offered) {
-      void api.machines().then((answer) => {
-        if (live) {
-          setMachine((answer.ok ? searcher(answer.value.machines, chatMachine) : undefined) ?? null);
-          setUnlisted(answer.ok ? undefined : problemText(answer.code));
-        }
-      });
-    }
+    void api.machines().then((answer) => {
+      if (live) {
+        setMachine((answer.ok ? searcher(answer.value.machines, chatMachine) : undefined) ?? null);
+        setUnlisted(answer.ok ? undefined : problemText(answer.code));
+      }
+    });
     return () => {
       live = false;
     };
-  }, [api, offered, chatMachine]);
+  }, [api, chatMachine]);
   useEffect(() => () => loader.stop(), [loader]);
   useEffect(() => {
-    if (offered && typeof machine === "string" && text.trim() !== "") {
+    if (welcomed && typeof machine === "string" && text.trim() !== "") {
       void loader.load(async () => {
         const answer = await symbols(socket, machine, text, later);
         return answer.ok ? { ok: true, value: { machine, text, symbols: answer.value } } : answer;
       });
     }
-  }, [loader, socket, machine, text, offered]);
-  // A server that stops offering symbols takes the section away at once.
-  const asking = offered && typeof machine === "string";
+  }, [loader, socket, machine, text, welcomed]);
+  const asking = welcomed && typeof machine === "string";
   const answered = asking && coded.value?.machine === machine && coded.value.text === text;
   return {
     symbols: answered ? (coded.value?.symbols ?? []) : [],
     problem: asking ? coded.problem : unlisted,
-    settled: !offered || machine === null || answered || coded.problem !== undefined,
-    offered,
+    settled: !welcomed || machine === null || answered || coded.problem !== undefined,
   };
 }
 

@@ -129,8 +129,7 @@ impl Wants {
     }
 }
 
-/// One event of the run `run`, in the order the run reported it, from the core to clients that
-/// have `run.stream`.
+/// One event of the run `run`, in the order the run reported it, from the core to clients.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RunUpdate {
     pub run: RunId,

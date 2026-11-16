@@ -1,11 +1,8 @@
-//! What each kind the relay carries asks, needs and answers.
+//! What each kind the relay carries asks and answers.
 
 use weacon_protocol::{
-    Asker, ChatId, Code, MachineId, MachineSettingsQueryKind, Message, RequestId, WorkspaceId,
-    WorktreeAction,
+    Asker, ChatId, MachineId, MachineSettingsQueryKind, Message, RequestId, WorkspaceId,
 };
-
-use super::{DIFF, SESSIONS, SETTINGS, SYMBOLS, TERMINAL, WORKTREE};
 
 /// The workspace, request and subject an ask or its answer names.
 #[derive(PartialEq, Eq)]
@@ -47,38 +44,18 @@ impl Asked {
     }
 }
 
-/// What a client offers for the relay to carry `message`, which the machine's core offers too;
-/// `None` for a kind the relay doesn't carry.
-pub(crate) const fn needs(message: &Message) -> Option<Code> {
-    if matches!(
+/// Whether `message` is of a kind the relay carries from a client to a machine.
+pub(crate) const fn carries(message: &Message) -> bool {
+    matches!(
         message,
-        Message::MachineSettingsQuery(_) | Message::MachineSettingsCommand(_)
-    ) {
-        Some(SETTINGS)
-    } else if matches!(message, Message::SessionsQuery(_)) {
-        Some(SESSIONS)
-    } else if matches!(message, Message::DiffQuery(_)) {
-        Some(DIFF)
-    } else if matches!(message, Message::SymbolsQuery(_)) {
-        Some(SYMBOLS)
-    } else if matches!(
-        message,
-        Message::WorktreeQuery(_) | Message::WorktreeCommand(_)
-    ) {
-        Some(WORKTREE)
-    } else {
-        None
-    }
-}
-
-/// What the machine's core must offer to be sent `message`, which may be more than [`needs`].
-pub(super) fn machine_needs(message: &Message) -> Option<Code> {
-    if let Message::WorktreeCommand(command) = message
-        && command.action == WorktreeAction::OpenTerminal
-    {
-        return Some(TERMINAL);
-    }
-    needs(message)
+        Message::MachineSettingsQuery(_)
+            | Message::MachineSettingsCommand(_)
+            | Message::SessionsQuery(_)
+            | Message::DiffQuery(_)
+            | Message::SymbolsQuery(_)
+            | Message::WorktreeQuery(_)
+            | Message::WorktreeCommand(_)
+    )
 }
 
 /// Whether `message` is one a member may send to a machine shared with their workspace, and

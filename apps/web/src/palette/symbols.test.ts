@@ -7,34 +7,31 @@ import { place, searcher, symbols } from "./symbols.ts";
 
 const CORE = { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" };
 
-// A machine, connected unless `offline`, whose core offers symbols unless `older`; `silent` when its core never said.
-const machine = (id: string, name: string, how: { offline?: boolean; older?: boolean; silent?: boolean } = {}): MachineSummary => ({
+// A machine, connected unless `offline`.
+const machine = (id: string, name: string, how: { offline?: boolean } = {}): MachineSummary => ({
   id,
   name,
   os: "linux",
   paired_at: 1,
-  ...(how.silent === true ? {} : { core: CORE }),
-  ...(how.older === true ? { missing: ["symbols.search"] } : {}),
+  core: CORE,
   ...(how.offline === true ? {} : { connected: true }),
 });
 
 const RUN: CodeSymbol = { repo: "site", kind: "fn", name: "a::run", path: "src/lib.rs", line: 2 };
 
-test("the open chat's machine is asked when it offers symbols, else the first machine that does", () => {
+test("the open chat's machine is asked when it is connected, else the first machine that is", () => {
   const machines = [
-    machine("mc-1", "Laptop", { older: true }),
+    machine("mc-1", "Laptop", { offline: true }),
     machine("mc-2", "Studio"),
     machine("mc-3", "Server"),
     machine("mc-4", "Old", { offline: true }),
-    machine("mc-5", "Quiet", { silent: true }),
   ];
 
   assert.equal(searcher(machines, "mc-3"), "mc-3");
   assert.equal(searcher(machines, "mc-1"), "mc-2");
   assert.equal(searcher(machines, "mc-4"), "mc-2");
-  assert.equal(searcher(machines, "mc-5"), "mc-2");
   assert.equal(searcher(machines, undefined), "mc-2");
-  assert.equal(searcher([machines[0]!, machines[3]!, machines[4]!], "mc-1"), undefined);
+  assert.equal(searcher([machines[0]!, machines[3]!], "mc-1"), undefined);
   assert.equal(searcher([], undefined), undefined);
 });
 

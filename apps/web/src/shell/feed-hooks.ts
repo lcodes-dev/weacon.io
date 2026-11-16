@@ -5,7 +5,7 @@ import { Connection, type Status, later } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import { ME } from "../me.ts";
 import type { WorkspaceChange, WorkspaceId } from "../protocol.ts";
-import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
+import { STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
 import type { WorkspaceSocket } from "./workspace-socket.ts";
 
 /**
@@ -34,7 +34,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           if (next.state === "live") {
             stayed = false;
             staying = setTimeout(() => (stayed = true), STAYED_MS);
-            socket.attach((envelope) => connection.send(envelope), next.capabilities);
+            socket.attach((envelope) => connection.send(envelope));
           } else if (next.state === "ended") {
             clearTimeout(staying);
             socket.attach(undefined);
@@ -57,7 +57,7 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
           socket.heard(envelope);
         },
       };
-      const connection = new Connection(fresh, ME, listener, FEED, later);
+      const connection = new Connection(fresh, ME, listener, later);
       opened = connection;
     };
     open();

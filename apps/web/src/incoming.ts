@@ -83,7 +83,7 @@ const text = (fields: Fields, key: string) => typeof fields[key] === "string";
 
 // The fields each message this app acts on must have.
 const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
-  welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isStrings(fields["capabilities"])),
+  welcome: (fields) => isApp(fields["app"]),
   error: (fields) => text(fields, "code"),
   receipt: (fields) => text(fields, "request") && isOutcome(fields),
   run: (fields) => text(fields, "run") && isRunEvent(fields["event"]),

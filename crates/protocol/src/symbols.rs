@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{Asker, MachineId, RepoId, RequestId, WorkspaceId};
 
 /// A person asks their own machine for the items of the code in the repositories it has for a
-/// workspace, from a client to a core that offers `symbols.search`. Neither the query nor its
-/// answer is stored.
+/// workspace, from a client to a core. Neither the query nor its answer is stored.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SymbolsQuery {
     pub request: RequestId,
@@ -27,8 +26,7 @@ pub enum SymbolsQueryKind {
     Search { words: String },
 }
 
-/// The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has
-/// `symbols.search`.
+/// The core's answer to a [`SymbolsQuery`] under the same `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SymbolsAnswer {
     pub request: RequestId,

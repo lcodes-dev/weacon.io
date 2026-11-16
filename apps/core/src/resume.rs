@@ -109,7 +109,7 @@ async fn hold(
     me: weacon_protocol::App,
     key: &ChatKey,
 ) -> Result<Option<Held>, Fault> {
-    let (_, daemon) = match Connection::open(socket, me, Vec::new()).await {
+    let (_, daemon) = match Connection::open(socket, me).await {
         Ok(opened) => opened,
         Err(fault) if fault.code() == &code!("daemon.not_running") => return Ok(None),
         Err(fault) => return Err(fault),
@@ -421,7 +421,6 @@ mod tests {
         if matches!(message, Message::Hello(_)) {
             return Some(Message::Welcome(Welcome {
                 app: build(&VERSION),
-                capabilities: Vec::new(),
             }));
         }
         if let Message::ChatQuery(query) = message {

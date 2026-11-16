@@ -10,49 +10,16 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{
-    Asker, Capability, Code, Envelope, Message, WorkspaceChange, WorkspaceId, code,
-};
+use weacon_protocol::{Asker, Envelope, Message, WorkspaceId};
 
 use crate::auth::{Member, Session};
 use crate::chats::{self, Asking, Watch};
 use crate::http::failure;
-use crate::proposals::PROPOSALS;
-use crate::relay::{self, Ask, DIFF, Refusal, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
-use crate::search::SEARCH;
+use crate::relay::{self, Ask, Refusal};
 use crate::shared::Shared;
 use crate::socket::{Closed, Pings, greet, reply};
-use crate::terminals::{self, TERMINALS};
-use crate::workspaces::MEMBERS;
+use crate::terminals;
 
-/// What a client must offer, and the server offers, to get a workspace's changes.
-const FEED: Code = code!("workspace.feed");
-/// What the server offers to clients that read and change tasks.
-const TASKS: Code = code!("workspace.tasks");
-/// What the server offers to clients that read and revise docs.
-const DOCS: Code = code!("workspace.docs");
-/// What the server offers to clients that read chats.
-const CHATS: Code = code!("workspace.chats");
-/// What the server offers to clients that ask chats' agents.
-const CHAT_COMMANDS: Code = code!("workspace.chat_commands");
-/// What the feed offers; a client hears of the features it offers too.
-const OFFERED: [Code; 15] = [
-    FEED,
-    TASKS,
-    DOCS,
-    SETTINGS,
-    PROPOSALS,
-    CHATS,
-    CHAT_COMMANDS,
-    chats::LIVE,
-    MEMBERS,
-    DIFF,
-    WORKTREE,
-    SESSIONS,
-    TERMINALS,
-    SEARCH,
-    SYMBOLS,
-];
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
@@ -97,7 +64,6 @@ pub(crate) async fn feed(
         asker,
         changes,
         last_seq: since,
-        offers: Vec::new(),
         chats: Watch::new(&shared),
         answer_to,
         answers,
@@ -115,8 +81,6 @@ struct Feed {
     /// Which workspace changed; the changes themselves are read from the database, in order.
     changes: Receiver<WorkspaceId>,
     last_seq: u64,
-    /// What the client offered besides the feed; it hears only of those features' changes.
-    offers: Vec<Capability>,
     chats: Watch,
     /// Machines' answers to what the client asked them through the relay.
     answer_to: mpsc::Sender<Envelope>,
@@ -124,11 +88,6 @@ struct Feed {
 }
 
 impl Feed {
-    /// Whether the client offered `feature`.
-    fn hears(&self, feature: Code) -> bool {
-        self.offers.contains(&Capability::new(feature))
-    }
-
     /// Goes on only while the feed's session is live and its account still a member.
     async fn allowed(&self, shared: &Shared) -> Result<(), Closed> {
         let Member {
@@ -165,13 +124,9 @@ async fn run(
     shared: &Shared,
     feed: &mut Feed,
 ) -> Result<Infallible, Closed> {
-    let feed_offer = Capability::new(FEED);
-    let offered = OFFERED.map(Capability::new).to_vec();
-    let greeted = greet(socket, shared, offered, &feed_offer);
-    let hello = timeout(shared.sockets.hello_within, greeted)
+    timeout(shared.sockets.hello_within, greet(socket, shared))
         .await
         .map_err(|_| Closed)??;
-    feed.offers = hello.capabilities;
     catch_up(socket, shared, feed).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
     loop {
@@ -184,9 +139,7 @@ async fn run(
             },
             Some(()) = feed.chats.more.recv() => send_chats(socket, shared, feed, None).await?,
             live = feed.chats.lives.recv() => {
-                if let Some(live) = feed.chats.passes(live, feed.member.workspace.id())?
-                    && feed.hears(chats::LIVE)
-                {
+                if let Some(live) = feed.chats.passes(live, feed.member.workspace.id())? {
                     feed.allowed(shared).await?;
                     reply(socket, shared, 0, live).await?;
                 }
@@ -239,22 +192,17 @@ async fn send_chats(
     Ok(())
 }
 
-/// Gives what the client sent to the feature it is for, if the client offered that feature;
-/// anything else is dropped.
+/// Gives what the client sent to the feature it is for; anything else is dropped.
 async fn received(
     socket: &mut WebSocket,
     shared: &Shared,
     feed: &mut Feed,
     envelope: Envelope,
 ) -> Result<(), Closed> {
-    if let Some(needs) = relay::needs(&envelope.message)
-        && feed.hears(needs)
-    {
+    if relay::carries(&envelope.message) {
         return relay(socket, shared, feed, envelope).await;
     }
-    let reads = feed.hears(CHATS) && chats::carries(&envelope.message);
-    let asks = feed.hears(CHAT_COMMANDS) && chats::asks(&envelope.message);
-    if reads || asks {
+    if chats::carries(&envelope.message) || chats::asks(&envelope.message) {
         feed.allowed(shared).await?;
         let asking = Asking {
             member: &feed.member,
@@ -264,9 +212,7 @@ async fn received(
         let answer = feed.chats.heard(envelope, asking, shared).await;
         return send_chats(socket, shared, feed, answer).await;
     }
-    if feed.hears(TERMINALS)
-        && let Message::TerminalCommand(command) = envelope.message
-    {
+    if let Message::TerminalCommand(command) = envelope.message {
         feed.allowed(shared).await?;
         let ask = Ask {
             asker: &feed.asker,
@@ -310,18 +256,6 @@ async fn catch_up(socket: &mut WebSocket, shared: &Shared, feed: &mut Feed) -> R
         let more = usize::try_from(PAGE).is_ok_and(|full| page.len() == full);
         for update in page {
             feed.last_seq = update.seq;
-            let wanted = match update.change {
-                WorkspaceChange::TaskChanged { .. } => feed.hears(TASKS),
-                WorkspaceChange::DocChanged { .. } => feed.hears(DOCS),
-                WorkspaceChange::ProposalChanged { .. } => feed.hears(PROPOSALS),
-                WorkspaceChange::ChatChanged { .. } => feed.hears(CHATS),
-                WorkspaceChange::MemberJoined { .. }
-                | WorkspaceChange::MembersChanged
-                | WorkspaceChange::MachinesChanged => true,
-            };
-            if !wanted {
-                continue;
-            }
             // Before each one, not each page: a member removed meanwhile gets nothing more.
             feed.allowed(shared).await?;
             reply(socket, shared, 0, Message::Workspace(update)).await?;
@@ -345,7 +279,7 @@ mod tests {
     use tokio_tungstenite::tungstenite::Message as Wire;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::{MaybeTlsStream, connect_async};
-    use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate};
+    use weacon_protocol::{MemberId, PROTOCOL, WorkspaceChange, WorkspaceUpdate, code};
 
     use weacon_model::{Attribution, Doc, DocText, OrderKey, Task, Title};
     use weacon_protocol::{DocId, ProposalChange, ProposalId, TaskId};
@@ -384,7 +318,7 @@ mod tests {
     async fn greeted(address: SocketAddr, token: &str, since: u64) -> Socket {
         let path = format!("/api/workspaces/w1/feed?since={since}");
         let mut client = open(address, &path, token).await.unwrap();
-        say(&mut client, &["workspace.feed"]).await;
+        say(&mut client).await;
         let welcome = next(&mut client).await;
         assert!(matches!(welcome, Message::Welcome(_)), "{welcome:?}");
         client
@@ -407,46 +341,23 @@ mod tests {
         let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
-        say(&mut client, &["workspace.feed"]).await;
+        say(&mut client).await;
         let welcome = next(&mut client).await;
         let missed = next(&mut client).await;
         join(&fixture, server.address, "m2", "bo@example.com").await;
         let live = next(&mut client).await;
 
-        let Message::Welcome(welcome) = welcome else {
-            panic!("{welcome:?}");
-        };
-        assert_eq!(
-            welcome.capabilities,
-            [
-                FEED,
-                TASKS,
-                DOCS,
-                SETTINGS,
-                PROPOSALS,
-                CHATS,
-                CHAT_COMMANDS,
-                chats::LIVE,
-                MEMBERS,
-                DIFF,
-                WORKTREE,
-                SESSIONS,
-                TERMINALS,
-                SEARCH,
-                SYMBOLS
-            ]
-            .map(Capability::new)
-        );
+        assert!(matches!(welcome, Message::Welcome(_)), "{welcome:?}");
         assert_eq!(missed, joined(1, "m1"));
         assert_eq!(live, joined(2, "m2"));
     }
 
     #[tokio::test]
-    async fn only_a_client_that_offers_tasks_hears_of_task_changes() {
+    async fn a_client_hears_of_task_changes() {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
-        let mut plain = greeted(server.address, &ada.token, 0).await;
-        let first = next(&mut plain).await;
+        let mut client = greeted(server.address, &ada.token, 0).await;
+        let first = next(&mut client).await;
         let task = Task::new(
             TaskId::try_from("t1".to_owned()).unwrap(),
             Title::try_from("Write".to_owned()).unwrap(),
@@ -460,11 +371,6 @@ mod tests {
             .unwrap();
         fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
-        let after_the_task = next(&mut plain).await;
-        let path = "/api/workspaces/w1/feed";
-        let mut both = open(server.address, path, &ada.token).await.unwrap();
-        say(&mut both, &["workspace.feed", "workspace.tasks"]).await;
-        next(&mut both).await;
 
         let task_changed = Message::Workspace(WorkspaceUpdate {
             workspace: workspace_id("w1"),
@@ -474,18 +380,17 @@ mod tests {
                 version: 1,
             },
         });
-        assert_eq!((first, after_the_task), (joined(1, "m1"), joined(3, "m2")));
-        assert_eq!(next(&mut both).await, joined(1, "m1"));
-        assert_eq!(next(&mut both).await, task_changed);
-        assert_eq!(next(&mut both).await, joined(3, "m2"));
+        assert_eq!(first, joined(1, "m1"));
+        assert_eq!(next(&mut client).await, task_changed);
+        assert_eq!(next(&mut client).await, joined(3, "m2"));
     }
 
     #[tokio::test]
-    async fn only_a_client_that_offers_docs_hears_of_doc_changes() {
+    async fn a_client_hears_of_doc_changes() {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
-        let mut plain = greeted(server.address, &ada.token, 0).await;
-        next(&mut plain).await;
+        let mut client = greeted(server.address, &ada.token, 0).await;
+        let first = next(&mut client).await;
         let doc = Doc::new(
             DocId::try_from("d1".to_owned()).unwrap(),
             DocText::new(
@@ -503,11 +408,6 @@ mod tests {
             .unwrap();
         fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
-        let after_the_doc = next(&mut plain).await;
-        let path = "/api/workspaces/w1/feed";
-        let mut docs = open(server.address, path, &ada.token).await.unwrap();
-        say(&mut docs, &["workspace.feed", "workspace.docs"]).await;
-        next(&mut docs).await;
 
         let doc_changed = Message::Workspace(WorkspaceUpdate {
             workspace: workspace_id("w1"),
@@ -517,18 +417,17 @@ mod tests {
                 version: 1,
             },
         });
-        assert_eq!(after_the_doc, joined(3, "m2"));
-        assert_eq!(next(&mut docs).await, joined(1, "m1"));
-        assert_eq!(next(&mut docs).await, doc_changed);
-        assert_eq!(next(&mut docs).await, joined(3, "m2"));
+        assert_eq!(first, joined(1, "m1"));
+        assert_eq!(next(&mut client).await, doc_changed);
+        assert_eq!(next(&mut client).await, joined(3, "m2"));
     }
 
     #[tokio::test]
-    async fn only_a_client_that_offers_proposals_hears_of_proposal_changes() {
+    async fn a_client_hears_of_proposal_changes() {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
-        let mut plain = greeted(server.address, &ada.token, 0).await;
-        next(&mut plain).await;
+        let mut client = greeted(server.address, &ada.token, 0).await;
+        let first = next(&mut client).await;
         let proposal = ProposalId::try_from("p1".to_owned()).unwrap();
         let task = ProposalChange::NewTask {
             title: "Ship".to_owned(),
@@ -537,21 +436,15 @@ mod tests {
         w1(&fixture).await.propose(&proposed).await.unwrap();
         fixture.shared.wake_feeds(&workspace_id("w1"));
         join(&fixture, server.address, "m2", "bo@example.com").await;
-        let after_the_proposal = next(&mut plain).await;
-        let path = "/api/workspaces/w1/feed";
-        let mut proposals = open(server.address, path, &ada.token).await.unwrap();
-        say(&mut proposals, &["workspace.feed", "workspace.proposals"]).await;
-        next(&mut proposals).await;
 
         let proposal_changed = Message::Workspace(WorkspaceUpdate {
             workspace: workspace_id("w1"),
             seq: 2,
             change: WorkspaceChange::ProposalChanged { proposal },
         });
-        assert_eq!(after_the_proposal, joined(3, "m2"));
-        assert_eq!(next(&mut proposals).await, joined(1, "m1"));
-        assert_eq!(next(&mut proposals).await, proposal_changed);
-        assert_eq!(next(&mut proposals).await, joined(3, "m2"));
+        assert_eq!(first, joined(1, "m1"));
+        assert_eq!(next(&mut client).await, proposal_changed);
+        assert_eq!(next(&mut client).await, joined(3, "m2"));
     }
 
     #[tokio::test]
@@ -607,7 +500,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_client_must_say_hello_and_offer_the_feed() {
+    async fn a_client_must_say_hello_on_this_protocol() {
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
         let address = server.address;
@@ -618,21 +511,12 @@ mod tests {
             .send(Wire::text("{\"id\":3,\"type\":\"welcome\"}"))
             .await
             .unwrap();
-        let mut without = open(address, "/api/workspaces/w1/feed", &ada.token)
-            .await
-            .unwrap();
-        say(&mut without, &[]).await;
         let mut older = open(address, "/api/workspaces/w1/feed", &ada.token)
             .await
             .unwrap();
-        say_as(&mut older, PROTOCOL + 1, &["workspace.feed"]).await;
+        say_as(&mut older, PROTOCOL + 1, &[]).await;
 
         assert_eq!(next(&mut wrong).await, refusal(code!("handshake.required")));
-        assert_eq!(
-            next(&mut without).await,
-            refusal(code!("capability.missing"))
-        );
-        assert!(ends(&mut without).await);
         assert_eq!(
             next(&mut older).await,
             refusal(code!("protocol.unsupported"))
@@ -733,7 +617,7 @@ mod tests {
             .unwrap();
         // A page of two changes, m2's and m1's: the session lasts through the first's check.
         checks.store(1, Ordering::SeqCst);
-        say(&mut client, &["workspace.feed"]).await;
+        say(&mut client).await;
 
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         assert_eq!(next(&mut client).await, joined(1, "m2"));

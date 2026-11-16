@@ -126,10 +126,9 @@ pub struct MachineSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "App")]
     pub core: Option<App>,
-    /// What the server offers cores that this one didn't offer back when it last connected:
-    /// it is older than the server supports, and those features don't reach it.
+    /// What its core said it does, in its hello, when it last connected.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub missing: Vec<Capability>,
+    pub offers: Vec<Capability>,
     /// Whether its core is connected now.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub connected: bool,

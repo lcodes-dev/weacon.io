@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
-import { type Asks, Connection, type Status, later, statusText } from "../connection.ts";
+import { Connection, type Status, later, statusText } from "../connection.ts";
 import type { ChatLeg } from "../protocol.ts";
 import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
 import { useSocketFor } from "../shell/workspace-socket.ts";
 import { ThemeSwitch } from "../theme-switch.tsx";
 
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "workspace.chats", "workspace.chat_commands", "worktree.manage", "worktree.open_terminal"] };
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
 const FAKE_WORKSPACE = "w-1";
 // The fake server's one person, with their agent in its one chat.
@@ -39,14 +38,13 @@ export function ChatPage({ url, chatRef }: { url: string; chatRef: ChatRef | und
         status(next) {
           setStatus(next);
           if (next.state === "live") {
-            socket.attach((envelope) => connection.send(envelope), next.capabilities);
+            socket.attach((envelope) => connection.send(envelope));
           } else if (next.state === "ended") {
             socket.attach(undefined);
           }
         },
         message: (envelope) => socket.heard(envelope),
       },
-      TRANSCRIPT,
       later,
     );
     return () => {
@@ -67,7 +65,7 @@ export function ChatPage({ url, chatRef }: { url: string; chatRef: ChatRef | und
       </header>
       <main>
         <div className={settings ? "pane away" : "pane"}>
-          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} me={FAKE_LEG.member} agents={[{ leg: FAKE_LEG, own: true, shared: false }]} machines={[]} missing={undefined} openSettings={() => {}} away={settings} />
+          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} me={FAKE_LEG.member} agents={[{ leg: FAKE_LEG, own: true, shared: false, terminal: true }]} machines={[]} missing={undefined} openSettings={() => {}} away={settings} />
         </div>
         {settings && (
           <div className="pane">

@@ -18,8 +18,7 @@ export function ChatsNav({
   start,
   children,
 }: {
-  /** The chats, or none yet while the server is connecting, or none it serves. */
-  loaded: Loading<ChatList> | "connecting" | "none";
+  loaded: Loading<ChatList>;
   chosen: ChatId | undefined;
   choose: (chat: ChatId) => void;
   /** The members' names, for each chat's owner. */
@@ -27,8 +26,7 @@ export function ChatsNav({
   start: (() => void) | undefined;
   children?: ReactNode;
 }) {
-  const listed = typeof loaded === "string" ? undefined : loaded;
-  const chats = listed?.value === undefined ? undefined : newestFirst(listed.value.chats);
+  const chats = loaded.value === undefined ? undefined : newestFirst(loaded.value.chats);
   return (
     <nav className="chats" aria-label="Chats">
       <button type="button" className="primary" disabled={start === undefined} onClick={start}>
@@ -36,8 +34,8 @@ export function ChatsNav({
       </button>
       {children}
       <h2>Chats</h2>
-      {(loaded === "connecting" || listed?.loading === true) && <p className="muted">Loading</p>}
-      {(loaded === "none" || chats?.length === 0) && <p className="muted">No chats yet.</p>}
+      {loaded.loading && <p className="muted">Loading</p>}
+      {chats?.length === 0 && <p className="muted">No chats yet.</p>}
       {chats !== undefined && chats.length > 0 && (
         <ul>
           {chats.map((chat) => (
@@ -50,7 +48,7 @@ export function ChatsNav({
           ))}
         </ul>
       )}
-      {listed?.problem !== undefined && <Problem text={listed.problem} retry={() => void listed.load()} />}
+      {loaded.problem !== undefined && <Problem text={loaded.problem} retry={() => void loaded.load()} />}
     </nav>
   );
 }

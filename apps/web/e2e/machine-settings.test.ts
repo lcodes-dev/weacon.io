@@ -46,9 +46,9 @@ test("a person reads and changes a machine's settings for the open workspace, th
     signIns.map((text) => text.trim()),
     ["Claude Code: Signed in Sign in again", "Codex: Not installed"],
   );
-  // This core opens no sign-in terminals, so the server closes the one asked for.
+  // This core closes the sign-in terminal it is asked for.
   await settings.getByRole("button", { name: "Sign in again" }).click();
-  await settings.getByText("The machine isn't connected, or its core can't open sign-in terminals.").waitFor();
+  await settings.getByText("The terminal closed.").waitFor();
   // xterm's own rules apply under the server's policy, which blocks inline styles.
   const rows = settings.locator(".xterm-rows");
   assert.equal(await rows.evaluate((element) => getComputedStyle(element).color), "rgb(255, 255, 255)");

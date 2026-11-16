@@ -11,8 +11,8 @@ use tokio::task::AbortHandle;
 use tokio::time::sleep;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, Capability, ChatCommand, Code, DiffAnswer, DiffAnswerKind, Envelope, ErrorBody,
-    MachineId, Message, code,
+    Asker, ChatCommand, Code, DiffAnswer, DiffAnswerKind, Envelope, ErrorBody, MachineId, Message,
+    code,
 };
 
 use crate::db::Workspace;
@@ -21,24 +21,11 @@ use crate::socket::refusal;
 
 mod kinds;
 
-pub(crate) use kinds::needs;
-use kinds::{About, Asked, answering, for_members, machine_needs, on_machine, stamped};
+pub(crate) use kinds::carries;
+use kinds::{About, Asked, answering, for_members, on_machine, stamped};
 
 /// How long an ask waits for its answer, or a diff for its next file.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
-/// What a machine's core offers, and the server offers, to have its settings relayed.
-pub(crate) const SETTINGS: Code = code!("machine.settings");
-/// What a client and a core offer to have a person's own sessions, run outside Weacon, read
-/// through it.
-pub(crate) const SESSIONS: Code = code!("sessions.read");
-/// What a client and a core offer to have a chat's diff relayed.
-pub(crate) const DIFF: Code = code!("diff.view");
-/// What a client and a core offer to have a chat's worktree questions and commands relayed.
-pub(crate) const WORKTREE: Code = code!("worktree.manage");
-/// What a client and a core offer to have a person's search of their own machine's code relayed.
-pub(crate) const SYMBOLS: Code = code!("symbols.search");
-/// What a core offers where its machine has a desktop terminal.
-const TERMINAL: Code = code!("worktree.open_terminal");
 
 /// The asks waiting for their machines' answers.
 pub(crate) struct Relay {
@@ -136,7 +123,6 @@ pub(crate) async fn forward(
 ) -> Result<(), Refusal> {
     let unknown = || refused(code!("relay.unknown"), false);
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
-    let needs = machine_needs(&message).ok_or_else(unknown)?;
     let machine = machine_for(shared, ask, &asked, &message).await?;
     let relayed = shared.links.next_id();
     let sent_to = Sent {
@@ -148,11 +134,7 @@ pub(crate) async fn forward(
         id: relayed,
         message,
     };
-    if shared
-        .links
-        .send(&machine, &Capability::new(needs), sent)
-        .is_err()
-    {
+    if shared.links.send(&machine, sent).is_err() {
         shared.relay.lock().remove(&relayed);
         return Err(refused(code!("machine.offline"), true));
     }
@@ -484,29 +466,25 @@ mod tests {
         timeout(PATIENCE, channel.recv()).await.unwrap().unwrap()
     }
 
-    // `paired`'s core, connected and offering `capabilities`, once its connection is relayed to.
-    async fn connected(address: SocketAddr, paired: &Paired, capabilities: &[&str]) -> Socket {
+    // `paired`'s core, connected, once its connection is relayed to.
+    async fn connected(address: SocketAddr, paired: &Paired) -> Socket {
         let mut core = open(address, "/api/machines/connect", &paired.token)
             .await
             .unwrap();
-        say(&mut core, capabilities).await;
+        say(&mut core).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
         assert!(pongs(&mut core).await);
         core
     }
 
-    // Ada's machine, connected as its core, and her feed of w1 offering `capabilities`.
-    async fn both(
-        fixture: &Fixture,
-        address: SocketAddr,
-        capabilities: &[&str],
-    ) -> (Paired, Socket, Socket) {
+    // Ada's machine, connected as its core, and her feed of w1.
+    async fn both(fixture: &Fixture, address: SocketAddr) -> (Paired, Socket, Socket) {
         let paired = pair_machine(fixture, address).await;
-        let core = connected(address, &paired, &["machine.connect", "machine.settings"]).await;
+        let core = connected(address, &paired).await;
         let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
             .await
             .unwrap();
-        say(&mut browser, capabilities).await;
+        say(&mut browser).await;
         assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
         // Ada joined w1 when she opened it.
         assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
@@ -530,12 +508,8 @@ mod tests {
         (envelope.id, code.as_str(), *retryable)
     }
 
-    // Grace, another member of w1 with no machine, and her feed of it offering `capabilities`.
-    async fn graces_feed(
-        fixture: &Fixture,
-        address: SocketAddr,
-        capabilities: &[&str],
-    ) -> (AccountId, Socket) {
+    // Grace, another member of w1 with no machine, and her feed of it.
+    async fn graces_feed(fixture: &Fixture, address: SocketAddr) -> (AccountId, Socket) {
         let db = &fixture.shared.db;
         let email = crate::test_support::email("grace@example.com");
         let account = crate::test_support::fresh_account();
@@ -548,7 +522,7 @@ mod tests {
         let mut browser = open(address, "/api/workspaces/w1/feed", &grace.token)
             .await
             .unwrap();
-        say(&mut browser, capabilities).await;
+        say(&mut browser).await;
         assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
         (account, browser)
     }
@@ -584,10 +558,9 @@ mod tests {
     async fn a_member_asks_a_machine_shared_with_their_workspace_for_its_repos_and_agents_alone() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let offers = ["workspace.feed", "machine.settings"];
-        let (paired, mut core, _adas) = both(&fixture, server.address, &offers).await;
+        let (paired, mut core, _adas) = both(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let (account, mut browser) = graces_feed(&fixture, server.address, &offers).await;
+        let (account, mut browser) = graces_feed(&fixture, server.address).await;
         let repos = || of_kind(&machine, MachineSettingsQueryKind::Repos);
         let agents = of_kind(&machine, MachineSettingsQueryKind::Agents);
 
@@ -619,12 +592,7 @@ mod tests {
     async fn a_query_reaches_the_owners_machine_as_theirs_and_its_answer_comes_back() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, mut core, mut browser) = both(
-            &fixture,
-            server.address,
-            &["workspace.feed", "machine.settings"],
-        )
-        .await;
+        let (paired, mut core, mut browser) = both(&fixture, server.address).await;
         let machine = paired.machine_id();
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
 
@@ -660,41 +628,27 @@ mod tests {
     async fn a_query_for_a_machine_not_theirs_another_workspace_or_one_offline_is_refused() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, core, mut browser) = both(
-            &fixture,
-            server.address,
-            &["workspace.feed", "machine.settings"],
-        )
-        .await;
+        let (paired, core, mut browser) = both(&fixture, server.address).await;
         let machine = paired.machine_id();
         let stranger = MachineId::try_from("mc-stranger".to_owned()).unwrap();
 
         let not_theirs = asked(&mut browser, 1, query(&stranger, "w1")).await;
         let elsewhere = asked(&mut browser, 2, query(&machine, "w9")).await;
-        // Ada's other machines: one whose core isn't connected, one that doesn't take settings.
+        // Ada's other machine, whose core isn't connected.
         let unconnected = pair_machine(&fixture, server.address).await.machine_id();
         let offline = asked(&mut browser, 4, query(&unconnected, "w1")).await;
-        let older = pair_machine(&fixture, server.address).await;
-        let _older_core = connected(server.address, &older, &["machine.connect"]).await;
-        let unsettled = asked(&mut browser, 5, query(&older.machine_id(), "w1")).await;
         drop(core);
 
         assert_eq!(error_of(&not_theirs), (1, "machine.not_found", false));
         assert_eq!(error_of(&elsewhere), (2, "machine.not_found", false));
         assert_eq!(error_of(&offline), (4, "machine.offline", true));
-        assert_eq!(error_of(&unsettled), (5, "machine.offline", true));
     }
 
     #[tokio::test]
     async fn a_feed_whose_member_is_one_no_more_relays_nothing_and_ends() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, core, mut browser) = both(
-            &fixture,
-            server.address,
-            &["workspace.feed", "machine.settings"],
-        )
-        .await;
+        let (paired, core, mut browser) = both(&fixture, server.address).await;
         let w1 = fixture
             .shared
             .db
@@ -714,12 +668,7 @@ mod tests {
     async fn a_member_who_leaves_while_their_machine_answers_hears_nothing_more() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, mut core, mut browser) = both(
-            &fixture,
-            server.address,
-            &["workspace.feed", "machine.settings"],
-        )
-        .await;
+        let (paired, mut core, mut browser) = both(&fixture, server.address).await;
         let machine = paired.machine_id();
 
         send(&mut browser, envelope(1, query(&machine, "w1"))).await;
@@ -735,12 +684,7 @@ mod tests {
     async fn a_database_that_fails_while_relaying_ends_the_feed() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, _core, mut browser) = both(
-            &fixture,
-            server.address,
-            &["workspace.feed", "machine.settings"],
-        )
-        .await;
+        let (paired, _core, mut browser) = both(&fixture, server.address).await;
         fixture.shared.db.close().await;
 
         send(&mut browser, envelope(1, query(&paired.machine_id(), "w1"))).await;
@@ -754,21 +698,6 @@ mod tests {
                 .iter()
                 .any(|record| record.msg == "feed failed")
         );
-    }
-
-    #[tokio::test]
-    async fn a_client_that_doesnt_offer_the_settings_relays_nothing() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let (paired, core, mut browser) = both(&fixture, server.address, &["workspace.feed"]).await;
-        let machine = paired.machine_id();
-
-        send(&mut browser, envelope(1, query(&machine, "w1"))).await;
-        send(&mut browser, envelope(2, settings_answer(&machine))).await;
-        assert!(pongs(&mut browser).await);
-
-        assert!(fixture.shared.relay.lock().is_empty());
-        drop(core);
     }
 
     // A list of the sessions on `machine`, claiming to be from someone else.
@@ -802,30 +731,11 @@ mod tests {
         })
     }
 
-    // Ada's machine, its core offering `core_offers`, and her feed of w1 offering sessions.
-    async fn sessions_both(
-        fixture: &Fixture,
-        address: SocketAddr,
-        core_offers: &[&str],
-    ) -> (Paired, Socket, Socket) {
-        let paired = pair_machine(fixture, address).await;
-        let core = connected(address, &paired, core_offers).await;
-        let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
-            .await
-            .unwrap();
-        say(&mut browser, &["workspace.feed", "sessions.read"]).await;
-        assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
-        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
-        (paired, core, browser)
-    }
-
     #[tokio::test]
     async fn a_persons_own_sessions_reach_them_as_theirs_and_nothing_of_them_is_logged() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let offers = ["machine.connect", "sessions.read"];
-        let (paired, mut core, mut browser) =
-            sessions_both(&fixture, server.address, &offers).await;
+        let (paired, mut core, mut browser) = both(&fixture, server.address).await;
         let machine = paired.machine_id();
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
 
@@ -846,35 +756,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_client_that_doesnt_offer_reading_sessions_relays_none() {
+    async fn sessions_go_only_to_the_askers_own_machine() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let offers = &["workspace.feed", "machine.settings"];
-        let (paired, mut core, mut browser) = both(&fixture, server.address, offers).await;
-        let machine = paired.machine_id();
-
-        send(&mut browser, envelope(51, sessions_query(&machine))).await;
-        send(&mut browser, envelope(52, query(&machine, "w1"))).await;
-
-        let relayed = next_envelope(&mut core).await;
-        assert!(
-            matches!(relayed.message, Message::MachineSettingsQuery(_)),
-            "{relayed:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn sessions_go_only_to_the_askers_own_machine_when_its_core_reads_them() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let offers = ["machine.connect", "machine.settings"];
-        let (paired, _core, mut browser) = sessions_both(&fixture, server.address, &offers).await;
+        let (_paired, _core, mut browser) = both(&fixture, server.address).await;
         let theirs = MachineId::try_from("mc-elsewhere".to_owned()).unwrap();
 
-        let unread = asked(&mut browser, 52, sessions_query(&paired.machine_id())).await;
         let elsewhere = asked(&mut browser, 53, sessions_query(&theirs)).await;
 
-        assert_eq!(error_of(&unread), (52, "machine.offline", true));
         assert_eq!(error_of(&elsewhere), (53, "machine.not_found", false));
     }
 
@@ -917,12 +806,11 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
-        let offers = ["machine.connect", "symbols.search"];
-        let mut core = connected(server.address, &paired, &offers).await;
+        let mut core = connected(server.address, &paired).await;
         let mut browser = open(server.address, "/api/workspaces/w1/feed", &paired.session)
             .await
             .unwrap();
-        say(&mut browser, &["workspace.feed", "symbols.search"]).await;
+        say(&mut browser).await;
         assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
         assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
         let machine = paired.machine_id();
@@ -950,10 +838,10 @@ mod tests {
     }
 
     #[test]
-    fn a_search_needs_symbols_search_and_its_answer_is_taken_back() {
+    fn a_search_is_carried_and_its_answer_isnt() {
         let machine = MachineId::try_from("mc-1".to_owned()).unwrap();
-        assert_eq!(needs(&symbols_query(&machine, "w1")), Some(SYMBOLS));
-        assert_eq!(needs(&symbols_answer(&machine, "w1")), None);
+        assert!(carries(&symbols_query(&machine, "w1")));
+        assert!(!carries(&symbols_answer(&machine, "w1")));
     }
 
     // A relay where `machine`'s own sessions were asked under 41, relayed as 7.
@@ -1117,13 +1005,8 @@ mod tests {
         assert_eq!(heard(&mut answers).await, envelope(41, refused));
     }
 
-    // Ada's paired machine, connected and offering settings, and her as an asker in w1.
+    // Ada's paired machine, connected, and her as an asker in w1.
     async fn adas(fixture: &Fixture) -> (MachineId, Asker, Attached) {
-        adas_offering(fixture, &[SETTINGS]).await
-    }
-
-    // Ada's paired machine, connected and offering `offers`, and her as an asker in w1.
-    async fn adas_offering(fixture: &Fixture, offers: &[Code]) -> (MachineId, Asker, Attached) {
         let server = fixture.run().await;
         let paired = pair_machine(fixture, server.address).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
@@ -1133,18 +1016,12 @@ mod tests {
             account,
             member: member_id("m1"),
         };
-        let attached = relink(fixture, &machine, &asker, offers);
-        (machine, asker, attached)
-    }
-
-    // `machine`, of `asker`, connected afresh and offering `offers`.
-    fn relink(fixture: &Fixture, machine: &MachineId, asker: &Asker, offers: &[Code]) -> Attached {
         let connected = Connected {
             machine: machine.clone(),
             owner: asker.account.clone(),
         };
-        let offers = offers.iter().cloned().map(Capability::new).collect();
-        fixture.shared.links.open(connected, offers)
+        let attached = fixture.shared.links.open(connected);
+        (machine, asker, attached)
     }
 
     fn code_of(result: Result<(), Refusal>) -> Option<String> {
@@ -1312,10 +1189,10 @@ mod tests {
         let result = forward(&fixture.shared, &ask, sent, &mpsc::channel(4).0).await;
 
         assert!(fixture.shared.relay.lock().is_empty());
-        assert_eq!(needs(&query(&machine, "w1")), Some(SETTINGS));
-        assert_eq!(needs(&command(&machine)), Some(SETTINGS));
-        assert_eq!(needs(&sessions_query(&machine)), Some(SESSIONS));
-        assert_eq!(needs(&settings_answer(&machine)), None);
+        assert!(carries(&query(&machine, "w1")));
+        assert!(carries(&command(&machine)));
+        assert!(carries(&sessions_query(&machine)));
+        assert!(!carries(&settings_answer(&machine)));
         assert_eq!(code_of(result), Some("relay.unknown".to_owned()));
     }
 
@@ -1461,35 +1338,21 @@ mod tests {
         make_as(&w1.unwrap(), &making).await.unwrap();
     }
 
-    // Ada's machine, connected as a core offering `offers`, her chat c-1 on it, and her
-    // feed of w1 offering diffs and worktrees.
-    async fn chat_and_feed(
-        fixture: &Fixture,
-        address: SocketAddr,
-        offers: &[&str],
-    ) -> (Paired, Socket, Socket) {
+    // Ada's machine, connected as a core, her chat c-1 on it, and her feed of w1.
+    async fn chat_and_feed(fixture: &Fixture, address: SocketAddr) -> (Paired, Socket, Socket) {
         let paired = pair_machine(fixture, address).await;
         chat_on(fixture, "c-1", &paired.machine_id()).await;
-        let core = connected(address, &paired, offers).await;
+        let core = connected(address, &paired).await;
         let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
             .await
             .unwrap();
-        say(
-            &mut browser,
-            &["workspace.feed", "diff.view", "worktree.manage"],
-        )
-        .await;
+        say(&mut browser).await;
         assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
+        // The chat was made, and Ada joined w1 when she opened it.
+        assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
         assert!(matches!(next(&mut browser).await, Message::Workspace(_)));
         (paired, core, browser)
     }
-
-    const ALL: [&str; 4] = [
-        "machine.connect",
-        "diff.view",
-        "worktree.manage",
-        "worktree.open_terminal",
-    ];
 
     #[tokio::test]
     async fn a_member_reads_the_changes_of_an_agent_on_a_shared_machine_and_changes_nothing() {
@@ -1497,13 +1360,12 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let mut core = connected(server.address, &paired, &ALL).await;
-        let reads = ["workspace.feed", "diff.view", "worktree.manage"];
-        let (account, mut grace) = graces_feed(&fixture, server.address, &reads).await;
+        let mut core = connected(server.address, &paired).await;
+        let (account, mut grace) = graces_feed(&fixture, server.address).await;
         let mut ada = open(server.address, "/api/workspaces/w1/feed", &paired.session)
             .await
             .unwrap();
-        say(&mut ada, &reads).await;
+        say(&mut ada).await;
         let db = &fixture.shared.db;
         db.set_shares(&machine, &[workspace_id("w1")])
             .await
@@ -1545,7 +1407,7 @@ mod tests {
     async fn a_chats_diff_and_worktree_reach_its_machine_as_its_owners_and_come_back() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
         let machine = paired.machine_id();
 
@@ -1584,7 +1446,7 @@ mod tests {
     async fn nothing_of_a_diff_or_a_pull_request_is_stored_or_logged() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address).await;
         let machine = paired.machine_id();
 
         let diff = on(&machine, diff_query("c-1", "w1"));
@@ -1629,7 +1491,7 @@ mod tests {
     #[tokio::test]
     async fn a_chat_unknown_or_an_agent_on_no_machine_or_one_not_theirs_is_refused() {
         let fixture = Fixture::new().await;
-        let (machine, asker, _attached) = adas_offering(&fixture, &[DIFF]).await;
+        let (machine, asker, _attached) = adas(&fixture).await;
         chat_on(&fixture, "c-1", &machine).await;
         let elsewhere = MachineId::try_from("mc-elsewhere".to_owned()).unwrap();
         chat_on(&fixture, "c-2", &elsewhere).await;
@@ -1669,55 +1531,6 @@ mod tests {
             ]
         );
         assert_eq!(mine, None);
-    }
-
-    #[tokio::test]
-    async fn each_ask_goes_only_to_a_machine_that_offers_what_it_needs() {
-        let fixture = Fixture::new().await;
-        let (machine, asker, attached) = adas_offering(&fixture, &[DIFF, WORKTREE]).await;
-        chat_on(&fixture, "c-1", &machine).await;
-        let w1 = fixture
-            .shared
-            .db
-            .workspace(&workspace_id("w1"))
-            .await
-            .unwrap();
-        let ask = Ask {
-            asker: &asker,
-            workspace: &w1,
-        };
-        let back = mpsc::channel(8).0;
-        let terminal = || {
-            on(
-                &machine,
-                worktree_command("c-1", WorktreeAction::OpenTerminal),
-            )
-        };
-        let sent = async |message| {
-            code_of(forward(&fixture.shared, &ask, envelope(1, message), &back).await)
-        };
-
-        let offered = [
-            sent(on(&machine, diff_query("c-1", "w1"))).await,
-            sent(on(&machine, worktree_query("c-1"))).await,
-            sent(on(
-                &machine,
-                worktree_command("c-1", WorktreeAction::Remove),
-            ))
-            .await,
-        ];
-        let no_terminal = sent(terminal()).await;
-        drop(attached);
-        let _with_terminal = relink(&fixture, &machine, &asker, &[TERMINAL]);
-        let state_of = on(&machine, worktree_query("c-1"));
-        let only_terminal = [sent(terminal()).await, sent(state_of).await];
-
-        assert_eq!(offered, [None, None, None]);
-        assert_eq!(no_terminal.as_deref(), Some("machine.offline"));
-        assert_eq!(only_terminal, [None, Some("machine.offline".to_owned())]);
-        assert_eq!(needs(&terminal()), Some(WORKTREE));
-        assert_eq!(needs(&diff_query("c-1", "w1")), Some(DIFF));
-        assert_eq!(needs(&state()), None);
     }
 
     // A relay where a diff of c-1 was asked under 41, relayed as 7; and where its answers

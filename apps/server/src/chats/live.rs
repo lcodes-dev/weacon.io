@@ -2,13 +2,10 @@
 //! no one.
 
 use weacon_observability::{Fault, Field};
-use weacon_protocol::{ChatLive, Code, MachineId, RunEvent, code};
+use weacon_protocol::{ChatLive, MachineId, RunEvent};
 
 use crate::db::Leg;
 use crate::shared::Shared;
-
-/// What a core offers, and the server offers, to pass a chat's live updates on.
-pub(crate) const LIVE: Code = code!("chat.live");
 
 /// Passes `live`, text being written, from `machine` to its chat's followers, when the chat
 /// runs there. Text from before the chat's last stored event is dropped; the rest is told the

@@ -16,7 +16,7 @@ export function parse(value: unknown): Incoming | undefined {
 }
 
 const CHECKS: { [T in Incoming["type"]]: (fields: Fields) => boolean } = {
-  welcome: (fields) => isApp(fields["app"]) && (fields["capabilities"] === undefined || isTexts(fields["capabilities"])),
+  welcome: (fields) => isApp(fields["app"]),
   error: (fields) => text(fields, "code"),
   receipt: (fields) => text(fields, "request") && isOutcome(fields),
   chat: (fields) => isAbout(fields) && isEntry(fields["entry"]),
@@ -33,10 +33,6 @@ function record(value: unknown): Fields | undefined {
 
 function text(fields: Fields | undefined, key: string): boolean {
   return typeof fields?.[key] === "string";
-}
-
-function isTexts(value: unknown): boolean {
-  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isWants(value: unknown): boolean {

@@ -6,9 +6,8 @@ import type { Api } from "../api/api.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
-import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
+import { type WorkspaceSocket, useWelcomed } from "../shell/workspace-socket.ts";
 import { waitForClaim } from "./claim.ts";
-import { isOutdated } from "./core.ts";
 import { MachineSettingsView } from "./machine-settings.tsx";
 import { osName } from "./os.ts";
 import { OutsideSessions } from "./outside-sessions.tsx";
@@ -105,12 +104,9 @@ function Machine({
       setOpen(true);
     }
   }, [justPaired]);
-  // A machine's settings are kept for each workspace, so they show only while one is open.
-  const settable = useOffers(socket, "machine.settings");
-  // Outside sessions belong to no workspace, but the open one's socket is the way to the machine.
-  const readable = useOffers(socket, "sessions.read");
+  // Its core is asked over the open workspace's feed, once that is welcomed.
+  const reachable = useWelcomed(socket);
   const [reading, setReading] = useState(false);
-  const relays = useOffers(socket, "terminal.relay");
   const { busy, problem, ask } = useAsk();
   const paired = new Date(machine.paired_at * 1000).toLocaleDateString();
   return (
@@ -120,7 +116,6 @@ function Machine({
         {osName(machine.os)}, paired {paired}
         {machine.core !== undefined && `, weacon ${machine.core.version}`}
       </span>
-      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports. Install a newer build there.</p>}
       {confirming ? (
         <span>
           Unpair {machine.name}? It disconnects at once.{" "}
@@ -146,15 +141,17 @@ function Machine({
         </button>
       )}
       {problem !== undefined && <span role="alert">{problem}</span>}
-      {socket !== undefined && settable && (
+      {/* A machine's settings are kept for each workspace, so they show only while one is open. */}
+      {socket !== undefined && reachable && (
         <button type="button" aria-label={`${machine.name} settings`} aria-expanded={open} onClick={() => setOpen(!open)}>
           {open ? "Hide settings" : "Settings"}
         </button>
       )}
-      {socket !== undefined && settable && open && (
-        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} relays={relays} team={team} />
+      {socket !== undefined && reachable && open && (
+        <MachineSettingsView key={socket.workspace} machine={machine} socket={socket} later={later} team={team} />
       )}
-      {socket !== undefined && readable && (
+      {/* Outside sessions belong to no workspace, but the open one's socket is the way to the machine. */}
+      {socket !== undefined && reachable && (
         <>
           <button type="button" aria-label={`${machine.name} sessions`} aria-expanded={reading} onClick={() => setReading(!reading)}>
             {reading ? "Hide sessions" : "Sessions"}

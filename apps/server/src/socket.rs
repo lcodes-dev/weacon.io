@@ -5,7 +5,7 @@ use std::time::Duration;
 use axum::extract::ws::{Message as Frame, Utf8Bytes, WebSocket};
 use futures_util::{Sink, SinkExt};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at, timeout};
-use weacon_protocol::{Capability, Code, Envelope, ErrorBody, Hello, Message, code};
+use weacon_protocol::{Code, Envelope, ErrorBody, Hello, Message, code};
 
 use crate::shared::Shared;
 
@@ -79,17 +79,10 @@ impl Pings {
     }
 }
 
-/// Answers the client's hello, offering `offers`, and gives it once the client is welcomed:
-/// only one that speaks this protocol and offers `needs`.
-pub(crate) async fn greet(
-    socket: &mut WebSocket,
-    shared: &Shared,
-    offers: Vec<Capability>,
-    needs: &Capability,
-) -> Result<Hello, Closed> {
-    let (hello, welcome) = hear(socket, shared, offers, needs).await?;
-    reply(socket, shared, welcome.id, welcome.answer).await?;
-    Ok(hello)
+/// Answers the client's hello, welcoming only one that speaks this protocol.
+pub(crate) async fn greet(socket: &mut WebSocket, shared: &Shared) -> Result<(), Closed> {
+    let (_, welcome) = hear(socket, shared).await?;
+    reply(socket, shared, welcome.id, welcome.answer).await
 }
 
 /// A welcome not sent yet, for a caller that gets ready for the client first.
@@ -102,8 +95,6 @@ pub(crate) struct PendingWelcome {
 pub(crate) async fn hear(
     socket: &mut WebSocket,
     shared: &Shared,
-    offers: Vec<Capability>,
-    needs: &Capability,
 ) -> Result<(Hello, PendingWelcome), Closed> {
     let Some(Ok(Frame::Text(text))) = socket.recv().await else {
         return Err(Closed);
@@ -116,13 +107,9 @@ pub(crate) async fn hear(
         reply(socket, shared, 0, refusal(code!("handshake.required"))).await?;
         return Err(Closed);
     };
-    let answer = hello.answer(shared.app.clone(), offers);
+    let answer = hello.answer(shared.app.clone());
     if !matches!(answer, Message::Welcome(_)) {
         reply(socket, shared, id, answer).await?;
-        return Err(Closed);
-    }
-    if !hello.capabilities.contains(needs) {
-        reply(socket, shared, id, refusal(code!("capability.missing"))).await?;
         return Err(Closed);
     }
     Ok((hello, PendingWelcome { id, answer }))

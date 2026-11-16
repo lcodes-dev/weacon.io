@@ -3,16 +3,13 @@
 use serde_json::Value;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
-    AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, MemberId,
+    AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, MachineId, MemberId,
     PermissionAnswer, RequestId, RunEvent, RunStatus, RunUpdate, Wants, WorkspaceId, code,
 };
 
 use crate::db::{Incoming, Leg, Workspace, turns};
 use crate::shared::Shared;
 use crate::socket::Closed;
-
-/// What the server offers to cores whose chats' events it stores.
-pub(crate) const UPLOAD: Code = code!("chat.upload");
 
 /// Stores what is [`kept`] of `update` from `machine`, named as its leg's member's, and tells
 /// the sockets that follow its chat. An event of a chat `machine` holds no leg of, or whose

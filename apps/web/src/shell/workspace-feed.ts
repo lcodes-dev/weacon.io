@@ -1,9 +1,6 @@
-import type { Asks, End } from "../connection.ts";
+import type { End } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { WorkspaceId } from "../protocol.ts";
-
-/** What a workspace's feed asks of the server: its changes, those of its chats, tasks, docs, proposals and members included. */
-export const FEED: Asks = { needs: "workspace.feed", offers: ["workspace.chats", "workspace.tasks", "workspace.docs", "workspace.proposals", "workspace.members", "workspace.chat_commands", "chat.live", "diff.view", "worktree.manage", "worktree.open_terminal", "machine.settings", "sessions.read", "symbols.search", "terminal.relay"] };
 
 /** The WebSocket of `workspace`'s changes after `since`, on this page's own server. */
 export function feedUrl(location: { protocol: string; host: string }, workspace: WorkspaceId, since: number): string {
@@ -18,7 +15,7 @@ export function retryAfter(failed: number): number {
   return Math.min(LONGEST_WAIT_MS, 1_000 * 2 ** Math.max(0, failed - 1));
 }
 
-// Ends another try may get past; another protocol or a server too old stays so.
+// Ends another try may get past; another protocol stays so.
 const PASSING: ReadonlySet<End> = new Set(["connection.lost", "connection.refused", "connection.no_answer"]);
 
 /** Whether a feed that ended with `code` is worth opening again. */

@@ -12,23 +12,18 @@ use tokio_tungstenite::tungstenite::{Message as Wire, Utf8Bytes};
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     AccountId, App, Capability, ChatAction, ChatCommand, Code, Envelope, ErrorBody, Hello,
-    MachineShares, Message, Outcome, PROTOCOL, Receipt, TerminalId, Welcome, WorkspaceId, code,
+    MachineShares, Message, Outcome, PROTOCOL, Receipt, TerminalId, WorkspaceId, code,
 };
 
 use self::asking::{Asking, asking, for_members};
-use self::chats::{ChatLink, LIVE, UPLOAD};
+use self::chats::ChatLink;
 use self::retry::Retry;
 use crate::chats::Chats;
 use crate::machine::{self, Paired};
-use crate::proposals;
 use crate::server::{Failure, Server, Socket};
 use crate::terminal::Told;
 use crate::workspaces::sharing;
 
-/// What the core must be offered by the server to keep its connection.
-const CONNECT: Code = code!("machine.connect");
-/// What the server offers that takes the core's proposals.
-pub(crate) const PROPOSALS: Code = code!("workspace.proposals");
 const PATH: &str = "/api/machines/connect";
 /// How often a core that isn't paired looks for a pairing.
 const LOOK_EVERY: Duration = Duration::from_secs(30);
@@ -163,19 +158,12 @@ impl Uplink {
             Err(Failure::Refused(..)) => return Ok(Ended::Unwelcome),
             Err(Failure::Unreachable(fault)) => return Err(fault),
         };
-        let Some(welcome) = self.greeted(&mut socket).await else {
+        if !self.greeted(&mut socket).await {
             return Ok(Ended::Unwelcome);
-        };
+        }
         log.info("uplink connected", &[]);
         let up = Instant::now();
-        let offers = |code| welcome.capabilities.contains(&Capability::new(code));
-        let chats = ChatLink::new(
-            self.chats.clone(),
-            offers(UPLOAD),
-            offers(LIVE),
-            log.clone(),
-        );
-        let mut link = Link::new(chats, offers(PROPOSALS));
+        let mut link = Link::new(ChatLink::new(self.chats.clone(), log.clone()));
         let unpaired = self
             .serve(&mut socket, paired, from_daemon, &mut link)
             .await;
@@ -237,7 +225,7 @@ impl Uplink {
                 }
                 Some(envelope) = from_daemon.recv() => {
                     look_at_shares = matches!(envelope.message, Message::MachineSettingsAnswer(_));
-                    link.offered(envelope, &self.to_daemon)
+                    link.passed(envelope)
                 }
                 Some(up) = link.chats.next() => Some(up),
             };
@@ -249,12 +237,12 @@ impl Uplink {
         }
     }
 
-    /// Says hello, and gives the server's welcome if it offers the connection.
-    async fn greeted(&self, socket: &mut Socket) -> Option<Welcome> {
+    /// Says hello; whether the server welcomed it.
+    async fn greeted(&self, socket: &mut Socket) -> bool {
         let (offered, dir) = (self.capabilities, self.state_dir.clone());
-        let capabilities = tokio::task::spawn_blocking(move || offered(&dir))
-            .await
-            .ok()?;
+        let Ok(capabilities) = tokio::task::spawn_blocking(move || offered(&dir)).await else {
+            return false;
+        };
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
@@ -265,13 +253,10 @@ impl Uplink {
         };
         send(socket, &hello).await;
         let Ok(Some(text)) = timeout(HELLO_WITHIN, first_text(socket)).await else {
-            return None;
+            return false;
         };
-        let Message::Welcome(welcome) = Envelope::from_json(text.as_bytes()).ok()?.message else {
-            return None;
-        };
-        let connects = welcome.capabilities.contains(&Capability::new(CONNECT));
-        connects.then_some(welcome)
+        let welcome = Envelope::from_json(text.as_bytes());
+        matches!(welcome, Ok(envelope) if matches!(envelope.message, Message::Welcome(_)))
     }
 }
 
@@ -385,8 +370,6 @@ pub(crate) fn refusal(id: u32, command: &ChatCommand, code: Code) -> Envelope {
 /// What one connection carries besides its socket.
 struct Link {
     chats: ChatLink,
-    /// Whether the server offered [`PROPOSALS`].
-    proposals: bool,
     /// The workspaces it was last told the machine is shared with.
     shared: Option<Vec<WorkspaceId>>,
     /// The terminals the server's commands on this connection named.
@@ -394,30 +377,23 @@ struct Link {
 }
 
 impl Link {
-    fn new(chats: ChatLink, proposals: bool) -> Self {
+    fn new(chats: ChatLink) -> Self {
         Self {
             chats,
-            proposals,
             shared: None,
             terminals: HashSet::new(),
         }
     }
 
-    /// `envelope` from the daemon, unless the server doesn't take it: a proposal to a server
-    /// that doesn't offer them is refused to the daemon at once, and word of a terminal no
-    /// command on this connection named, such as one an earlier connection opened, is dropped.
-    fn offered(&self, envelope: Envelope, to_daemon: &ToDaemon) -> Option<Envelope> {
+    /// `envelope` from the daemon, unless it is word of a terminal no command on this
+    /// connection named, such as one an earlier connection opened.
+    fn passed(&self, envelope: Envelope) -> Option<Envelope> {
         if let Message::Terminal(update) = &envelope.message
             && !self.terminals.contains(&update.terminal)
         {
             return None;
         }
-        let refusal = proposals::unoffered(&envelope.message).filter(|_| !self.proposals);
-        let Some(message) = refusal else {
-            return Some(envelope);
-        };
-        drop(to_daemon.try_send(Envelope { id: 0, message }));
-        None
+        Some(envelope)
     }
 
     /// The workspaces the machine is shared with, unless the server was last told the same.
@@ -524,7 +500,7 @@ mod tests {
         Uplink {
             state_dir: dir.to_path_buf(),
             app: weacon_appkit::build(&VERSION),
-            capabilities: |_| vec![Capability::new(CONNECT)],
+            capabilities: |_| Vec::new(),
             log: recording_logger().0,
             to_daemon,
             terminals: terminals().0,
@@ -565,32 +541,31 @@ mod tests {
         }
     }
 
-    // A server that takes the socket, checks the hello and welcomes it with `offers`, past the
-    // core's word on what its machine is shared with.
-    async fn welcoming(local: &Local, offers: &[Code]) -> Peer {
-        welcomed(local, offers).await.0
+    // A server that takes the socket, checks the hello and welcomes it, past the core's word
+    // on what its machine is shared with.
+    async fn welcoming(local: &Local) -> Peer {
+        welcomed(local).await.0
     }
 
     // [`welcoming`], with what the core then says its machine is shared with.
-    async fn welcomed(local: &Local, offers: &[Code]) -> (Peer, Message) {
-        let mut peer = greeting(local, offers).await;
+    async fn welcomed(local: &Local) -> (Peer, Message) {
+        let mut peer = greeting(local).await;
         let shares = heard(&mut peer).await;
         assert!(matches!(shares, Message::MachineShares(_)), "{shares:?}");
         (peer, shares)
     }
 
-    // A server that takes the socket, checks the hello and welcomes it with `offers`.
-    async fn greeting(local: &Local, offers: &[Code]) -> Peer {
+    // A server that takes the socket, checks the hello and welcomes it.
+    async fn greeting(local: &Local) -> Peer {
         let stream = local.accept().await;
         let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
         let Message::Hello(hello) = heard(&mut peer).await else {
             panic!("no hello");
         };
         assert_eq!(hello.protocol, PROTOCOL);
-        assert_eq!(hello.capabilities, [Capability::new(CONNECT)]);
+        assert_eq!(hello.capabilities, []);
         let welcome = Welcome {
             app: weacon_appkit::build(&VERSION),
-            capabilities: offers.iter().cloned().map(Capability::new).collect(),
         };
         let envelope = Envelope {
             id: 1,
@@ -667,7 +642,7 @@ mod tests {
         let pairing = paired(&local);
         let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
         let serve = async {
-            let mut peer = welcoming(&local, &[CONNECT]).await;
+            let mut peer = welcoming(&local).await;
             let sent = [
                 command("r-owner", Some(&owner())),
                 command("r-stranger", Some(&stranger)),
@@ -791,7 +766,7 @@ mod tests {
             }),
         };
         let serve = async {
-            let mut peer = welcoming(&local, &[CONNECT, code!("chat.upload")]).await;
+            let mut peer = welcoming(&local).await;
             peer.send(text(&follow)).await.unwrap();
             peer.send(text(&prompt)).await.unwrap();
             let agent = soon(bench.started.recv()).await.unwrap();
@@ -909,11 +884,8 @@ mod tests {
     // What the uplink answers `message` under id 9 with: `None` when it passes it on.
     async fn answered(link: &Uplink, message: Message) -> Option<String> {
         let frame = text(&Envelope { id: 9, message });
-        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let reply = match link
-            .answer(frame, &owner(), &mut Link::new(chats, false))
-            .await
-        {
+        let chats = ChatLink::new(link.chats.clone(), link.log.clone());
+        let reply = match link.answer(frame, &owner(), &mut Link::new(chats)).await {
             Step::Nothing => return None,
             Step::Unpaired => return Some("unpaired".to_owned()),
             Step::Reply(reply) => *reply,
@@ -1048,7 +1020,7 @@ mod tests {
             }),
         };
         let serve = async {
-            let (mut peer, first) = welcomed(&local, &[CONNECT]).await;
+            let (mut peer, first) = welcomed(&local).await;
             share(&dir, "w-1", true);
             outgoing.send(changed.clone()).await.unwrap();
             let answer = heard(&mut peer).await;
@@ -1093,23 +1065,12 @@ mod tests {
         let others = [every_ask(Some(&stranger)), every_ask(None)].concat();
         let others = all_answered(&link, others).await;
         let error = answered(&link, other_error.clone()).await;
-        // A server that doesn't store chats' events may not follow one.
-        let chat_query = answered(
-            &link,
-            Message::ChatQuery(ChatQuery {
-                workspace: WorkspaceId::try_from("w-1".to_owned()).unwrap(),
-                chat: ChatId::try_from("c-1".to_owned()).unwrap(),
-                query: ChatQueryKind::Subscribe { after: 0 },
-            }),
-        )
-        .await;
 
         assert_eq!(owners, vec![None; 8]);
         assert_eq!(others, vec![not_owner; 16]);
         // A kind this build doesn't know arrives as `Message::Unknown`.
         assert!(matches!(asking(&Message::Unknown), Asking::Unknown));
         assert_eq!(error, None);
-        assert_eq!(chat_query, Some("message.unsupported".to_owned()));
         let passed: Vec<_> = std::iter::from_fn(|| taken.try_recv().ok())
             .map(|envelope| envelope.message)
             .collect();
@@ -1141,7 +1102,7 @@ mod tests {
         outgoing.send(answer.clone()).await.unwrap();
         machine::write(&dir, &pairing).unwrap();
         let serve = async {
-            let mut peer = welcoming(&local, &[CONNECT]).await;
+            let mut peer = welcoming(&local).await;
             peer.send(text(&query)).await.unwrap();
             heard(&mut peer).await
         };
@@ -1168,8 +1129,8 @@ mod tests {
             id: 9,
             message: ask(),
         });
-        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let mut carried = Link::new(chats, false);
+        let chats = ChatLink::new(link.chats.clone(), link.log.clone());
+        let mut carried = Link::new(chats);
         let Step::Reply(reply) = link.answer(frame, &owner(), &mut carried).await else {
             panic!("not refused");
         };
@@ -1199,7 +1160,7 @@ mod tests {
         let close = terminal_command("t-1");
 
         let (ended, ()) = tokio::join!(once(&link, &pairing), async {
-            let mut peer = welcoming(&local, &[CONNECT]).await;
+            let mut peer = welcoming(&local).await;
             peer.send(text(&close)).await.unwrap();
             // Its answer shows the command was taken before the connection goes.
             peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
@@ -1218,8 +1179,8 @@ mod tests {
     async fn only_word_of_a_terminal_this_connection_named_goes_to_the_server() {
         let dir = TempDir::new().unwrap();
         let link = uplink(&dir);
-        let chats = ChatLink::new(link.chats.clone(), false, false, link.log.clone());
-        let mut carried = Link::new(chats, false);
+        let chats = ChatLink::new(link.chats.clone(), link.log.clone());
+        let mut carried = Link::new(chats);
         let update = |terminal: &str| Envelope {
             id: 0,
             message: Message::Terminal(weacon_protocol::TerminalUpdate {
@@ -1228,9 +1189,7 @@ mod tests {
                 event: weacon_protocol::TerminalEvent::Opened,
             }),
         };
-        let sent = |carried: &Link, terminal: &str| {
-            carried.offered(update(terminal), &link.to_daemon).is_some()
-        };
+        let sent = |carried: &Link, terminal: &str| carried.passed(update(terminal)).is_some();
 
         // As one an earlier connection opened, whose word was still queued.
         let before = sent(&carried, "t-1");
@@ -1244,7 +1203,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_server_that_doesnt_offer_the_connection_or_refuses_the_token_is_left() {
+    async fn a_server_that_refuses_the_token_is_left() {
         let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (log, records) = recording_logger();
         let link = Uplink {
@@ -1253,9 +1212,6 @@ mod tests {
         };
         let pairing = paired(&local);
 
-        // The server goes once it has welcomed the core, which then mustn't stay.
-        let leaves = async { drop(greeting(&local, &[]).await) };
-        let (unoffered, ()) = tokio::join!(once(&link, &pairing), leaves);
         let (unauthorized, ()) = tokio::join!(
             once(&link, &pairing),
             refusing(&local, "401 Unauthorized", code!("machine.unpaired"))
@@ -1265,7 +1221,6 @@ mod tests {
             refusing(&local, "401 Unauthorized", code!("proxy.sign_in"))
         );
 
-        assert_eq!(unoffered.unwrap(), Ended::Unwelcome);
         assert_eq!(unauthorized.unwrap(), Ended::Unpaired);
         assert_eq!(busy.unwrap(), Ended::Unwelcome);
         assert!(!messages(&records).contains(&"uplink connected"));
@@ -1283,11 +1238,10 @@ mod tests {
         let pairing = paired(&local);
 
         let (at_once, ()) = tokio::join!(once(&link, &pairing), async {
-            drop(welcoming(&local, &[CONNECT]).await);
+            drop(welcoming(&local).await);
         });
         link.timing.steady_after = Duration::ZERO;
-        let offers = [CONNECT];
-        let (quiet, _peer) = tokio::join!(once(&link, &pairing), welcoming(&local, &offers));
+        let (quiet, _peer) = tokio::join!(once(&link, &pairing), welcoming(&local));
 
         assert_eq!(at_once.unwrap(), Ended::Unwelcome);
         assert_eq!(quiet.unwrap(), Ended::Lost);
@@ -1327,7 +1281,7 @@ mod tests {
 
         // The server welcomes the core, then reads all it sends but says nothing more.
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
-        let listening = async { drain(welcoming(&local, &[CONNECT]).await).await };
+        let listening = async { drain(welcoming(&local).await).await };
         let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), listening);
         chatter.abort();
 
@@ -1349,7 +1303,7 @@ mod tests {
         let (_daemon, mut from_daemon) = mpsc::channel(1);
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
         let listening = async {
-            let peer = welcoming(&local, &[CONNECT]).await;
+            let peer = welcoming(&local).await;
             machine::write(&dir, &replaced).unwrap();
             drain(peer).await;
         };
@@ -1372,7 +1326,7 @@ mod tests {
         let (_daemon, mut from_daemon) = mpsc::channel(1);
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
         let asking = async {
-            let mut peer = welcoming(&local, &[CONNECT]).await;
+            let mut peer = welcoming(&local).await;
             machine::write(&dir, &replaced).unwrap();
             let envelope = Envelope {
                 id: 9,
@@ -1399,7 +1353,6 @@ mod tests {
             heard(&mut peer).await;
             let welcome = Welcome {
                 app: weacon_appkit::build(&VERSION),
-                capabilities: vec![Capability::new(CONNECT)],
             };
             let envelope = Envelope {
                 id: 1,
@@ -1483,9 +1436,9 @@ mod tests {
         assert_eq!(failed.unwrap_err().code().as_str(), "server.unreachable");
     }
 
-    /// What the server hears first when the daemon sends a proposal query, then a marker, to
-    /// a server that offers `offers`, and what reaches the daemon of the server's answer.
-    async fn proposals_through(offers: &[Code]) -> (Message, Option<Message>, Message) {
+    /// What the server hears first when the daemon sends a proposal query, then a marker, and
+    /// what reaches the daemon of the server's answer.
+    async fn proposals_through() -> (Message, Option<Message>, Message) {
         let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (to_daemon, mut asks) = mpsc::channel(4);
         let link = with_commands(&dir, to_daemon);
@@ -1512,7 +1465,7 @@ mod tests {
             },
         });
         let serve = async {
-            let mut peer = welcoming(&local, offers).await;
+            let mut peer = welcoming(&local).await;
             let first = heard(&mut peer).await;
             let envelope = Envelope {
                 id: 0,
@@ -1529,18 +1482,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn proposals_reach_only_a_server_that_offers_them_and_its_answers_reach_the_daemon() {
-        let (unoffered, handed, _) = Box::pin(proposals_through(&[CONNECT])).await;
-        assert!(matches!(unoffered, Message::Error(_)), "{unoffered:?}");
-        let refused = weacon_protocol::ProposalAnswerKind::Failed {
-            code: code!("proposal.unsupported"),
-        };
-        assert!(
-            matches!(&handed, Some(Message::ProposalAnswer(answer)) if answer.answer == refused),
-            "{handed:?}"
-        );
-
-        let (offered, handed, answer) = Box::pin(proposals_through(&[CONNECT, PROPOSALS])).await;
+    async fn proposals_reach_the_server_and_its_answers_reach_the_daemon() {
+        let (offered, handed, answer) = Box::pin(proposals_through()).await;
         assert!(matches!(offered, Message::ProposalQuery(_)), "{offered:?}");
         assert_eq!(handed, Some(answer));
     }

@@ -107,7 +107,7 @@ export function StartMissing({
           Open Settings
         </button>
       )}{" "}
-      {ready !== undefined && ready.kind !== "unserved" && (
+      {ready !== undefined && (
         <button type="button" onClick={check}>
           Check again
         </button>

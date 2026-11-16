@@ -7,7 +7,7 @@ use axum::routing::get;
 use weacon_model::Title;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Code, Invitation, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
+    Invitation, MemberList, MemberSummary, WorkspaceCreate, WorkspaceList, WorkspaceRole,
     WorkspaceSummary, code,
 };
 
@@ -19,8 +19,6 @@ use crate::shared::Shared;
 use crate::{sharing, team};
 
 pub(crate) const MAX_NAME: usize = 100;
-/// What the server offers to clients that read a workspace's members.
-pub(crate) const MEMBERS: Code = code!("workspace.members");
 /// What an account's own workspace is called when it is made.
 const PERSONAL: &str = "Personal";
 

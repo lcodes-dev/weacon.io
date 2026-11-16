@@ -9,22 +9,16 @@ use axum::response::Response;
 use axum::routing::get;
 use tokio::time::timeout;
 use weacon_observability::{Field, Logger};
-use weacon_protocol::{
-    App, Capability, Code, Envelope, Hello, MAX_FRAME, MachineName, Message, code,
-};
+use weacon_protocol::{App, Envelope, Hello, MAX_FRAME, MachineName, Message, code};
 
 use crate::auth::Machine;
 use crate::chats;
 use crate::links::Connected;
-use crate::proposals::{PROPOSALS, machines as proposals};
-use crate::relay::{DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
+use crate::proposals::machines as proposals;
 use crate::shared::Shared;
 use crate::sharing;
 use crate::socket::{Closed, Pings, hear, refusal, reply, send};
 use crate::terminals;
-
-/// What a core must offer, and the server offers, to keep a machine's connection.
-const CONNECT: Code = code!("machine.connect");
 
 pub(crate) fn routes() -> Router<Shared> {
     Router::new().route("/api/machines/connect", get(connect))
@@ -93,23 +87,6 @@ async fn serve(mut socket: WebSocket, shared: Shared, mut link: Link) {
     }
 }
 
-/// What the server offers every core, and needs of it for all its features to reach it.
-pub(crate) fn offers() -> Vec<Capability> {
-    [
-        CONNECT,
-        SETTINGS,
-        DIFF,
-        WORKTREE,
-        SESSIONS,
-        SYMBOLS,
-        PROPOSALS,
-        chats::SERVE,
-        chats::LIVE,
-    ]
-    .map(Capability::new)
-    .into()
-}
-
 /// The build of `hello` that the machines list keeps: none unless every part reads as a
 /// machine name.
 fn kept(hello: &Hello) -> Option<&App> {
@@ -125,12 +102,7 @@ async fn run(
     shared: &Shared,
     link: &mut Link,
 ) -> Result<Infallible, Closed> {
-    let offer = Capability::new(CONNECT);
-    let mut offered = offers();
-    // A core uploads its chats' events without offering it back.
-    offered.push(Capability::new(chats::upload::UPLOAD));
-    let heard = hear(socket, shared, offered, &offer);
-    let (hello, welcome) = timeout(shared.sockets.hello_within, heard)
+    let (hello, welcome) = timeout(shared.sockets.hello_within, hear(socket, shared))
         .await
         .map_err(|_| Closed)??;
     // It may have been unpaired since it was let in, before it could hear of it.
@@ -147,7 +119,7 @@ async fn run(
         machine: link.machine.id.clone(),
         owner: link.machine.owner.clone(),
     };
-    let mut attached = shared.links.open(connected, hello.capabilities);
+    let mut attached = shared.links.open(connected);
     // Welcomed only once attached, so whatever a welcomed core is asked reaches it.
     reply(socket, shared, welcome.id, welcome.answer).await?;
     let mut pings = Pings::new(shared.sockets.ping_every);
@@ -219,12 +191,12 @@ mod tests {
     use futures_util::SinkExt;
     use tokio::time::timeout;
     use tokio_tungstenite::tungstenite::Message as Wire;
-    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, PROTOCOL, Welcome};
+    use weacon_protocol::{AccountId, ChatEntry, ChatUpdate, Message, PROTOCOL};
 
     use super::*;
     use crate::db::test_support::{NOW, id, make, said};
     use crate::test_support::socket::{
-        Socket, ends, frame, next, next_envelope, open, pongs, say, upgrade_status,
+        Socket, ends, frame, next, next_envelope, open, pongs, say, say_as, upgrade_status,
     };
     use crate::test_support::{Fixture, Paired, ask, pair_machine, run};
 
@@ -235,24 +207,9 @@ mod tests {
     async fn connected(address: SocketAddr, fixture: &Fixture) -> (Paired, Socket) {
         let paired = pair_machine(fixture, address).await;
         let mut client = open(address, CONNECT_PATH, &paired.token).await.unwrap();
-        say(&mut client, &["machine.connect"]).await;
+        say(&mut client).await;
         let welcome = next(&mut client).await;
-        assert!(
-            matches!(&welcome, Message::Welcome(Welcome { capabilities, .. })
-                if *capabilities == [
-                    CONNECT,
-                    SETTINGS,
-                    DIFF,
-                    WORKTREE,
-                    SESSIONS,
-                    SYMBOLS,
-                    PROPOSALS,
-                    code!("chat.serve"),
-                    code!("chat.live"),
-                    code!("chat.upload"),
-                ].map(Capability::new)),
-            "{welcome:?}"
-        );
+        assert!(matches!(welcome, Message::Welcome(_)), "{welcome:?}");
         (paired, client)
     }
 
@@ -275,11 +232,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_machines_list_shows_a_cores_build_and_what_it_doesnt_offer() {
+    async fn the_machines_list_shows_a_cores_build_and_what_it_offers() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
+        let paired = pair_machine(&fixture, server.address).await;
+        let mut client = open(server.address, CONNECT_PATH, &paired.token)
+            .await
+            .unwrap();
+        say_as(&mut client, PROTOCOL, &["worktree.open_terminal"]).await;
         // Welcomed once its build is kept.
-        let (paired, _client) = connected(server.address, &fixture).await;
+        next(&mut client).await;
 
         let (_, list) = ask(server.address, "GET /api/machines", &paired.proof, "").await;
 
@@ -287,17 +249,10 @@ mod tests {
         let build = weacon_appkit::build(&crate::test_support::VERSION);
         assert_eq!(machine["core"]["version"], build.version.as_str());
         assert_eq!(machine["core"]["commit"], build.commit.as_str());
-        let missing = [
-            "machine.settings",
-            "diff.view",
-            "worktree.manage",
-            "sessions.read",
-            "symbols.search",
-            "workspace.proposals",
-            "chat.serve",
-            "chat.live",
-        ];
-        assert_eq!(machine["missing"], serde_json::json!(missing));
+        assert_eq!(
+            machine["offers"],
+            serde_json::json!(["worktree.open_terminal"])
+        );
     }
 
     #[tokio::test]
@@ -310,24 +265,6 @@ mod tests {
             let opened = open(server.address, CONNECT_PATH, token).await;
             assert_eq!(upgrade_status(opened), 401, "{token}");
         }
-    }
-
-    #[tokio::test]
-    async fn a_core_must_offer_the_connection() {
-        let fixture = Fixture::new().await;
-        let server = fixture.run().await;
-        let paired = pair_machine(&fixture, server.address).await;
-        let mut client = open(server.address, CONNECT_PATH, &paired.token)
-            .await
-            .unwrap();
-
-        say(&mut client, &["chat.send"]).await;
-
-        assert_eq!(
-            next(&mut client).await,
-            refusal(code!("capability.missing"))
-        );
-        assert!(ends(&mut client).await);
     }
 
     #[tokio::test]
@@ -361,15 +298,14 @@ mod tests {
         let mut core = open(server.address, CONNECT_PATH, &paired.token)
             .await
             .unwrap();
-        say(&mut core, &["machine.connect", "machine.settings"]).await;
+        say(&mut core).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
 
         let asked = Envelope {
             id: 9,
             message: refusal(code!("machine.test")),
         };
-        let settings = Capability::new(SETTINGS);
-        let sent = (fixture.shared.links).send(&paired.machine_id(), &settings, asked.clone());
+        let sent = (fixture.shared.links).send(&paired.machine_id(), asked.clone());
 
         assert_eq!(sent, Ok(()));
         assert_eq!(next_envelope(&mut core).await, asked);
@@ -383,7 +319,7 @@ mod tests {
         let mut newer = open(server.address, CONNECT_PATH, &paired.token)
             .await
             .unwrap();
-        say(&mut newer, &["machine.connect", "machine.settings"]).await;
+        say(&mut newer).await;
         assert!(matches!(next(&mut newer).await, Message::Welcome(_)));
 
         let ended = ends(&mut older).await;
@@ -391,8 +327,7 @@ mod tests {
             id: 9,
             message: refusal(code!("machine.test")),
         };
-        let settings = Capability::new(SETTINGS);
-        let sent = (fixture.shared.links).send(&paired.machine_id(), &settings, asked.clone());
+        let sent = (fixture.shared.links).send(&paired.machine_id(), asked.clone());
 
         assert!(ended);
         assert_eq!(sent, Ok(()));
@@ -427,7 +362,7 @@ mod tests {
         let db = &fixture.shared.db;
         assert!(db.unpair(&account, &paired.machine_id()).await.unwrap());
 
-        say(&mut client, &["machine.connect"]).await;
+        say(&mut client).await;
 
         // It isn't welcomed, so nothing it could be asked is relayed to it.
         assert_eq!(next(&mut client).await, refusal(code!("machine.unpaired")));

@@ -309,7 +309,7 @@ pub(super) fn paired(
         os: stored_os(os)?,
         paired_at,
         core: None,
-        missing: Vec::new(),
+        offers: Vec::new(),
         connected: false,
     })
 }
@@ -433,7 +433,7 @@ mod tests {
             }
         );
         assert_eq!(twice, claimed);
-        let machines = db.machines_of(&ada, &[]).await.unwrap();
+        let machines = db.machines_of(&ada).await.unwrap();
         assert_eq!(
             machines,
             [MachineSummary {
@@ -442,7 +442,7 @@ mod tests {
                 os: MachineOs::Linux,
                 paired_at: NOW + 1,
                 core: None,
-                missing: Vec::new(),
+                offers: Vec::new(),
                 connected: false,
             }]
         );
@@ -469,7 +469,7 @@ mod tests {
         start(&db, "p3", NOW + 600).await;
         start(&db, "p1", NOW + 600).await;
         start(&db, "p2", NOW + 600).await;
-        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
     }
 
     #[tokio::test]
@@ -489,18 +489,18 @@ mod tests {
         let Setup { _dir, db, ada, bo } = setup().await;
         start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
-        let unclaimed = db.machines_of(&ada, &[]).await.unwrap();
+        let unclaimed = db.machines_of(&ada).await.unwrap();
         claim(&db, "p1", "secret", NOW + 2).await;
         let machine = id("mc-p1");
 
         assert_eq!(unclaimed, []);
         assert!(db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.has_machine(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&bo, &[]).await.unwrap(), []);
+        assert_eq!(db.machines_of(&bo).await.unwrap(), []);
         assert!(!db.unpair(&bo, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada, &[]).await.unwrap().len(), 1);
+        assert_eq!(db.machines_of(&ada).await.unwrap().len(), 1);
         assert!(db.unpair(&ada, &machine).await.unwrap());
-        assert_eq!(db.machines_of(&ada, &[]).await.unwrap(), []);
+        assert_eq!(db.machines_of(&ada).await.unwrap(), []);
         assert!(!db.has_machine(&ada, &machine).await.unwrap());
         assert!(!db.unpair(&ada, &machine).await.unwrap());
         assert_eq!(claim(&db, "p1", "secret", NOW + 3).await, Claim::Unknown);
