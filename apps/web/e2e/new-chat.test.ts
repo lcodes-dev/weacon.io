@@ -105,12 +105,12 @@ function firstPrompts(sent: Envelope[]): Array<{ chat: string; request: string; 
 
 const nav = (page: Page) => page.getByRole("navigation", { name: "Chats" });
 
-// Types a message that calls the person's own agent, picked from the list `@` opens.
+// Types a message that calls the person's own agent, after the mention New chat opens the box on
+// once an agent is picked.
 async function call(page: Page, text: string): Promise<void> {
-  await page.getByRole("combobox", { name: "Message" }).focus();
-  await page.keyboard.type("@cl");
-  await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
-  await page.keyboard.press("Enter");
+  const box = page.getByRole("combobox", { name: "Message" });
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await box.press("End");
   await page.keyboard.type(text);
 }
 

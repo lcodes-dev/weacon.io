@@ -9,7 +9,9 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
   t.after(() => harness.close());
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
-  await page.getByText("Connected").waitFor();
+  // The fake chat's last message called the agent, so the box opens on its mention.
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await box.fill("");
   await box.focus();
   const cdp = await page.context().newCDPSession(page);
   const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 };
@@ -78,7 +80,9 @@ test("@ offers the writer's own agent, a pick stays one mention, and a message t
   const { page } = harness;
   const box = page.getByRole("combobox", { name: "Message" });
   const options = page.getByRole("option");
-  await page.getByText("Connected").waitFor();
+  // The fake chat's last message called the agent, so the box opens on its mention.
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await box.fill("");
   await box.focus();
 
   await page.keyboard.type("hi @x");
@@ -135,7 +139,9 @@ test("@ offers the writer's own agent, a pick stays one mention, and a message t
     kind: "prompt",
     text: "hi @Clau亜de Code and @Claude Code @clx ok",
   });
-  await page.waitForFunction(() => document.querySelector("textarea")?.value === "");
+  // After a call, the box opens on the agent's mention again.
+  await page.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  await box.press("End");
   await page.keyboard.type("@");
   assert.equal(await options.count(), 1);
 });
