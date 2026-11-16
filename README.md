@@ -66,7 +66,6 @@ Weacon is in early development. This is what works on `main` today:
 | Code map | `weacon map` and the local MCP the core gives its agents; at the start of a Claude Code session, the flows of the chat's task, then the folder's map | The task's flows for Codex, whose runs get no MCP token |
 | Server MCP | | An MCP endpoint for agents Weacon didn't start |
 | Chrome extension | A side panel that lists the chats your machine's core serves, shows one live and sends prompts, permission answers and Stop; **Pick an element** attaches an element of any web page, with its screenshot, to the next message, and the agent gets the page's part quoted apart from your words | Starting a new chat from the panel; signing the extension in without a core |
-| Updates | `weacon update`, `weacon update check` and `weacon update schedule`, which check a release's signature | A signed release to install: none is published yet |
 
 ## Run it on your machine
 
@@ -355,7 +354,6 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 - **`scripts/setup.sh` says Weacon needs another Node, or to install mise.** Install mise as in step 1, then run it again. Without mise, the Node on your `PATH` must be exactly the one in `.node-version`, and rustup must be installed.
 - **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
-- **`update check failed` in the core's log.** There is no release to check against yet. Turn the checks off with `target/debug/weacon update schedule off`.
 - **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
 - **The sign-in page never accepts the code.** Use the newest mail `scripts/dev.sh` shows, and request a new code if it expired.
 

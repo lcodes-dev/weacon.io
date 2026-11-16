@@ -25,7 +25,7 @@ test("a core older than the server shows as outdated in the machines list and it
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await row.getByText("Linux, paired").waitFor();
   };
-  const outdated = row.getByText("Its weacon is older than this server supports. Run weacon update there.");
+  const outdated = row.getByText("Its weacon is older than this server supports. Install a newer build there.");
   await reopen();
   assert.equal(await row.getByText("weacon 0.0.0").count(), 0);
   assert.equal(await row.getByRole("status").count(), 0);

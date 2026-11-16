@@ -41,7 +41,7 @@ use std::time::SystemTime;
 
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use weacon_appkit::{App, Ending};
+use weacon_appkit::App;
 use weacon_observability::{Fault, Logger, json_lines};
 use weacon_protocol::code;
 
@@ -88,7 +88,7 @@ fn main() -> ExitCode {
             }
         })
     });
-    app.finish(result.map(Ending::from))
+    app.finish(result)
 }
 
 /// Serves until Ctrl-C or the system asks the server to stop.

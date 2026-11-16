@@ -2,7 +2,6 @@
 //! orders agents, commits what happens to each chat's log and then publishes it.
 
 pub(crate) mod agent;
-pub(super) mod busy;
 #[cfg(test)]
 mod by_hand;
 mod commands;
@@ -30,9 +29,8 @@ use weacon_protocol::{
 };
 
 use self::agent::{Agent, FromRun, Order};
-pub(crate) use self::busy::{Install, LeaveId, LeaveStep};
 use self::handle::Ask;
-pub(crate) use self::handle::{Chats, WeakChats};
+pub(crate) use self::handle::Chats;
 use self::launch::Launched;
 pub(crate) use self::launch::{Host, RunAs};
 use self::named::{about, chat_about, failed};
@@ -112,8 +110,6 @@ pub(crate) struct Engine<A> {
     /// The disk's state as last logged; turns wait on `disk`, never on this.
     disk_full: bool,
     disk: watch::Receiver<bool>,
-    /// While an install has leave, prompts are queued and no new turn starts.
-    install: Install,
     starts: mpsc::UnboundedSender<Launched<A>>,
     started: mpsc::UnboundedReceiver<Launched<A>>,
     log: Logger,
@@ -139,7 +135,6 @@ impl<A: Agent> Engine<A> {
             incoming,
             says,
             disk_full: false,
-            install: Install::default(),
             disk,
             starts,
             started,
@@ -173,11 +168,6 @@ impl<A: Agent> Engine<A> {
                     continue;
                 }
                 Some(launched) = self.started.recv() => self.take_launched(launched).await,
-                () = self.install.runs_out(), if self.install.pauses() => {
-                    self.install.pause = None;
-                    self.turns_resumed().await;
-                    continue;
-                }
             };
             self.close_if_unused(&key);
         }
@@ -423,22 +413,6 @@ mod tests {
 
     fn code_of(refused: Result<(), Fault>) -> String {
         refused.unwrap_err().code().as_str().to_owned()
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_live_run_is_busy_on_a_turn_and_not_before_or_between_turns() {
-        let mut bench = bench();
-        let mut pushes = watch(&bench).await;
-        assert!(!bench.chats.downgrade().busy().await.unwrap(), "no run");
-
-        let agent = first_turn(&mut bench, &mut pushes).await;
-        assert!(bench.chats.downgrade().busy().await.unwrap(), "on a turn");
-        agent.say.send(done(Outcome::Completed)).unwrap();
-        pushed(&mut pushes, 3).await;
-        assert!(
-            !bench.chats.downgrade().busy().await.unwrap(),
-            "idle between turns"
-        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -802,7 +776,6 @@ mod tests {
 
         let sent = soon(async { Some(bench.command(prompt("r-1", "Hi")).await) }).await;
         assert!(matches!(sent, Some(Ok(()))));
-        assert!(bench.chats.downgrade().busy().await.unwrap(), "starting");
         let (anyone, _pushes) = client(1);
         let elsewhere = query("c-2", ChatQueryKind::Snapshot);
         let answer = soon(async { Some(bench.chats.query(elsewhere, &anyone).await) }).await;

@@ -10,7 +10,6 @@ mod diff;
 mod doc;
 mod frame;
 mod hex;
-mod install;
 mod log;
 mod machine;
 mod map;
@@ -59,7 +58,6 @@ pub use doc::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use hex::to_hex;
-pub use install::{InstallAction, InstallCommand};
 pub use log::{ClientLog, Level, LogEvent};
 pub use machine::{
     MachineId, MachineKey, MachineList, MachineName, MachineOs, MachineShares, MachineSummary,
@@ -77,10 +75,7 @@ pub use proposal::{
     ProposalState, ProposalVerdict, StaleAnchor,
 };
 pub use receipt::{Outcome, Receipt, RequestId};
-pub use release::{
-    BuildTarget, Commit, DownloadUrl, ReleaseBuild, ReleaseManifest, ReleaseVersion, Sha256,
-    UpdateSchedule,
-};
+pub use release::{DownloadUrl, Sha256};
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
@@ -156,13 +151,11 @@ mod tests {
         generator.subschema_for::<ProposalList>();
         generator.subschema_for::<ProposalDecision>();
         generator.subschema_for::<ProposalOutcome>();
-        generator.subschema_for::<ReleaseManifest>();
         generator.subschema_for::<TaskList>();
         generator.subschema_for::<TaskCreate>();
         generator.subschema_for::<TaskChange>();
         generator.subschema_for::<TerminalInput>();
         generator.subschema_for::<TerminalOutput>();
-        generator.subschema_for::<UpdateSchedule>();
         generator.subschema_for::<WorkspaceCreate>();
         generator.subschema_for::<WorkspaceSummary>();
         generator.subschema_for::<WorkspaceList>();

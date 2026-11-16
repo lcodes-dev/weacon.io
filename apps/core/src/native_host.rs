@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use weacon_observability::{Fault, Logger};
-use weacon_protocol::{Envelope, FrameError, LineDecoder, MAX_FRAME, Message, code};
+use weacon_protocol::{Envelope, FrameError, LineDecoder, MAX_FRAME, code};
 
 use crate::app::{App, runtime};
 use crate::daemon::{READ_CHUNK, socket_path};
@@ -136,8 +136,7 @@ async fn to_daemon(
         let mut json = Vec::new();
         (&mut chrome).take(length).read_to_end(&mut json).await?;
         match as_line(&json) {
-            Ok(Some(line)) => daemon.write_all(&line).await?,
-            Ok(None) => refused(log, "message.unsupported"),
+            Ok(line) => daemon.write_all(&line).await?,
             Err(error) => {
                 refused(log, error.code().as_str());
                 return Ok(());
@@ -148,18 +147,12 @@ async fn to_daemon(
 
 // A frame that parses as a message goes on as it came, compacted onto one line, so the daemon
 // sees the fields and message types of an extension newer than this build and answers them.
-// Only `weacon update` may pause turns for an install, so the extension's ask goes nowhere.
-fn as_line(json: &[u8]) -> Result<Option<Vec<u8>>, FrameError> {
-    if matches!(
-        Envelope::from_json(json)?.message,
-        Message::InstallCommand(_)
-    ) {
-        return Ok(None);
-    }
+fn as_line(json: &[u8]) -> Result<Vec<u8>, FrameError> {
+    Envelope::from_json(json)?;
     let value: serde_json::Value = serde_json::from_slice(json).map_err(|_| FrameError::Invalid)?;
     let mut line = serde_json::to_vec(&value).map_err(|_| FrameError::Invalid)?;
     line.push(b'\n');
-    Ok(Some(line))
+    Ok(line)
 }
 
 async fn to_chrome(
@@ -195,7 +188,7 @@ fn refused(log: &Logger, code: &str) {
 #[cfg(test)]
 mod tests {
     use tokio::io::{AsyncBufReadExt, BufReader, DuplexStream, duplex};
-    use weacon_protocol::{ErrorBody, encode_line};
+    use weacon_protocol::{ErrorBody, Message, encode_line};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -351,31 +344,6 @@ mod tests {
             );
         }
         assert!(messages(&records).is_empty());
-    }
-
-    #[tokio::test]
-    async fn the_extension_cannot_ask_for_leave_to_install() {
-        let (log, records) = recording_logger();
-        let (mut chrome, host_chrome) = duplex(64 * 1024);
-        let (daemon, host_daemon) = duplex(64 * 1024);
-        let (chrome_in, chrome_out) = tokio::io::split(host_chrome);
-        let leave = r#"{"id":2,"type":"install_command","request":"x","action":{"kind":"leave"}}"#;
-        chrome.write_all(&framed(leave.as_bytes())).await.unwrap();
-        chrome
-            .write_all(&framed(&error(3).to_json().unwrap()))
-            .await
-            .unwrap();
-        drop(chrome);
-
-        relay(chrome_in, chrome_out, host_daemon, &log)
-            .await
-            .unwrap();
-
-        let mut lines = BufReader::new(daemon).lines();
-        let line = lines.next_line().await.unwrap().unwrap();
-        assert_eq!(Envelope::from_json(line.as_bytes()), Ok(error(3)));
-        assert!(lines.next_line().await.unwrap().is_none());
-        assert_eq!(messages(&records), ["native message refused"]);
     }
 
     #[tokio::test]

@@ -32,7 +32,6 @@ impl<A: Agent> Engine<A> {
     }
 
     async fn hold(&mut self, key: &ChatKey, client: &Client) -> Result<(), Fault> {
-        let installing = self.install.pauses();
         let chat = self.open(key).await?;
         let holder = chat.held.as_ref().filter(|holder| !holder.is_gone());
         if let Some(holder) = holder {
@@ -44,9 +43,8 @@ impl<A: Agent> Engine<A> {
                 "Someone else carries this chat on by hand already",
             ));
         }
-        // A live run, a starting one, a session still to save or an install's restart would race
-        // the hand's agent.
-        let busy = chat.orders.is_some() || chat.is_starting() || installing;
+        // A live run, a starting one or a session still to save would race the hand's agent.
+        let busy = chat.orders.is_some() || chat.is_starting();
         if busy || chat.pending_session.is_some() {
             return Err(Fault::new(
                 code!("chat.busy"),

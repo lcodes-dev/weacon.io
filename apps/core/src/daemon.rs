@@ -25,7 +25,6 @@ use crate::proposals;
 use crate::session::Session;
 
 mod chat;
-mod leave;
 mod route;
 mod worktrees;
 
@@ -76,13 +75,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             let server = route::server(app, state_dir, chats, worktrees, (maps, proposing));
             daemon.uplink.spawn(server);
         }
-        let checks = daemon.shared.chats.downgrade();
-        let serve = async {
-            tokio::select! {
-                () = daemon.serve(signals.wait()) => {}
-                never = crate::update::schedule(state_dir, app.version.version, &checks, &app.log) => match never {},
-            }
-        };
+        let serve = daemon.serve(signals.wait());
         crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
         Ok(())
     })
@@ -241,7 +234,6 @@ struct Connection {
     decoder: LineDecoder,
     client: Client,
     late: worktrees::Late,
-    leave: leave::Leave,
 }
 
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
@@ -254,7 +246,6 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
         decoder: LineDecoder::default(),
         client: Client { push },
         late,
-        leave: leave::Leave::default(),
     };
     loop {
         let read = tokio::select! {
@@ -294,7 +285,6 @@ async fn answer(
         decoder,
         client,
         late,
-        leave,
     } = connection;
     for received in decoder.push(bytes) {
         if let Ok(Envelope {
@@ -308,13 +298,7 @@ async fn answer(
                 .log
                 .warn("client reported an error", &[("code", code)]);
         }
-        let reply = match received {
-            Ok(Envelope {
-                id,
-                message: Message::InstallCommand(command),
-            }) if session.greeted() => leave.answer(&shared.chats.downgrade(), id, command).await,
-            received => route::route(shared, session, received, client, late).await,
-        };
+        let reply = route::route(shared, session, received, client, late).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
@@ -796,30 +780,6 @@ mod tests {
 
         assert_eq!(error_code(&replies[0]), Some("handshake.required"));
         assert!(!dir.join("picks").exists());
-    }
-
-    #[tokio::test]
-    async fn leave_to_install_is_given_only_after_the_hello() {
-        use weacon_protocol::{InstallAction, InstallCommand, RequestId};
-
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let leave = encode_line(&Envelope {
-            id: 2,
-            message: Message::InstallCommand(InstallCommand {
-                request: RequestId::try_from("i-1".to_owned()).unwrap(),
-                action: InstallAction::Leave,
-            }),
-        })
-        .unwrap();
-        let (early, _) = exchange(connect(&running.socket).await, &leave, 1).await;
-        let mut greeted = hello(PROTOCOL);
-        greeted.extend(&leave);
-        let (replies, _) = exchange(connect(&running.socket).await, &greeted, 2).await;
-        running.stop().await;
-
-        assert_eq!(error_code(&early[0]), Some("handshake.required"));
-        assert!(matches!(replies[1], Message::Receipt(_)), "{replies:?}");
     }
 
     #[tokio::test]

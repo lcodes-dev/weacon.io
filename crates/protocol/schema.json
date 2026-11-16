@@ -419,19 +419,6 @@
       "properties": {
         "type": {
           "type": "string",
-          "const": "install_command"
-        }
-      },
-      "$ref": "#/$defs/InstallCommand",
-      "required": [
-        "type"
-      ]
-    },
-    {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
           "const": "chat_live"
         }
       },
@@ -795,12 +782,6 @@
         "proposal",
         "change"
       ]
-    },
-    "BuildTarget": {
-      "description": "A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.",
-      "type": "string",
-      "maxLength": 64,
-      "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "Bytes": {
       "description": "Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only\nhow many, since they are sealed or terminal content.",
@@ -1557,11 +1538,6 @@
       "maxLength": 64,
       "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
     },
-    "Commit": {
-      "description": "A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.",
-      "type": "string",
-      "pattern": "^[0-9a-f]{40}$"
-    },
     "CommitId": {
       "description": "A git commit, as 40 or 64 lowercase hex digits.",
       "type": "string",
@@ -2066,65 +2042,6 @@
         "old_start",
         "new_start",
         "lines"
-      ]
-    },
-    "InstallAction": {
-      "oneOf": [
-        {
-          "description": "Given only while no chat is busy. From then on no turn starts and no chat can be held\nuntil `failed`, until the asker hangs up, or until the leave runs out.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "leave"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "description": "The new build is in place and the daemon is about to be restarted; turns stay paused,\neven once the asker hangs up, until the leave runs out again. Refused once the leave has\nrun out, and the asker then puts the old build back.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "restarting"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "description": "The install failed and the build before it is back; turns go on.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "failed"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        }
-      ]
-    },
-    "InstallCommand": {
-      "description": "From `weacon update` to its own core's daemon that offers `update.leave`, over the daemon's\nlocal socket: leave to install a build that restarts the daemon, then how the install went.\nThe daemon answers each with a [`crate::Receipt`] that echoes `request`, or with the error\n`update.chat_busy` when it refuses leave, or `update.no_leave` for a report without leave.",
-      "type": "object",
-      "properties": {
-        "action": {
-          "$ref": "#/$defs/InstallAction"
-        },
-        "request": {
-          "$ref": "#/$defs/RequestId"
-        }
-      },
-      "required": [
-        "request",
-        "action"
       ]
     },
     "Invitation": {
@@ -4022,74 +3939,6 @@
         "request"
       ]
     },
-    "ReleaseBuild": {
-      "description": "One target's binary in a release.",
-      "type": "object",
-      "properties": {
-        "sha256": {
-          "$ref": "#/$defs/Sha256"
-        },
-        "size": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "target": {
-          "$ref": "#/$defs/BuildTarget"
-        },
-        "url": {
-          "$ref": "#/$defs/DownloadUrl"
-        }
-      },
-      "required": [
-        "target",
-        "url",
-        "size",
-        "sha256"
-      ]
-    },
-    "ReleaseManifest": {
-      "description": "A release, as its signed manifest describes it; a core reads it to update itself.",
-      "type": "object",
-      "properties": {
-        "builds": {
-          "description": "At most one for each target.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/ReleaseBuild"
-          }
-        },
-        "commit": {
-          "$ref": "#/$defs/Commit"
-        },
-        "protocol": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "published_at": {
-          "description": "When the release was signed, in seconds since the Unix epoch, so a core can tell a\nmanifest that is being held back from the newest one.",
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        },
-        "version": {
-          "$ref": "#/$defs/ReleaseVersion"
-        }
-      },
-      "required": [
-        "version",
-        "commit",
-        "published_at",
-        "protocol",
-        "builds"
-      ]
-    },
-    "ReleaseVersion": {
-      "description": "A release's `major.minor.patch`, ordered by its numbers.",
-      "type": "string",
-      "pattern": "^(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})\\.(0|[1-9][0-9]{0,8})$"
-    },
     "RepoId": {
       "description": "A git repository the owner registered for a workspace on their machine, 1–64 ASCII\nletters, digits, `-` or `_`.",
       "type": "string",
@@ -4628,11 +4477,6 @@
           ]
         }
       ]
-    },
-    "Sha256": {
-      "description": "A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.",
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
     },
     "SharedMachine": {
       "description": "A machine shared with a workspace, as each of its members sees it: `owner` is its owner's\nmember there.",
@@ -5344,32 +5188,6 @@
         "terminal",
         "workspace",
         "event"
-      ]
-    },
-    "UpdateSchedule": {
-      "description": "When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "off"
-          ]
-        },
-        {
-          "description": "Look once a day and say when one is out; install only when asked.",
-          "type": "string",
-          "const": "notify"
-        },
-        {
-          "description": "Look once a day and install what's out.",
-          "type": "string",
-          "const": "daily"
-        },
-        {
-          "description": "Look once a week and install what's out.",
-          "type": "string",
-          "const": "weekly"
-        }
       ]
     },
     "Wants": {

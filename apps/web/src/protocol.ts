@@ -100,9 +100,6 @@ export type Envelope = {
     type: "proposal_answer";
   } & ProposalAnswer
   | {
-    type: "install_command";
-  } & InstallCommand
-  | {
     type: "chat_live";
   } & ChatLive
   | {
@@ -266,11 +263,6 @@ export type Batched = {
   change: ProposalChange;
   proposal: ProposalId;
 };
-
-/**
- * A Rust target a release is built for, such as `x86_64-unknown-linux-musl`.
- */
-export type BuildTarget = string;
 
 /**
  * Bytes that travel as lowercase hex, at most [`NOISE_MAX`] of them. Its `Debug` shows only
@@ -574,11 +566,6 @@ export type ClientLog = {
 export type Code = string;
 
 /**
- * A full git commit id: 40 lowercase hex digits. Unlike a doc's `CommitId`, not 64.
- */
-export type Commit = string;
-
-/**
  * A git commit, as 40 or 64 lowercase hex digits.
  */
 export type CommitId = string;
@@ -798,29 +785,6 @@ export type Hunk = {
   lines: Array<DiffLine>;
   new_start: number;
   old_start: number;
-};
-
-export type InstallAction = (
-  | {
-    kind: "leave";
-  }
-  | {
-    kind: "restarting";
-  }
-  | {
-    kind: "failed";
-  }
-);
-
-/**
- * From `weacon update` to its own core's daemon that offers `update.leave`, over the daemon's
- * local socket: leave to install a build that restarts the daemon, then how the install went.
- * The daemon answers each with a [`crate::Receipt`] that echoes `request`, or with the error
- * `update.chat_busy` when it refuses leave, or `update.no_leave` for a report without leave.
- */
-export type InstallCommand = {
-  action: InstallAction;
-  request: RequestId;
 };
 
 /**
@@ -1626,39 +1590,6 @@ export type Receipt = {
 );
 
 /**
- * One target's binary in a release.
- */
-export type ReleaseBuild = {
-  sha256: Sha256;
-  size: number;
-  target: BuildTarget;
-  url: DownloadUrl;
-};
-
-/**
- * A release, as its signed manifest describes it; a core reads it to update itself.
- */
-export type ReleaseManifest = {
-  /**
-   * At most one for each target.
-   */
-  builds: Array<ReleaseBuild>;
-  commit: Commit;
-  protocol: number;
-  /**
-   * When the release was signed, in seconds since the Unix epoch, so a core can tell a
-   * manifest that is being held back from the newest one.
-   */
-  published_at: number;
-  version: ReleaseVersion;
-};
-
-/**
- * A release's `major.minor.patch`, ordered by its numbers.
- */
-export type ReleaseVersion = string;
-
-/**
  * A git repository the owner registered for a workspace on their machine, 1–64 ASCII
  * letters, digits, `-` or `_`.
  */
@@ -1856,11 +1787,6 @@ export type SessionsQueryKind = (
     session: AgentSession;
   }
 );
-
-/**
- * A SHA-256 digest: 64 lowercase hex digits. Not the `sha2::Sha256` hasher.
- */
-export type Sha256 = string;
 
 /**
  * A machine shared with a workspace, as each of its members sees it: `owner` is its owner's
@@ -2190,18 +2116,6 @@ export type TerminalUpdate = {
   terminal: TerminalId;
   workspace: WorkspaceId;
 };
-
-/**
- * When a core looks for a release, chosen by its owner. Only `off` keeps it from ever asking.
- */
-export type UpdateSchedule = (
-  | (
-    | "off"
-  )
-  | "notify"
-  | "daily"
-  | "weekly"
-);
 
 /**
  * What a permission prompt's tool would do, as text the core makes of its input and every

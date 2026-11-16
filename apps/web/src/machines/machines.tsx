@@ -129,7 +129,7 @@ function Machine({
         {osName(machine.os)}, paired {paired}
         {machine.core !== undefined && `, weacon ${machine.core.version}`}
       </span>
-      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports. Run weacon update there.</p>}
+      {isOutdated(machine) && <p role="status">Its weacon is older than this server supports. Install a newer build there.</p>}
       {confirming ? (
         <span>
           Unpair {machine.name}? It disconnects at once.{" "}

@@ -98,8 +98,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        AccountId, BuildTarget, ChallengeId, ChatId, DocId, MachineId, MemberId, PairingId, RepoId,
-        RequestId, RunId, TaskId, TerminalId, WorkspaceId,
+        AccountId, ChallengeId, ChatId, DocId, MachineId, MemberId, PairingId, RepoId, RequestId,
+        RunId, TaskId, TerminalId, WorkspaceId,
     };
 
     // How `T` refuses a token, when parsed and when it arrives.
@@ -114,7 +114,6 @@ mod tests {
     fn each_id_says_what_it_isnt() {
         let cases = [
             (refusal::<AccountId>(), "not an account id"),
-            (refusal::<BuildTarget>(), "not a build target"),
             (refusal::<ChallengeId>(), "not a challenge id"),
             (refusal::<ChatId>(), "not a chat id"),
             (refusal::<DocId>(), "not a doc id"),

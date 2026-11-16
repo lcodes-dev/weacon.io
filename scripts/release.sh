@@ -7,18 +7,12 @@
 #   scripts/release.sh server <target>
 # Or copies a Linux build to a host over SSH and installs it there as a systemd user service:
 #   scripts/release.sh install <[user@]host> <target>
-# Or writes the unsigned manifest of the core's builds in a folder, as published at a base URL:
-#   scripts/release.sh manifest <tag> <folder> <https base URL>
-# Or, on the machine with the release key, checks a draft release's manifest and builds against
-# its tag, signs the manifest with minisign and uploads it with its signature to the draft:
-#   scripts/release.sh sign <tag> <secret key file>
 set -euo pipefail
 
-caller=$PWD
 cd "$(dirname "$0")/.."
 
-# The targets every release builds the core for; the manifest names a build for each, and the
-# release workflow's matrix lists them too. Only the Linux ones build the server.
+# The targets every release builds the core for; the release workflow's matrix lists them too.
+# Only the Linux ones build the server.
 LINUX_TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-musl)
 CORE_TARGETS=("${LINUX_TARGETS[@]}" aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc)
 LINUX_CHOICE=${LINUX_TARGETS[*]}
@@ -89,111 +83,6 @@ check_serves() {
   done
 }
 
-workspace_version() {
-  sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' Cargo.toml
-}
-
-# The file a target's build of the core is published as.
-build_name() {
-  printf 'weacon-%s%s' "$1" "$(exe_suffix "$1")"
-}
-
-# The trusted public keys in the core's verify.rs, read from stdin, one a line.
-trusted_keys() {
-  sed -n '/const TRUSTED/,/];/s/.*"\(RW[A-Za-z0-9+/]*\)".*/\1/p'
-}
-
-# A file's size and SHA-256 on one line; shasum, unlike sha256sum, comes with macOS too.
-size_and_sha256() {
-  local size sha256
-  size=$(wc -c <"$1" | tr -d ' ')
-  sha256=$(shasum -a 256 "$1" | cut -d ' ' -f 1)
-  [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || return 1
-  printf '%s %s\n' "$size" "$sha256"
-}
-
-# Writes <folder>/manifest.json for the core's builds there. It is dated when it's signed.
-write_manifest() {
-  local tag=${1:-} dir=${2:-} base=${3:-} protocol commit target name size sha256 builds=()
-  if [ "$tag" != "v$(workspace_version)" ] || ! [ -d "$dir" ] || [[ $base != https://* ]]; then
-    die "usage: scripts/release.sh manifest v$(workspace_version) <folder> <https base URL>"
-  fi
-  protocol=$(sed -n 's/^pub const PROTOCOL: u32 = \([0-9]*\);$/\1/p' crates/protocol/src/message.rs)
-  [ -n "$protocol" ] || die "the protocol version wasn't found"
-  # As for the builds: WEACON_COMMIT when it isn't blank, else git's.
-  commit=${WEACON_COMMIT:-}
-  [ -n "$commit" ] || commit=$(git rev-parse HEAD) || die "the commit wasn't found; set WEACON_COMMIT"
-  [[ $commit =~ ^[0-9a-f]{40}$ ]] || die "the commit isn't a full commit id"
-  for target in "${CORE_TARGETS[@]}"; do
-    name=$(build_name "$target")
-    [ -f "$dir/$name" ] || die "$dir has no $name"
-    read -r size sha256 < <(size_and_sha256 "$dir/$name") || die "$name couldn't be read"
-    builds+=("$(jq -cn --arg target "$target" --arg url "${base%/}/$name" \
-      --argjson size "$size" --arg sha256 "$sha256" \
-      '{target: $target, url: $url, size: $size, sha256: $sha256}')")
-  done
-  printf '%s\n' "${builds[@]}" | jq -cs --arg version "${tag#v}" --arg commit "$commit" \
-    --argjson protocol "$protocol" \
-    '{version: $version, commit: $commit, published_at: 0, protocol: $protocol, builds: .}' \
-    >"$dir/manifest.json"
-  printf '%s: %s builds\n' "$dir/manifest.json" "${#builds[@]}"
-}
-
-# Signs the draft release of <tag> once its manifest and builds match the tag.
-sign_release() {
-  local tag=${1:-} key=${2:-} tool commit repo keys target name names public trusted=
-  [[ $key == /* ]] || key="$caller/$key"
-  if ! [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || ! [ -f "$key" ]; then
-    die "usage: scripts/release.sh sign <vX.Y.Z> <secret key file>"
-  fi
-  for tool in gh minisign jq shasum; do
-    command -v "$tool" >/dev/null || die "$tool is missing"
-  done
-  commit=$(git rev-parse -q --verify "$tag^{commit}") || die "$tag isn't here: fetch the tags"
-  repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-  # The keys the tag's own core trusts.
-  keys=$(git show "$tag:apps/core/src/update/verify.rs" | trusted_keys)
-  [ -n "$keys" ] || die "the trusted keys weren't found at $tag"
-
-  # Global, so the trap still sees it once this returns.
-  work=$(mktemp -d)
-  trap 'rm -rf "$work"' EXIT
-  gh release download "$tag" --repo "$repo" --dir "$work" --pattern manifest.json
-  names=$(for target in "${CORE_TARGETS[@]}"; do
-    jq -cn --arg target "$target" --arg name "$(build_name "$target")" '{($target): $name}'
-  done | jq -cs add)
-  jq -e --arg version "${tag#v}" --arg commit "$commit" \
-    --arg base "https://github.com/$repo/releases/download/$tag/" --argjson names "$names" '
-      .version == $version and .commit == $commit
-      and ([.builds[].target] | sort) == ($names | keys)
-      and all(.builds[]; .url == $base + $names[.target])' \
-    "$work/manifest.json" >/dev/null || die "the draft's manifest doesn't describe $tag's builds"
-  for target in "${CORE_TARGETS[@]}"; do
-    name=$(build_name "$target")
-    gh release download "$tag" --repo "$repo" --dir "$work" --pattern "$name"
-    [ "$(size_and_sha256 "$work/$name")" = "$(jq -r --arg target "$target" \
-      '.builds[] | select(.target == $target) | "\(.size) \(.sha256)"' "$work/manifest.json")" ] \
-      || die "$name doesn't match the draft's manifest"
-  done
-
-  mkdir "$work/signed"
-  jq -c --argjson now "$(date +%s)" '.published_at = $now' "$work/manifest.json" \
-    >"$work/signed/manifest.json"
-  # Prehashed only: the core refuses legacy signatures.
-  minisign -S -H -s "$key" -m "$work/signed/manifest.json" -t "weacon ${tag#v}"
-  for public in $keys; do
-    if minisign -V -H -q -P "$public" -m "$work/signed/manifest.json" 2>/dev/null; then
-      trusted=1
-      break
-    fi
-  done
-  [ -n "$trusted" ] || die "the signature isn't by a key $tag's core trusts"
-  gh release upload "$tag" --repo "$repo" --clobber \
-    "$work/signed/manifest.json" "$work/signed/manifest.json.minisig"
-  printf 'Signed %s. Publish the draft, then put manifest.json and manifest.json.minisig at\n' "$tag"
-  printf 'https://weacon.io/releases/stable/.\n'
-}
-
 # Builds the core, or with `server` first the server, for a target into dist/, and checks it.
 build() {
   local server='' bin=weacon package=weacon-core target exe changes binary links
@@ -252,7 +141,5 @@ build() {
 
 case "${1:-}" in
   install) install_on "${2:-}" "${3:-}" ;;
-  manifest) write_manifest "${2:-}" "${3:-}" "${4:-}" ;;
-  sign) sign_release "${2:-}" "${3:-}" ;;
   *) build "$@" ;;
 esac
