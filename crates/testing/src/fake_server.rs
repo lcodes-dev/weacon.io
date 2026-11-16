@@ -494,6 +494,7 @@ mod tests {
         client.send(hello(PROTOCOL)).await.unwrap();
         texts(&mut client, 1).await;
         let query = Message::DiffQuery(DiffQuery {
+            machine: None,
             request: request("q-1"),
             workspace: workspace(),
             chat: chat(),

@@ -24,7 +24,7 @@ pub(crate) async fn keep(
     let fault = match kept {
         Ok(changed) => {
             shared.log.info("machine shares kept", &[machine_id]);
-            // A chat whose member's agent was just detached shows so at once.
+            // Who may call the machine's agents changed, which their chats show at once.
             for workspace in &changed {
                 shared.wake_feeds(workspace);
             }

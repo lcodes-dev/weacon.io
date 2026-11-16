@@ -164,7 +164,7 @@ UPDATE chat_events SET core_seq = NULL;
 ";
 
 /// Keys a chat's legs by their machine, which runs one agent in the chat whoever calls it, each
-/// with the number it had, and notes which machine sent each event.
+/// with the number it had, and notes which machine sent each event and which a call is for.
 pub(crate) const LEGS_BY_MACHINE: &str = "
 CREATE TABLE legs_by_machine (
     workspace_id TEXT NOT NULL,
@@ -187,6 +187,8 @@ INSERT OR IGNORE INTO legs_by_machine (rowid, workspace_id, chat_id, machine_id,
 SELECT rowid, workspace_id, chat_id, machine_id, member_id, machine_name, agent, repo, core_seq,
     detached, quoted_seq
 FROM chat_legs ORDER BY rowid;
+
+ALTER TABLE chats ADD COLUMN called_on TEXT;
 
 ALTER TABLE chat_events ADD COLUMN machine_id TEXT;
 

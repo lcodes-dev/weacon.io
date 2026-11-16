@@ -1,5 +1,5 @@
-//! Each member's own agent in a chat: the machine, repository and agent their first prompt
-//! there fixed, and the last of that machine's events the chat has.
+//! The agents in a chat, one on each machine a member called there: the repository and agent
+//! its first prompt fixed, whom it works for, and the last of that machine's events the chat has.
 
 use sqlx::SqliteConnection;
 use weacon_observability::Fault;
@@ -14,7 +14,7 @@ use crate::db::{Workspace, failed, stored, unreadable};
 /// server waits for the machine's answer to it.
 pub(crate) const CALL_SECS: i64 = 30;
 
-/// A leg as a member's first prompt in a chat makes it.
+/// A leg as the first prompt to a machine in a chat makes it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct NewLeg<'a> {
     /// Kept without a reference: an unpaired machine leaves the chat readable.
@@ -24,9 +24,10 @@ pub(crate) struct NewLeg<'a> {
     pub(crate) repo: Option<&'a RepoId>,
 }
 
-/// A member's own agent in a chat.
+/// A machine's agent in a chat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Leg {
+    /// Whom it works for: the member who called it last.
     pub(crate) member: MemberId,
     pub(crate) machine: MachineId,
     pub(crate) machine_name: MachineName,
@@ -82,55 +83,69 @@ fn columns() -> String {
     )
 }
 
-// A leg whose machine still serves its member: their account owns it, or its owner shares it
-// with the workspace.
-fn served() -> String {
-    format!(
-        "FROM chat_legs AS l
-         JOIN members AS m ON m.workspace_id = l.workspace_id AND m.member_id = l.member_id
-         JOIN machines AS d ON d.machine_id = l.machine_id
-             AND (d.account_id = m.account_id OR {SHARER} IS NOT NULL)"
-    )
-}
+// A leg whose machine still serves it: one a member of the leg's workspace owns.
+const SERVED: &str = "FROM chat_legs AS l
+    JOIN machines AS d ON d.machine_id = l.machine_id
+    JOIN members AS o ON o.workspace_id = l.workspace_id AND o.account_id = d.account_id";
 
 impl Workspace {
-    /// Fixes `member`'s leg of `chat` for their call at `now`, which takes the chat's turn as
-    /// [`Self::call`] does, in place of one whose machine never sent an event. One whose machine
-    /// did, or that a call of theirs still on its way holds, stays, as `chat.machine_fixed`; a
-    /// machine that neither is `member`'s nor is shared with the workspace is
-    /// `machine.not_found`, and one that holds another member's leg of the chat
-    /// `chat.machine_taken`.
-    pub(crate) async fn set_leg(
+    /// Calls the leg of `chat` on `new`'s machine for `member` at `now`: makes it as `new` says
+    /// when the machine has none there, or one that took no prompt and that no call holds,
+    /// takes the chat's turn, and has the leg work for `member`. Gives the leg as it was, or
+    /// none when another call or leg holds the turn, as [`Self::call`] says. A machine that
+    /// neither is `member`'s nor is shared with the workspace is `machine.not_found`, and a
+    /// detached leg `chat.detached`.
+    pub(crate) async fn call_leg(
         &self,
         chat: &ChatId,
         member: &MemberId,
-        leg: &NewLeg<'_>,
+        new: &NewLeg<'_>,
         now: i64,
-    ) -> Result<(), Fault> {
+    ) -> Result<Option<Leg>, Fault> {
         let mut transaction = self.db.write().await?;
         sqlx::query(
-            "DELETE FROM chat_legs WHERE workspace_id = ?1 AND chat_id = ?2 AND member_id = ?3
+            "DELETE FROM chat_legs WHERE workspace_id = ?1 AND chat_id = ?2 AND machine_id = ?3
                  AND core_seq = 0
                  AND NOT EXISTS (SELECT 1 FROM chats WHERE workspace_id = ?1 AND chat_id = ?2
-                     AND called_by = ?3 AND called_at > ?4 - ?5)",
+                     AND called_at > ?4 - ?5)",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(member.as_str())
+        .bind(new.machine_id.as_str())
         .bind(now)
         .bind(CALL_SECS)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        if self.leg_in(&mut transaction, chat, member).await?.is_some() {
-            return Err(machine_fixed());
+        if !self
+            .serves_in(&mut transaction, new.machine_id, member)
+            .await?
+        {
+            return Err(machine_not_found());
         }
-        self.put_leg(&mut transaction, chat, member, leg).await?;
-        self.call_in(&mut transaction, chat, member, now).await?;
-        transaction.commit().await.map_err(failed)
+        let found = self.leg_in(&mut transaction, chat, new.machine_id).await?;
+        let leg = if let Some(leg) = found {
+            leg
+        } else {
+            self.put_leg(&mut transaction, chat, member, new).await?;
+            let made = self.leg_in(&mut transaction, chat, new.machine_id).await?;
+            made.ok_or_else(machine_not_found)?
+        };
+        if leg.detached {
+            return Err(detached());
+        }
+        let called = (new.machine_id, member);
+        if !self.call_in(&mut transaction, chat, called, now).await? {
+            return Ok(None);
+        }
+        self.lend_in(&mut transaction, chat, new.machine_id, member)
+            .await?;
+        transaction.commit().await.map_err(failed)?;
+        Ok(Some(leg))
     }
 
-    /// Writes `member`'s leg of `chat`, on a machine that serves them.
+    /// Writes the leg of `chat` that `leg` describes, to work for `member`, whom its machine
+    /// serves.
     pub(super) async fn put_leg(
         &self,
         transaction: &mut SqliteConnection,
@@ -141,21 +156,6 @@ impl Workspace {
         // Checked as it is written, so a machine unpaired meanwhile gets no leg.
         if !self.serves_in(transaction, leg.machine_id, member).await? {
             return Err(machine_not_found());
-        }
-        // A core keeps one log for a chat, so a machine runs one member's agent in it, whether
-        // or not it still serves the member who had it first.
-        let taken: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM chat_legs
-                 WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?)",
-        )
-        .bind(self.id.as_str())
-        .bind(chat.as_str())
-        .bind(leg.machine_id.as_str())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(failed)?;
-        if taken {
-            return Err(machine_taken());
         }
         let agent = leg.agent.name().ok_or_else(super::unstorable)?;
         sqlx::query(
@@ -201,27 +201,31 @@ impl Workspace {
         .map_err(failed)
     }
 
-    /// `member`'s leg of `chat`, whoever owns its machine now.
-    pub(crate) async fn leg(&self, chat: &ChatId, member: &MemberId) -> Result<Option<Leg>, Fault> {
+    /// The leg of `chat` on `machine`, whoever owns the machine now.
+    pub(crate) async fn leg(
+        &self,
+        chat: &ChatId,
+        machine: &MachineId,
+    ) -> Result<Option<Leg>, Fault> {
         let mut reader = self.db.readers.acquire().await.map_err(failed)?;
-        self.leg_in(&mut reader, chat, member).await
+        self.leg_in(&mut reader, chat, machine).await
     }
 
     async fn leg_in(
         &self,
         connection: &mut SqliteConnection,
         chat: &ChatId,
-        member: &MemberId,
+        machine: &MachineId,
     ) -> Result<Option<Leg>, Fault> {
         let select = format!(
             "SELECT {} FROM chat_legs AS l
-             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.member_id = ?",
+             WHERE l.workspace_id = ? AND l.chat_id = ? AND l.machine_id = ?",
             columns()
         );
         sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
             .bind(chat.as_str())
-            .bind(member.as_str())
+            .bind(machine.as_str())
             .fetch_optional(connection)
             .await
             .map_err(failed)?
@@ -229,7 +233,7 @@ impl Workspace {
             .transpose()
     }
 
-    /// Every member's leg of `chat`, in the order they were made.
+    /// Every leg of `chat`, in the order they were made.
     pub(crate) async fn legs(&self, chat: &ChatId) -> Result<Vec<Leg>, Fault> {
         let select = format!(
             "SELECT {} FROM chat_legs AS l WHERE l.workspace_id = ? AND l.chat_id = ?
@@ -247,7 +251,7 @@ impl Workspace {
             .collect()
     }
 
-    /// The leg of `chat` that `machine` holds, while the machine still serves the leg's member.
+    /// The leg of `chat` that `machine` holds, while the machine still serves it.
     pub(crate) async fn leg_on(
         &self,
         chat: &ChatId,
@@ -268,7 +272,7 @@ impl Workspace {
             "SELECT {} {}
              WHERE l.workspace_id = ? AND l.chat_id = ? AND l.machine_id = ?",
             columns(),
-            served()
+            SERVED
         );
         sqlx::query_as::<_, LegRow>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
@@ -281,52 +285,55 @@ impl Workspace {
             .transpose()
     }
 
-    /// Notes that `member`'s agent in `chat` was given the chat up to `seq` as quotes.
+    /// Notes that the agent on `machine` in `chat` was given the chat up to `seq` as quotes.
     pub(crate) async fn quoted(
         &self,
         chat: &ChatId,
-        member: &MemberId,
+        machine: &MachineId,
         seq: u64,
     ) -> Result<(), Fault> {
         sqlx::query(
             "UPDATE chat_legs SET quoted_seq = ?
-             WHERE workspace_id = ? AND chat_id = ? AND member_id = ?",
+             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
         )
         .bind(super::number(seq)?)
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(member.as_str())
+        .bind(machine.as_str())
         .execute(&self.db.writer)
         .await
         .map_err(failed)?;
         Ok(())
     }
 
-    /// Takes `chat`'s turn for `member`'s call at `now`, unless another member called theirs
-    /// less than [`CALL_SECS`] ago and its run hasn't reported yet; whether it was taken.
+    /// Takes `chat`'s turn for `member`'s call of the leg on `machine` at `now`, unless another
+    /// call, of another leg or by another member, was made less than [`CALL_SECS`] ago and its
+    /// run hasn't reported yet; whether it was taken.
     pub(crate) async fn call(
         &self,
         chat: &ChatId,
-        member: &MemberId,
+        called: (&MachineId, &MemberId),
         now: i64,
     ) -> Result<bool, Fault> {
         let mut writer = self.db.writer.acquire().await.map_err(failed)?;
-        self.call_in(&mut writer, chat, member, now).await
+        self.call_in(&mut writer, chat, called, now).await
     }
 
     async fn call_in(
         &self,
         connection: &mut SqliteConnection,
         chat: &ChatId,
-        member: &MemberId,
+        (machine, member): (&MachineId, &MemberId),
         now: i64,
     ) -> Result<bool, Fault> {
         let called = sqlx::query(
-            "UPDATE chats SET called_by = ?1, called_at = ?2
-             WHERE workspace_id = ?3 AND chat_id = ?4
-                 AND (called_by IS NULL OR called_by = ?1 OR called_at <= ?2 - ?5)",
+            "UPDATE chats SET called_by = ?1, called_on = ?2, called_at = ?3
+             WHERE workspace_id = ?4 AND chat_id = ?5
+                 AND (called_by IS NULL OR called_at <= ?3 - ?6
+                     OR (called_by = ?1 AND called_on = ?2))",
         )
         .bind(member.as_str())
+        .bind(machine.as_str())
         .bind(now)
         .bind(self.id.as_str())
         .bind(chat.as_str())
@@ -335,24 +342,6 @@ impl Workspace {
         .await
         .map_err(failed)?;
         Ok(called.rows_affected() > 0)
-    }
-
-    /// [`Self::call`] of the leg of `chat` on `machine`, which works for `member` from then on:
-    /// what its machine sends is theirs.
-    pub(crate) async fn call_leg(
-        &self,
-        chat: &ChatId,
-        (machine, member): (&MachineId, &MemberId),
-        now: i64,
-    ) -> Result<bool, Fault> {
-        let mut transaction = self.db.write().await?;
-        let called = self.call_in(&mut transaction, chat, member, now).await?;
-        if called {
-            self.lend_in(&mut transaction, chat, machine, member)
-                .await?;
-        }
-        transaction.commit().await.map_err(failed)?;
-        Ok(called)
     }
 
     /// Takes back `member`'s [`Self::call_leg`] of `leg`, which never reached its machine: the
@@ -391,15 +380,15 @@ impl Workspace {
         Ok(())
     }
 
-    /// Gives back the turn `member`'s call took in `chat`, as when it never reached their
-    /// machine.
+    /// [`Self::uncall_in`], on a connection of its own.
     #[cfg(test)]
     pub(crate) async fn uncall(&self, chat: &ChatId, member: &MemberId) -> Result<(), Fault> {
         let mut writer = self.db.writer.acquire().await.map_err(failed)?;
         self.uncall_in(&mut writer, chat, member).await
     }
 
-    /// [`Self::uncall`], written through `connection`.
+    /// Gives back the turn `member`'s call took in `chat`, as once its run reports or when it
+    /// never reached its machine.
     pub(super) async fn uncall_in(
         &self,
         connection: &mut SqliteConnection,
@@ -407,7 +396,7 @@ impl Workspace {
         member: &MemberId,
     ) -> Result<(), Fault> {
         sqlx::query(
-            "UPDATE chats SET called_by = NULL, called_at = NULL
+            "UPDATE chats SET called_by = NULL, called_on = NULL, called_at = NULL
              WHERE workspace_id = ? AND chat_id = ? AND called_by = ?",
         )
         .bind(self.id.as_str())
@@ -419,20 +408,20 @@ impl Workspace {
         Ok(())
     }
 
-    /// Detaches `member`'s leg of `chat`, whose machine is no longer theirs, and tells the feed.
-    pub(crate) async fn detach_leg(&self, chat: &ChatId, member: &MemberId) -> Result<(), Fault> {
+    /// Detaches `leg` of `chat`, whose machine no longer serves it, and tells the feed.
+    pub(crate) async fn detach_leg(&self, chat: &ChatId, leg: &Leg) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         sqlx::query(
             "UPDATE chat_legs SET detached = 1
-             WHERE workspace_id = ? AND chat_id = ? AND member_id = ?",
+             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(member.as_str())
+        .bind(leg.machine.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
-        self.record_change(&mut transaction, Versioned::Chat(chat), member)
+        self.record_change(&mut transaction, Versioned::Chat(chat), &leg.member)
             .await?;
         transaction.commit().await.map_err(failed)
     }
@@ -446,15 +435,14 @@ impl Workspace {
         most: u32,
     ) -> Result<Vec<(ChatId, u64)>, Fault> {
         let select = format!(
-            "SELECT c.chat_id, l.core_seq {}
+            "SELECT c.chat_id, l.core_seq {SERVED}
              JOIN chats AS c ON c.workspace_id = l.workspace_id AND c.chat_id = l.chat_id
              WHERE l.workspace_id = ? AND l.machine_id = ? AND l.detached = 0 AND c.state = 'open'
                  AND EXISTS (SELECT 1 FROM changes AS h WHERE h.workspace_id = c.workspace_id
                      AND h.chat_id = c.chat_id)
              ORDER BY COALESCE(json_extract(c.run_status, '$.state')
                      IN ('starting', 'running', 'waiting'), 0) DESC, c.updated_at DESC, c.chat_id
-             LIMIT ?",
-            served()
+             LIMIT ?"
         );
         sqlx::query_as::<_, (String, i64)>(sqlx::AssertSqlSafe(select))
             .bind(self.id.as_str())
@@ -493,17 +481,10 @@ pub(super) fn stored_agent(name: &str) -> Result<AgentKind, Fault> {
         .ok_or_else(unreadable)
 }
 
-fn machine_taken() -> Fault {
+pub(crate) fn detached() -> Fault {
     Fault::new(
-        weacon_protocol::code!("chat.machine_taken"),
-        "Another member's agent already runs on this machine in this chat",
-    )
-}
-
-pub(crate) fn machine_fixed() -> Fault {
-    Fault::new(
-        weacon_protocol::code!("chat.machine_fixed"),
-        "Your agent in a chat stays on the machine it started on",
+        weacon_protocol::code!("chat.detached"),
+        "This agent's machine no longer has this chat",
     )
 }
 
@@ -518,7 +499,7 @@ mod tests {
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
-    async fn a_call_on_its_way_keeps_its_leg_from_another_call_of_the_same_member() {
+    async fn a_call_on_its_way_holds_the_chats_turn_from_a_call_of_any_other_leg() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
@@ -526,65 +507,66 @@ mod tests {
         one.pair_for("m3", "mc-4").await;
         let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
         let (name, desk, shelf) = (id("Bo's desk"), id("mc-3"), id("mc-4"));
-        let on = |machine_id| NewLeg {
+        let on = |machine_id, agent| NewLeg {
             machine_id,
             machine: &name,
-            agent: AgentKind::Codex,
+            agent,
             repo: None,
         };
+        let codex = AgentKind::Codex;
 
-        one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
-        let held = one.set_leg(&chat, &bo, &on(&desk), NOW + 1).await;
+        let first = one.call_leg(&chat, &bo, &on(&shelf, codex), NOW).await;
+        let held = one.call_leg(&chat, &bo, &on(&desk, codex), NOW + 1).await;
 
-        assert_eq!(code(&held.unwrap_err()), "chat.machine_fixed");
-        let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
-        assert_eq!(leg.machine.as_str(), "mc-4");
-        // The call took the chat's turn as it fixed the leg, so no one else's starts meanwhile.
-        assert!(!one.call(&chat, &member_id("m1"), NOW + 1).await.unwrap());
-        // Once the hold has run out with no prompt taken, the choice can change.
-        let later = NOW + CALL_SECS;
-        one.set_leg(&chat, &bo, &on(&desk), later).await.unwrap();
-        assert_eq!(
-            one.leg(&chat, &bo).await.unwrap().unwrap().machine.as_str(),
-            "mc-3"
-        );
+        assert_eq!(first.unwrap().unwrap().machine.as_str(), "mc-4");
+        assert_eq!(held.unwrap(), None);
+        assert_eq!(one.leg(&chat, &desk).await.unwrap(), None);
+        // No one else's starts meanwhile either, but the same call may be made again.
+        let adas = (&id::<MachineId>("mc-1"), &member_id("m1"));
+        assert!(!one.call(&chat, adas, NOW + 1).await.unwrap());
+        let again = one.call_leg(&chat, &bo, &on(&shelf, codex), NOW + 1).await;
+        assert!(again.unwrap().is_some());
+        // Once the hold has run out, another leg is called, and one that took no prompt is
+        // made again as its next call says.
+        let later = NOW + 1 + CALL_SECS;
+        let other = one.call_leg(&chat, &bo, &on(&desk, codex), later).await;
+        assert!(other.unwrap().is_some());
+        let claude = on(&shelf, AgentKind::Claude);
+        let remade = one.call_leg(&chat, &bo, &claude, later + CALL_SECS).await;
+        assert_eq!(remade.unwrap().unwrap().agent, AgentKind::Claude);
     }
 
     #[tokio::test]
-    async fn a_members_leg_is_read_in_its_own_workspace_only_and_stays_once_its_machine_took_a_prompt()
+    async fn a_leg_is_read_in_its_own_workspace_only_and_stays_as_made_once_its_machine_took_a_prompt()
      {
         let dir = TempDir::new().unwrap();
         let (one, two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         one.pair_for("m3", "mc-3").await;
-        one.pair_for("m3", "mc-4").await;
         let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
-        let (name, desk, shelf) = (id("Bo's desk"), id("mc-3"), id("mc-4"));
-        let adas = id("mc-1");
-        let on = |machine_id| NewLeg {
+        let (name, desk, adas) = (id("Bo's desk"), id("mc-3"), id("mc-1"));
+        let on = |machine_id, agent| NewLeg {
             machine_id,
             machine: &name,
-            agent: AgentKind::Codex,
+            agent,
             repo: None,
         };
 
-        one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
-        // Given back with no prompt taken, so another choice takes its place.
+        let (codex, stray) = (on(&desk, AgentKind::Codex), on(&adas, AgentKind::Codex));
+        let called = one.call_leg(&chat, &bo, &codex, NOW).await;
+        called.unwrap().unwrap();
         one.uncall(&chat, &bo).await.unwrap();
-        one.set_leg(&chat, &bo, &on(&desk), NOW).await.unwrap();
-        one.uncall(&chat, &bo).await.unwrap();
-        let stolen = one.set_leg(&chat, &bo, &on(&adas), NOW).await;
+        let stolen = one.call_leg(&chat, &bo, &stray, NOW).await;
 
         assert_eq!(code(&stolen.unwrap_err()), "machine.not_found");
-        let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
+        let leg = one.leg(&chat, &desk).await.unwrap().unwrap();
         assert_eq!(
-            (leg.machine.as_str(), leg.agent, leg.core_seq, leg.detached),
-            ("mc-3", AgentKind::Codex, 0, false)
+            (leg.member.as_str(), leg.agent, leg.core_seq, leg.detached),
+            ("m3", AgentKind::Codex, 0, false)
         );
         assert_eq!(one.leg_on(&chat, &desk).await.unwrap(), Some(leg));
-        assert_eq!(one.leg_on(&chat, &shelf).await.unwrap(), None);
-        assert_eq!(two.leg(&chat, &bo).await.unwrap(), None);
+        assert_eq!(two.leg(&chat, &desk).await.unwrap(), None);
         assert_eq!(two.leg_on(&chat, &desk).await.unwrap(), None);
         assert!(one.chats().await.unwrap()[0].legs.is_empty());
         let event = status(RunState::Idle);
@@ -595,8 +577,11 @@ mod tests {
         };
         let stored = one.append_from(&desk, &chat, &[first]).await;
         assert_eq!(stored.unwrap(), 1);
-        let fixed = one.set_leg(&chat, &bo, &on(&shelf), NOW).await;
-        assert_eq!(code(&fixed.unwrap_err()), "chat.machine_fixed");
+        let claude = on(&desk, AgentKind::Claude);
+        let again = one.call_leg(&chat, &bo, &claude, NOW).await;
+        assert_eq!(again.unwrap().unwrap().agent, AgentKind::Codex);
+        let kept = one.leg(&chat, &desk).await.unwrap().unwrap();
+        assert_eq!((kept.agent, kept.core_seq), (AgentKind::Codex, 1));
         let listed = one.chats().await.unwrap().remove(0).legs;
         let members: Vec<_> = listed.iter().map(|leg| leg.member.as_str()).collect();
         assert_eq!(members, ["m3"]);
@@ -606,7 +591,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_machine_holds_one_members_leg_of_a_chat_even_once_it_no_longer_serves_them() {
+    async fn a_shared_machines_leg_of_a_chat_is_each_members_to_call_and_its_owners_once_it_isnt() {
         let dir = TempDir::new().unwrap();
         let (one, _two) = two_teams(&dir).await;
         make(&one, "c-1", "m1", NOW).await.unwrap();
@@ -620,22 +605,39 @@ mod tests {
             repo: None,
         };
         let (db, w1) = (one.db.clone(), [id("w1")]);
+        let at = |calls: i64| NOW + calls * CALL_SECS;
 
-        let later = NOW + 2 * CALL_SECS;
-        let unshared = one.set_leg(&chat, &ada, &on_desk, later).await;
+        let unshared = one.call_leg(&chat, &ada, &on_desk, at(1)).await;
         db.set_shares(&desk, &w1).await.unwrap();
-        one.set_leg(&chat, &ada, &on_desk, later).await.unwrap();
-        let sharer = one.leg(&chat, &ada).await.unwrap().unwrap().shared_by;
+        one.call_leg(&chat, &ada, &on_desk, at(1)).await.unwrap();
+        let event = status(RunState::Idle);
+        let first = Incoming {
+            core_seq: Some(1),
+            event: &event,
+            at: NOW,
+        };
+        one.append_from(&desk, &chat, &[first]).await.unwrap();
+        let hers = one.leg(&chat, &desk).await.unwrap().unwrap();
+        // His call of the same leg waits for hers, as anyone's would.
+        let held = one.call_leg(&chat, &bo, &on_desk, at(1)).await;
+        let his = one.call_leg(&chat, &bo, &on_desk, at(2)).await;
         db.set_shares(&desk, &[]).await.unwrap();
-        let second = one.set_leg(&chat, &bo, &on_desk, later).await;
-        db.set_shares(&desk, &w1).await.unwrap();
+        let ended = one.call_leg(&chat, &ada, &on_desk, at(3)).await;
+        let owners = one.call_leg(&chat, &bo, &on_desk, at(3)).await;
 
         assert_eq!(code(&unshared.unwrap_err()), "machine.not_found");
-        assert_eq!(sharer, Some(bo.clone()));
-        assert_eq!(code(&second.unwrap_err()), "chat.machine_taken");
-        let held = one.leg_on(&chat, &desk).await.unwrap().unwrap();
-        assert_eq!(held.member, ada);
-        assert_eq!(one.legs(&chat).await.unwrap().len(), 1);
+        assert_eq!((&hers.member, &hers.shared_by), (&ada, &Some(bo.clone())));
+        assert_eq!(held.unwrap(), None);
+        assert_eq!(his.unwrap(), Some(hers.clone()));
+        assert_eq!(code(&ended.unwrap_err()), "machine.not_found");
+        let lent = Leg {
+            member: bo.clone(),
+            shared_by: None,
+            ..hers
+        };
+        assert_eq!(owners.unwrap(), Some(lent.clone()));
+        assert_eq!(one.leg(&chat, &desk).await.unwrap(), Some(lent));
+        assert_eq!(one.legs(&chat).await.unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -660,7 +662,7 @@ mod tests {
 
         let one = db.workspace(&id("w1")).await.unwrap();
         let ada = member_id("m1");
-        let leg = one.leg(&id("c-1"), &ada).await.unwrap().unwrap();
+        let leg = one.leg(&id("c-1"), &id("mc-1")).await.unwrap().unwrap();
         let kept = Leg {
             member: ada.clone(),
             machine: id("mc-1"),
@@ -674,7 +676,7 @@ mod tests {
             shared_by: None,
         };
         assert_eq!(leg, kept);
-        let gone = one.leg(&id("c-2"), &ada).await.unwrap().unwrap();
+        let gone = one.leg(&id("c-2"), &id("mc-2")).await.unwrap().unwrap();
         assert_eq!((gone.agent, gone.detached), (AgentKind::Claude, true));
         let chat = one.chat(&id("c-2")).await.unwrap().unwrap();
         assert_eq!(chat.state, weacon_protocol::ChatState::Open);
@@ -757,18 +759,24 @@ mod tests {
         make(&two, "c-1", "m2", NOW).await.unwrap();
         let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
 
-        assert!(one.call(&chat, &ada, NOW).await.unwrap());
-        assert!(one.call(&chat, &ada, NOW + 1).await.unwrap());
-        assert!(!one.call(&chat, &bo, NOW + CALL_SECS).await.unwrap());
+        let (hers, his) = (id::<MachineId>("mc-1"), id::<MachineId>("mc-3"));
+        let (adas, bos) = ((&hers, &ada), (&his, &bo));
+
+        assert!(one.call(&chat, adas, NOW).await.unwrap());
+        assert!(one.call(&chat, adas, NOW + 1).await.unwrap());
+        assert!(!one.call(&chat, bos, NOW + CALL_SECS).await.unwrap());
+        // Nor does her own call of another leg, or his of the one she called.
+        assert!(!one.call(&chat, (&his, &ada), NOW + 2).await.unwrap());
+        assert!(!one.call(&chat, (&hers, &bo), NOW + 2).await.unwrap());
         // Another workspace's chat of the same name is free.
-        assert!(two.call(&chat, &member_id("m2"), NOW).await.unwrap());
-        let called = one.chat(&chat).await.unwrap().unwrap().called;
-        assert_eq!(called, Some((ada.clone(), NOW + 1)));
+        let theirs = (&hers, &member_id("m2"));
+        assert!(two.call(&chat, theirs, NOW).await.unwrap());
+        assert_eq!(called(&one).await, Some(("m1".to_owned(), NOW + 1)));
         one.uncall(&chat, &bo).await.unwrap();
-        assert!(!one.call(&chat, &bo, NOW + 2).await.unwrap());
-        assert!(one.call(&chat, &bo, NOW + 1 + CALL_SECS).await.unwrap());
+        assert!(!one.call(&chat, bos, NOW + 2).await.unwrap());
+        assert!(one.call(&chat, bos, NOW + 1 + CALL_SECS).await.unwrap());
         one.uncall(&chat, &bo).await.unwrap();
-        assert!(one.call(&chat, &ada, NOW + 3 + CALL_SECS).await.unwrap());
+        assert!(one.call(&chat, adas, NOW + 3 + CALL_SECS).await.unwrap());
         // Her run at work ends the hold; an earlier run of hers going idle doesn't.
         let reports = [
             (said("Hi"), true),
@@ -782,9 +790,20 @@ mod tests {
                 at: NOW,
             };
             one.append_as(&chat, &ada, &[incoming]).await.unwrap();
-            let called = one.chat(&chat).await.unwrap().unwrap().called;
-            assert_eq!(called.is_some(), held);
+            assert_eq!(called(&one).await.is_some(), held);
         }
+    }
+
+    // Who holds the turn of the workspace's chat c-1, and since when.
+    async fn called(workspace: &Workspace) -> Option<(String, i64)> {
+        sqlx::query_as(
+            "SELECT called_by, called_at FROM chats
+             WHERE workspace_id = ? AND chat_id = 'c-1' AND called_by IS NOT NULL",
+        )
+        .bind(workspace.id.as_str())
+        .fetch_optional(&workspace.db.readers)
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -802,7 +821,7 @@ mod tests {
             agent: AgentKind::Claude,
             repo: None,
         };
-        one.set_leg(&chat, &bo, &leg, NOW).await.unwrap();
+        one.call_leg(&chat, &bo, &leg, NOW).await.unwrap().unwrap();
         let event = status(RunState::Idle);
         let at = |core_seq| Incoming {
             core_seq: Some(core_seq),
@@ -840,8 +859,13 @@ mod tests {
         one.pair_for("m1", "mc-1").await;
         one.db.set_shares(&id("mc-1"), &[id("w1")]).await.unwrap();
         let (chat, ada, bo) = (id::<ChatId>("c-1"), member_id("m1"), member_id("m3"));
-        let hers = id::<MachineId>("mc-1");
-        let adas = one.leg(&chat, &ada).await.unwrap().unwrap();
+        let (hers, name) = (id::<MachineId>("mc-1"), id("Ada's laptop"));
+        let on_hers = NewLeg {
+            machine_id: &hers,
+            machine: &name,
+            agent: AgentKind::Claude,
+            repo: None,
+        };
         let event = status(RunState::Idle);
         let at = |core_seq| Incoming {
             core_seq: Some(core_seq),
@@ -849,18 +873,21 @@ mod tests {
             at: NOW,
         };
         one.append_from(&hers, &chat, &[at(1)]).await.unwrap();
+        let adas = one.leg(&chat, &hers).await.unwrap().unwrap();
         let later = NOW + 2 * CALL_SECS;
 
-        assert!(one.call_leg(&chat, (&hers, &bo), later).await.unwrap());
+        let his = one.call_leg(&chat, &bo, &on_hers, later).await.unwrap();
+        assert_eq!(his, Some(adas.clone()));
         one.append_from(&hers, &chat, &[at(2)]).await.unwrap();
         // Ada's call while his holds the turn leaves the leg his.
-        assert!(!one.call_leg(&chat, (&hers, &ada), later).await.unwrap());
-        let called = one.leg_on(&chat, &hers).await.unwrap().unwrap();
-        assert_eq!((called.member, called.number), (bo.clone(), adas.number));
+        let held = one.call_leg(&chat, &ada, &on_hers, later).await.unwrap();
+        assert_eq!(held, None);
+        let lent = one.leg_on(&chat, &hers).await.unwrap().unwrap();
+        assert_eq!((lent.member, lent.number), (bo.clone(), adas.number));
         one.uncall_leg(&chat, &adas, &bo).await.unwrap();
         one.append_from(&hers, &chat, &[at(3)]).await.unwrap();
 
         assert_eq!(senders(&one).await, ["m1", "m3", "m1"]);
-        assert_eq!(one.chat(&chat).await.unwrap().unwrap().called, None);
+        assert_eq!(called(&one).await, None);
     }
 }

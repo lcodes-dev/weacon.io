@@ -404,6 +404,7 @@ mod tests {
     impl Bench {
         async fn changes(&self) -> Result<Vec<DiffAnswerKind>, Fault> {
             let query = DiffQuery {
+                machine: None,
                 request: request(),
                 workspace: self.workspace.clone(),
                 chat: self.chat.clone(),
@@ -420,6 +421,7 @@ mod tests {
 
         async fn act(&self, action: Action) -> Result<WorktreeAnswerKind, Fault> {
             let command = WorktreeCommand {
+                machine: None,
                 request: request(),
                 workspace: self.workspace.clone(),
                 chat: self.chat.clone(),
@@ -592,6 +594,7 @@ mod tests {
 
     fn state_query(bench: &Bench) -> WorktreeQuery {
         WorktreeQuery {
+            machine: None,
             request: request(),
             workspace: bench.workspace.clone(),
             chat: bench.chat.clone(),
@@ -770,6 +773,7 @@ mod tests {
     async fn a_chat_without_a_worktree_or_a_newer_ask_is_refused() {
         let bench = bench();
         let other = DiffQuery {
+            machine: None,
             request: request(),
             workspace: bench.workspace.clone(),
             chat: chat("c-2"),
@@ -784,6 +788,7 @@ mod tests {
             "request.unknown"
         );
         let newer = WorktreeQuery {
+            machine: None,
             request: request(),
             workspace: bench.workspace.clone(),
             chat: bench.chat.clone(),
@@ -847,6 +852,7 @@ mod tests {
     async fn a_terminal_needs_the_chats_folder_and_a_desktop() {
         let bench = bench();
         let other = WorktreeCommand {
+            machine: None,
             request: request(),
             workspace: bench.workspace.clone(),
             chat: chat("c-2"),
@@ -860,6 +866,7 @@ mod tests {
         let (state, work) = (bench.dir.join("state"), bench.dir.join("work"));
         let headless = Worktrees::new(&state, None, Some(work), no_desktop);
         let asked = WorktreeCommand {
+            machine: None,
             request: request(),
             workspace: bench.workspace.clone(),
             chat: bench.chat.clone(),

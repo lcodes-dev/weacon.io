@@ -598,6 +598,7 @@ mod tests {
             std::fs::write(worktree.join(name), "mine\n").unwrap();
         }
         let diff = Message::DiffQuery(DiffQuery {
+            machine: None,
             request: id("r-1"),
             workspace,
             chat,
@@ -668,6 +669,7 @@ mod tests {
         let _agent = running.started.recv().await.unwrap();
         asked.chats = running.chats.clone();
         let remove = Message::WorktreeCommand(WorktreeCommand {
+            machine: None,
             request: id("r-2"),
             workspace: key().workspace,
             chat: key().chat,
@@ -698,6 +700,7 @@ mod tests {
         let by = Some(by("a-1"));
         [
             Message::DiffQuery(DiffQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -705,6 +708,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeQuery(WorktreeQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -712,6 +716,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeCommand(WorktreeCommand {
+                machine: None,
                 request,
                 workspace: workspace.clone(),
                 chat,

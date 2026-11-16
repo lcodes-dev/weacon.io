@@ -824,6 +824,7 @@ mod tests {
         let request = RequestId::try_from("r-1".to_owned()).unwrap();
         let other = ChatId::try_from("c-2".to_owned()).unwrap();
         let diff = |chat: &ChatId| DiffQuery {
+            machine: None,
             request: request.clone(),
             workspace: workspace.clone(),
             chat: chat.clone(),
@@ -831,6 +832,7 @@ mod tests {
             by: None,
         };
         let query = WorktreeQuery {
+            machine: None,
             request: request.clone(),
             workspace: workspace.clone(),
             chat: other.clone(),
@@ -838,6 +840,7 @@ mod tests {
             by: None,
         };
         let command = WorktreeCommand {
+            machine: None,
             request: request.clone(),
             workspace: workspace.clone(),
             chat: other.clone(),

@@ -3,26 +3,27 @@ import { useEffect, useState } from "react";
 import type { ChatRef } from "../chat-ref.ts";
 import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
+import type { MachineId } from "../protocol.ts";
 import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
 import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, resumeLine, unsent, waiting } from "./worktree.ts";
 
 /**
- * The worktree of the chat at `chatRef`, asked over `link` while it is `live`, for its owner (`mine`)
- * alone: its state each time it is `shown`, and answers while it isn't. A pull request's draft stays
- * until the core opens it. What the server offers decides whether there is one.
+ * The worktree the chat at `chatRef` has on `machine`, asked over `link` while it is `live`: its
+ * state each time it is `shown`, and answers while it isn't. A pull request's draft stays until the
+ * core opens it. What the server offers decides whether there is one.
  */
-export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, mine: boolean, shown: boolean) {
+export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, machine: MachineId | undefined, live: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
   const [draft, setDraft] = useState<{ title: string; body: string }>();
   const manages = useOffers(link, "worktree.manage");
-  const usable = chatRef !== undefined && live && mine && manages;
+  const usable = chatRef !== undefined && machine !== undefined && live && manages;
   // Whether `ask` went out; the screen says so when it couldn't.
   const ask = (what: Ask): boolean => {
-    if (chatRef === undefined) {
+    if (chatRef === undefined || machine === undefined) {
       return false;
     }
     const pending = { id: link.nextId(), request: newId(), ask: what.kind, confirm: what.kind === "state" && what.confirm === true };
-    const sent = link.send(envelopeFor(chatRef, pending.id, pending.request, what));
+    const sent = link.send(envelopeFor({ ...chatRef, machine }, pending.id, pending.request, what));
     setWorktree((before) => (sent ? waiting(before, pending) : unsent(before, what.kind)));
     return sent;
   };

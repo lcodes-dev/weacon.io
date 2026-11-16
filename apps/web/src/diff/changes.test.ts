@@ -28,14 +28,14 @@ const answer = (request: string, body: unknown, chat = "c-1", workspace = "w-1")
   ({ id: 0, type: "diff_answer", request, workspace, chat, answer: body }) as Envelope;
 
 test("asking sends a changes query and waits for its answers", () => {
-  const { query, changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { query, changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
 
-  assert.deepEqual(query, { id: 5, type: "diff_query", request: "q-1", workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
+  assert.deepEqual(query, { id: 5, type: "diff_query", request: "q-1", workspace: "w-1", chat: "c-1", machine: "mc-1", query: { kind: "changes" } });
   assert.deepEqual(changes, { asked: { id: 5, request: "q-1", workspace: "w-1", chat: "c-1" }, files: [], total: undefined, cut: false, held: false });
 });
 
 test("files arrive one answer each, and only the latest request's for its chat count", () => {
-  const { changes } = ask(5, "q-2", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-2", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const of = (path: string, files = 2) => ({ kind: "file", files, file: file(path) });
   const one = receive(changes, answer("q-2", of("a.rs")));
   const two = receive(one, answer("q-2", of("b.rs", 3)));
@@ -55,7 +55,7 @@ test("files arrive one answer each, and only the latest request's for its chat c
 });
 
 test("unchanged counts only before any file, and a file with a newer line op is kept as it came", () => {
-  const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
   const moved = { ...file("b.rs"), content: { kind: "text", hunks: [{ old_start: 1, new_start: 1, lines: [{ op: "moved", text: "x" }] }] } };
 
@@ -64,7 +64,7 @@ test("unchanged counts only before any file, and a file with a newer line op is 
 });
 
 test("an error under the query's id cuts the changes short, so opening them asks again", () => {
-  const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const error = (id: number): Envelope => ({ id, type: "error", code: "message.unsupported", retryable: false });
   const failed = receive(changes, error(5));
 
@@ -78,9 +78,9 @@ test("an error under the query's id cuts the changes short, so opening them asks
 
 test("asking again keeps the files shown until the new request's first answer replaces them", () => {
   const of = (path: string, files: number) => ({ kind: "file", files, file: file(path) });
-  const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const shown = cut(receive(changes, answer("q-1", of("a.rs", 2))));
-  const again = ask(6, "q-2", "w-1", "c-1", shown).changes;
+  const again = ask(6, "q-2", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, shown).changes;
   const first = receive(again, answer("q-2", of("b.rs", 2)));
   const none = receive(again, answer("q-2", { kind: "unchanged" }));
 
@@ -91,11 +91,11 @@ test("asking again keeps the files shown until the new request's first answer re
   assert.equal(first.held, false);
   assert.deepEqual({ files: none.files, total: none.total }, { files: [], total: 0 });
   assert.equal(cut(again).cut, true);
-  assert.equal(ask(7, "q-3", "w-1", "c-1", NO_CHANGES).changes.held, false);
+  assert.equal(ask(7, "q-3", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES).changes.held, false);
 });
 
 test("a connection that ends cuts short only changes still coming", () => {
-  const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
   const one = receive(changes, answer("q-1", { kind: "file", files: 2, file: file("a.rs") }));
   const all = receive(one, answer("q-1", { kind: "file", files: 2, file: file("b.rs") }));
   const none = receive(changes, answer("q-1", { kind: "unchanged" }));
@@ -108,7 +108,7 @@ test("a connection that ends cuts short only changes still coming", () => {
 });
 
 test("an unchanged chat has no files, and a newer peer's kinds of file still arrive", () => {
-  const { changes } = ask(5, "q-1", "w-1", "c-1", NO_CHANGES);
+  const { changes } = ask(5, "q-1", { workspace: "w-1", chat: "c-1", machine: "mc-1" }, NO_CHANGES);
 
   assert.deepEqual(receive(changes, answer("q-1", { kind: "unchanged" })), { ...changes, total: 0 });
   // A newer peer's kinds still arrive, for the view to show as it can.

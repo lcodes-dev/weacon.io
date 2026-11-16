@@ -403,13 +403,14 @@ export type ChatEvent = (
 export type ChatId = string;
 
 /**
- * A member's own agent in a chat, fixed by their first prompt there: its machine's id and
- * name, and the repository it works in, if any.
+ * The agent a chat has on one machine, made by the first prompt to it there: the `member` it
+ * last worked for, its machine's id and name, and the repository it works in, if any.
  */
 export type ChatLeg = {
   agent: AgentKind;
   /**
-   * Its machine was unpaired, or no longer has its log: it can never be prompted again.
+   * Its machine was unpaired, or its machine's owner left the workspace: it can never be
+   * prompted again.
    */
   detached: boolean;
   machine: MachineName;
@@ -636,6 +637,11 @@ export type DiffQuery = {
    */
   by?: Asker;
   chat: ChatId;
+  /**
+   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
+   * answers for its own.
+   */
+  machine?: MachineId;
   query: DiffQueryKind;
   request: RequestId;
   workspace: WorkspaceId;
@@ -2146,6 +2152,9 @@ export type WorkspaceChange = (
     kind: "members_changed";
   }
   | {
+    kind: "machines_changed";
+  }
+  | {
     kind: "task_changed";
     task: TaskId;
     version: number;
@@ -2275,6 +2284,11 @@ export type WorktreeCommand = {
    */
   by?: Asker;
   chat: ChatId;
+  /**
+   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
+   * answers for its own.
+   */
+  machine?: MachineId;
   request: RequestId;
   workspace: WorkspaceId;
 };
@@ -2289,6 +2303,11 @@ export type WorktreeQuery = {
    */
   by?: Asker;
   chat: ChatId;
+  /**
+   * The machine whose agent's work in the chat is meant, as a client tells the server; a core
+   * answers for its own.
+   */
+  machine?: MachineId;
   query: WorktreeQueryKind;
   request: RequestId;
   workspace: WorkspaceId;

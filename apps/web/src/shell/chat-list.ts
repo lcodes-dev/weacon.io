@@ -1,14 +1,14 @@
 import type { Names } from "../members/names.ts";
-import type { ChatLeg, ChatState, ChatSummary, MemberId, RunState } from "../protocol.ts";
+import type { ChatLeg, ChatState, ChatSummary, MachineId, RunState } from "../protocol.ts";
 
 /** `chats`, the one last written in or whose turn ended last first. */
 export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
   return [...chats].sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
 }
 
-/** The agent of `member`, the person's in the chat's workspace, in `chat`; an unknown member has none. */
-export function legOf(member: MemberId | undefined, chat: Pick<ChatSummary, "legs"> | undefined): ChatLeg | undefined {
-  return chat?.legs.find((leg) => leg.member === member);
+/** The agent a person calls in `chat`: the one on the first of `machines`, those they may call, that has one there. */
+export function legOf(machines: readonly MachineId[], chat: Pick<ChatSummary, "legs"> | undefined): ChatLeg | undefined {
+  return machines.flatMap((machine) => chat?.legs.filter((leg) => leg.machine_id === machine) ?? [])[0];
 }
 
 const NOTES: Partial<Record<ChatState, string>> = { full: "Full" };

@@ -274,6 +274,7 @@ function WorkspaceChats({
     void machines.load();
     void shared.load();
   };
+  useReloadOn(socket, ({ kind }) => kind === "machines_changed", () => void shared.load());
   // Back from Settings, where a machine may have been paired or shared, they are read again.
   const wasAway = useRef(away);
   useEffect(() => {
@@ -300,7 +301,9 @@ function WorkspaceChats({
   const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
   const mine = own?.kind === "ready" ? own.machines : [];
   const missing = <StartMissing ready={ready} problem={machines.problem ?? shared.problem} check={loadMachines} openSettings={openSettings} />;
-  const leg = legOf(workspace.member, open);
+  // Their own machines first, connected or not, then those shared with the workspace.
+  const reach = [...(machines.value?.machines ?? []), ...others].map(({ id }) => id);
+  const leg = legOf(reach, open);
   const guest = others.some(({ id, owner }) => id === leg?.machine_id && owner !== workspace.member);
   const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   return (

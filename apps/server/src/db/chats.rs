@@ -11,7 +11,7 @@ use weacon_protocol::{ChatId, ChatState, ChatTask, MemberId, RunState, RunStatus
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_quota_full, turns};
-pub(crate) use legs::{CALL_SECS, Leg, NewLeg, machine_fixed};
+pub(crate) use legs::{Leg, NewLeg, detached};
 pub(crate) use quotes::Said;
 pub(crate) use runs::Snapshot;
 
@@ -39,22 +39,11 @@ pub(crate) struct Chat {
     pub(crate) seq: u64,
     /// Whether its first words were taken, which is when the feed heard of it.
     pub(crate) made: bool,
-    /// Who last called their agent in it, and when, until that agent's run reports.
-    pub(crate) called: Option<(MemberId, i64)>,
     /// The task it was made for, with its title as it then was.
     pub(crate) task: Option<ChatTask>,
 }
 
-type ChatRow = (
-    String,
-    String,
-    i64,
-    bool,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<i64>,
-);
+type ChatRow = (String, String, i64, bool, Option<String>, Option<String>);
 
 impl Workspace {
     /// Makes the chat `chat` before its first words are stored or sent: feeds hear of it once
@@ -147,7 +136,7 @@ impl Workspace {
         sqlx::query_as::<_, ChatRow>(
             "SELECT owner_member, state, seq, EXISTS (SELECT 1 FROM changes
                  AS h WHERE h.workspace_id = c.workspace_id AND h.chat_id = c.chat_id),
-                 t.task_id, t.title, called_by, called_at
+                 t.task_id, t.title
              FROM chats AS c LEFT JOIN chat_tasks AS t USING (workspace_id, chat_id)
              WHERE workspace_id = ? AND chat_id = ?",
         )
@@ -156,9 +145,8 @@ impl Workspace {
         .fetch_optional(&self.db.readers)
         .await
         .map_err(failed)?
-        .map(|(owner, state, seq, made, task, title, by, at)| {
+        .map(|(owner, state, seq, made, task, title)| {
             Ok(Chat {
-                called: by.map(stored).transpose()?.zip(at),
                 owner: stored(owner)?,
                 state: stored_state(&state)?,
                 seq: count(seq)?,
@@ -196,7 +184,8 @@ impl Workspace {
         self.append(transaction, chat, from, events).await
     }
 
-    /// [`Self::append`] for events `member`'s machine sent, whoever owns it now.
+    /// [`Self::append`] for events sent by the machine of the leg that works for `member`,
+    /// whoever owns it now.
     #[cfg(test)]
     pub(crate) async fn append_as(
         &self,
@@ -204,7 +193,9 @@ impl Workspace {
         member: &MemberId,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
-        let leg = self.leg(chat, member).await?.ok_or_else(chat_not_found)?;
+        let mut legs = self.legs(chat).await?.into_iter();
+        let leg = legs.find(|leg| leg.member == *member);
+        let leg = leg.ok_or_else(chat_not_found)?;
         let transaction = self.db.write().await?;
         self.append(transaction, chat, Some((member, &leg.machine)), events)
             .await
@@ -308,7 +299,6 @@ mod tests {
             state: ChatState::Open,
             seq: 0,
             made: true,
-            called: None,
             task: None,
         };
         assert_eq!(one.chat(&id("c-1")).await.unwrap(), Some(chat));
@@ -374,14 +364,15 @@ mod tests {
         }
         // Its first prompt never reached the machine.
         begin(&one, "c-6", "m1", NOW).await.unwrap();
-        // On mc-1 too, but mc-1 isn't Bo's machine.
+        // On mc-1 too, though the last to call it there was Bo.
         make(&one, "c-7", "m3", NOW).await.unwrap();
         make(&two, "c-1", "m2", NOW).await.unwrap();
         one.pair_for("m1", "mc-1").await;
         append(&one, "c-2", &[(Some(4), status(RunState::Idle))])
             .await
             .unwrap();
-        one.detach_leg(&id("c-3"), &member_id("m1")).await.unwrap();
+        let gone = one.leg(&id("c-3"), &id("mc-1")).await.unwrap().unwrap();
+        one.detach_leg(&id("c-3"), &gone).await.unwrap();
         sqlx::query("UPDATE chat_legs SET machine_id = 'mc-2' WHERE chat_id = 'c-4'")
             .execute(&one.db.writer)
             .await
@@ -392,7 +383,7 @@ mod tests {
             .iter()
             .map(|(chat, core_seq)| (chat.as_str(), *core_seq))
             .collect();
-        assert_eq!(ids, [("c-1", 0), ("c-2", 4)]);
+        assert_eq!(ids, [("c-1", 0), ("c-2", 4), ("c-7", 0)]);
         assert_eq!(two.legs_on(&id("mc-1"), 9).await.unwrap().len(), 1);
         // A run at work comes first, so it is followed whatever the bound.
         append(&one, "c-2", &[(Some(5), status(RunState::Running))])

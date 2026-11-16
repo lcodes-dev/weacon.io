@@ -19,6 +19,7 @@ import {
 } from "./worktree.ts";
 
 const REF = { workspace: "w-1", chat: "c-1" };
+const ON = { ...REF, machine: "mc-1" };
 
 type Heard = Extract<Incoming, { type: "worktree_answer" | "error" }>;
 
@@ -38,15 +39,15 @@ const asked = (worktree: Worktree, id: number, ask: Ask): Worktree =>
 const hear = (worktree: Worktree, message: Heard) => answered(worktree, REF, message);
 
 test("each ask goes out as the protocol's query or command, under its id and request", () => {
-  assert.deepEqual(envelopeFor(REF, 3, "q-1", { kind: "state", confirm: true }), { id: 3, type: "worktree_query", ...REF, request: "q-1", query: { kind: "state" } });
-  assert.deepEqual(envelopeFor(REF, 4, "q-2", { kind: "open_pull_request", title: "Sort the pantry", body: "" }), {
+  assert.deepEqual(envelopeFor(ON, 3, "q-1", { kind: "state", confirm: true }), { id: 3, type: "worktree_query", ...ON, request: "q-1", query: { kind: "state" } });
+  assert.deepEqual(envelopeFor(ON, 4, "q-2", { kind: "open_pull_request", title: "Sort the pantry", body: "" }), {
     id: 4,
     type: "worktree_command",
-    ...REF,
+    ...ON,
     request: "q-2",
     action: { kind: "open_pull_request", title: "Sort the pantry", body: "" },
   });
-  assert.deepEqual(envelopeFor(REF, 5, "q-3", { kind: "remove" }), { id: 5, type: "worktree_command", ...REF, request: "q-3", action: { kind: "remove" } });
+  assert.deepEqual(envelopeFor(ON, 5, "q-3", { kind: "remove" }), { id: 5, type: "worktree_command", ...ON, request: "q-3", action: { kind: "remove" } });
 });
 
 test("only an action, or the state Remove asks for, keeps the bar busy", () => {
@@ -115,7 +116,7 @@ test("a chat with no worktree says so, and an action refused or unsent says what
 });
 
 test("a pull request or a terminal says what came of it, with the page to open", () => {
-  const answer = (id: number, kind: string, url?: string): Heard => ({ id: 0, type: "worktree_answer", ...REF, request: `q-${id}`, answer: { kind, url } as never });
+  const answer = (id: number, kind: string, url?: string): Heard => ({ id: 0, type: "worktree_answer", ...ON, request: `q-${id}`, answer: { kind, url } as never });
   const pr = asked(UNASKED, 3, { kind: "open_pull_request", title: "t", body: "" });
   const terminal = asked(UNASKED, 4, { kind: "open_terminal" });
 
@@ -151,7 +152,7 @@ test("the state line and Remove's question say what is there, what goes and what
 
 test("asking the state again keeps the last action's outcome, and the next action clears it", () => {
   const pr = asked(UNASKED, 3, { kind: "open_pull_request", title: "t", body: "" });
-  const linked = hear(pr, { id: 0, type: "worktree_answer", ...REF, request: "q-3", answer: { kind: "pull_request_page", url: "https://example.com/compare" } });
+  const linked = hear(pr, { id: 0, type: "worktree_answer", ...ON, request: "q-3", answer: { kind: "pull_request_page", url: "https://example.com/compare" } });
 
   assert.deepEqual(asked(linked, 4, { kind: "state" }).outcome, linked.outcome);
   assert.equal(asked(linked, 5, { kind: "state", confirm: true }).outcome, undefined);

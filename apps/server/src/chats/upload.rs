@@ -426,8 +426,15 @@ mod tests {
             .set_shares(&ada.machine, &[id("w1")])
             .await
             .unwrap();
-        let called = workspace.call_leg(&chat, (&ada.machine, &bo), NOW);
-        assert!(called.await.unwrap());
+        let name = id("Ada's laptop");
+        let on_hers = crate::db::NewLeg {
+            machine_id: &ada.machine,
+            machine: &name,
+            agent: weacon_protocol::AgentKind::Claude,
+            repo: None,
+        };
+        let called = workspace.call_leg(&chat, &bo, &on_hers, NOW);
+        assert!(called.await.unwrap().is_some());
         let asked = ChatEvent::Prompt {
             request: id("r-1"),
             text: "Go".to_owned(),

@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Asker, ChatId, RequestId, WorkspaceId};
+use crate::{Asker, ChatId, MachineId, RequestId, WorkspaceId};
 
 /// From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
 /// `request`.
@@ -11,6 +11,11 @@ pub struct DiffQuery {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub query: DiffQueryKind,
+    /// The machine whose agent's work in the chat is meant, as a client tells the server; a core
+    /// answers for its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MachineId")]
+    pub machine: Option<MachineId>,
     /// Who asked, stamped by the server when it relays the query to a machine; a client's own
     /// value is overwritten.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -132,6 +137,7 @@ mod tests {
 
     fn query(query: DiffQueryKind, by: Option<Asker>) -> Envelope {
         envelope(Message::DiffQuery(DiffQuery {
+            machine: None,
             request: request(),
             workspace: workspace(),
             chat: chat(),

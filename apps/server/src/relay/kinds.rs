@@ -94,6 +94,19 @@ pub(super) fn for_members(message: &Message) -> bool {
     matches!(message, Message::DiffQuery(_) | Message::WorktreeQuery(_))
 }
 
+/// The machine `message` names for a chat's agent, if it is about one and names one.
+pub(super) fn on_machine(message: &Message) -> Option<&MachineId> {
+    if let Message::DiffQuery(query) = message {
+        query.machine.as_ref()
+    } else if let Message::WorktreeQuery(query) = message {
+        query.machine.as_ref()
+    } else if let Message::WorktreeCommand(command) = message {
+        command.machine.as_ref()
+    } else {
+        None
+    }
+}
+
 /// What a message the relay carries asks, with `by` stamped on it whatever the client
 /// put there; `None` for a kind the relay doesn't carry.
 pub(super) fn stamped(mut message: Message, by: &Asker) -> Option<(Asked, Message)> {

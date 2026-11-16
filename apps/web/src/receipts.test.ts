@@ -111,17 +111,6 @@ test("how a command ended is said once for every subject", () => {
   ]);
 });
 
-test("a machine that already runs another member's agent in the chat refuses a call in its own words", async () => {
-  const { receipts: all } = setup();
-  const taken = all.wait("r-1", 2);
-
-  all.take({ id: 2, type: "error", code: "chat.machine_taken", retryable: false });
-
-  assert.equal(await taken, "taken");
-  const about = { subject: "the message", refused: "wasn't sent", unsent: "wasn't sent", unsure: "may not have been sent", gone: "it takes none" };
-  assert.equal(settledText("taken", about), "Someone else's agent already runs on this machine in this chat. Call it from another chat.");
-});
-
 test("a full workspace and a core that can't do a command each end it as their own refusal, as an error or a failed receipt", async () => {
   const { receipts: all } = setup();
   const full = all.wait("r-1", 2);

@@ -789,6 +789,7 @@ mod tests {
         let chat = ChatId::try_from("c-1".to_owned()).unwrap();
         [
             Message::DiffQuery(weacon_protocol::DiffQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -796,6 +797,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeQuery(WorktreeQuery {
+                machine: None,
                 request: request.clone(),
                 workspace: workspace.clone(),
                 chat: chat.clone(),
@@ -803,6 +805,7 @@ mod tests {
                 by: by.clone(),
             }),
             Message::WorktreeCommand(WorktreeCommand {
+                machine: None,
                 request,
                 workspace,
                 chat,

@@ -822,7 +822,7 @@
           ]
         },
         {
-          "description": "Starts or queues a turn of the sender's own agent. Only the sender's first prompt in a\nchat has `repo` and `machine`, one of the sender's; the server drops `machine` before\nrelaying. `agent` fixes their agent there on that prompt, Claude when missing; a later\nprompt naming another agent is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince the sender's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
+          "description": "Starts or queues a turn of the chat's agent on one machine. To the server every prompt\nnames that `machine`, the sender's own or one shared with the workspace, which the\nserver drops before relaying; the first prompt to a machine in a chat makes its agent\nthere, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a\nlater prompt naming another is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince that agent's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
           "type": "object",
           "properties": {
             "agent": {
@@ -1195,14 +1195,14 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "ChatLeg": {
-      "description": "A member's own agent in a chat, fixed by their first prompt there: its machine's id and\nname, and the repository it works in, if any.",
+      "description": "The agent a chat has on one machine, made by the first prompt to it there: the `member` it\nlast worked for, its machine's id and name, and the repository it works in, if any.",
       "type": "object",
       "properties": {
         "agent": {
           "$ref": "#/$defs/AgentKind"
         },
         "detached": {
-          "description": "Its machine was unpaired, or no longer has its log: it can never be prompted again.",
+          "description": "Its machine was unpaired, or its machine's owner left the workspace: it can never be\nprompted again.",
           "type": "boolean"
         },
         "machine": {
@@ -1706,6 +1706,10 @@
         },
         "chat": {
           "$ref": "#/$defs/ChatId"
+        },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "$ref": "#/$defs/MachineId"
         },
         "query": {
           "$ref": "#/$defs/DiffQueryKind"
@@ -5257,6 +5261,19 @@
           ]
         },
         {
+          "description": "A machine began or stopped being shared with the workspace; clients read its shared\nmachines again.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "machines_changed"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
           "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
           "type": "object",
           "properties": {
@@ -5604,6 +5621,10 @@
         "chat": {
           "$ref": "#/$defs/ChatId"
         },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "$ref": "#/$defs/MachineId"
+        },
         "request": {
           "$ref": "#/$defs/RequestId"
         },
@@ -5628,6 +5649,10 @@
         },
         "chat": {
           "$ref": "#/$defs/ChatId"
+        },
+        "machine": {
+          "description": "The machine whose agent's work in the chat is meant, as a client tells the server; a core\nanswers for its own.",
+          "$ref": "#/$defs/MachineId"
         },
         "query": {
           "$ref": "#/$defs/WorktreeQueryKind"

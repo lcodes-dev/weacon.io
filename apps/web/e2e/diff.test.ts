@@ -63,7 +63,7 @@ test("Changes asks for the chat's changes once and shows every file, scrolling t
     assert.match(query?.request ?? "", /^[0-9a-f]{32}$/);
     // The hello takes id 1; the chat's queries may come first.
     assert.ok((query?.id ?? 0) > 1);
-    assert.deepEqual(query, { id: query?.id, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", query: { kind: "changes" } });
+    assert.deepEqual(query, { id: query?.id, type: "diff_query", request: query?.request, workspace: "w-1", chat: "c-1", machine: "mc-1", query: { kind: "changes" } });
   } finally {
     await harness.close();
   }

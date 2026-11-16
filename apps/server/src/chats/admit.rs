@@ -103,13 +103,6 @@ pub(super) fn not_owner() -> Fault {
     )
 }
 
-pub(super) fn detached() -> Fault {
-    Fault::new(
-        code!("chat.detached"),
-        "Your agent's machine no longer has this chat",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use weacon_protocol::{AccountId, ChatId, MemberId, PermissionAnswer, RequestId, WorkspaceId};
@@ -152,7 +145,6 @@ mod tests {
             state,
             seq: 3,
             made: true,
-            called: None,
             task: None,
         }
     }

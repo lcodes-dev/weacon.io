@@ -214,12 +214,11 @@ pub(crate) async fn append(
     }
 }
 
-/// The last of its owner's machine's events `chat` has.
+/// The last of its first leg's machine's events `chat` has.
 pub(crate) async fn core_seq(workspace: &Workspace, chat: &str) -> u64 {
     let chat = id::<ChatId>(chat);
-    let owner = workspace.chat(&chat).await.unwrap().unwrap().owner;
-    let leg = workspace.leg(&chat, &owner).await.unwrap().unwrap();
-    leg.core_seq
+    let legs = workspace.legs(&chat).await.unwrap();
+    legs.first().unwrap().core_seq
 }
 
 pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {

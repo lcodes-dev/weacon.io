@@ -444,6 +444,11 @@ async function openChats(served: Served, chats: Array<{ id: string; title: strin
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const { id, member } = await firstWorkspace(page);
   agentOwner = owner(member);
+  if (agentOwner === member) {
+    // Their agent's machine is one of their own.
+    const laptop = { id: "mc-1", name: "laptop", os: "linux", key: "ab".repeat(32), paired_at: 1, connected: true };
+    await page.route("**/api/machines", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ machines: [laptop] }) }));
+  }
   await listChats(page, () => ({ chats: chats.map((chat) => ({ ...chat, owner: owner(member), legs: [{ member: owner(member), machine: "laptop", machine_id: "mc-1", agent: "claude", detached: false }], state: "open" as const, updated_at: 1 })) }));
   await page.getByRole("button", { name: "Personal" }).click();
   return id;
@@ -480,7 +485,7 @@ test("a chat where a person has their agent shows its transcript and prompts, an
   const [said, prompt, stop] = commands(sent);
   assert.deepEqual(
     [said?.action, prompt?.action, stop?.action],
-    [{ kind: "say", text: "Use the top shelf too." }, { kind: "prompt", text: "@Claude Code go on" }, { kind: "interrupt" }],
+    [{ kind: "say", text: "Use the top shelf too." }, { kind: "prompt", text: "@Claude Code go on", machine: "mc-1" }, { kind: "interrupt" }],
   );
   assert.equal(await page.getByRole("button", { name: "Add your agent" }).count(), 0);
   for (const command of [said, prompt, stop]) {

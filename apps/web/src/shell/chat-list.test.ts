@@ -22,15 +22,16 @@ test("a chat that takes no prompts says why", () => {
   assert.equal(stateNote("newer" as ChatSummary["state"]), undefined);
 });
 
-test("a member's agent in a chat is their own leg of it, and a person whose member isn't known has none", () => {
+test("a person's agent in a chat is the one on a machine they may call, whoever called it last, their own first", () => {
   const leg = (member: string) => ({ member, machine_id: `mc-${member}`, machine: "laptop", agent: "claude" as const, detached: false });
   const shared = { ...chat("c-1", 10), legs: [leg("m-1"), leg("m-2")] };
 
-  assert.equal(legOf("m-2", shared)?.machine_id, "mc-m-2");
-  assert.equal(legOf("m-3", shared), undefined);
-  assert.equal(legOf(undefined, shared), undefined);
-  assert.equal(legOf("m-1", undefined), undefined);
-  assert.equal(legOf("m-1", chat("c-2", 10)), undefined);
+  assert.equal(legOf(["mc-m-2"], shared)?.member, "m-2");
+  assert.equal(legOf(["mc-m-2", "mc-m-1"], shared)?.member, "m-2");
+  assert.equal(legOf(["mc-m-3"], shared), undefined);
+  assert.equal(legOf([], shared), undefined);
+  assert.equal(legOf(["mc-m-1"], undefined), undefined);
+  assert.equal(legOf(["mc-m-1"], chat("c-2", 10)), undefined);
 });
 
 test("a chat's row names who started it once known, and why it takes no messages", () => {

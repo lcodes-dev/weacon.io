@@ -24,8 +24,8 @@ import "./chat.css";
 
 /**
  * The chat at `chatRef` over its workspace's `link`: its transcript and the message box, for every
- * member, kept in place while `away` under another page such as Settings. `me`, with `leg`, their
- * own agent in it, also gets its changes, Stop and its permission prompts' answers, where the
+ * member, kept in place while `away` under another page such as Settings. `me`, with `leg`, the
+ * agent they call in it, also gets its changes, Stop and its permission prompts' answers, where the
  * server takes commands; without one, they pick theirs from `machines`, or read what is `missing`.
  */
 export function ChatScreen({
@@ -68,8 +68,9 @@ export function ChatScreen({
   const reading = useLiveChat(link, chatRef, live, access.read);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
   const mine = leg !== undefined;
-  const changes = useChanges(link, chatRef, live, mine && shown === "changes");
-  const worktree = useWorktree(link, chatRef, live, mine, shown === "changes");
+  const called = leg && { machine: leg.machine_id };
+  const changes = useChanges(link, chatRef, leg?.machine_id, live, shown === "changes");
+  const worktree = useWorktree(link, chatRef, leg?.machine_id, live, shown === "changes");
   const { chat, state } = reading.sync;
   // A message named while the changes show brings the transcript back.
   useEffect(() => {
@@ -130,14 +131,14 @@ export function ChatScreen({
           changes={changes.changes}
           hidden={shown !== "changes"}
           mine={acts}
-          send={commands.send()}
+          send={commands.send(called)}
           blocked={why}
           bar={worktree.usable && !guest && <ReviewBar bar={worktree} title={title ?? ""} />}
         />
       </div>
       {mine || shown !== "run" ? (
         <Composer
-          send={commands.send()}
+          send={commands.send(called)}
           blocked={why}
           hidden={shown !== "run"}
           agent={leg?.detached === false ? agentItem(leg.agent) : undefined}

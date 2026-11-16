@@ -172,11 +172,10 @@ impl Workspace {
         connection: &mut SqliteConnection,
         member: &MemberId,
     ) -> Result<(), Fault> {
-        // What the others ran on a machine of theirs shared here can't be called again, even if
-        // they come back.
+        // The agents on a machine of theirs can't be called here again, even if they come back.
         let detached = sqlx::query_as::<_, (String, String)>(
             "UPDATE chat_legs SET detached = 1
-             WHERE workspace_id = ?1 AND member_id != ?2 AND detached = 0
+             WHERE workspace_id = ?1 AND detached = 0
                  AND machine_id IN (SELECT d.machine_id FROM machines AS d
                      JOIN members AS m ON m.account_id = d.account_id
                      WHERE m.workspace_id = ?1 AND m.member_id = ?2)

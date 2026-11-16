@@ -38,14 +38,15 @@ pub enum ChatAction {
         #[schemars(with = "ChatTask")]
         task: Option<ChatTask>,
     },
-    /// Starts or queues a turn of the sender's own agent. Only the sender's first prompt in a
-    /// chat has `repo` and `machine`, one of the sender's; the server drops `machine` before
-    /// relaying. `agent` fixes their agent there on that prompt, Claude when missing; a later
-    /// prompt naming another agent is refused as `chat.agent_conflict`, and an agent the core
+    /// Starts or queues a turn of the chat's agent on one machine. To the server every prompt
+    /// names that `machine`, the sender's own or one shared with the workspace, which the
+    /// server drops before relaying; the first prompt to a machine in a chat makes its agent
+    /// there, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a
+    /// later prompt naming another is refused as `chat.agent_conflict`, and an agent the core
     /// doesn't know as `message.unsupported`. `task` links a new chat to a task of its
     /// workspace; the server relays it with the task's title as it is then, and a later prompt
     /// naming a task with the chat's own, or none. `quotes` is what was written in the chat
-    /// since the sender's last prompt there, which only the server fills in. `pick` names a
+    /// since that agent's last prompt there, which only the server fills in. `pick` names a
     /// [`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as
     /// quoted page content.
     Prompt {
@@ -279,8 +280,8 @@ pub struct ChatSummary {
     pub task: Option<TaskId>,
 }
 
-/// A member's own agent in a chat, fixed by their first prompt there: its machine's id and
-/// name, and the repository it works in, if any.
+/// The agent a chat has on one machine, made by the first prompt to it there: the `member` it
+/// last worked for, its machine's id and name, and the repository it works in, if any.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatLeg {
     pub member: MemberId,
@@ -290,7 +291,8 @@ pub struct ChatLeg {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "RepoId")]
     pub repo: Option<RepoId>,
-    /// Its machine was unpaired, or no longer has its log: it can never be prompted again.
+    /// Its machine was unpaired, or its machine's owner left the workspace: it can never be
+    /// prompted again.
     pub detached: bool,
 }
 

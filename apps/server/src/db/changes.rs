@@ -13,9 +13,11 @@ const DOC_CHANGED: &str = "doc_changed";
 const PROPOSAL_CHANGED: &str = "proposal_changed";
 const CHAT_CHANGED: &str = "chat_changed";
 const MEMBERS_CHANGED: &str = "members_changed";
+const MACHINES_CHANGED: &str = "machines_changed";
 
 /// A task or a doc, at the version it now has as stored, a proposal that was made or whose
-/// state changed, a chat that was made or whose turn began or ended, or who is in the workspace.
+/// state changed, a chat that was made or whose turn began or ended, who is in the workspace, or
+/// which machines are shared with it.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Versioned<'a> {
     Task(&'a TaskId, i64),
@@ -23,6 +25,7 @@ pub(super) enum Versioned<'a> {
     Proposal(&'a ProposalId),
     Chat(&'a ChatId),
     Members,
+    Machines,
 }
 
 type Row = (
@@ -74,6 +77,7 @@ impl Workspace {
             Versioned::Proposal(id) => (PROPOSAL_CHANGED, None, None, Some(id.as_str()), None),
             Versioned::Chat(id) => (CHAT_CHANGED, None, None, None, Some(id.as_str())),
             Versioned::Members => (MEMBERS_CHANGED, None, None, None, None),
+            Versioned::Machines => (MACHINES_CHANGED, None, None, None, None),
         };
         sqlx::query(
             "INSERT INTO changes (workspace_id, seq, kind, member_id, task_id, task_version,
@@ -137,6 +141,9 @@ impl Workspace {
             },
             (MEMBERS_CHANGED, None, None, None, None, None, None) => {
                 WorkspaceChange::MembersChanged
+            }
+            (MACHINES_CHANGED, None, None, None, None, None, None) => {
+                WorkspaceChange::MachinesChanged
             }
             (TASK_CHANGED, Some(task), Some(task_version), None, None, None, None) => {
                 WorkspaceChange::TaskChanged {
