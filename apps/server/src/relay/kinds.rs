@@ -16,7 +16,8 @@ pub(super) struct Asked {
 }
 
 /// What an ask is about: a machine it names, its owner's own sessions or code on a machine, or a
-/// chat's diff or worktree, whose machine the server knows. Its answer must be about the same.
+/// chat's diff, worktree or command, whose machine the server knows. Its answer must be about
+/// the same; a command's receipt names only its request.
 #[derive(PartialEq, Eq)]
 pub(super) enum About {
     Machine(MachineId),
@@ -24,6 +25,7 @@ pub(super) enum About {
     Symbols(MachineId),
     Diff(ChatId),
     Worktree(ChatId),
+    Command(ChatId),
 }
 
 impl Asked {
@@ -35,7 +37,7 @@ impl Asked {
         }
     }
 
-    fn new(workspace: &WorkspaceId, request: &RequestId, about: About) -> Self {
+    pub(super) fn new(workspace: &WorkspaceId, request: &RequestId, about: About) -> Self {
         Self {
             workspace: Some(workspace.clone()),
             request: request.clone(),

@@ -30,6 +30,7 @@ pub(super) const STEPS: &[&str] = &[
     steps::PLAIN_CODES,
     steps::CHAT_TASKS,
     steps::INVITATIONS,
+    steps::REQUESTS_GONE,
 ];
 
 /// Applies the steps the database hasn't had yet, each in its own transaction that holds the
@@ -230,7 +231,6 @@ mod tests {
                 "chats",
                 "chat_events",
                 "chat_waiting",
-                "chat_requests",
                 "changes",
                 "search",
                 "search_rows",

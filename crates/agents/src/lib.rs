@@ -3,7 +3,6 @@
 mod access;
 mod claude;
 mod codex;
-pub mod guard;
 mod launch;
 mod lines;
 pub mod outside;

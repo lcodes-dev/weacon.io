@@ -326,7 +326,6 @@ printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":tr
                 config_dir: dir.join("config"),
                 cwd: dir.to_path_buf(),
                 access: AccessLevel::AskFirst,
-                hook: None,
                 mcp: None,
                 plugin: None,
             };

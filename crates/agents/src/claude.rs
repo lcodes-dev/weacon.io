@@ -1,6 +1,5 @@
 //! The driver for Claude Code, through its stream-json mode.
 
-pub(crate) mod hook;
 pub(crate) mod transcript;
 mod wire;
 
@@ -27,13 +26,9 @@ pub(crate) const VENDOR: Vendor = Vendor {
     login: &["auth", "login"],
     own_sign_in,
     takes_mcp: true,
-    takes_hook: true,
     drive,
     resume: Some(resume),
 };
-
-/// The folders and files under home that hold its sign-in.
-pub(crate) const CREDENTIALS: [&str; 2] = [".claude", ".claude.json"];
 
 /// The tools that only change files, the input naming each one's file, and the one holding
 /// its new text.
@@ -43,11 +38,6 @@ const FILE_TOOLS: [(&str, &str, &str); 4] = [
     ("NotebookEdit", "notebook_path", "new_source"),
     ("Write", "file_path", "content"),
 ];
-
-/// Whether `tool` only changes a file.
-fn changes_file(tool: &str) -> bool {
-    FILE_TOOLS.iter().any(|(name, ..)| *name == tool)
-}
 
 /// The file a prompt for `tool` would change, when it only changes a file.
 pub(crate) fn changed_file(tool: &str, input: &Value) -> Option<PathBuf> {
@@ -83,21 +73,6 @@ fn drive(launch: &Launch, _: &App, session: Option<&AgentSession>) -> (Command, 
     (command(launch, session), RunWire::Claude(Wire::default()))
 }
 
-// Settings that run `hook` before every tool; flag settings load with the user's alone, and a
-// hook's "ask" outweighs any rule that would allow the call.
-fn hook_settings(hook: &[String]) -> String {
-    let command: Vec<String> = hook.iter().map(|word| shell_quoted(word)).collect();
-    // Claude Code goes on when a hook fails in any other way than exiting with 2.
-    let command = format!("{} || exit 2", command.join(" "));
-    let hooks = json!([{ "type": "command", "command": command }]);
-    json!({ "hooks": { "PreToolUse": [{ "matcher": "*", "hooks": hooks }] } }).to_string()
-}
-
-// Claude Code runs a hook's command through a shell, which reads a single-quoted word as is.
-fn shell_quoted(word: &str) -> String {
-    format!("'{}'", word.replace('\'', "'\\''"))
-}
-
 /// Only the workspace's own settings: a repository's could allow tools or add hooks.
 const USER_SETTINGS: [&str; 2] = ["--setting-sources", "user"];
 
@@ -122,9 +97,6 @@ fn command(launch: &Launch, session: Option<&AgentSession>) -> Command {
     if launch.access == AccessLevel::ReadOnly {
         let tools = FILE_TOOLS.map(|(tool, ..)| tool);
         command.args(["--disallowedTools", &format!("Bash,{}", tools.join(","))]);
-    }
-    if let Some(hook) = &launch.hook {
-        command.args(["--settings", &hook_settings(hook)]);
     }
     if let Some(mcp) = &launch.mcp {
         point_at(&mut command, mcp);
@@ -473,35 +445,6 @@ mod tests {
             assert!(args.contains("--include-partial-messages"), "{access:?}");
             assert_eq!(args.contains(refused), access == AccessLevel::ReadOnly);
         }
-    }
-
-    #[test]
-    fn the_guard_hook_is_passed_as_a_quoted_settings_hook() {
-        let launch = Launch {
-            hook: Some(vec![
-                "/bin/weacon".to_owned(),
-                "guard".to_owned(),
-                "check".to_owned(),
-            ]),
-            ..launch(AgentKind::Claude, "claude", Path::new("/work"))
-        };
-        let command = command(&launch, None);
-        let args: Vec<String> = command
-            .as_std()
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect();
-        let settings = args
-            .windows(2)
-            .find(|pair| pair[0] == "--settings")
-            .map(|pair| pair[1].clone())
-            .unwrap();
-        // Each word single-quoted, and the tool is blocked when the guard exits with 2.
-        assert!(
-            settings.contains("'/bin/weacon' 'guard' 'check' || exit 2"),
-            "{settings}"
-        );
-        assert!(settings.contains("PreToolUse"), "{settings}");
     }
 
     fn launched(mcp: Option<McpServer>, plugin: Option<PathBuf>) -> (Command, Vec<String>) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { MachineSettings, MachineSummary } from "../protocol.ts";
-import { Starts, missingText, readiness, signedIn, startBlocked, startProblem } from "./start.ts";
+import { missingText, readiness, signedIn, startBlocked, startProblem } from "./start.ts";
 
 const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary => ({
   id,
@@ -34,48 +34,13 @@ test("each thing missing reads as its own line, and nothing is missing once a ch
   assert.equal(missingText("offline"), "Your machine is offline. Start Weacon on it to start a chat.");
 });
 
-test("a retry of a first prompt that may have run goes to the same chat with the same choice", () => {
-  const starts = new Starts();
-  let made = 0;
-  const fresh = () => `c-${++made}`;
-  const choice = { machine: "mc-1", repo: "api", agent: "codex" as const };
-  const first = starts.begin("r-1", "w-1", "Fix the build.", choice, fresh);
-
-  assert.deepEqual(first, {
-    chatRef: { workspace: "w-1", chat: "c-1" },
-    action: { kind: "prompt", text: "Fix the build.", machine: "mc-1", repo: "api", agent: "codex" },
-  });
-  assert.equal(starts.end("r-1", "lost"), undefined);
-  assert.deepEqual(starts.begin("r-1", "w-1", "Fix the build.", { ...choice, repo: "web" }, fresh), first);
-  assert.equal(starts.end("r-1", "unsure"), undefined);
-  // A late receipt that accepts it opens the chat.
-  assert.equal(starts.end("r-1", "accepted"), "c-1");
-  assert.equal(starts.end("r-1", "accepted"), undefined);
-  const task = { id: "t-1", title: "Speed up the build" };
-  const forTask = starts.begin("r-2", "w-1", "Go.", { ...choice, task }, fresh);
-  assert.deepEqual(forTask.action, { kind: "prompt", text: "Go.", machine: "mc-1", repo: "api", agent: "codex", task });
-});
-
-test("a refused first prompt is forgotten, so the next send makes a fresh chat", () => {
-  const starts = new Starts();
-  let made = 0;
-  const fresh = () => `c-${++made}`;
-  const choice = { machine: "mc-1", repo: "api", agent: "claude" as const };
-  starts.begin("r-1", "w-1", "Go.", choice, fresh);
-  assert.equal(starts.end("r-1", "offline"), undefined);
-  assert.equal(starts.begin("r-1", "w-1", "Go.", choice, fresh).chatRef.chat, "c-2");
-  assert.equal(starts.end("r-1", "too_long"), undefined);
-  assert.equal(starts.begin("r-1", "w-1", "Go.", choice, fresh).chatRef.chat, "c-3");
-  assert.equal(starts.end("r-2", "accepted"), undefined);
-});
-
 test("a first prompt that didn't start its chat says why, and the right way on", () => {
   assert.equal(startProblem("accepted"), undefined);
   assert.equal(startProblem("offline"), "The machine is offline, so the chat wasn't started. Try again once it's back.");
   assert.equal(startProblem("refused"), "The chat couldn't be started.");
   assert.equal(startProblem("full"), "This workspace is full, so the chat wasn't started.");
   assert.equal(startProblem("unsupported"), "The machine's core can't do this, so the chat couldn't be started.");
-  assert.equal(startProblem("unsure"), "The server didn't answer. The chat may have started.");
+  assert.equal(startProblem("unsure"), "No answer came. The chat may have started.");
   assert.equal(startProblem("too_long"), "It's too long to send. Shorten it and try again.");
 });
 

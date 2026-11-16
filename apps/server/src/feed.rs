@@ -16,7 +16,7 @@ use weacon_protocol::{
 };
 
 use crate::auth::{Member, Session};
-use crate::chats::{self, Watch};
+use crate::chats::{self, Asking, Watch};
 use crate::client_log::{ClientLogs, LOG_FORWARD};
 use crate::connections::Place;
 use crate::http::{RequestTag, failure};
@@ -60,7 +60,9 @@ const OFFERED: [Code; 16] = [
 /// How many answers from machines wait for the client to take them.
 const ANSWERS: usize = 16;
 
-const MAX_MESSAGE: usize = 16 * 1024;
+/// As much as a core keeps in one entry of a chat's log, so a prompt as long as a pasted log
+/// goes through, and still fits a frame once the server stamps it.
+const MAX_MESSAGE: usize = weacon_protocol::MAX_FRAME - (32 << 10);
 const PAGE: u32 = 500;
 
 #[derive(Deserialize)]
@@ -274,10 +276,12 @@ async fn received(
     let asks = feed.hears(CHAT_COMMANDS) && chats::asks(&envelope.message);
     if reads || asks {
         feed.allowed(shared).await?;
-        let answer = feed
-            .chats
-            .heard(envelope, &feed.member, &feed.asker, shared)
-            .await;
+        let asking = Asking {
+            member: &feed.member,
+            asker: &feed.asker,
+            back: &feed.answer_to,
+        };
+        let answer = feed.chats.heard(envelope, asking, shared).await;
         return send_chats(socket, shared, feed, answer).await;
     }
     if feed.hears(TERMINALS)
@@ -687,14 +691,29 @@ mod tests {
         assert!(ends(&mut silent).await);
     }
 
+    // Pings `client`'s feed and waits for its pong, past what else it sends.
+    async fn pong_past_the_rest(client: &mut Socket) {
+        client.send(Wire::Ping(Vec::new().into())).await.unwrap();
+        while let Some(Ok(wire)) = frame(client).await {
+            if matches!(wire, Wire::Pong(_)) {
+                return;
+            }
+        }
+        panic!("the feed ended");
+    }
+
     #[tokio::test]
-    async fn an_oversized_message_ends_the_feed() {
-        assert_eq!(MAX_MESSAGE, 16_384);
+    async fn a_long_message_is_taken_and_an_oversized_one_ends_the_feed() {
+        assert_eq!(MAX_MESSAGE, 1_015_808);
         let fixture = Fixture::new().await;
         let (server, ada) = fixture.client("ada@example.com").await;
-        let mut client = open(server.address, "/api/workspaces/w1/feed", &ada.token)
+        let mut client = greeted(server.address, &ada.token, 0).await;
+        client
+            .send(Wire::text("x".repeat(64 * 1024)))
             .await
             .unwrap();
+        // Past what the feed sends meanwhile, the pong says it took the long one.
+        pong_past_the_rest(&mut client).await;
         client
             .send(Wire::text("x".repeat(MAX_MESSAGE + 1)))
             .await
