@@ -290,7 +290,15 @@ async fn prompt(
     };
     let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
-    if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
+    // A machine that was away and came back as the turn was taken is at work after all.
+    let links = &from.shared.links;
+    let back_since = away.as_ref().is_some_and(|machine| links.is_open(machine));
+    let sent = if back_since {
+        Err(agent_working())
+    } else {
+        relay_to(from, (chat, &leg), command, back).await
+    };
+    if let Err(fault) = sent {
         workspace.uncall_leg(&id, &leg.machine, asked).await?;
         return Err(fault);
     }
