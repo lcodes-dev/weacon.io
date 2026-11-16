@@ -78,12 +78,14 @@ export function Workspaces({
     setNotice(text);
     void loaded.load();
   };
-  // The one the person chose to leave, whose refusals that follow are no news.
+  // The one the person chose to leave or was told they are out of, whose refusals that follow are
+  // no news: the list, reloaded since, no longer names it.
   const departed = useRef<WorkspaceId>(undefined);
   useEffect(() => {
     if (left !== undefined && left.workspace !== departed.current) {
       const name = list?.find(({ id }) => id === left.workspace)?.name;
       leave(name === undefined ? "You're no longer a member of that workspace." : `You're no longer a member of ${name}.`);
+      departed.current = left.workspace;
     }
   }, [left]);
   // A workspace opened again is one the person is back in, so leaving it is news once more.
