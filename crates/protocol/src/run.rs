@@ -79,7 +79,11 @@ pub enum RunEvent {
         run: RunId,
         prompt: u32,
         tool: String,
+        /// Stays on the machine: the core sends `wants` up in its place.
         input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "Wants")]
+        wants: Option<Wants>,
     },
     /// The agent no longer waits for the answer to `prompt`.
     PermissionWithdrawn {
@@ -98,6 +102,40 @@ pub enum RunEvent {
     #[serde(other, skip_serializing)]
     #[schemars(skip)]
     Newer,
+}
+
+/// What a permission prompt's tool would do, as text the core makes of its input and every
+/// reader of the chat sees: at most [`WANTS_MAX`] bytes, `cut` when some was left out.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Wants {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cut: bool,
+}
+
+/// The most bytes of text a [`Wants`] holds.
+pub const WANTS_MAX: usize = 4096;
+
+impl Wants {
+    /// `text`, cut at the last character that ends within [`WANTS_MAX`] bytes.
+    #[must_use]
+    pub fn of(text: &str) -> Self {
+        let end = text.floor_char_boundary(WANTS_MAX);
+        Self {
+            text: text.get(..end).unwrap_or_default().to_owned(),
+            cut: end < text.len(),
+        }
+    }
+
+    /// This, cut again if it holds more than [`WANTS_MAX`] bytes.
+    #[must_use]
+    pub fn bounded(self) -> Self {
+        let cut = Self::of(&self.text);
+        Self {
+            cut: self.cut || cut.cut,
+            ..cut
+        }
+    }
 }
 
 /// One event of the run `run`, in the order the run reported it, from the core to clients that
@@ -180,6 +218,35 @@ mod tests {
 
     use super::*;
     use crate::test_support::{round_trips, run};
+
+    #[test]
+    fn what_a_tool_wants_is_cut_on_a_character_within_4096_bytes_and_says_so() {
+        assert_eq!(WANTS_MAX, 4096);
+        let fits = "a".repeat(WANTS_MAX);
+        let whole = Wants::of(&fits);
+        assert_eq!((whole.text.as_str(), whole.cut), (fits.as_str(), false));
+        // The é would end one byte past the limit, so it goes whole.
+        let split = format!("{}é", "a".repeat(WANTS_MAX - 1));
+        let cut = Wants::of(&split);
+        assert_eq!((cut.text.len(), cut.cut), (WANTS_MAX - 1, true));
+        assert_eq!(Wants::of(&format!("{fits}b")).text, fits);
+
+        let long = Wants {
+            text: format!("{fits}b"),
+            cut: false,
+        };
+        assert_eq!(long.bounded(), Wants::of(&format!("{fits}b")));
+        let said = Wants {
+            text: "ls".to_owned(),
+            cut: true,
+        };
+        assert_eq!(said.clone().bounded(), said);
+        assert_eq!(whole.clone().bounded(), whole);
+        assert_eq!(
+            serde_json::to_value(Wants::of("ls")).unwrap(),
+            json!({ "text": "ls" })
+        );
+    }
 
     #[test]
     fn sessions_are_lowercase_uuids() {

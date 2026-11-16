@@ -1,8 +1,7 @@
-import type { ChatRef } from "../chat-ref.ts";
 import { type Sent, sentProblem } from "../composer/prompt.ts";
-import type { AgentKind, ChatAction, ChatId, ChatTask, MachineId, MachineSettings, MachineSummary, RepoId, RequestId, WorkspaceId } from "../protocol.ts";
+import type { AgentKind, MachineSettings, MachineSummary, RepoId } from "../protocol.ts";
 import { lacks } from "../machines/core.ts";
-import { type Subject, mayHaveRun, settledText } from "../receipts.ts";
+import { type Subject, settledText } from "../receipts.ts";
 
 /** Whether a person can start a chat: on which of their machines, or what is missing first. */
 export type Readiness = { kind: "ready"; machines: MachineSummary[] } | { kind: "unserved" | "unpaired" | "offline" | "outdated" };
@@ -32,41 +31,6 @@ const MISSING: Record<Exclude<Readiness["kind"], "ready">, string> = {
 /** What is missing to start a chat, in one line. */
 export function missingText(kind: Exclude<Readiness["kind"], "ready">): string {
   return MISSING[kind];
-}
-
-/** What a new chat's first prompt names besides its text, and the task it is for when it is for one. */
-export type Choice = { machine: MachineId; repo: RepoId; agent: AgentKind; task?: ChatTask };
-
-/** A first prompt on its way: the chat it makes and what it asks. */
-export type Start = { chatRef: ChatRef; action: Extract<ChatAction, { kind: "prompt" }> };
-
-/**
- * The first prompts of one new-chat box, by request: a retry of one that may have run goes
- * again to the same chat with the same choice, so it can't make two.
- */
-export class Starts {
-  #held = new Map<RequestId, Start>();
-
-  /** What to send under `request`: what it sent before, or `text` and `choice` to a chat `fresh` names. */
-  begin(request: RequestId, workspace: WorkspaceId, text: string, choice: Choice, fresh: () => ChatId): Start {
-    const held = this.#held.get(request);
-    if (held !== undefined) {
-      return held;
-    }
-    const start: Start = { chatRef: { workspace, chat: fresh() }, action: { kind: "prompt", text, ...choice } };
-    this.#held.set(request, start);
-    return start;
-  }
-
-  /** The chat the first prompt under `request` made, once it ended as `sent`, if it did; only the first word counts. */
-  end(request: RequestId, sent: Sent): ChatId | undefined {
-    const held = this.#held.get(request);
-    if (held === undefined || (sent !== "too_long" && mayHaveRun(sent))) {
-      return undefined;
-    }
-    this.#held.delete(request);
-    return sent === "accepted" ? held.chatRef.chat : undefined;
-  }
 }
 
 const NEW_CHAT: Subject = {

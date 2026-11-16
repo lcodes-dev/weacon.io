@@ -36,7 +36,7 @@ test("Enter during a composition neither sends nor clears, and Enter after it se
   );
 
   // A prompt over the server's limit is kept, and nothing is sent.
-  const long = "a".repeat(17_000);
+  const long = "a".repeat(1_016_000);
   await box.fill(long);
   await box.press("Enter");
   await page.getByText("It's too long to send. Shorten it and try again.").waitFor();

@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 
-import type { Lates, Send } from "../composer/prompt.ts";
+import type { Send } from "../composer/prompt.ts";
 import { useSend } from "../composer/send.ts";
 import type { Changes } from "./changes.ts";
 import { type Comment, unsent } from "./comments.ts";
@@ -17,7 +17,6 @@ export function ChatChanges({
   hidden,
   mine,
   send,
-  lates,
   blocked,
   bar,
 }: {
@@ -25,13 +24,11 @@ export function ChatChanges({
   hidden: boolean;
   mine: boolean;
   send: Send;
-  /** Late receipts, among them a review's. */
-  lates: Lates;
   blocked: string | undefined;
   bar?: ReactNode;
 }) {
   const [comments, setComments] = useState<readonly Comment[]>([]);
-  const { sending, problem, submit } = useSend<readonly Comment[]>(send, lates, (sent) => setComments((now) => unsent(now, sent)));
+  const { sending, problem, submit } = useSend<readonly Comment[]>(send, (sent) => setComments((now) => unsent(now, sent)));
   const sendReview = () => submit(reviewPrompt(comments), comments);
   if (hidden) {
     return null;

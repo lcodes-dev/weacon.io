@@ -89,9 +89,9 @@ pub struct ChatUpdate {
     pub entry: ChatEntry,
 }
 
-/// A run's update that a viewer of its chat needs and no one stores: text as it is written, and
-/// the tool a permission prompt names, never its input. From a core to the server, and from the
-/// server to the feeds that follow the chat, each under `chat.live`.
+/// A run's update that a viewer of its chat needs and no one stores: text as it is written.
+/// From a core to the server, and from the server to the feeds that follow the chat, each
+/// under `chat.live`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChatLive {
     pub workspace: WorkspaceId,

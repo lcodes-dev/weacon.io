@@ -82,7 +82,7 @@ pub use release::{
 pub use repo::RepoId;
 pub use run::{
     AgentKind, AgentOwner, AgentRef, AgentSession, PermissionAnswer, RunEvent, RunId, RunState,
-    RunStatus, RunUpdate,
+    RunStatus, RunUpdate, WANTS_MAX, Wants,
 };
 pub use search::{Mark, SearchAnswer, SearchHit, SearchQuery, Snippet};
 pub use secret::Secret;

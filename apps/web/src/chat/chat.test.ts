@@ -299,22 +299,20 @@ test("earlier runs take their agents from the statuses the log holds, by the sna
   assert.equal(snapshot.runs.get("r-1"), undefined);
 });
 
-test("a prompt's tool heard live names it whether it comes before its stored prompt or after", () => {
-  const stored = (seq: number, prompt: number) => ran(seq, "r-1", { event: "permission_asked", run: "r-1", prompt, tool: "", input: null });
-  const named = (prompt: number): RunEvent => ({ event: "permission_asked", run: "r-1", prompt, tool: "Bash", input: null });
-  const tools = (shown: Chat) => shown.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => [ask.prompt, ask.tool]) : []));
+test("a prompt shows the tool and what it wants from its stored event, committed or in a snapshot, and never from a live update", () => {
+  const wants = { text: "cargo test", cut: true };
+  const asked: RunEvent = { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: null, wants };
+  const shown = (chat: Chat) => chat.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => [ask.tool, ask.wants]) : []));
   const started = chat([said(1, "Fix it"), status(2, "r-1", "running")]);
 
-  const early = commitAll(stream(started, "r-1", named(1)), [stored(3, 1)]);
-  const late = stream(commitAll(started, [stored(3, 1), stored(4, 2)]), "r-1", named(2));
+  const committed = commitAll(started, [ran(3, "r-1", asked)]);
+  const read = fromSnapshot({ seq: 3, runs: runs("r-1"), waiting: [3], events: [said(1, "Fix it"), status(2, "r-1", "waiting"), ran(3, "r-1", asked)] });
 
-  assert.deepEqual(tools(early), [[1, "Bash"]]);
-  assert.deepEqual(tools(late), [
-    [1, ""],
-    [2, "Bash"],
-  ]);
-  const other: RunEvent = { event: "permission_asked", run: "r-1", prompt: 2, tool: "Other", input: null };
-  assert.deepEqual(tools(stream(late, "r-1", other)), tools(late));
+  assert.deepEqual(shown(committed), [["Bash", wants]]);
+  assert.deepEqual(shown(read), [["Bash", wants]]);
+  assert.equal(stream(started, "r-1", asked), started);
+  const bare = commitAll(started, [ran(3, "r-1", { event: "permission_asked", run: "r-1", prompt: 1, tool: "", input: null })]);
+  assert.deepEqual(shown(bare), [["", undefined]]);
 });
 
 test("text heard live after its message was stored is not shown again, and newer text is", () => {
@@ -324,30 +322,4 @@ test("text heard live after its message was stored is not shown again, and newer
   assert.deepEqual(rows(stream(started, "r-1", delta("lo"), 2)), ["Hello"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"), 3)), ["Hello", "Next"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"))), ["Hello", "Next"]);
-});
-
-test("a fresh snapshot keeps the tools heard live, which no snapshot holds", () => {
-  const waiting = ran(3, "r-1", { event: "permission_asked", run: "r-1", prompt: 1, tool: "", input: null });
-  const named: RunEvent = { event: "permission_asked", run: "r-1", prompt: 1, tool: "Bash", input: null };
-  const heard = stream(chat([said(1, "Fix it"), status(2, "r-1", "waiting"), waiting], 3, [3]), "r-1", named);
-
-  const again = fromSnapshot({ seq: 3, runs: runs("r-1"), waiting: [3], events: [said(1, "Fix it"), status(2, "r-1", "waiting"), waiting] }, heard.tools);
-
-  const tools = again.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => ask.tool) : []));
-  assert.deepEqual(tools, ["Bash"]);
-});
-
-test("the first tool named for a prompt is the one kept, and a turn that closed is named too", () => {
-  const stored = ran(3, "r-1", { event: "permission_asked", run: "r-1", prompt: 1, tool: "", input: null });
-  const named = (tool: string): RunEvent => ({ event: "permission_asked", run: "r-1", prompt: 1, tool, input: null });
-  const events = [said(1, "Fix it"), status(2, "r-1", "running"), stored, finished(4, "r-1")];
-  const tools = (shown: Chat) => shown.items.flatMap((item) => (item.kind === "turn" ? item.turn.asks.map((ask) => ask.tool) : []));
-  const closed = chat(events);
-
-  const heard = stream(stream(stream(closed, "r-1", named("")), "r-1", named("Bash")), "r-1", named("Other"));
-
-  assert.deepEqual(tools(heard), ["Bash"]);
-  assert.deepEqual([...heard.tools.values()], ["Bash"]);
-  const again = fromSnapshot({ seq: 4, runs: runs("r-1"), waiting: [], events }, heard.tools);
-  assert.deepEqual(tools(again), ["Bash"]);
 });

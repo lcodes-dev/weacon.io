@@ -1,6 +1,6 @@
 import type { RequestId, RunId } from "../protocol.ts";
 import type { Ask } from "./chat.ts";
-import { type Settled, type Subject, mayHaveRun, settledText } from "../receipts.ts";
+import { type Settled, type Subject, settledText } from "../receipts.ts";
 
 /** A person's answer to the prompt `prompt` of `run`, on its way or not taken. */
 export type Answering = {
@@ -18,21 +18,9 @@ export function askKey(run: RunId, prompt: number): string {
   return `${run}#${prompt}`;
 }
 
-/**
- * `answers` with the answer to the prompt `prompt` of `run` on its way, and the request it goes
- * under. The same answer again, after one that may have been taken, goes under the same request,
- * so it can't run twice.
- */
-export function sending(
-  answers: Answers,
-  { run, prompt, allow }: { run: RunId; prompt: number; allow: boolean },
-  fresh: () => RequestId,
-): { answers: Answers; request: RequestId } {
-  const key = askKey(run, prompt);
-  const before = answers.get(key);
-  const again = before !== undefined && before.allow === allow && (before.settled === undefined || mayHaveRun(before.settled));
-  const request = again ? before.request : fresh();
-  return { answers: new Map(answers).set(key, { run, prompt, allow, request, settled: undefined }), request };
+/** `answers` with the answer to the prompt `prompt` of `run` on its way under `request`. */
+export function sending(answers: Answers, { run, prompt, allow }: { run: RunId; prompt: number; allow: boolean }, request: RequestId): Answers {
+  return new Map(answers).set(askKey(run, prompt), { run, prompt, allow, request, settled: undefined });
 }
 
 /** `answers` once the answer sent under `request` for `key` ended as `settled`. */
@@ -47,18 +35,6 @@ export function settle(answers: Answers, key: string, request: RequestId, settle
     return next;
   }
   return next.set(key, { ...before, settled });
-}
-
-/** Every answer sent, by request, with the prompt it answers. */
-export type SentAnswers = ReadonlyMap<RequestId, { run: RunId; prompt: number }>;
-
-/**
- * `answers` once the answer sent under `request` ended as `settled`, on time or late; a request
- * that sent no answer changes nothing, and one a later answer replaced changes only its prompt.
- */
-export function settleAnswer(answers: Answers, sent: SentAnswers, request: RequestId, settled: Settled): Answers {
-  const answer = sent.get(request);
-  return answer === undefined ? answers : settle(answers, askKey(answer.run, answer.prompt), request, settled);
 }
 
 const ANSWER: Subject = {
@@ -86,7 +62,7 @@ export function answerProblem(answering: Answering | undefined): string | undefi
   return answering?.settled === undefined ? undefined : settledText(answering.settled, ANSWER);
 }
 
-/** What a permission prompt says; a stored chat keeps no tool names, so one may be missing. */
+/** What a permission prompt says; one stored before prompts kept their tools names none. */
 export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
   switch (state) {
     case "open":
@@ -98,6 +74,14 @@ export function askText({ state, tool }: Pick<Ask, "state" | "tool">): string {
     case "denied":
       return tool === "" ? "Denied" : `Denied ${tool}`;
   }
+}
+
+/** What a waiting prompt shows of what its tool wants, and whether more was left out; nothing once it no longer waits. */
+export function wantsShown({ state, wants }: Pick<Ask, "state" | "wants">): { text: string; more: string | undefined } | undefined {
+  if (state !== "open" || wants === undefined) {
+    return undefined;
+  }
+  return { text: wants.text, more: wants.cut === true ? "The rest is too long to show." : undefined };
 }
 
 /** The tool a prompt names, or "a tool" when its name wasn't kept. */
