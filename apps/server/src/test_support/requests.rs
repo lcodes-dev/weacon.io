@@ -78,7 +78,7 @@ pub(crate) async fn sign_in(
     email: &str,
 ) -> (String, Value) {
     let (_, challenge) = start_sign_in(address, email).await;
-    let (_, code) = fixture.letter().await;
+    let (_, code) = fixture.letter();
     let finish = finish_body(email, &challenge, &code);
     let (head, body) = request(address, "POST /api/sign-in/finish", &finish).await;
     (

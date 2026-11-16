@@ -2,7 +2,6 @@
 
 use std::convert::Infallible;
 
-use axum::Extension;
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{Message as Frame, WebSocket, WebSocketUpgrade};
@@ -17,7 +16,6 @@ use weacon_protocol::{
 
 use crate::auth::Machine;
 use crate::chats;
-use crate::connections::Place;
 use crate::links::Connected;
 use crate::proposals::{PROPOSALS, machines as proposals};
 use crate::relay::{DIFF, SESSIONS, SETTINGS, SYMBOLS, WORKTREE};
@@ -37,7 +35,6 @@ pub(crate) fn routes() -> Router<Shared> {
 /// unpaired, its core goes, or the server stops.
 pub(crate) async fn connect(
     State(shared): State<Shared>,
-    Extension(place): Extension<Place>,
     machine: Machine,
     upgrade: WebSocketUpgrade,
 ) -> Response {
@@ -46,7 +43,6 @@ pub(crate) async fn connect(
         .log
         .child(&[("machine_id", machine.id.as_str().into())]);
     let link = Link {
-        _place: place,
         machine,
         unpaired,
         log,
@@ -61,7 +57,6 @@ pub(crate) async fn connect(
 }
 
 struct Link {
-    _place: Place,
     machine: Machine,
     unpaired: Receiver<MachineId>,
     log: Logger,

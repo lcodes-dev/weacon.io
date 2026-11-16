@@ -252,14 +252,13 @@ async function ask<T>(page: Page, method: string, path: string, body?: unknown):
   );
 }
 
-// A phone of its own, signed in as `email`.
+// A phone of its own, signed in as `email`, whose account an invitation made.
 async function anotherPhone(served: Served, email: string): Promise<Page> {
   const context = await served.page.context().browser()?.newContext(PHONE);
   if (context === undefined) {
     throw new Error("no browser");
   }
   const page = await context.newPage();
-  await served.admin("add-account", "--email", email);
   await page.goto(served.url);
   await signInAs(served, page, email);
   return page;

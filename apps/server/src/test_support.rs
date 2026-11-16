@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, UNIX_EPOCH};
 
 use tokio::net::TcpListener;
-use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use weacon_testing::TempDir;
 use weacon_version::Version;
@@ -19,15 +19,14 @@ pub(crate) mod socket;
 pub(crate) use data::{agent, email, fresh_account, member_id, new_task, two_teams, workspace_id};
 pub(crate) use requests::{
     Client, Paired, ask, bearer, claim_body, confirm_body, error_code, finish_body, header,
-    lookup_body, pair_machine, pairing_start, request, request_with, sign_in, start_pairing,
-    start_sign_in, status,
+    lookup_body, pair_machine, request, request_with, sign_in, start_pairing, start_sign_in,
+    status,
 };
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
 
 use crate::connections;
 use crate::db::Db;
 use crate::http;
-use crate::pairing;
 use crate::secret::Secret;
 use crate::shared::Shared;
 use crate::sign_in;
@@ -89,8 +88,6 @@ impl Fixture {
             db,
             secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,
-            proxies: Arc::new([]),
-            connections: Arc::new(Semaphore::new(64)),
             // A short hello; pings far apart, since a client answers them only while its test
             // reads it. Tests about pings ask for them with `pinging`.
             sockets: crate::socket::Timing {
@@ -106,11 +103,6 @@ impl Fixture {
             links: Arc::default(),
             relay: Arc::default(),
             terminals: Arc::default(),
-            sign_ins: Arc::new(Semaphore::new(sign_in::AT_ONCE)),
-            finish_takes: Duration::ZERO,
-            sign_in_limits: Arc::new(sign_in::limits()),
-            sign_up: Arc::new([]),
-            pairing_limits: Arc::new(pairing::limits()),
             web: WEB,
         };
         Self {
@@ -155,12 +147,6 @@ impl Fixture {
             .fetch_add(seconds.unsigned_abs(), Ordering::Relaxed);
     }
 
-    /// Waits until every sign-in has done its work after its answer.
-    pub(crate) async fn settled(&self) {
-        let every = u32::try_from(sign_in::AT_ONCE).unwrap();
-        drop(self.shared.sign_ins.acquire_many(every).await.unwrap());
-    }
-
     /// Who each printed sign-in mail that no test has taken is for, and the code in it.
     pub(crate) fn letters(&self) -> Vec<(String, String)> {
         let records = self.records.lock().unwrap();
@@ -176,9 +162,8 @@ impl Fixture {
             .collect()
     }
 
-    /// The one code the server sent once every sign-in has done its work, and who it is for.
-    pub(crate) async fn letter(&self) -> (String, String) {
-        self.settled().await;
+    /// The one code the server sent that no test has taken, and who it is for.
+    pub(crate) fn letter(&self) -> (String, String) {
         let [letter] = self.letters().try_into().unwrap();
         self.taken.fetch_add(1, Ordering::Relaxed);
         letter

@@ -144,8 +144,8 @@ export type AccountSignInFinish = {
 };
 
 /**
- * Asks the server to send a one-time code to `email`, if that person may sign in. The
- * answer, a [`SignInStarted`], is the same either way.
+ * Asks the server to send a one-time code to `email`, an account's address. The answer is a
+ * [`SignInStarted`], or a refusal when no account has that address.
  */
 export type AccountSignInStart = {
   email: string;
@@ -1905,8 +1905,7 @@ export type SignInStart = {
 };
 
 /**
- * The answer to a [`SignInStart`], for members and strangers alike: the challenge to finish
- * it with.
+ * The answer to an [`AccountSignInStart`]: the challenge to finish it with.
  */
 export type SignInStarted = {
   challenge: ChallengeId;

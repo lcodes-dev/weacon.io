@@ -77,8 +77,8 @@ mod tests {
     use crate::db::{Db, NewWorkspace};
     use crate::test_support::{email, member_id, workspace_id};
 
-    // ada owns w1 as o1 and w2 as o2; cy, with an account, is invited to w1 and bo, without one,
-    // to w2.
+    // ada owns w1 as o1 and w2 as o2; cy, with an account, is invited to w1 and bo, who gets
+    // account a-new by it, to w2.
     async fn invited(dir: &TempDir) -> Db {
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         for (account, address) in [("a-ada", "ada@example.com"), ("a-cy", "cy@example.com")] {
@@ -97,7 +97,7 @@ mod tests {
             db.account(id("a-ada")).create_workspace(new).await.unwrap();
             let place = db.workspace(&workspace_id(workspace)).await.unwrap();
             place
-                .invite(&member_id(owner), &email(address), NOW)
+                .invite(&member_id(owner), &id("a-new"), &email(address), NOW)
                 .await
                 .unwrap();
         }
@@ -130,8 +130,7 @@ mod tests {
             cy.accept(&workspace_id("w2"), &i1, NOW).await.unwrap(),
             None
         );
-        let bo: AccountId = id("a-bo");
-        db.add_account(&bo, &email("bo@example.com")).await.unwrap();
+        let bo: AccountId = id("a-new");
         assert_eq!(
             db.account(bo).invitations(NOW).await.unwrap(),
             [offer("w2")]
@@ -167,7 +166,9 @@ mod tests {
         // Removed, then invited again, the address is the member it was.
         w1.remove(&o1, &i1).await.unwrap();
         assert!(cy.workspaces().await.unwrap().is_empty());
-        w1.invite(&o1, &email("cy@example.com"), NOW).await.unwrap();
+        w1.invite(&o1, &id("a-new"), &email("cy@example.com"), NOW)
+            .await
+            .unwrap();
         let again = cy.accept(&workspace_id("w1"), &member_id("i9"), NOW).await;
         assert_eq!(again.unwrap().unwrap().member, Some(i1));
     }

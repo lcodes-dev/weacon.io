@@ -163,8 +163,7 @@ ALTER TABLE members ADD COLUMN role TEXT NOT NULL DEFAULT 'member';
 ALTER TABLE accounts ADD COLUMN personal_made INTEGER NOT NULL DEFAULT 0;
 ";
 
-/// A challenge is for an address, whose account a right code may make. A server's owner is
-/// its first account; one from before is that of the first member added.
+/// A challenge is for an address. Nothing reads `owner`.
 pub(crate) const CHALLENGES_BY_EMAIL: &str = "
 DROP TABLE sign_in_challenges;
 
@@ -184,7 +183,7 @@ UPDATE accounts SET owner = 1 WHERE account_id = coalesce(
 CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 ";
 
-/// Only so many live codes are mailed to an address; its other challenges take those codes.
+/// Nothing reads `mailed`.
 pub(crate) const MAILED: &str = "
 ALTER TABLE sign_in_challenges ADD COLUMN mailed INTEGER NOT NULL DEFAULT 1;
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
@@ -279,8 +278,7 @@ CREATE TABLE pairings (
 ) STRICT;
 ";
 
-/// The bytes of doc revisions each workspace holds, which its quota bounds. Each revision
-/// also counts 256 bytes for its rows, as `db::docs` counts them.
+/// Nothing reads `doc_bytes`.
 pub(crate) const DOC_BYTES: &str = "
 ALTER TABLE workspaces ADD COLUMN doc_bytes INTEGER NOT NULL DEFAULT 0;
 
@@ -303,8 +301,8 @@ ALTER TABLE task_versions ADD COLUMN agent TEXT;
 ALTER TABLE doc_versions ADD COLUMN agent TEXT;
 ";
 
-/// Agents' proposals to docs and tasks. Only an open one holds its `change`, whose bytes count
-/// toward the doc quota; `change_hash` stays, so that one sent again answers as it first did.
+/// Agents' proposals to docs and tasks. Only an open one holds its `change`; `change_hash`
+/// stays, so that one sent again answers as it first did. Nothing reads `bytes`.
 /// The proposing machine is plain text, as it outlives the machine's pairing.
 pub(crate) const PROPOSALS: &str = "
 CREATE TABLE proposals (

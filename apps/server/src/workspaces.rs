@@ -60,7 +60,6 @@ pub(crate) async fn create(
 fn created(made: Result<WorkspaceSummary, Fault>) -> Response {
     match made {
         Ok(summary) => (StatusCode::CREATED, Json(summary)).into_response(),
-        Err(fault) if *fault.code() == code!("workspace.too_many") => invalid(fault.code().clone()),
         Err(fault) => failure(fault),
     }
 }
@@ -386,26 +385,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_account_that_owns_too_many_is_told_so() {
-        let fixture = Fixture::new().await;
-        let (_server, ada) = fixture.client("ada@example.com").await;
-        let create = json!({ "name": "Team" }).to_string();
-        // The Personal workspace is one of them.
-        for _ in 1..100 {
-            let (made, _) = ada.send("POST /api/workspaces", &create).await;
-            assert_eq!(made, "http/1.1 201 created");
-        }
-
-        let more = ask(ada.address, "POST /api/workspaces", &ada.proof(), &create).await;
-
-        let refused = json!({ "code": "workspace.too_many", "retryable": false });
-        assert_eq!(
-            more,
-            ("http/1.1 422 unprocessable entity".to_owned(), refused)
-        );
-    }
-
-    #[tokio::test]
     async fn a_workspace_needs_a_name_of_one_short_line_that_keeps_its_direction_and_a_session() {
         let fixture = Fixture::new().await;
         let (_server, ada) = fixture.client("ada@example.com").await;
@@ -452,14 +431,5 @@ mod tests {
                 .count(),
             MAX_NAME
         );
-    }
-
-    #[test]
-    fn only_a_full_account_is_refused_and_other_faults_fail() {
-        let full = created(Err(Fault::new(code!("workspace.too_many"), "Full")));
-        let broken = created(Err(Fault::new(code!("db.failed"), "Broken")));
-
-        assert_eq!(full.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(broken.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

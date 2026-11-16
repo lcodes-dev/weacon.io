@@ -5,14 +5,13 @@ import type { Page } from "playwright-core";
 
 import { type Served, serve, signIn, signInAs } from "./server.ts";
 
-// A page of its own browser context, signed in as `email`.
-async function another(served: Served, email: string): Promise<Page> {
+// A page of its own browser context, signed in as `email`, whose account an invitation made.
+async function invited(served: Served, email: string): Promise<Page> {
   const context = await served.page.context().browser()?.newContext();
   if (context === undefined) {
     throw new Error("no browser");
   }
   const page = await context.newPage();
-  await served.admin("add-account", "--email", email);
   await page.goto(served.url);
   await signInAs(served, page, email);
   return page;
@@ -38,7 +37,7 @@ test("an owner invites someone, who signs in and joins, leaves, joins again and 
   await invite(page, "bo@example.com");
   await members(page).getByRole("list", { name: "Invitations" }).getByText("bo@example.com").waitFor();
 
-  const bo = await another(served, "bo@example.com");
+  const bo = await invited(served, "bo@example.com");
   const offer = bo.getByRole("list", { name: "Invitations" }).getByRole("listitem");
   await offer.getByText("Crew").waitFor();
   await offer.getByRole("button", { name: "Accept" }).click();

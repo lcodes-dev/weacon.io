@@ -13,7 +13,6 @@ async function another(served: Served, email: string): Promise<Page> {
     throw new Error("no browser");
   }
   const page = await context.newPage();
-  await served.admin("add-account", "--email", email);
   await page.goto(served.url);
   await signInAs(served, page, email);
   return page;

@@ -2,13 +2,9 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::builder::RangedU64ValueParser;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use weacon_protocol::WorkspaceId;
 use weacon_version::Version;
-
-use crate::client::Net;
-use crate::sign_up::SignUp;
 
 /// Weacon's server: holds every workspace.
 #[derive(Debug, Parser)]
@@ -39,23 +35,6 @@ pub(crate) struct Serve {
     /// stop working, and nobody is signed out.
     #[arg(long)]
     pub(crate) secret: PathBuf,
-    /// How many connections may be open at once; more wait their turn. Keep it well under the
-    /// open-file limit.
-    #[arg(long, default_value_t = 512, value_parser = RangedU64ValueParser::<usize>::new().range(1..=1_000_000))]
-    pub(crate) max_connections: usize,
-    /// A reverse proxy in front of the server, as an address or a block such as 10.0.0.0/8;
-    /// repeat it for more. Only these are believed about the client in X-Forwarded-For, where
-    /// they must write bare addresses, without ports. Without any, every request counts as
-    /// coming from the address that connected.
-    #[arg(long)]
-    pub(crate) trusted_proxy: Vec<Net>,
-    /// Who may make an account by signing in: `anyone`, or the addresses at one domain, such
-    /// as example.com; repeat it for more domains. Without it, only accounts an operator made
-    /// with `weacon-server add-account` or `weacon-server add-member` can sign in. The first
-    /// account on the server is its owner, so make your own with `weacon-server add-account`
-    /// before allowing sign-up.
-    #[arg(long)]
-    pub(crate) sign_up: Vec<SignUp>,
 }
 
 /// Commands an operator runs against the database.
@@ -91,20 +70,6 @@ pub(crate) enum AdminCommand {
         db: PathBuf,
         #[arg(long)]
         workspace: WorkspaceId,
-    },
-    /// Copy the database to a new file while the server runs, and check the copy.
-    Backup {
-        #[arg(long)]
-        db: PathBuf,
-        #[arg(long)]
-        to: PathBuf,
-    },
-    /// Check a backup and copy it to a new database file, with the server stopped.
-    Restore {
-        #[arg(long)]
-        from: PathBuf,
-        #[arg(long)]
-        db: PathBuf,
     },
 }
 
@@ -162,35 +127,11 @@ mod tests {
                 listen: "127.0.0.1:8080".parse().unwrap(),
                 db: PathBuf::from("team.db"),
                 secret: PathBuf::from("secret"),
-                max_connections: 512,
-                trusted_proxy: Vec::new(),
-                sign_up: Vec::new(),
             }
         );
-        let told = [
-            "--listen",
-            "0.0.0.0:9000",
-            "--max-connections",
-            "2",
-            "--trusted-proxy",
-            "10.0.0.0/8",
-            "--trusted-proxy",
-            "::1",
-            "--sign-up",
-            "anyone",
-            "--sign-up",
-            "example.com",
-        ];
+        let told = ["--listen", "0.0.0.0:9000"];
         let told = serve(&[&args[..], &told].concat());
         assert_eq!(told.listen.to_string(), "0.0.0.0:9000");
-        assert_eq!(told.max_connections, 2);
-        let proxies = ["10.0.0.0/8".parse().unwrap(), "::1".parse().unwrap()];
-        assert_eq!(told.trusted_proxy, proxies);
-        let sign_up = [SignUp::Anyone, SignUp::Domain("example.com".to_owned())];
-        assert_eq!(told.sign_up, sign_up);
-        run(&[&args[..], &["--sign-up", "everyone"]].concat()).unwrap_err();
-        run(&[&args[..], &["--trusted-proxy", "proxy.example"]].concat()).unwrap_err();
-        run(&[&args[..], &["--max-connections", "0"]].concat()).unwrap_err();
         run(&[&args[..], &["--listen", "nowhere"]].concat()).unwrap_err();
         run(&["weacon-server", "serve", "--db", "team.db"]).unwrap_err();
         run(&["weacon-server"]).unwrap_err();
@@ -233,7 +174,6 @@ mod tests {
                 email: "a@b.example".to_owned(),
             })
         );
-        run(&["weacon-server", "restore", "--from", "a.db"]).unwrap_err();
         let bad_id = [
             "weacon-server",
             "members",
