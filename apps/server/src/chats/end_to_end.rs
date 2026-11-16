@@ -23,13 +23,6 @@ use weacon_protocol::Message;
 
 use crate::db::test_support::id;
 
-const OFFERS: [&str; 4] = [
-    "workspace.feed",
-    "workspace.chats",
-    "workspace.chat_commands",
-    "chat.live",
-];
-
 async fn token(fixture: &Fixture, server: &Running, address: &str) -> String {
     let (_, body) = sign_in(fixture, server.address, address).await;
     body["token"].as_str().unwrap().to_owned()
@@ -38,7 +31,7 @@ async fn token(fixture: &Fixture, server: &Running, address: &str) -> String {
 async fn feed(server: &Running, workspace: &str, token: &str) -> Socket {
     let path = format!("/api/workspaces/{workspace}/feed");
     let mut client = open(server.address, &path, token).await.unwrap();
-    say(&mut client, &OFFERS).await;
+    say(&mut client).await;
     assert!(matches!(next(&mut client).await, Message::Welcome(_)));
     client
 }
@@ -103,13 +96,13 @@ async fn others(fixture: &Fixture) {
         .unwrap();
 }
 
-// Ada's machine, connected and serving chats, and her feed of w1.
+// Ada's machine, connected, and her feed of w1.
 async fn connected(fixture: &Fixture, server: &Running) -> (MachineId, Socket, Socket) {
     let paired = pair_machine(fixture, server.address).await;
     let mut core = open(server.address, "/api/machines/connect", &paired.token)
         .await
         .unwrap();
-    say(&mut core, &["machine.connect", "chat.serve"]).await;
+    say(&mut core).await;
     assert!(matches!(next(&mut core).await, Message::Welcome(_)));
     let ada = feed(server, "w1", &paired.session).await;
     (paired.machine_id(), core, ada)

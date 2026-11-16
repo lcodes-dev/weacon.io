@@ -55,7 +55,7 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
     }
     return [];
   };
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings", "workspace.tasks"], answer });
+  const { sent } = await serveFeed(page, { answer });
   await openPersonal(served);
   await page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "Tasks" }).click();
   await page.getByRole("textbox", { name: "New task" }).fill("Turn the compost");
@@ -135,7 +135,7 @@ test("a message found with ⌘K opens its chat at it, however far back it is", {
     }
     return [];
   };
-  await serveFeed(page, { also: ["workspace.search"], answer });
+  await serveFeed(page, { answer });
   await openPersonal(served);
 
   await page.keyboard.press("ControlOrMeta+k");

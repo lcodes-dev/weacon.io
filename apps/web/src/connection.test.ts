@@ -38,9 +38,7 @@ function open(): Opened {
   const messages: Envelope[] = [];
   const deadlines: Array<{ run: () => void; ms: number }> = [];
   const listener: Listener = { status: (status) => statuses.push(status), message: (envelope) => messages.push(envelope) };
-  const connection = new Connection(socket, ME, listener, { needs: "run.stream", offers: ["diff.view"] }, (run, ms) =>
-    deadlines.push({ run, ms }),
-  );
+  const connection = new Connection(socket, ME, listener, (run, ms) => deadlines.push({ run, ms }));
   socket.fire("open");
   assert.deepEqual(
     deadlines.map(({ ms }) => ms),
@@ -49,34 +47,32 @@ function open(): Opened {
   return { socket, connection, statuses, messages, deadline: () => deadlines.forEach(({ run }) => run()) };
 }
 
-const welcome = (capabilities: string[]) => JSON.stringify({ id: 1, type: "welcome", app: SERVER, capabilities });
+const welcome = JSON.stringify({ id: 1, type: "welcome", app: SERVER });
 
 test("it says hello, and once welcomed passes on each message and sends", () => {
   const { socket, connection, statuses, messages } = open();
   connection.send({ id: 0, type: "error", code: "web.early", retryable: false });
-  socket.fire("message", welcome(["run.stream", "diff.view"]));
+  socket.fire("message", welcome);
   socket.fire("message", "not json");
   socket.fire("message", JSON.stringify({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }));
   connection.send({ id: 0, type: "error", code: "web.crashed", retryable: false });
   socket.fire("close");
 
   assert.deepEqual(socket.sent, [
-    { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["run.stream", "diff.view"] },
+    { id: 1, type: "hello", protocol: 1, app: ME },
     { id: 0, type: "error", code: "web.crashed", retryable: false },
   ]);
   assert.deepEqual(statuses, [
-    { state: "live", server: SERVER, capabilities: ["run.stream", "diff.view"] },
+    { state: "live", server: SERVER },
     { state: "ended", code: "connection.lost" },
   ]);
   assert.deepEqual(messages, [{ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }]);
 });
 
-test("only a server that streams runs is welcome, and refusals say why", () => {
+test("anything but a welcome ends the connection, and refusals say why", () => {
   const ends = [
-    welcome([]),
-    JSON.stringify({ id: 1, type: "welcome", capabilities: ["run.stream"] }),
-    JSON.stringify({ id: 1, type: "welcome", app: { ...SERVER, commit: 7 }, capabilities: ["run.stream"] }),
-    JSON.stringify({ id: 1, type: "welcome", app: SERVER, capabilities: "run.stream.v2" }),
+    JSON.stringify({ id: 1, type: "welcome" }),
+    JSON.stringify({ id: 1, type: "welcome", app: { ...SERVER, commit: 7 } }),
     JSON.stringify({ id: 1, type: "error", code: "protocol.unsupported", retryable: false }),
     JSON.stringify({ id: 1, type: "error", code: "store.full", retryable: false }),
     "garbled",
@@ -91,8 +87,6 @@ test("only a server that streams runs is welcome, and refusals say why", () => {
   assert.deepEqual(
     ends.map(({ statuses }) => statuses),
     [
-      [{ state: "ended", code: "connection.server_too_old" }],
-      [{ state: "ended", code: "connection.refused" }],
       [{ state: "ended", code: "connection.refused" }],
       [{ state: "ended", code: "connection.refused" }],
       [{ state: "ended", code: "connection.other_protocol" }],
@@ -113,7 +107,7 @@ test("a socket that closes before any answer is refused", () => {
 test("a server that doesn't welcome the app in time ends the connection", () => {
   const late = open();
   const prompt = open();
-  prompt.socket.fire("message", welcome(["run.stream"]));
+  prompt.socket.fire("message", welcome);
   late.deadline();
   prompt.deadline();
 
@@ -124,7 +118,7 @@ test("a server that doesn't welcome the app in time ends the connection", () => 
 
 test("the header says how the connection stands", () => {
   assert.equal(statusText({ state: "connecting" }), "Connecting to the server");
-  assert.equal(statusText({ state: "live", server: SERVER, capabilities: [] }), "Connected");
+  assert.equal(statusText({ state: "live", server: SERVER }), "Connected");
   assert.equal(statusText({ state: "ended", code: "connection.lost" }), "The server closed the connection.");
   assert.equal(statusText({ state: "ended", code: "connection.refused" }), "The server can't be reached.");
   assert.equal(statusText({ state: "ended", code: "connection.no_answer" }), "The server didn't answer.");
@@ -132,35 +126,11 @@ test("the header says how the connection stands", () => {
     statusText({ state: "ended", code: "connection.other_protocol" }),
     "The server runs another version of Weacon. Reload the page.",
   );
-  assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app.");
-});
-
-test("a connection that needs another capability asks for it and takes only a server that offers it", () => {
-  const welcomed = ["workspace.feed", "run.stream"].map((offered) => {
-    const socket = new FakeSocket();
-    const statuses: Status[] = [];
-    const listener: Listener = { status: (status) => statuses.push(status), message: () => {} };
-    new Connection(socket, ME, listener, { needs: "workspace.feed", offers: [] }, () => {});
-    socket.fire("open");
-    socket.fire("message", welcome([offered]));
-    return { hello: socket.sent[0], statuses };
-  });
-
-  assert.deepEqual(welcomed, [
-    {
-      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
-      statuses: [{ state: "live", server: SERVER, capabilities: ["workspace.feed"] }],
-    },
-    {
-      hello: { id: 1, type: "hello", protocol: 1, app: ME, capabilities: ["workspace.feed"] },
-      statuses: [{ state: "ended", code: "connection.server_too_old" }],
-    },
-  ]);
 });
 
 test("once closed, it closes the socket and tells nothing more of it", () => {
   const { socket, connection, statuses, messages, deadline } = open();
-  socket.fire("message", welcome(["run.stream"]));
+  socket.fire("message", welcome);
   connection.close();
   socket.fire("message", JSON.stringify({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }));
   socket.fire("close");

@@ -348,7 +348,7 @@ const isMachine = (value: unknown): value is MachineSummary =>
   isId((value as MachineSummary).id) &&
   SYSTEMS.includes((value as MachineSummary).os) &&
   typeof (value as MachineSummary).paired_at === "number" &&
-  isOffers((value as { missing?: unknown }).missing) &&
+  isOffers((value as { offers?: unknown }).offers) &&
   ["undefined", "boolean"].includes(typeof (value as { connected?: unknown }).connected);
 const isOffers = (offers: unknown): boolean => offers === undefined || (Array.isArray(offers) && offers.every((offer) => typeof offer === "string"));
 const isMachineList = listOf<MachineList>("machines", isMachine);

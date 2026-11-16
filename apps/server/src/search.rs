@@ -13,9 +13,6 @@ use crate::auth::Member;
 use crate::http::{self, Body, Refusals, Unreadable, parsed};
 use crate::shared::Shared;
 
-/// What the server offers to clients that search a workspace.
-pub(crate) const SEARCH: Code = code!("workspace.search");
-
 const LIMIT: u32 = 20;
 const MAX_LIMIT: u32 = 50;
 

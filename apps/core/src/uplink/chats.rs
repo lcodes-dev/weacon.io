@@ -7,13 +7,10 @@ use tokio::sync::mpsc;
 use weacon_observability::{Fault, Field, Logger};
 use weacon_protocol::{
     ChatAction, ChatAnswer, ChatAnswerKind, ChatCommand, ChatEntry, ChatEvent, ChatQuery,
-    ChatQueryKind, ChatUpdate, Code, Envelope, Message, Outcome, Receipt, RequestId, RunEvent,
-    code,
+    ChatQueryKind, ChatUpdate, Envelope, Message, Outcome, Receipt, RequestId, RunEvent, code,
 };
 
 mod live;
-
-pub(super) use live::LIVE;
 
 use self::live::Live;
 use super::{QUEUE, Step, failure, refusal, reply};
@@ -21,8 +18,6 @@ use crate::chats::Chats;
 use crate::chats::feed::{self, Client};
 use crate::runs::ChatKey;
 
-/// What a server offers when it stores the events of the chats it subscribes to.
-pub(super) const UPLOAD: Code = code!("chat.upload");
 /// The most events asked for at once to catch up a chat too far behind to replay.
 const PAGE: u32 = 256;
 /// The most chats one connection follows. Each keeps a place in the link's queue, so the
@@ -45,7 +40,6 @@ pub(super) struct ChatLink {
     pushes: mpsc::Receiver<Message>,
     /// The answers to commands taken up, under their envelopes' ids.
     answers: mpsc::Receiver<Envelope>,
-    uploads: bool,
     /// Asks waiting for room in `asks`, in the order asked.
     waiting: VecDeque<Ask>,
     /// The seq of the last event of each followed chat that came, to follow again after.
@@ -54,9 +48,8 @@ pub(super) struct ChatLink {
 }
 
 impl ChatLink {
-    /// Takes up asks for `chats` in order; `uploads` when the server offered [`UPLOAD`], and
-    /// `live` when it offered [`LIVE`].
-    pub(super) fn new(chats: Chats, uploads: bool, live: bool, log: Logger) -> Self {
+    /// Takes up asks for `chats` in order.
+    pub(super) fn new(chats: Chats, log: Logger) -> Self {
         let (asks, asked) = mpsc::channel(QUEUE);
         let (push, pushes) = mpsc::channel(feed::QUEUE + FOLLOWS_MAX);
         let (answer, answers) = mpsc::channel(QUEUE);
@@ -65,10 +58,9 @@ impl ChatLink {
             asks,
             pushes,
             answers,
-            uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
-            live: Live::new(live),
+            live: Live::default(),
         }
     }
 
@@ -92,7 +84,6 @@ impl ChatLink {
             chat,
             query: ChatQueryKind::Subscribe { after },
         }) = message
-            && self.uploads
         {
             let key = ChatKey { workspace, chat };
             if !self.came.contains_key(&key) && self.came.len() >= FOLLOWS_MAX {
@@ -366,17 +357,16 @@ mod tests {
 
     // A link with no worker, whose asks wait in a queue with room for `room` for the test to
     // read, and the way to push to it.
-    fn link(uploads: bool, room: usize) -> (ChatLink, mpsc::Receiver<Ask>, Client) {
+    fn link(room: usize) -> (ChatLink, mpsc::Receiver<Ask>, Client) {
         let (asks, asked) = mpsc::channel(room);
         let (push, pushes) = mpsc::channel(4);
         let link = ChatLink {
             asks,
             pushes,
             answers: mpsc::channel(1).1,
-            uploads,
             waiting: VecDeque::new(),
             came: HashMap::new(),
-            live: Live::new(true),
+            live: Live::default(),
         };
         (link, asked, Client { push })
     }
@@ -480,7 +470,7 @@ mod tests {
 
     #[test]
     fn a_servers_follows_and_commands_pass_in_the_order_asked() {
-        let (mut link, mut asked, _push) = link(true, 4);
+        let (mut link, mut asked, _push) = link(4);
 
         let followed = link.take(subscribe(7));
         let commanded = link.take(told("r-1", "Hi"));
@@ -502,7 +492,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn what_waits_for_room_keeps_its_order_and_a_chat_followed_again_its_place() {
-        let (mut link, mut asked, _push) = link(true, 1);
+        let (mut link, mut asked, _push) = link(1);
         drop(link.take(told("r-1", "Hi")));
         drop(link.take(subscribe(100)));
         drop(link.take(told("r-2", "Hi")));
@@ -525,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_connection_follows_a_bounded_number_of_chats() {
-        let (mut link, _asked, _push) = link(true, 1);
+        let (mut link, _asked, _push) = link(1);
         let follow = |id: &str| {
             envelope(Message::ChatQuery(query(
                 id,
@@ -546,7 +536,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_follow_with_no_room_yet_is_passed_on_once_there_is() {
-        let (mut link, mut asked, _push) = link(true, 1);
+        let (mut link, mut asked, _push) = link(1);
         drop(link.take(told("r-1", "Hi")));
         drop(link.take(subscribe(3)));
 
@@ -561,21 +551,15 @@ mod tests {
     }
 
     #[test]
-    fn only_a_server_that_stores_events_may_follow_and_it_may_ask_nothing_else() {
-        let (mut uploading, mut asked, _push) = link(true, 4);
-        let (mut not_uploading, _not_asked, _not_pushed) = link(false, 4);
+    fn the_server_may_follow_a_chat_and_ask_nothing_else_of_it() {
+        let (mut link, mut asked, _push) = link(4);
 
         let snapshot = Message::ChatQuery(query("c-1", ChatQueryKind::Snapshot));
-        let refused = [
-            not_uploading.take(subscribe(0)),
-            uploading.take(envelope(snapshot)),
-        ];
+        let refused = link.take(envelope(snapshot));
 
-        let codes = refused.iter().map(error_code).collect::<Vec<_>>();
-        assert_eq!(codes, [Some("message.unsupported"); 2]);
+        assert_eq!(error_code(&refused), Some("message.unsupported"));
         asked.try_recv().unwrap_err();
-        assert!(not_uploading.waiting.is_empty() && uploading.waiting.is_empty());
-        assert!(not_uploading.came.is_empty());
+        assert!(link.waiting.is_empty());
     }
 
     #[test]
@@ -592,7 +576,7 @@ mod tests {
 
     #[test]
     fn no_hold_is_taken_from_the_server() {
-        let (mut link, mut asked, _push) = link(true, 4);
+        let (mut link, mut asked, _push) = link(4);
 
         let refused = [ChatAction::Hold, ChatAction::Release].map(|action| {
             link.take(envelope(Message::ChatCommand(command(
@@ -607,7 +591,7 @@ mod tests {
 
     #[test]
     fn commands_with_no_room_yet_all_wait_for_it() {
-        let (mut link, _asked, _push) = link(true, 1);
+        let (mut link, _asked, _push) = link(1);
         let interrupt = |at: usize| command(&format!("r-{at}"), "c-1", ChatAction::Interrupt);
 
         let taken: Vec<_> = (0..QUEUE + 2)
@@ -665,7 +649,7 @@ mod tests {
 
     #[test]
     fn messages_go_up_as_the_server_keeps_them_and_nothing_else_does() {
-        let (mut link, _asked, _push) = link(true, 4);
+        let (mut link, _asked, _push) = link(4);
         let ask = |input: Value| RunEvent::PermissionAsked {
             run: run("run-1"),
             prompt: 1,
@@ -697,7 +681,7 @@ mod tests {
 
     #[test]
     fn a_chat_whose_events_were_lost_is_followed_again_after_the_last_that_came() {
-        let (mut link, mut asked, _push) = link(true, 4);
+        let (mut link, mut asked, _push) = link(4);
         drop(link.take(subscribe(2)));
 
         let first = link.upload(lost());
@@ -712,7 +696,7 @@ mod tests {
 
     #[test]
     fn events_lost_from_a_chat_never_followed_ask_nothing() {
-        let (mut link, _asked, _push) = link(true, 4);
+        let (mut link, _asked, _push) = link(4);
 
         assert_eq!(link.upload(lost()), None);
         assert!(link.waiting.is_empty());
@@ -730,7 +714,7 @@ mod tests {
     async fn a_chat_too_far_behind_to_send_again_at_once_goes_up_a_page_at_a_time() {
         let bench = bench();
         prompts(&bench.chats, 10, 900_000).await;
-        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), recording_logger().0);
 
         drop(link.take(subscribe(0)));
         let mut prompted = Vec::new();
@@ -754,7 +738,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_the_chats_refuse_is_answered_under_its_envelope() {
         let bench = bench();
-        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), recording_logger().0);
         let unknown = weacon_protocol::RepoId::try_from("typo".to_owned()).unwrap();
         let asked = prompt_in("r-1", "Hi", &unknown);
 
@@ -789,7 +773,7 @@ mod tests {
     async fn a_follow_past_the_logs_end_goes_on_from_there() {
         let bench = bench();
         prompts(&bench.chats, 1, 2).await;
-        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), recording_logger().0);
 
         drop(link.take(subscribe(100)));
         // Passes the follow on, and gives what went up meanwhile, if anything did.
@@ -853,7 +837,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn what_a_connection_left_queued_when_it_ended_is_not_done() {
         let mut bench = bench();
-        let mut link = ChatLink::new(bench.chats.clone(), true, true, recording_logger().0);
+        let mut link = ChatLink::new(bench.chats.clone(), recording_logger().0);
 
         drop(link.take(told("r-1", "Hi")));
         drop(link);
@@ -882,7 +866,7 @@ mod tests {
     async fn an_ask_the_engine_refuses_is_logged_by_its_ids_alone() {
         let stopped = parts().0.chats;
         let (log, records) = recording_logger();
-        let mut link = ChatLink::new(stopped, true, true, log);
+        let mut link = ChatLink::new(stopped, log);
 
         drop(link.take(told("r-1", "MARKER-PROMPT")));
         let fields = logged(&records, "chat ask refused").await;

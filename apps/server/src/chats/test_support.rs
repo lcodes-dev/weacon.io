@@ -74,15 +74,12 @@ pub(crate) fn core_named<T: serde::Serialize + serde::de::DeserializeOwned>(hear
     serde_json::from_str(&json.replace("run-1-l1", "run-1")).unwrap()
 }
 
-pub(crate) fn attach(shared: &Shared, ada: &Ada, offers: &[&str]) -> Attached {
+pub(crate) fn attach(shared: &Shared, ada: &Ada) -> Attached {
     let connected = Connected {
         machine: ada.machine.clone(),
         owner: ada.asker.account.clone(),
     };
-    let offers = offers
-        .iter()
-        .map(|offer| serde_json::from_value(serde_json::json!(offer)).unwrap());
-    shared.links.open(connected, offers.collect())
+    shared.links.open(connected)
 }
 
 pub(crate) fn sent(attached: &mut Attached) -> Vec<Message> {

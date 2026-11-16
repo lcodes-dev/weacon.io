@@ -17,9 +17,6 @@ use crate::auth::Member;
 use crate::http::{self, Body, Refusals, Unreadable, parsed};
 use crate::shared::Shared;
 
-/// What the server offers to clients that read and decide on proposals.
-pub(crate) const PROPOSALS: Code = code!("workspace.proposals");
-
 pub(crate) fn routes() -> Router<Shared> {
     Router::new()
         .route("/api/workspaces/{workspace}/proposals", get(list))

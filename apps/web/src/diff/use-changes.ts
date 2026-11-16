@@ -4,7 +4,7 @@ import type { ChatRef } from "../chat-ref.ts";
 import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { MachineId } from "../protocol.ts";
-import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { NO_CHANGES, ask, cut, needsAsking, receive } from "./changes.ts";
 
 /**
@@ -14,7 +14,6 @@ import { NO_CHANGES, ask, cut, needsAsking, receive } from "./changes.ts";
  */
 export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, machine: MachineId | undefined, live: boolean, shown: boolean) {
   const [changes, setChanges] = useState(NO_CHANGES);
-  const offered = useOffers(link, "diff.view");
   useEffect(() => {
     if (!live) {
       return;
@@ -27,7 +26,7 @@ export function useChanges(link: WorkspaceSocket, chatRef: ChatRef | undefined, 
       setChanges(cut);
     };
   }, [link, live]);
-  const askable = chatRef !== undefined && machine !== undefined && live && offered;
+  const askable = chatRef !== undefined && machine !== undefined && live;
   useEffect(() => {
     if (shown && askable && needsAsking(changes)) {
       const { query, changes: asked } = ask(link.nextId(), newId(), { ...chatRef, machine }, changes);

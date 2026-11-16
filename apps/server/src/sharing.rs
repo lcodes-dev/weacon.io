@@ -78,7 +78,7 @@ mod tests {
         let mut core = open(server.address, "/api/machines/connect", &paired.token)
             .await
             .unwrap();
-        say(&mut core, &["machine.connect"]).await;
+        say(&mut core).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
         let listed = || async {
             let path = "GET /api/workspaces/w1/machines";

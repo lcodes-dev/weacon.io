@@ -266,8 +266,8 @@ export type Batched = {
 export type Bytes = string;
 
 /**
- * A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
- * it doesn't know, so a newer peer's list still parses.
+ * Something a core does only on some machines, such as `worktree.open_terminal`, named like a
+ * [`Code`].
  */
 export type Capability = Code;
 
@@ -309,8 +309,7 @@ export type ChatAction = (
 );
 
 /**
- * The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client
- * that has `chat.events`.
+ * The core's answer to a [`ChatQuery`], or its word that the client missed events.
  */
 export type ChatAnswer = {
   answer: ChatAnswerKind;
@@ -336,8 +335,8 @@ export type ChatAnswerKind = (
 );
 
 /**
- * What a person says in a chat or asks of their agent there, from a client to the server or to
- * a core that offers `chat.send`. A receipt under `request` answers it.
+ * What a person says in a chat or asks of their agent there, from a client to the server or to a
+ * core. A receipt under `request` answers it.
  */
 export type ChatCommand = {
   action: ChatAction;
@@ -415,17 +414,15 @@ export type ChatLeg = {
 };
 
 /**
- * A workspace's chats, from the server, to clients that have the capability
- * `workspace.chats`.
+ * A workspace's chats, from the server to clients.
  */
 export type ChatList = {
   chats: Array<ChatSummary>;
 };
 
 /**
- * A run's update that a viewer of its chat needs and no one stores: text as it is written.
- * From a core to the server, and from the server to the feeds that follow the chat, each
- * under `chat.live`.
+ * A run's update that a viewer of its chat needs and no one stores: text as it is written. From a
+ * core to the server, and from the server to the feeds that follow the chat.
  */
 export type ChatLive = {
   /**
@@ -439,8 +436,8 @@ export type ChatLive = {
 };
 
 /**
- * A question about a chat's log, from a client to a core that offers `chat.events`. The answer
- * is a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.
+ * A question about a chat's log, from a client to a core. The answer is a [`ChatAnswer`], or for
+ * `subscribe` the [`ChatUpdate`]s themselves.
  */
 export type ChatQuery = {
   chat: ChatId;
@@ -505,8 +502,8 @@ export type ChatTask = {
 };
 
 /**
- * A committed event of a chat, from the core to a client that subscribed under `chat.events`.
- * Text deltas are never committed; they arrive only as run updates.
+ * A committed event of a chat, from the core to a client that subscribed. Text deltas are never
+ * committed; they arrive only as run updates.
  */
 export type ChatUpdate = {
   chat: ChatId;
@@ -554,7 +551,7 @@ export type Code = string;
 export type CommitId = string;
 
 /**
- * From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
+ * From the core to a client, in answer to a [`DiffQuery`].
  */
 export type DiffAnswer = {
   answer: DiffAnswerKind;
@@ -609,8 +606,7 @@ export type DiffLine = {
 };
 
 /**
- * From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes
- * `request`.
+ * From a client to a core. Each answer is a [`DiffAnswer`] that echoes `request`.
  */
 export type DiffQuery = {
   /**
@@ -685,8 +681,7 @@ export type DocList = {
 export type DocPin = string;
 
 /**
- * A doc at one revision; `version` rises with each revision. The server sends it to clients
- * that have the capability `workspace.docs`.
+ * A doc at one revision; `version` rises with each revision. The server sends it to clients.
  */
 export type DocRecord = {
   content: DocContent;
@@ -761,6 +756,9 @@ export type FileChange = (
  */
 export type Hello = {
   app: App;
+  /**
+   * What a core does only on some machines, said to its server.
+   */
   capabilities?: Array<Capability>;
   protocol: number;
 };
@@ -870,8 +868,8 @@ export type MachineSettingsAction = (
 );
 
 /**
- * From the core to a client that has `machine.settings`, in answer to a
- * [`MachineSettingsQuery`] or a [`MachineSettingsCommand`].
+ * From the core to a client, in answer to a [`MachineSettingsQuery`] or a
+ * [`MachineSettingsCommand`].
  */
 export type MachineSettingsAnswer = {
   answer: MachineSettingsAnswerKind;
@@ -895,10 +893,10 @@ export type MachineSettingsAnswerKind = (
 );
 
 /**
- * From the owner of `machine` to its core, which offers `machine.settings`: changes what the
- * machine keeps for `workspace`. The server relays it only from the machine's owner, and the
- * core acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
- * `request` and holds the settings after the change.
+ * From the owner of `machine` to its core: changes what the machine keeps for `workspace`. The
+ * server relays it only from the machine's owner, and the core acts only when `by` is its owner;
+ * the answer is a [`MachineSettingsAnswer`] that echoes `request` and holds the settings after the
+ * change.
  */
 export type MachineSettingsCommand = {
   action: MachineSettingsAction;
@@ -912,11 +910,10 @@ export type MachineSettingsCommand = {
 };
 
 /**
- * From the owner of `machine` to its core, which offers `machine.settings`: what the machine
- * keeps for `workspace`. The server relays it only from the machine's owner, and the core
- * answers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered
- * to, any member of a workspace the machine is shared with. The answer is a
- * [`MachineSettingsAnswer`] that echoes `request`.
+ * From the owner of `machine` to its core: what the machine keeps for `workspace`. The server
+ * relays it only from the machine's owner, and the core answers only when `by` is its owner;
+ * `repos` and `agents` are also relayed from, and answered to, any member of a workspace the
+ * machine is shared with. The answer is a [`MachineSettingsAnswer`] that echoes `request`.
  */
 export type MachineSettingsQuery = {
   /**
@@ -963,12 +960,11 @@ export type MachineSummary = {
    */
   core?: App;
   id: MachineId;
-  /**
-   * What the server offers cores that this one didn't offer back when it last connected:
-   * it is older than the server supports, and those features don't reach it.
-   */
-  missing?: Array<Capability>;
   name: MachineName;
+  /**
+   * What its core said it does, in its hello, when it last connected.
+   */
+  offers?: Array<Capability>;
   os: MachineOs;
   paired_at: number;
 };
@@ -995,8 +991,8 @@ export type MapArgs = {
 };
 
 /**
- * From a hook that an agent the core started runs, to that core over its socket, under
- * `map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.
+ * From a hook that an agent the core started runs, to that core over its socket: the code map of
+ * `folder`, in the workspace of the run whose MCP token it holds.
  */
 export type MapQuery = {
   folder: string;
@@ -1058,8 +1054,7 @@ export type MemberId = string;
 
 /**
  * A workspace's members, past ones included, in the order they were added, from the server to
- * clients that have the capability `workspace.members`. Only its owner gets the live
- * invitations.
+ * clients. Only its owner gets the live invitations.
  */
 export type MemberList = {
   invitations?: Array<Invitation>;
@@ -1221,10 +1216,9 @@ export type PermissionAnswer = {
 };
 
 /**
- * An element someone picked in Chrome, from the extension to a core that offers `element.pick`,
- * which keeps it on the machine for a prompt that names its `request`. The
- * sender cuts the HTML short and shrinks the screenshot so the message fits in one frame.
- * Everything in it comes from the page, so it is untrusted.
+ * An element someone picked in Chrome, from the extension to a core, which keeps it on the machine
+ * for a prompt that names its `request`. The sender cuts the HTML short and shrinks the screenshot
+ * so the message fits in one frame. Everything in it comes from the page, so it is untrusted.
  */
 export type Pick = {
   /**
@@ -1368,9 +1362,8 @@ export type ProposalChange = (
 );
 
 /**
- * What an agent asks the server for, from a core to a server that offers
- * `workspace.proposals`, for one of its owner's agents. The server answers with receipts under
- * `request`, and names the owner and machine itself.
+ * What an agent asks the server for, from a core to its server, for one of its owner's agents. The
+ * server answers with receipts under `request`, and names the owner and machine itself.
  */
 export type ProposalCommand = {
   action: ProposalAction;
@@ -1426,8 +1419,8 @@ export type ProposalOutcome = (
 );
 
 /**
- * What a core asks a server that offers `workspace.proposals` about its owner's workspace,
- * to propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].
+ * What a core asks its server about its owner's workspace, to propose what a move of the code did
+ * to its docs. The answer is a [`ProposalAnswer`].
  */
 export type ProposalQuery = {
   query: ProposalQueryKind;
@@ -1447,9 +1440,8 @@ export type ProposalQueryKind = (
 );
 
 /**
- * A proposal, from the server to clients that have the capability `workspace.proposals`, at
- * `at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an
- * open proposal still holds its `change`.
+ * A proposal, from the server to clients, at `at` seconds since the Unix epoch. Its author's
+ * machine is a name, never an id, and only an open proposal still holds its `change`.
  */
 export type ProposalRecord = {
   about: ProposalAbout;
@@ -1628,8 +1620,7 @@ export type RunStatus = {
 };
 
 /**
- * One event of the run `run`, in the order the run reported it, from the core to clients that
- * have `run.stream`.
+ * One event of the run `run`, in the order the run reported it, from the core to clients.
  */
 export type RunUpdate = {
   event: RunEvent;
@@ -1670,11 +1661,10 @@ export type SearchHit = (
 );
 
 /**
- * Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in
- * the workspace that hold every word of `text`, at most 8 words of at most 64 characters, in
- * 256 bytes. Words of three or more characters match whatever their case and accents; shorter
- * ones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.
- * `limit` is 20 without one, and at most 50.
+ * Asks the server for the tasks, docs and chats in the workspace that hold every word of `text`,
+ * at most 8 words of at most 64 characters, in 256 bytes. Words of three or more characters match
+ * whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and text
+ * without a longer word finds nothing. `limit` is 20 without one, and at most 50.
  */
 export type SearchQuery = {
   limit?: number;
@@ -1682,8 +1672,7 @@ export type SearchQuery = {
 };
 
 /**
- * The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has
- * `sessions.read`.
+ * The core's answer to a [`SessionsQuery`] under the same `request`.
  */
 export type SessionsAnswer = {
   answer: SessionsAnswerKind;
@@ -1707,8 +1696,8 @@ export type SessionsAnswerKind = (
 );
 
 /**
- * A person asks their own machine about the agent sessions they ran outside Weacon, from a
- * client to a core that offers `sessions.read`. No workspace holds these sessions.
+ * A person asks their own machine about the agent sessions they ran outside Weacon, from a client
+ * to a core. No workspace holds these sessions.
  */
 export type SessionsQuery = {
   /**
@@ -1855,8 +1844,7 @@ export type SymbolKind = (
 );
 
 /**
- * The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has
- * `symbols.search`.
+ * The core's answer to a [`SymbolsQuery`] under the same `request`.
  */
 export type SymbolsAnswer = {
   answer: SymbolsAnswerKind;
@@ -1875,8 +1863,7 @@ export type SymbolsAnswerKind = (
 
 /**
  * A person asks their own machine for the items of the code in the repositories it has for a
- * workspace, from a client to a core that offers `symbols.search`. Neither the query nor its
- * answer is stored.
+ * workspace, from a client to a core. Neither the query nor its answer is stored.
  */
 export type SymbolsQuery = {
   /**
@@ -1946,8 +1933,8 @@ export type TaskList = {
 };
 
 /**
- * A task as it travels: `order` is its order key and `version` rises with each change. The
- * server sends it to clients that have the capability `workspace.tasks`.
+ * A task as it travels: `order` is its order key and `version` rises with each change. The server
+ * sends it to clients.
  */
 export type TaskRecord = {
   id: TaskId;
@@ -1983,9 +1970,8 @@ export type TerminalAction = (
 );
 
 /**
- * A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
- * `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only
- * from the machine's owner, and the core acts only when `by` is its owner.
+ * A sign-in terminal's input, from the owner of `machine`'s browser to its core. The server relays
+ * it only from the machine's owner, and the core acts only when `by` is its owner.
  */
 export type TerminalCommand = {
   action: TerminalAction;
@@ -2019,8 +2005,8 @@ export type TerminalEvent = (
 export type TerminalId = string;
 
 /**
- * A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the
- * server, to the browser that opened `terminal`.
+ * A sign-in terminal's output, from a core, through the server, to the browser that opened
+ * `terminal`.
  */
 export type TerminalUpdate = {
   event: TerminalEvent;
@@ -2042,7 +2028,6 @@ export type Wants = {
  */
 export type Welcome = {
   app: App;
-  capabilities?: Array<Capability>;
 };
 
 /**
@@ -2122,8 +2107,8 @@ export type WorkspaceSummary = {
 };
 
 /**
- * One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
- * strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
+ * One change to `workspace`, from the server to clients. `seq` grows strictly within a workspace,
+ * and a feed opened with `since=N` sends every change after `N`.
  */
 export type WorkspaceUpdate = {
   change: WorkspaceChange;
@@ -2146,8 +2131,7 @@ export type WorktreeAction = (
 );
 
 /**
- * From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a
- * [`WorktreeCommand`].
+ * From the core to a client, in answer to a [`WorktreeQuery`] or a [`WorktreeCommand`].
  */
 export type WorktreeAnswer = {
   answer: WorktreeAnswerKind;
@@ -2177,10 +2161,10 @@ export type WorktreeAnswerKind = (
 );
 
 /**
- * From a client to a core that offers `worktree.manage`: what a person asks of a chat's
- * worktree. The core acts only for someone who may act on the chat, and a client asks the
- * person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
- * echoes `request`: the worktree's state after `remove`, which a repeated one answers too.
+ * From a client to a core: what a person asks of a chat's worktree. The core acts only for someone
+ * who may act on the chat, and a client asks the person before `remove`, whatever the access
+ * level. The answer is a [`WorktreeAnswer`] that echoes `request`: the worktree's state after
+ * `remove`, which a repeated one answers too.
  */
 export type WorktreeCommand = {
   action: WorktreeAction;
@@ -2199,8 +2183,8 @@ export type WorktreeCommand = {
 };
 
 /**
- * From a client to a core that offers `worktree.manage`: a question about a chat's worktree.
- * The answer is a [`WorktreeAnswer`] that echoes `request`.
+ * From a client to a core: a question about a chat's worktree. The answer is a [`WorktreeAnswer`]
+ * that echoes `request`.
  */
 export type WorktreeQuery = {
   /**

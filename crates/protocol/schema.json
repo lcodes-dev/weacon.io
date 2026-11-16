@@ -772,7 +772,7 @@
       "pattern": "^([0-9a-f]{2})*$"
     },
     "Capability": {
-      "description": "A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones\nit doesn't know, so a newer peer's list still parses.",
+      "description": "Something a core does only on some machines, such as `worktree.open_terminal`, named like a\n[`Code`].",
       "$ref": "#/$defs/Code"
     },
     "ChallengeId": {
@@ -872,7 +872,7 @@
           ]
         },
         {
-          "description": "Holds the chat for a person carrying its session on by hand: while the connection that\nsent it is open, no run starts and prompts queue. Sent by a local client under\n`chat.hold`, never through the server.",
+          "description": "Holds the chat for a person carrying its session on by hand: while the connection that sent\nit is open, no run starts and prompts queue. Sent by a local client, never through the\nserver.",
           "type": "object",
           "properties": {
             "kind": {
@@ -885,7 +885,7 @@
           ]
         },
         {
-          "description": "Ends this connection's hold, under `chat.hold`; queued prompts then go on.",
+          "description": "Ends this connection's hold; queued prompts then go on.",
           "type": "object",
           "properties": {
             "kind": {
@@ -900,7 +900,7 @@
       ]
     },
     "ChatAnswer": {
-      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events, to a client\nthat has `chat.events`.",
+      "description": "The core's answer to a [`ChatQuery`], or its word that the client missed events.",
       "type": "object",
       "properties": {
         "answer": {
@@ -998,7 +998,7 @@
       ]
     },
     "ChatCommand": {
-      "description": "What a person says in a chat or asks of their agent there, from a client to the server or to\na core that offers `chat.send`. A receipt under `request` answers it.",
+      "description": "What a person says in a chat or asks of their agent there, from a client to the server or to a\ncore. A receipt under `request` answers it.",
       "type": "object",
       "properties": {
         "action": {
@@ -1209,7 +1209,7 @@
       ]
     },
     "ChatList": {
-      "description": "A workspace's chats, from the server, to clients that have the capability\n`workspace.chats`.",
+      "description": "A workspace's chats, from the server to clients.",
       "type": "object",
       "properties": {
         "chats": {
@@ -1224,7 +1224,7 @@
       ]
     },
     "ChatLive": {
-      "description": "A run's update that a viewer of its chat needs and no one stores: text as it is written.\nFrom a core to the server, and from the server to the feeds that follow the chat, each\nunder `chat.live`.",
+      "description": "A run's update that a viewer of its chat needs and no one stores: text as it is written. From a\ncore to the server, and from the server to the feeds that follow the chat.",
       "type": "object",
       "properties": {
         "after": {
@@ -1250,7 +1250,7 @@
       ]
     },
     "ChatQuery": {
-      "description": "A question about a chat's log, from a client to a core that offers `chat.events`. The answer\nis a [`ChatAnswer`], or for `subscribe` the [`ChatUpdate`]s themselves.",
+      "description": "A question about a chat's log, from a client to a core. The answer is a [`ChatAnswer`], or for\n`subscribe` the [`ChatUpdate`]s themselves.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1406,7 +1406,7 @@
       ]
     },
     "ChatUpdate": {
-      "description": "A committed event of a chat, from the core to a client that subscribed under `chat.events`.\nText deltas are never committed; they arrive only as run updates.",
+      "description": "A committed event of a chat, from the core to a client that subscribed. Text deltas are never\ncommitted; they arrive only as run updates.",
       "type": "object",
       "properties": {
         "chat": {
@@ -1501,7 +1501,7 @@
       "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
     },
     "DiffAnswer": {
-      "description": "From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].",
+      "description": "From the core to a client, in answer to a [`DiffQuery`].",
       "type": "object",
       "properties": {
         "answer": {
@@ -1654,7 +1654,7 @@
       ]
     },
     "DiffQuery": {
-      "description": "From a client to a core that offers `diff.view`. Each answer is a [`DiffAnswer`] that echoes\n`request`.",
+      "description": "From a client to a core. Each answer is a [`DiffAnswer`] that echoes `request`.",
       "type": "object",
       "properties": {
         "by": {
@@ -1787,7 +1787,7 @@
       "pattern": "^(sym|flow|area):[!-~]+#[0-9a-f]{16}$"
     },
     "DocRecord": {
-      "description": "A doc at one revision; `version` rises with each revision. The server sends it to clients\nthat have the capability `workspace.docs`.",
+      "description": "A doc at one revision; `version` rises with each revision. The server sends it to clients.",
       "type": "object",
       "properties": {
         "content": {
@@ -1962,6 +1962,7 @@
           "$ref": "#/$defs/App"
         },
         "capabilities": {
+          "description": "What a core does only on some machines, said to its server.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Capability"
@@ -2183,7 +2184,7 @@
       ]
     },
     "MachineSettingsAnswer": {
-      "description": "From the core to a client that has `machine.settings`, in answer to a\n[`MachineSettingsQuery`] or a [`MachineSettingsCommand`].",
+      "description": "From the core to a client, in answer to a [`MachineSettingsQuery`] or a\n[`MachineSettingsCommand`].",
       "type": "object",
       "properties": {
         "answer": {
@@ -2264,7 +2265,7 @@
       ]
     },
     "MachineSettingsCommand": {
-      "description": "From the owner of `machine` to its core, which offers `machine.settings`: changes what the\nmachine keeps for `workspace`. The server relays it only from the machine's owner, and the\ncore acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes\n`request` and holds the settings after the change.",
+      "description": "From the owner of `machine` to its core: changes what the machine keeps for `workspace`. The\nserver relays it only from the machine's owner, and the core acts only when `by` is its owner;\nthe answer is a [`MachineSettingsAnswer`] that echoes `request` and holds the settings after the\nchange.",
       "type": "object",
       "properties": {
         "action": {
@@ -2292,7 +2293,7 @@
       ]
     },
     "MachineSettingsQuery": {
-      "description": "From the owner of `machine` to its core, which offers `machine.settings`: what the machine\nkeeps for `workspace`. The server relays it only from the machine's owner, and the core\nanswers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered\nto, any member of a workspace the machine is shared with. The answer is a\n[`MachineSettingsAnswer`] that echoes `request`.",
+      "description": "From the owner of `machine` to its core: what the machine keeps for `workspace`. The server\nrelays it only from the machine's owner, and the core answers only when `by` is its owner;\n`repos` and `agents` are also relayed from, and answered to, any member of a workspace the\nmachine is shared with. The answer is a [`MachineSettingsAnswer`] that echoes `request`.",
       "type": "object",
       "properties": {
         "by": {
@@ -2335,7 +2336,7 @@
           ]
         },
         {
-          "description": "The repositories the owner registered for the workspace, of a core that offers\n`repo.list`.",
+          "description": "The repositories the owner registered for the workspace.",
           "type": "object",
           "properties": {
             "kind": {
@@ -2392,15 +2393,15 @@
         "id": {
           "$ref": "#/$defs/MachineId"
         },
-        "missing": {
-          "description": "What the server offers cores that this one didn't offer back when it last connected:\nit is older than the server supports, and those features don't reach it.",
+        "name": {
+          "$ref": "#/$defs/MachineName"
+        },
+        "offers": {
+          "description": "What its core said it does, in its hello, when it last connected.",
           "type": "array",
           "items": {
             "$ref": "#/$defs/Capability"
           }
-        },
-        "name": {
-          "$ref": "#/$defs/MachineName"
         },
         "os": {
           "$ref": "#/$defs/MachineOs"
@@ -2440,7 +2441,7 @@
       }
     },
     "MapQuery": {
-      "description": "From a hook that an agent the core started runs, to that core over its socket, under\n`map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.",
+      "description": "From a hook that an agent the core started runs, to that core over its socket: the code map of\n`folder`, in the workspace of the run whose MCP token it holds.",
       "type": "object",
       "properties": {
         "folder": {
@@ -2599,7 +2600,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "MemberList": {
-      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients that have the capability `workspace.members`. Only its owner gets the live\ninvitations.",
+      "description": "A workspace's members, past ones included, in the order they were added, from the server to\nclients. Only its owner gets the live invitations.",
       "type": "object",
       "properties": {
         "invitations": {
@@ -2957,7 +2958,7 @@
       ]
     },
     "Pick": {
-      "description": "An element someone picked in Chrome, from the extension to a core that offers `element.pick`,\nwhich keeps it on the machine for a prompt that names its `request`. The\nsender cuts the HTML short and shrinks the screenshot so the message fits in one frame.\nEverything in it comes from the page, so it is untrusted.",
+      "description": "An element someone picked in Chrome, from the extension to a core, which keeps it on the machine\nfor a prompt that names its `request`. The sender cuts the HTML short and shrinks the screenshot\nso the message fits in one frame. Everything in it comes from the page, so it is untrusted.",
       "type": "object",
       "properties": {
         "component": {
@@ -3378,7 +3379,7 @@
       ]
     },
     "ProposalCommand": {
-      "description": "What an agent asks the server for, from a core to a server that offers\n`workspace.proposals`, for one of its owner's agents. The server answers with receipts under\n`request`, and names the owner and machine itself.",
+      "description": "What an agent asks the server for, from a core to its server, for one of its owner's agents. The\nserver answers with receipts under `request`, and names the owner and machine itself.",
       "type": "object",
       "properties": {
         "action": {
@@ -3515,7 +3516,7 @@
       ]
     },
     "ProposalQuery": {
-      "description": "What a core asks a server that offers `workspace.proposals` about its owner's workspace,\nto propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].",
+      "description": "What a core asks its server about its owner's workspace, to propose what a move of the code did\nto its docs. The answer is a [`ProposalAnswer`].",
       "type": "object",
       "properties": {
         "query": {
@@ -3572,7 +3573,7 @@
       ]
     },
     "ProposalRecord": {
-      "description": "A proposal, from the server to clients that have the capability `workspace.proposals`, at\n`at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an\nopen proposal still holds its `change`.",
+      "description": "A proposal, from the server to clients, at `at` seconds since the Unix epoch. Its author's\nmachine is a name, never an id, and only an open proposal still holds its `change`.",
       "type": "object",
       "properties": {
         "about": {
@@ -4063,7 +4064,7 @@
       ]
     },
     "RunUpdate": {
-      "description": "One event of the run `run`, in the order the run reported it, from the core to clients that\nhave `run.stream`.",
+      "description": "One event of the run `run`, in the order the run reported it, from the core to clients.",
       "type": "object",
       "properties": {
         "event": {
@@ -4177,7 +4178,7 @@
       ]
     },
     "SearchQuery": {
-      "description": "Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in\nthe workspace that hold every word of `text`, at most 8 words of at most 64 characters, in\n256 bytes. Words of three or more characters match whatever their case and accents; shorter\nones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.\n`limit` is 20 without one, and at most 50.",
+      "description": "Asks the server for the tasks, docs and chats in the workspace that hold every word of `text`,\nat most 8 words of at most 64 characters, in 256 bytes. Words of three or more characters match\nwhatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and text\nwithout a longer word finds nothing. `limit` is 20 without one, and at most 50.",
       "type": "object",
       "properties": {
         "limit": {
@@ -4194,7 +4195,7 @@
       ]
     },
     "SessionsAnswer": {
-      "description": "The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has\n`sessions.read`.",
+      "description": "The core's answer to a [`SessionsQuery`] under the same `request`.",
       "type": "object",
       "properties": {
         "answer": {
@@ -4274,7 +4275,7 @@
       ]
     },
     "SessionsQuery": {
-      "description": "A person asks their own machine about the agent sessions they ran outside Weacon, from a\nclient to a core that offers `sessions.read`. No workspace holds these sessions.",
+      "description": "A person asks their own machine about the agent sessions they ran outside Weacon, from a client\nto a core. No workspace holds these sessions.",
       "type": "object",
       "properties": {
         "by": {
@@ -4550,7 +4551,7 @@
       ]
     },
     "SymbolsAnswer": {
-      "description": "The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has\n`symbols.search`.",
+      "description": "The core's answer to a [`SymbolsQuery`] under the same `request`.",
       "type": "object",
       "properties": {
         "answer": {
@@ -4602,7 +4603,7 @@
       ]
     },
     "SymbolsQuery": {
-      "description": "A person asks their own machine for the items of the code in the repositories it has for a\nworkspace, from a client to a core that offers `symbols.search`. Neither the query nor its\nanswer is stored.",
+      "description": "A person asks their own machine for the items of the code in the repositories it has for a\nworkspace, from a client to a core. Neither the query nor its answer is stored.",
       "type": "object",
       "properties": {
         "by": {
@@ -4758,7 +4759,7 @@
       ]
     },
     "TaskRecord": {
-      "description": "A task as it travels: `order` is its order key and `version` rises with each change. The\nserver sends it to clients that have the capability `workspace.tasks`.",
+      "description": "A task as it travels: `order` is its order key and `version` rises with each change. The server\nsends it to clients.",
       "type": "object",
       "properties": {
         "id": {
@@ -4860,7 +4861,7 @@
       ]
     },
     "TerminalCommand": {
-      "description": "A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers\n`terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only\nfrom the machine's owner, and the core acts only when `by` is its owner.",
+      "description": "A sign-in terminal's input, from the owner of `machine`'s browser to its core. The server relays\nit only from the machine's owner, and the core acts only when `by` is its owner.",
       "type": "object",
       "properties": {
         "action": {
@@ -4944,7 +4945,7 @@
       "pattern": "^[A-Za-z0-9_][A-Za-z0-9_-]*$"
     },
     "TerminalUpdate": {
-      "description": "A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the\nserver, to the browser that opened `terminal`.",
+      "description": "A sign-in terminal's output, from a core, through the server, to the browser that opened\n`terminal`.",
       "type": "object",
       "properties": {
         "event": {
@@ -4984,12 +4985,6 @@
       "properties": {
         "app": {
           "$ref": "#/$defs/App"
-        },
-        "capabilities": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Capability"
-          }
         }
       },
       "required": [
@@ -5043,7 +5038,7 @@
           ]
         },
         {
-          "description": "A task was made, at version 1, or changed. Only for clients that have the capability\n`workspace.tasks`, which read the tasks again to see what it now is.",
+          "description": "A task was made, at version 1, or changed. Clients read the tasks again to see what it now\nis.",
           "type": "object",
           "properties": {
             "kind": {
@@ -5066,7 +5061,7 @@
           ]
         },
         {
-          "description": "A doc was made, at version 1, or revised. Only for clients that have the capability\n`workspace.docs`, which read the doc again to see what it now says.",
+          "description": "A doc was made, at version 1, or revised. Clients read the doc again to see what it now\nsays.",
           "type": "object",
           "properties": {
             "doc": {
@@ -5089,7 +5084,7 @@
           ]
         },
         {
-          "description": "A chat was made, or its title, state, latest turn or latest run changed. Only for clients\nthat have the capability `workspace.chats`, which read the chats again.",
+          "description": "A chat was made, or its title, state, latest turn or latest run changed. Clients read the\nchats again.",
           "type": "object",
           "properties": {
             "chat": {
@@ -5106,7 +5101,7 @@
           ]
         },
         {
-          "description": "A proposal was made or its state changed. Only for clients that have the capability\n`workspace.proposals`, which read the proposals again.",
+          "description": "A proposal was made or its state changed. Clients read the proposals again.",
           "type": "object",
           "properties": {
             "kind": {
@@ -5204,7 +5199,7 @@
       ]
     },
     "WorkspaceUpdate": {
-      "description": "One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows\nstrictly within a workspace, and a feed opened with `since=N` sends every change after `N`.",
+      "description": "One change to `workspace`, from the server to clients. `seq` grows strictly within a workspace,\nand a feed opened with `since=N` sends every change after `N`.",
       "type": "object",
       "properties": {
         "change": {
@@ -5277,7 +5272,7 @@
       ]
     },
     "WorktreeAnswer": {
-      "description": "From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a\n[`WorktreeCommand`].",
+      "description": "From the core to a client, in answer to a [`WorktreeQuery`] or a [`WorktreeCommand`].",
       "type": "object",
       "properties": {
         "answer": {
@@ -5377,7 +5372,7 @@
       ]
     },
     "WorktreeCommand": {
-      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove`, which a repeated one answers too.",
+      "description": "From a client to a core: what a person asks of a chat's worktree. The core acts only for someone\nwho may act on the chat, and a client asks the person before `remove`, whatever the access\nlevel. The answer is a [`WorktreeAnswer`] that echoes `request`: the worktree's state after\n`remove`, which a repeated one answers too.",
       "type": "object",
       "properties": {
         "action": {
@@ -5409,7 +5404,7 @@
       ]
     },
     "WorktreeQuery": {
-      "description": "From a client to a core that offers `worktree.manage`: a question about a chat's worktree.\nThe answer is a [`WorktreeAnswer`] that echoes `request`.",
+      "description": "From a client to a core: a question about a chat's worktree. The answer is a [`WorktreeAnswer`]\nthat echoes `request`.",
       "type": "object",
       "properties": {
         "by": {

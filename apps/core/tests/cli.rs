@@ -194,7 +194,7 @@ mod tests {
         .unwrap();
         let mut stdin = host.stdin.take().unwrap();
         let mut stdout = host.stdout.take().unwrap();
-        let hello = client_hello(1, PROTOCOL, []);
+        let hello = client_hello(1, PROTOCOL);
         stdin.write_all(&frame(&hello.to_json().unwrap())).unwrap();
         let mut length = [0; 4];
         stdout.read_exact(&mut length).unwrap();

@@ -17,9 +17,8 @@ token_id!(
     "not a terminal id"
 );
 
-/// A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
-/// `terminal.sign_in`. The server relays it only when it offers `terminal.relay`, and only
-/// from the machine's owner, and the core acts only when `by` is its owner.
+/// A sign-in terminal's input, from the owner of `machine`'s browser to its core. The server relays
+/// it only from the machine's owner, and the core acts only when `by` is its owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalCommand {
     pub terminal: TerminalId,
@@ -47,8 +46,8 @@ pub enum TerminalAction {
     Close,
 }
 
-/// A sign-in terminal's output, from a core that offers `terminal.sign_in`, through the
-/// server, to the browser that opened `terminal`.
+/// A sign-in terminal's output, from a core, through the server, to the browser that opened
+/// `terminal`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TerminalUpdate {
     pub terminal: TerminalId,

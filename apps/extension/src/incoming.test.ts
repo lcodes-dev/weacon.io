@@ -21,7 +21,7 @@ const ENTRIES: ChatEntry[] = [
 ];
 
 const GOOD: Envelope[] = [
-  { id: 1, type: "welcome", app: { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" }, capabilities: ["chat.list"] },
+  { id: 1, type: "welcome", app: { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" } },
   { id: 1, type: "welcome", app: { name: "weacon-core", version: "0.1.0", commit: "1a2b3c4" } },
   { id: 2, type: "error", code: "chat.held", retryable: false },
   { id: 2, type: "receipt", request: "p-1", state: "completed" },
@@ -62,7 +62,6 @@ test("anything malformed, or that the panel doesn't act on, is dropped", () => {
     { id: 1.5, type: "error", code: "x.y" },
     { id: 1, type: "run", run: "r", event: { event: "text", text: "x" } },
     { id: 1, type: "welcome", app: { name: "x", version: "1" } },
-    { id: 1, type: "welcome", app: { name: "x", version: "1", commit: "c" }, capabilities: [1] },
     { id: 1, type: "error" },
     { id: 1, type: "receipt", request: "r" },
     { id: 0, type: "chat", workspace: "w", entry: ENTRIES[0] },

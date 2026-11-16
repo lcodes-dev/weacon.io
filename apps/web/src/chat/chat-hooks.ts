@@ -43,13 +43,13 @@ function feedsOf(link: WorkspaceSocket): ChatFeeds {
  * The chat at `chatRef`, kept in step over `link` while it is `live` and the server lets this
  * client read it; what it shows stays once that ends.
  */
-export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean, readable: boolean) {
+export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined, live: boolean) {
   const [sync, setSync] = useState<Sync>(START);
   const current = useRef<LiveChat>(undefined);
   const workspace = chatRef?.workspace;
   const chat = chatRef?.chat;
   useEffect(() => {
-    if (workspace === undefined || chat === undefined || !live || !readable) {
+    if (workspace === undefined || chat === undefined || !live) {
       return;
     }
     const { chat: liveChat, hide } = feedsOf(link).show({ workspace, chat }, setSync);
@@ -59,7 +59,7 @@ export function useLiveChat(link: WorkspaceSocket, chatRef: ChatRef | undefined,
       current.current = undefined;
       setSync(ended);
     };
-  }, [link, workspace, chat, live, readable]);
+  }, [link, workspace, chat, live]);
   return {
     sync,
     more: () => current.current?.more(),

@@ -253,7 +253,7 @@ mod tests {
         let mut core = open(address, "/api/machines/connect", &paired.token)
             .await
             .unwrap();
-        say(&mut core, &["machine.connect", "workspace.proposals"]).await;
+        say(&mut core).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
         core
     }

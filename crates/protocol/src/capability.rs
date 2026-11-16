@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::Code;
 
-/// A feature a peer supports, such as `chat.send`, named like a [`Code`]. A peer keeps the ones
-/// it doesn't know, so a newer peer's list still parses.
+/// Something a core does only on some machines, such as `worktree.open_terminal`, named like a
+/// [`Code`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct Capability(Code);
@@ -22,14 +22,15 @@ mod tests {
 
     #[test]
     fn travels_as_a_dotted_name_checked_on_arrival() {
-        let known: Capability = serde_json::from_str(r#""chat.send""#).unwrap();
-        let unknown: Capability = serde_json::from_str(r#""future.thing_v2""#).unwrap();
+        let known: Capability = serde_json::from_str(r#""worktree.open_terminal""#).unwrap();
 
-        assert_eq!(serde_json::to_string(&known).unwrap(), r#""chat.send""#);
-        assert_eq!(Capability::new(crate::code!("chat.send")), known);
         assert_eq!(
-            serde_json::to_string(&unknown).unwrap(),
-            r#""future.thing_v2""#
+            serde_json::to_string(&known).unwrap(),
+            r#""worktree.open_terminal""#
+        );
+        assert_eq!(
+            Capability::new(crate::code!("worktree.open_terminal")),
+            known
         );
         serde_json::from_str::<Capability>(r#""Chat Send""#).unwrap_err();
     }

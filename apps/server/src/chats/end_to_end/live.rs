@@ -93,7 +93,7 @@ async fn a_runs_text_reaches_the_chats_followers_live_and_is_never_kept() {
 }
 
 #[tokio::test]
-async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_gets_none() {
+async fn live_updates_reach_a_chats_followers_and_a_member_no_more_gets_none() {
     let fixture = Fixture::new().await;
     let server = fixture.run().await;
     others(&fixture).await;
@@ -112,22 +112,6 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
     )
     .await;
     assert_eq!(chat_event(&mut bo).await.seq, 2);
-    let token = token(&fixture, &server, "ada@example.com").await;
-    let mut older = open(server.address, "/api/workspaces/w1/feed", &token)
-        .await
-        .unwrap();
-    say(&mut older, &OFFERS[..3]).await;
-    assert!(matches!(next(&mut older).await, Message::Welcome(_)));
-    let follow = chat_query("w1", ChatQueryKind::Subscribe { after: 1 });
-    socket::send(
-        &mut older,
-        Envelope {
-            id: 2,
-            message: follow,
-        },
-    )
-    .await;
-    assert_eq!(chat_event(&mut older).await.seq, 2);
     let writing = || RunEvent::TextDelta {
         text: "Wor".to_owned(),
     };
@@ -140,7 +124,6 @@ async fn live_updates_go_only_to_a_client_that_takes_them_and_a_member_no_more_g
 
     assert_eq!(live_heard(&mut ada).await, live("c-1", writing()));
     assert_eq!(live_heard(&mut bo).await, live("c-1", writing()));
-    assert!(quiet(&mut older).await);
     let w1 = fixture.shared.db.workspace(&id("w1")).await.unwrap();
     w1.leave(&member_id("m3")).await.unwrap();
     socket::send(&mut core, up(live("c-1", writing()))).await;

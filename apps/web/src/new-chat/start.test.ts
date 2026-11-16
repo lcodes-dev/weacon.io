@@ -12,19 +12,14 @@ const machine = (id: string, more: Partial<MachineSummary> = {}): MachineSummary
   ...more,
 });
 
-test("a person calls an agent only where the server takes commands, on a connected machine of theirs whose core runs chats", () => {
+test("a person calls an agent on a connected machine of theirs", () => {
   const online = machine("mc-1", { connected: true });
-  const old = machine("mc-2", { connected: true, missing: ["chat.serve"] });
   const away = machine("mc-3");
 
   const own = (id: string) => ({ id, name: `Box ${id}`, own: true, shared: false });
-  assert.deepEqual(readiness(true, [away, online, old]), { kind: "ready", machines: [own("mc-1")] });
-  assert.deepEqual(readiness(false, [online]), { kind: "unserved" });
-  assert.deepEqual(readiness(true, []), { kind: "unpaired" });
-  assert.deepEqual(readiness(true, [away]), { kind: "offline" });
-  assert.deepEqual(readiness(true, [away, old]), { kind: "outdated" });
-  const other = machine("mc-4", { connected: true, missing: ["terminal.relay"] });
-  assert.deepEqual(readiness(true, [other]), { kind: "ready", machines: [own("mc-4")] });
+  assert.deepEqual(readiness([away, online]), { kind: "ready", machines: [own("mc-1")] });
+  assert.deepEqual(readiness([]), { kind: "unpaired" });
+  assert.deepEqual(readiness([away]), { kind: "offline" });
 });
 
 test("a machine shared with the workspace is called like one's own, marked as shared, while it is connected", () => {
@@ -43,26 +38,22 @@ test("a machine shared with the workspace is called like one's own, marked as sh
   assert.deepEqual(picked.map(machineLabel), ["Box mc-1 (shared)", "Box mc-8 (shared)"]);
   assert.equal(machineLabel({ id: "mc-3", name: "Laptop", own: true, shared: false }), "Laptop");
   // Someone with no machine of their own calls the shared one.
-  assert.deepEqual(readiness(true, [], [shared("mc-8", true)]), { kind: "ready", machines: [{ id: "mc-8", name: "Box mc-8", own: false, shared: true }] });
-  assert.deepEqual(readiness(true, [], [shared("mc-9", false)]), { kind: "unpaired" });
-  assert.deepEqual(readiness(false, [], [shared("mc-8", true)]), { kind: "unserved" });
+  assert.deepEqual(readiness([], [shared("mc-8", true)]), { kind: "ready", machines: [{ id: "mc-8", name: "Box mc-8", own: false, shared: true }] });
+  assert.deepEqual(readiness([], [shared("mc-9", false)]), { kind: "unpaired" });
 });
 
 test("nothing is said to be missing until the machines shared with the workspace are known, unless a machine of one's own already serves", () => {
-  const mine = readiness(true, [machine("mc-1", { connected: true })]);
-  const none = readiness(true, []);
+  const mine = readiness([machine("mc-1", { connected: true })]);
+  const none = readiness([]);
 
   assert.equal(onceSharedKnown(none, false), undefined);
   assert.deepEqual(onceSharedKnown(none, true), { kind: "unpaired" });
-  assert.equal(onceSharedKnown(readiness(true, [machine("mc-2")]), false), undefined);
+  assert.equal(onceSharedKnown(readiness([machine("mc-2")]), false), undefined);
   assert.deepEqual(onceSharedKnown(mine, false), mine);
-  assert.deepEqual(onceSharedKnown(readiness(false, []), false), { kind: "unserved" });
   assert.equal(onceSharedKnown(undefined, true), undefined);
 });
 
 test("each thing missing to call an agent reads as its own line", () => {
-  const lines = (["unserved", "unpaired", "offline", "outdated"] as const).map(missingText);
-  assert.equal(new Set(lines).size, 4);
   assert.equal(missingText("unpaired"), "Pair a machine in Settings to call your own agent.");
   assert.equal(missingText("offline"), "Your machine is offline. Start Weacon on it to call your agent.");
 });

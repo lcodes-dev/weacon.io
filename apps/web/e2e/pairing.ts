@@ -42,13 +42,13 @@ export async function confirm(page: Page, code: string): Promise<void> {
 /** The build the test cores say they are. */
 export const BUILD: App = { name: "weacon-core", version: "0.0.0", commit: "0000000" };
 
-/** A core's connection to the server, which says `hello` as `app` offering `capabilities` once open. */
-export function dial(page: Page, token: string, app: App, capabilities: string[]): WebSocket {
+/** A core's connection to the server, which says `hello` as `app` once open. */
+export function dial(page: Page, token: string, app: App): WebSocket {
   const url = new URL("/api/machines/connect", page.url());
   url.protocol = "ws:";
   // Node's WebSocket takes headers, as the core's own client sends its bearer token.
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${token}` } } as unknown as string[]);
-  socket.onopen = () => socket.send(JSON.stringify({ id: 1, type: "hello", protocol: PROTOCOL, app, capabilities } satisfies Envelope));
+  socket.onopen = () => socket.send(JSON.stringify({ id: 1, type: "hello", protocol: PROTOCOL, app } satisfies Envelope));
   return socket;
 }
 
@@ -68,7 +68,7 @@ export async function core(
   outside?: Outside,
   symbols?: CodeSymbol[],
 ): Promise<{ settings: MachineSettings; queries: number; set(settings: MachineSettings): void; refuse(): void; close(): void }> {
-  const socket = dial(page, token, BUILD, ["machine.connect", "machine.settings", ...(outside === undefined ? [] : ["sessions.read"]), ...(symbols === undefined ? [] : ["symbols.search"])]);
+  const socket = dial(page, token, BUILD);
   const held = { settings, refusing: false, queries: 0 };
   const send = (envelope: Envelope) => socket.send(JSON.stringify(envelope));
   await new Promise<void>((resolve, reject) => {
@@ -87,6 +87,9 @@ export async function core(
         const found = symbols.filter(({ name }) => words.every((word) => name.toLowerCase().includes(word)));
         const { request, machine, workspace } = envelope;
         send({ id: envelope.id, type: "symbols_answer", request, machine, workspace, answer: { kind: "found", symbols: found, more: false } });
+      } else if (envelope.type === "terminal_command" && envelope.action.kind === "open") {
+        // It has no agent to sign in, so it closes each terminal it is asked to open.
+        send({ id: 0, type: "terminal", workspace: envelope.workspace, terminal: envelope.terminal, event: { kind: "closed" } });
       } else if (envelope.type === "machine_settings_command" && held.refusing) {
         send({ id: envelope.id, type: "error", code: "settings.not_owner", retryable: false });
         return;

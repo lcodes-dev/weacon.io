@@ -3,11 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ChatId, DocId, TaskId};
 
-/// Asks the server, under the capability `workspace.search`, for the tasks, docs and chats in
-/// the workspace that hold every word of `text`, at most 8 words of at most 64 characters, in
-/// 256 bytes. Words of three or more characters match whatever their case and accents; shorter
-/// ones match as typed, ignoring only ASCII case, and text without a longer word finds nothing.
-/// `limit` is 20 without one, and at most 50.
+/// Asks the server for the tasks, docs and chats in the workspace that hold every word of `text`,
+/// at most 8 words of at most 64 characters, in 256 bytes. Words of three or more characters match
+/// whatever their case and accents; shorter ones match as typed, ignoring only ASCII case, and text
+/// without a longer word finds nothing. `limit` is 20 without one, and at most 50.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SearchQuery {
     pub text: String,

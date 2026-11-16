@@ -7,17 +7,28 @@ export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
   return [...chats].sort((a, b) => b.updated_at - a.updated_at || a.id.localeCompare(b.id));
 }
 
-/** An agent a person may call in a chat: on a machine of their `own`, or on one `shared` with the workspace, which may be both. */
-export type Reached = { leg: ChatLeg; own: boolean; shared: boolean };
+/**
+ * An agent a person may call in a chat: on a machine of their `own`, or on one `shared` with the
+ * workspace, which may be both; `terminal` when its machine opens terminals.
+ */
+export type Reached = { leg: ChatLeg; own: boolean; shared: boolean; terminal: boolean };
 
 /**
  * The agents a person may call in `chat`, whoever called each last: those it has on their `own`
- * machines first, then on the others `shared` with the workspace.
+ * machines first, then on the others `shared` with the workspace. `terminals` are the machines that
+ * open terminals.
  */
-export function reached(own: readonly MachineId[], shared: readonly MachineId[], chat: Pick<ChatSummary, "legs"> | undefined): Reached[] {
+export function reached(
+  own: readonly MachineId[],
+  shared: readonly MachineId[],
+  chat: Pick<ChatSummary, "legs"> | undefined,
+  terminals: readonly MachineId[],
+): Reached[] {
   const machines = [...own, ...shared.filter((machine) => !own.includes(machine))];
   const on = (machine: MachineId) => chat?.legs.filter((leg) => leg.machine_id === machine && !leg.detached) ?? [];
-  return machines.flatMap((machine) => on(machine).map((leg) => ({ leg, own: own.includes(machine), shared: shared.includes(machine) })));
+  return machines.flatMap((machine) =>
+    on(machine).map((leg) => ({ leg, own: own.includes(machine), shared: shared.includes(machine), terminal: terminals.includes(machine) })),
+  );
 }
 
 /** The agents of a chat `member` just started, until the list has it: the one its first message `called`, on one of `machines`. */

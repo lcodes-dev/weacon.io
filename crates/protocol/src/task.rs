@@ -35,8 +35,8 @@ pub enum Author {
     },
 }
 
-/// A task as it travels: `order` is its order key and `version` rises with each change. The
-/// server sends it to clients that have the capability `workspace.tasks`.
+/// A task as it travels: `order` is its order key and `version` rises with each change. The server
+/// sends it to clients.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct TaskRecord {
     pub id: TaskId,

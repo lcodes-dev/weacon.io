@@ -73,8 +73,7 @@ pub struct MemberSummary {
 }
 
 /// A workspace's members, past ones included, in the order they were added, from the server to
-/// clients that have the capability `workspace.members`. Only its owner gets the live
-/// invitations.
+/// clients. Only its owner gets the live invitations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MemberList {
     pub members: Vec<MemberSummary>,
@@ -95,22 +94,21 @@ pub enum WorkspaceChange {
     /// A machine began or stopped being shared with the workspace; clients read its shared
     /// machines again.
     MachinesChanged,
-    /// A task was made, at version 1, or changed. Only for clients that have the capability
-    /// `workspace.tasks`, which read the tasks again to see what it now is.
+    /// A task was made, at version 1, or changed. Clients read the tasks again to see what it now
+    /// is.
     TaskChanged { task: TaskId, version: u64 },
-    /// A doc was made, at version 1, or revised. Only for clients that have the capability
-    /// `workspace.docs`, which read the doc again to see what it now says.
+    /// A doc was made, at version 1, or revised. Clients read the doc again to see what it now
+    /// says.
     DocChanged { doc: DocId, version: u64 },
-    /// A chat was made, or its title, state, latest turn or latest run changed. Only for clients
-    /// that have the capability `workspace.chats`, which read the chats again.
+    /// A chat was made, or its title, state, latest turn or latest run changed. Clients read the
+    /// chats again.
     ChatChanged { chat: ChatId },
-    /// A proposal was made or its state changed. Only for clients that have the capability
-    /// `workspace.proposals`, which read the proposals again.
+    /// A proposal was made or its state changed. Clients read the proposals again.
     ProposalChanged { proposal: ProposalId },
 }
 
-/// One change to `workspace`, from the server to clients that have `workspace.feed`. `seq` grows
-/// strictly within a workspace, and a feed opened with `since=N` sends every change after `N`.
+/// One change to `workspace`, from the server to clients. `seq` grows strictly within a workspace,
+/// and a feed opened with `since=N` sends every change after `N`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkspaceUpdate {
     pub workspace: WorkspaceId,

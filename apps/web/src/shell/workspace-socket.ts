@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 
-import { HELLO_ID, type WebCapability } from "../connection.ts";
+import { HELLO_ID } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
 import type { Envelope, WorkspaceId } from "../protocol.ts";
 
@@ -10,7 +10,6 @@ export class WorkspaceSocket {
   #send: ((envelope: Envelope) => void) | undefined;
   #handlers = new Set<(message: Incoming) => void>();
   #lastId = HELLO_ID;
-  #offered: readonly string[] = [];
   #watchers = new Set<() => void>();
   #connection = 0;
 
@@ -18,18 +17,12 @@ export class WorkspaceSocket {
     this.workspace = workspace;
   }
 
-  /**
-   * Sends through `send` from now on, as when the feed goes live with what the server `offered`;
-   * `undefined` when it ends, keeping what was offered until the next welcome says otherwise.
-   */
-  attach(send: ((envelope: Envelope) => void) | undefined, offered?: readonly string[]): void {
-    const changed = send !== this.#send || (offered !== undefined && offered !== this.#offered);
+  /** Sends through `send` from now on, as when the feed goes live; `undefined` when it ends. */
+  attach(send: ((envelope: Envelope) => void) | undefined): void {
+    const changed = send !== this.#send;
     this.#send = send;
     if (send !== undefined) {
       this.#connection += 1;
-    }
-    if (offered !== undefined) {
-      this.#offered = offered;
     }
     if (changed) {
       for (const watcher of [...this.#watchers]) {
@@ -38,10 +31,7 @@ export class WorkspaceSocket {
     }
   }
 
-  /**
-   * Calls `watcher` each time the connection or what the server offers changes, until the
-   * returned function is called.
-   */
+  /** Calls `watcher` each time the connection changes, until the returned function is called. */
   watch(watcher: () => void): () => void {
     this.#watchers.add(watcher);
     return () => this.#watchers.delete(watcher);
@@ -55,11 +45,6 @@ export class WorkspaceSocket {
   /** Whether a connection is attached now. */
   get live(): boolean {
     return this.#send !== undefined;
-  }
-
-  /** Whether the server offered `capability` when it last welcomed the feed. */
-  offers(capability: WebCapability): boolean {
-    return this.#offered.includes(capability);
   }
 
   /** Hands `message` to every page that subscribed. */
@@ -105,10 +90,10 @@ function socketFor(workspace: WorkspaceId | undefined): WorkspaceSocket | undefi
   return workspace === undefined ? undefined : new WorkspaceSocket(workspace);
 }
 
-/** Whether the server offers `capability` on `socket`, kept current as welcomes change it. */
-export function useOffers(socket: WorkspaceSocket | undefined, capability: WebCapability): boolean {
+/** Whether `socket`'s feed has been welcomed yet, so what is sent on it can reach a machine. */
+export function useWelcomed(socket: WorkspaceSocket | undefined): boolean {
   return useSyncExternalStore(
     (changed) => socket?.watch(changed) ?? (() => {}),
-    () => socket?.offers(capability) ?? false,
+    () => (socket?.connection ?? 0) > 0,
   );
 }

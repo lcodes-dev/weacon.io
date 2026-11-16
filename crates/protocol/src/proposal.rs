@@ -19,9 +19,8 @@ token_id!(
     "not a proposal id"
 );
 
-/// What an agent asks the server for, from a core to a server that offers
-/// `workspace.proposals`, for one of its owner's agents. The server answers with receipts under
-/// `request`, and names the owner and machine itself.
+/// What an agent asks the server for, from a core to its server, for one of its owner's agents. The
+/// server answers with receipts under `request`, and names the owner and machine itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProposalCommand {
     pub request: RequestId,
@@ -99,8 +98,8 @@ pub enum AnchorChange {
     Gone { was: String },
 }
 
-/// What a core asks a server that offers `workspace.proposals` about its owner's workspace,
-/// to propose what a move of the code did to its docs. The answer is a [`ProposalAnswer`].
+/// What a core asks its server about its owner's workspace, to propose what a move of the code did
+/// to its docs. The answer is a [`ProposalAnswer`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProposalQuery {
     pub request: RequestId,
@@ -180,9 +179,8 @@ pub enum ProposalState {
     Withdrawn,
 }
 
-/// A proposal, from the server to clients that have the capability `workspace.proposals`, at
-/// `at` seconds since the Unix epoch. Its author's machine is a name, never an id, and only an
-/// open proposal still holds its `change`.
+/// A proposal, from the server to clients, at `at` seconds since the Unix epoch. Its author's
+/// machine is a name, never an id, and only an open proposal still holds its `change`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProposalRecord {
     pub id: ProposalId,

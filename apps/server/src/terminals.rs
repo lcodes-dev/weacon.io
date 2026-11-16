@@ -8,17 +8,12 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use tokio::sync::mpsc;
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Asker, Capability, Code, Envelope, MachineId, Message, TerminalAction, TerminalCommand,
-    TerminalEvent, TerminalId, TerminalUpdate, WorkspaceId, code,
+    Asker, Code, Envelope, MachineId, Message, TerminalAction, TerminalCommand, TerminalEvent,
+    TerminalId, TerminalUpdate, WorkspaceId, code,
 };
 
 use crate::relay::{self, Ask, Refusal};
 use crate::shared::Shared;
-
-/// What the server offers, and a browser offers back, to have sign-in terminals relayed.
-pub(crate) const TERMINALS: Code = code!("terminal.relay");
-/// What a machine's core offers to run sign-in terminals.
-const SIGN_IN: Code = code!("terminal.sign_in");
 
 type Key = (MachineId, TerminalId);
 
@@ -77,11 +72,7 @@ async fn sent(
     shared
         .terminals
         .route(key.clone(), command, ask.asker, back)?;
-    if shared
-        .links
-        .send(&key.0, &Capability::new(SIGN_IN), envelope)
-        .is_err()
-    {
+    if shared.links.send(&key.0, envelope).is_err() {
         shared.terminals.lock().remove(&key);
         return Err(relay::refused(code!("machine.offline"), true));
     }
@@ -171,11 +162,7 @@ fn abandon(shared: &Shared, (machine, terminal): Key, route: Route) {
         id: shared.links.next_id(),
         message: Message::TerminalCommand(close),
     };
-    drop(
-        shared
-            .links
-            .send(&machine, &Capability::new(SIGN_IN), envelope),
-    );
+    drop(shared.links.send(&machine, envelope));
 }
 
 impl Terminals {
@@ -286,12 +273,12 @@ mod tests {
         }
     }
 
-    // `paired`'s core, connected and offering `capabilities`.
-    async fn connect_core(address: SocketAddr, paired: &Paired, capabilities: &[&str]) -> Socket {
+    // `paired`'s core, connected.
+    async fn connect_core(address: SocketAddr, paired: &Paired) -> Socket {
         let mut core = open(address, "/api/machines/connect", &paired.token)
             .await
             .unwrap();
-        say(&mut core, capabilities).await;
+        say(&mut core).await;
         assert!(matches!(next(&mut core).await, Message::Welcome(_)));
         assert!(pongs(&mut core).await);
         core
@@ -302,7 +289,7 @@ mod tests {
         let mut browser = open(address, "/api/workspaces/w1/feed", &paired.session)
             .await
             .unwrap();
-        say(&mut browser, &["workspace.feed", "terminal.relay"]).await;
+        say(&mut browser).await;
         assert!(matches!(next(&mut browser).await, Message::Welcome(_)));
         while !matches!(next(&mut browser).await, Message::Workspace(_)) {}
         browser
@@ -346,8 +333,7 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let signs_in = ["machine.connect", "terminal.sign_in"];
-        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut core = connect_core(server.address, &paired).await;
         let mut browser = browser(server.address, &paired).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
         let Message::TerminalCommand(open) = opening(&machine, "w1").message else {
@@ -384,11 +370,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_terminal_on_a_machine_not_theirs_elsewhere_or_without_sign_ins_is_closed() {
+    async fn a_terminal_on_a_machine_not_theirs_elsewhere_or_not_connected_is_closed() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
-        let _core = connect_core(server.address, &paired, &["machine.connect"]).await;
         let mut browser = browser(server.address, &paired).await;
         let stranger: MachineId = id("mc-stranger");
 
@@ -397,7 +382,7 @@ mod tests {
         send(&mut browser, opening(&paired.machine_id(), "w9")).await;
         let elsewhere = next_envelope(&mut browser).await;
         send(&mut browser, opening(&paired.machine_id(), "w1")).await;
-        let unoffered = next_envelope(&mut browser).await;
+        let offline = next_envelope(&mut browser).await;
 
         assert_eq!(closed_code(&not_theirs), Some("machine.not_found"));
         let Message::Terminal(elsewhere_update) = &elsewhere.message else {
@@ -405,7 +390,7 @@ mod tests {
         };
         assert_eq!(elsewhere_update.workspace.as_str(), "w9");
         assert_eq!(closed_code(&elsewhere), Some("machine.not_found"));
-        assert_eq!(closed_code(&unoffered), Some("machine.offline"));
+        assert_eq!(closed_code(&offline), Some("machine.offline"));
     }
 
     #[tokio::test]
@@ -414,19 +399,9 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let mut core = connect_core(
-            server.address,
-            &paired,
-            &["machine.connect", "terminal.sign_in"],
-        )
-        .await;
+        let mut core = connect_core(server.address, &paired).await;
         let other = pair_machine(&fixture, server.address).await;
-        let mut other_core = connect_core(
-            server.address,
-            &other,
-            &["machine.connect", "terminal.sign_in"],
-        )
-        .await;
+        let mut other_core = connect_core(server.address, &other).await;
         let mut opener = browser(server.address, &paired).await;
         let mut second = browser(server.address, &paired).await;
 
@@ -456,8 +431,7 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let signs_in = ["machine.connect", "terminal.sign_in"];
-        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut core = connect_core(server.address, &paired).await;
         let mut browser = browser(server.address, &paired).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
 
@@ -484,8 +458,7 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let signs_in = ["machine.connect", "terminal.sign_in"];
-        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut core = connect_core(server.address, &paired).await;
         let mut browser = browser(server.address, &paired).await;
 
         send(&mut browser, opening(&machine, "w1")).await;
@@ -507,8 +480,7 @@ mod tests {
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
         let machine = paired.machine_id();
-        let signs_in = ["machine.connect", "terminal.sign_in"];
-        let mut core = connect_core(server.address, &paired, &signs_in).await;
+        let mut core = connect_core(server.address, &paired).await;
         let mut browser = browser(server.address, &paired).await;
 
         send(&mut browser, opening(&machine, "w1")).await;
@@ -570,7 +542,7 @@ mod tests {
             machine: machine.clone(),
             owner: asker.account,
         };
-        let _again = shared.links.open(connected, Vec::new());
+        let _again = shared.links.open(connected);
 
         offline(shared, &machine);
 

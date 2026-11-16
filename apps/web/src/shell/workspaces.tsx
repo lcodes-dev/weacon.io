@@ -2,12 +2,12 @@ import { type ReactNode, useContext, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { Api } from "../api/api.ts";
-import { answered, useLoaded } from "../api/loaded.ts";
+import { useLoaded } from "../api/loaded.ts";
 import { Problem } from "../api/problem.tsx";
 import { workspaceOf } from "../chat-ref.ts";
-import { useChatAccess } from "../chat/access.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
+import { opensTerminals } from "../machines/core.ts";
 import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
@@ -28,7 +28,7 @@ import { Landing } from "./landing.tsx";
 import { STORE, opening, remember } from "./last-workspace.ts";
 import { type Place, placeOf, searchOf } from "./place.ts";
 import { WorkspaceMenu } from "./workspace-menu.tsx";
-import { type WorkspaceSocket, useOffers, useSocketFor } from "./workspace-socket.ts";
+import { type WorkspaceSocket, useSocketFor } from "./workspace-socket.ts";
 
 /** The open workspace, as a page shown over it, such as Settings, sees it. */
 export type OpenWorkspace = { workspace: WorkspaceSummary; socket: WorkspaceSocket; left(notice: string): void };
@@ -167,14 +167,10 @@ type Open = {
 function Workspace(open: Open) {
   const { api, workspace, socket, place } = open;
   const status = useFeed(workspace.id, api, socket);
-  // Whether the server serves chats, known once the feed is welcomed.
-  const { read, send } = useChatAccess(socket);
   const names = useNames(useMembers(api, workspace.id, socket));
-  const served = useSections(socket);
-  const searches = useOffers(socket, "workspace.search");
-  const palette = (chatMachine?: MachineId) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={searches && !open.away} go={open.go} />;
+  const palette = (chatMachine?: MachineId) => <Palette api={api} workspace={workspace.id} socket={socket} chatMachine={chatMachine} enabled={!open.away} go={open.go} />;
   if (place.view === "chats") {
-    return <WorkspaceChats {...open} place={place} status={status} read={read} send={send} names={names} palette={palette} tasksServed={served.tasks} />;
+    return <WorkspaceChats {...open} place={place} status={status} names={names} palette={palette} />;
   }
   return (
     <div className="workspace detail">
@@ -185,10 +181,8 @@ function Workspace(open: Open) {
       </Side>
       <section>
         <Heading title={TITLES[place.view]} status={status} back={() => open.go({ view: "chats" })} />
-        {!served[place.view] ? (
-          <p className="page muted">{status.state === "connecting" ? "Loading" : `This server doesn't offer ${TITLES[place.view].toLowerCase()}.`}</p>
-        ) : place.view === "tasks" ? (
-          <TasksPage api={api} workspace={workspace.id} socket={socket} shown={place.task} startChat={send ? (task) => open.go({ view: "chats", task }) : undefined} />
+        {place.view === "tasks" ? (
+          <TasksPage api={api} workspace={workspace.id} socket={socket} shown={place.task} startChat={(task) => open.go({ view: "chats", task })} />
         ) : place.view === "docs" ? (
           <DocsPage api={api} workspace={workspace.id} socket={socket} names={names} doc={place.doc} choose={(doc) => open.go(doc === undefined ? { view: "docs" } : { view: "docs", doc })} />
         ) : (
@@ -208,27 +202,14 @@ function Side({ detail, children }: { detail: boolean; children: ReactNode }) {
   return slot === null ? null : createPortal(<div className={detail ? "side detail" : "side"}>{children}</div>, slot);
 }
 
-// Which of the sections besides chats the server offers on `socket`.
-function useSections(socket: WorkspaceSocket) {
-  return {
-    tasks: useOffers(socket, "workspace.tasks"),
-    docs: useOffers(socket, "workspace.docs"),
-    proposals: useOffers(socket, "workspace.proposals"),
-  };
-}
-
 const TITLES = { chats: "Chats", tasks: "Tasks", docs: "Docs", proposals: "Proposals" } as const;
 
-// The workspace's sections the server serves, besides its chats; none when it serves no other.
-function Sections({ socket, place, go }: Pick<Open, "socket" | "place" | "go">) {
-  const served = useSections(socket);
-  const views = (["chats", "tasks", "docs", "proposals"] as const).filter((view) => view === "chats" || served[view]);
-  if (views.length === 1) {
-    return null;
-  }
+const VIEWS = ["chats", "tasks", "docs", "proposals"] as const;
+
+function Sections({ place, go }: Pick<Open, "place" | "go">) {
   return (
     <nav className="sections" aria-label="Sections">
-      {views.map((view) => (
+      {VIEWS.map((view) => (
         <button key={view} type="button" aria-current={view === place.view ? "page" : undefined} onClick={() => go({ view })}>
           {TITLES[view]}
         </button>
@@ -251,7 +232,7 @@ function Heading({ title, status, back }: { title: string; status: Status; back(
 }
 
 /**
- * The workspace's chats, where the server serves them (`read`), kept fresh by its feed, beside the
+ * The workspace's chats, kept fresh by its feed, beside the
  * chosen one or a new one. Every member writes in every chat, and calls only their own agent.
  */
 function WorkspaceChats({
@@ -262,16 +243,13 @@ function WorkspaceChats({
   away,
   place,
   go,
-  read,
-  send,
   names,
   palette,
   openSettings,
   menu,
-  tasksServed,
-}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; read: boolean; send: boolean; names: Names; palette(chatMachine?: MachineId): ReactNode; tasksServed: boolean }) {
-  const chats = useLoaded(() => (read ? api.chats(workspace.id) : answered({ chats: [] })), `${workspace.id} ${read}`);
-  useReloadOn(socket, ({ kind }) => read && kind === "chat_changed", () => void chats.load(), [read]);
+}: Open & { place: Extract<Place, { view: "chats" }>; status: Status; names: Names; palette(chatMachine?: MachineId): ReactNode }) {
+  const chats = useLoaded(() => api.chats(workspace.id), workspace.id);
+  useReloadOn(socket, ({ kind }) => kind === "chat_changed", () => void chats.load());
   const machines = useLoaded(() => api.machines(), api);
   const shared = useLoaded(() => api.sharedMachines(workspace.id), workspace.id);
   const loadMachines = () => {
@@ -288,10 +266,7 @@ function WorkspaceChats({
     wasAway.current = away;
   }, [away]);
   const others = shared.value?.machines ?? [];
-  // Until the feed is welcomed, whether it takes commands isn't known yet.
-  const found = machines.value === undefined || status.state === "connecting" ? undefined : readiness(send, machines.value.machines, others);
-  const ready = onceSharedKnown(found, shared.value !== undefined);
-  const loadedTasks = useTasks(api, workspace.id, socket, tasksServed);
+  const loadedTasks = useTasks(api, workspace.id, socket);
   const tasks = loadedTasks.value?.tasks;
   // New chat for a task opens with it; going to a chat, however, leaves the new one.
   const [starting, setStarting] = useState(place.task !== undefined);
@@ -303,19 +278,25 @@ function WorkspaceChats({
   const startedHere = place.chat !== undefined && place.chat === started?.id ? started : undefined;
   const open = listedChat ?? (startedHere && { ...startedHere, title: undefined });
   // The view stays while the feed reconnects; it sends only once the feed is back.
-  const own = machines.value === undefined ? undefined : readiness(true, machines.value.machines, others);
+  const own = machines.value === undefined ? undefined : readiness(machines.value.machines, others);
+  const ready = onceSharedKnown(own, shared.value !== undefined);
   const mine = own?.kind === "ready" ? own.machines : [];
   const missing = <StartMissing ready={ready} problem={machines.problem ?? shared.problem} check={loadMachines} openSettings={openSettings} />;
   // On their own machines, connected or not, and on those shared with the workspace.
-  const agents = reached((machines.value?.machines ?? []).map(({ id }) => id), others.map(({ id }) => id), open && { legs: withFirst(open.legs, startedHere?.legs ?? []) });
+  const theirs = machines.value?.machines ?? [];
+  const agents = reached(
+    theirs.map(({ id }) => id),
+    others.map(({ id }) => id),
+    open && { legs: withFirst(open.legs, startedHere?.legs ?? []) },
+    theirs.filter(opensTerminals).map(({ id }) => id),
+  );
   const leg = agents[0]?.leg;
-  const listed = read ? chats : status.state === "connecting" ? "connecting" : "none";
   const detail = starting || place.chat !== undefined;
   return (
     <div className={detail ? "workspace detail" : "workspace"}>
       <Side detail={detail || away}>
         <ChatsNav
-          loaded={listed}
+          loaded={chats}
           names={names}
           chosen={starting ? undefined : place.chat}
           choose={(chat) => {
@@ -323,7 +304,7 @@ function WorkspaceChats({
             go({ view: "chats", chat });
           }}
           start={
-            send && status.state !== "connecting"
+            status.state !== "connecting"
               ? () => {
                   setStarting(true);
                   loadMachines();
@@ -332,7 +313,7 @@ function WorkspaceChats({
           }
         >
           {palette(leg?.machine_id)}
-          <Sections socket={socket} place={place} go={go} />
+          <Sections place={place} go={go} />
         </ChatsNav>
         {menu}
       </Side>
@@ -350,9 +331,9 @@ function WorkspaceChats({
           <NewChat
             key={place.task}
             socket={socket}
-            tasks={tasksServed ? tasks : undefined}
+            tasks={tasks}
             task={place.task}
-            live={live && send}
+            live={live}
             away={away}
             machines={mine}
             missing={missing}

@@ -230,8 +230,8 @@ test("a machine whose id, date or system isn't one is a malformed answer", async
   const bad = [
     { ...MACHINE, id: "../x" },
     { ...MACHINE, paired_at: "today" },
-    { ...MACHINE, missing: "symbols.search" },
-    { ...MACHINE, missing: [7] },
+    { ...MACHINE, offers: "worktree.open_terminal" },
+    { ...MACHINE, offers: [7] },
     { ...MACHINE, connected: "yes" },
     { ...MACHINE, os: "plan9" },
   ];
@@ -239,7 +239,7 @@ test("a machine whose id, date or system isn't one is a malformed answer", async
     ...bad.map((machine) => ({ status: 200, body: { machines: [machine] } })),
     { status: 200, body: { ...PENDING, pairing: "../x" } },
     { status: 200, body: { ...PENDING, os: "plan9" } },
-    { status: 200, body: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } },
+    { status: 200, body: { machines: [{ ...MACHINE, offers: ["worktree.open_terminal"], connected: true }] } },
     { status: 404, body: { code: "pairing.not_found", retryable: false } },
   );
 
@@ -248,7 +248,7 @@ test("a machine whose id, date or system isn't one is a malformed answer", async
   }
   assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
   assert.deepEqual(await api.lookUpPairing("abcd"), { ok: false, code: MALFORMED });
-  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, missing: ["symbols.search"], connected: true }] } });
+  assert.deepEqual(await api.machines(), { ok: true, value: { machines: [{ ...MACHINE, offers: ["worktree.open_terminal"], connected: true }] } });
   assert.deepEqual(await api.confirmPairing({ pairing: "p-1", code: "abcd" }), { ok: false, code: "pairing.not_found" });
 });
 

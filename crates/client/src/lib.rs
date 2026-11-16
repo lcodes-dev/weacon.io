@@ -11,19 +11,18 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use weacon_observability::Fault;
 use weacon_protocol::{
-    App, Capability, Envelope, FrameError, Hello, LineDecoder, Message, PROTOCOL, Welcome, code,
-    encode_line,
+    App, Envelope, FrameError, Hello, LineDecoder, Message, PROTOCOL, Welcome, code, encode_line,
 };
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 const READ_CHUNK: usize = 8192;
 
-/// The daemon's build and capabilities, after a handshake as `me` over the socket at `socket`.
+/// The daemon's build, after a handshake as `me` over the socket at `socket`.
 ///
 /// # Errors
 /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
 pub async fn handshake(socket: &Path, me: App) -> Result<Welcome, Fault> {
-    Ok(Connection::open(socket, me, Vec::new()).await?.0)
+    Ok(Connection::open(socket, me).await?.0)
 }
 
 /// A raw connection to the daemon at `socket`, before any handshake, for relaying another app's
@@ -46,33 +45,24 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Connects to the daemon at `socket` as `me`, offering `capabilities`, and shakes hands,
-    /// giving the daemon's welcome.
+    /// Connects to the daemon at `socket` as `me` and shakes hands, giving the daemon's welcome.
     ///
     /// # Errors
     /// When no daemon listens there, it doesn't answer in time, or it refuses the handshake.
-    pub async fn open(
-        socket: &Path,
-        me: App,
-        capabilities: Vec<Capability>,
-    ) -> Result<(Welcome, Self), Fault> {
-        tokio::time::timeout(TIMEOUT, Self::greet(socket, me, capabilities))
+    pub async fn open(socket: &Path, me: App) -> Result<(Welcome, Self), Fault> {
+        tokio::time::timeout(TIMEOUT, Self::greet(socket, me))
             .await
             .map_err(no_answer)?
     }
 
-    async fn greet(
-        socket: &Path,
-        me: App,
-        capabilities: Vec<Capability>,
-    ) -> Result<(Welcome, Self), Fault> {
+    async fn greet(socket: &Path, me: App) -> Result<(Welcome, Self), Fault> {
         let stream = platform::connect(socket).await.map_err(not_running)?;
         let hello = Envelope {
             id: 1,
             message: Message::Hello(Hello {
                 protocol: PROTOCOL,
                 app: me,
-                capabilities,
+                capabilities: Vec::new(),
             }),
         };
         let mut connection = Self {
@@ -186,12 +176,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_welcome_gives_the_daemons_build_and_capabilities_after_our_hello() {
+    async fn a_welcome_gives_the_daemons_build_after_our_hello() {
         let dir = TempDir::new().unwrap();
         let socket = dir.join("weacon.sock");
         let welcome = Welcome {
             app: app("weacon-core"),
-            capabilities: serde_json::from_str(r#"["chat.send"]"#).unwrap(),
         };
         let mut bytes = b"not json\n".to_vec();
         bytes.extend(
@@ -235,7 +224,6 @@ mod tests {
         let socket = dir.join("weacon.sock");
         let welcome = Welcome {
             app: app("weacon-core"),
-            capabilities: Vec::new(),
         };
         let line = |message| encode_line(&Envelope { id: 0, message }).unwrap();
         let mut bytes = line(Message::Welcome(welcome.clone()));
@@ -243,15 +231,12 @@ mod tests {
         bytes.extend(b"not json\n");
         bytes.extend(line(update("llo")));
         let daemon = send_after_hello(&socket, bytes);
-        let offered = vec![Capability::new(code!("run.stream"))];
 
-        let (welcomed, mut connection) =
-            Connection::open(&socket, app("weacon-extension"), offered.clone())
-                .await
-                .unwrap();
-        let hello = daemon.await.unwrap();
+        let (welcomed, mut connection) = Connection::open(&socket, app("weacon-extension"))
+            .await
+            .unwrap();
+        daemon.await.unwrap();
 
-        assert!(matches!(hello.message, Message::Hello(hello) if hello.capabilities == offered));
         assert_eq!(welcomed, welcome);
         let pushed = |message| Some(Ok(Envelope { id: 0, message }));
         assert_eq!(connection.next().await.unwrap(), pushed(update("He")));
@@ -270,7 +255,6 @@ mod tests {
         let server = Server::bind(&socket).unwrap();
         let welcome = Message::Welcome(Welcome {
             app: app("weacon-core"),
-            capabilities: Vec::new(),
         });
         let daemon = tokio::spawn(async move {
             let mut stream = BufReader::new(server.accept().await.unwrap());
@@ -282,9 +266,7 @@ mod tests {
             stream.write_all(&line(7, update("Hi"))).await.unwrap();
             serde_json::from_str::<Envelope>(&lines[1]).unwrap()
         });
-        let (_, mut connection) = Connection::open(&socket, app("weacon-cli"), Vec::new())
-            .await
-            .unwrap();
+        let (_, mut connection) = Connection::open(&socket, app("weacon-cli")).await.unwrap();
 
         let sent = Envelope {
             id: 7,
@@ -311,7 +293,6 @@ mod tests {
             id: 1,
             message: Message::Welcome(Welcome {
                 app: app("weacon-core"),
-                capabilities: Vec::new(),
             }),
         };
         let daemon = tokio::spawn(async move {
@@ -330,9 +311,7 @@ mod tests {
             message: update("Hi"),
         };
 
-        let (_, mut connection) = Connection::open(&socket, app("weacon-core"), Vec::new())
-            .await
-            .unwrap();
+        let (_, mut connection) = Connection::open(&socket, app("weacon-core")).await.unwrap();
         connection.send(&envelope).await.unwrap();
 
         assert_eq!(daemon.await.unwrap(), envelope);

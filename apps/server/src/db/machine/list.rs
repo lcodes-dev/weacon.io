@@ -11,12 +11,10 @@ use crate::db::{Db, failed};
 type Row = (String, String, String, i64, Option<String>, Option<String>);
 
 impl Db {
-    /// The machines paired with `account`, oldest first, each with the `offered` capabilities
-    /// its core didn't offer back when it last connected.
+    /// The machines paired with `account`, oldest first.
     pub(crate) async fn machines_of(
         &self,
         account: &AccountId,
-        offered: &[Capability],
     ) -> Result<Vec<MachineSummary>, Fault> {
         sqlx::query_as::<_, Row>(
             "SELECT machine_id, name, os, paired_at, core_build, core_offers
@@ -27,7 +25,7 @@ impl Db {
         .await
         .map_err(failed)?
         .into_iter()
-        .map(|row| stored_machine(row, offered))
+        .map(stored_machine)
         .collect()
     }
 
@@ -49,23 +47,15 @@ impl Db {
     }
 }
 
-fn stored_machine(row: Row, offered: &[Capability]) -> Result<MachineSummary, Fault> {
+fn stored_machine(row: Row) -> Result<MachineSummary, Fault> {
     let (id, name, os, paired_at, core, offers) = row;
     // A value this build can't read shows the machine as not connected yet, not the list as broken.
     let core: Option<App> = core.and_then(|core| serde_json::from_str(&core).ok());
     let offers: Option<Vec<Capability>> =
         offers.and_then(|offers| serde_json::from_str(&offers).ok());
-    // Only a core whose build shows can be shown as older than the server.
-    let missing = match (&core, offers) {
-        (Some(_), Some(offers)) => (offered.iter())
-            .filter(|wanted| !offers.contains(wanted))
-            .cloned()
-            .collect(),
-        _ => Vec::new(),
-    };
     Ok(MachineSummary {
         core,
-        missing,
+        offers: offers.unwrap_or_default(),
         ..paired(id, name, &os, paired_at)?
     })
 }
@@ -79,46 +69,31 @@ mod tests {
     use crate::db::test_support::{NOW, id};
 
     #[tokio::test]
-    async fn a_machine_shows_its_cores_build_and_what_it_lacks_of_the_servers_offers() {
+    async fn a_machine_shows_its_cores_build_and_what_it_offers() {
         let Setup { _dir, db, ada, .. } = setup().await;
         start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
         claim(&db, "p1", "secret", NOW + 1).await;
-        let offered = [
-            Capability::new(code!("machine.connect")),
-            Capability::new(code!("machine.settings")),
-        ];
+        let offered = [Capability::new(code!("worktree.open_terminal"))];
         let core = App {
             name: "weacon-core".to_owned(),
             version: "1.2.3".to_owned(),
             commit: "abc".to_owned(),
         };
 
-        let before = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), Some(&core), &offered[..1])
-            .await
-            .unwrap();
-        let older = db.machines_of(&ada, &offered).await.unwrap();
-        let earlier_server = db.machines_of(&ada, &offered[..1]).await.unwrap();
+        let before = db.machines_of(&ada).await.unwrap();
         db.saw_core(&id("mc-p1"), Some(&core), &offered)
             .await
             .unwrap();
-        let current = db.machines_of(&ada, &offered).await.unwrap();
-        db.saw_core(&id("mc-p1"), None, &offered[..1])
-            .await
-            .unwrap();
-        let unplain = db.machines_of(&ada, &offered).await.unwrap();
+        let with_terminal = db.machines_of(&ada).await.unwrap();
+        db.saw_core(&id("mc-p1"), None, &[]).await.unwrap();
+        let unplain = db.machines_of(&ada).await.unwrap();
 
-        assert_eq!(
-            (before[0].core.as_ref(), before[0].missing.len()),
-            (None, 0)
-        );
-        assert_eq!(older[0].core.as_ref(), Some(&core));
-        assert_eq!(older[0].missing, offered[1..]);
-        assert_eq!(earlier_server[0].missing, []);
-        assert_eq!(current[0].missing, []);
+        assert_eq!((before[0].core.as_ref(), before[0].offers.len()), (None, 0));
+        assert_eq!(with_terminal[0].core.as_ref(), Some(&core));
+        assert_eq!(with_terminal[0].offers, offered);
         assert_eq!(unplain[0].core, None);
-        assert_eq!(unplain[0].missing, []);
+        assert_eq!(unplain[0].offers, []);
     }
 
     #[tokio::test]
@@ -132,11 +107,10 @@ mod tests {
             .await
             .unwrap();
 
-        let offered = [Capability::new(code!("machine.connect"))];
-        let machines = db.machines_of(&ada, &offered).await.unwrap();
+        let machines = db.machines_of(&ada).await.unwrap();
 
         assert_eq!(
-            (machines[0].core.as_ref(), machines[0].missing.len()),
+            (machines[0].core.as_ref(), machines[0].offers.len()),
             (None, 0)
         );
     }

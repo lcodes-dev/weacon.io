@@ -4,19 +4,18 @@ import type { ChatRef } from "../chat-ref.ts";
 import { newId } from "../ids.ts";
 import { route } from "../incoming.ts";
 import type { MachineId } from "../protocol.ts";
-import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { type Ask, UNASKED, answered, cancelled, ended, envelopeFor, resumeLine, unsent, waiting } from "./worktree.ts";
 
 /**
  * The worktree the chat at `chatRef` has on `machine`, asked over `link` while it is `live`: its
  * state each time it is `shown`, and answers while it isn't. A pull request's draft stays until the
- * core opens it. What the server offers decides whether there is one.
+ * core opens it.
  */
 export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined, machine: MachineId | undefined, live: boolean, shown: boolean) {
   const [worktree, setWorktree] = useState(UNASKED);
   const [draft, setDraft] = useState<{ title: string; body: string }>();
-  const manages = useOffers(link, "worktree.manage");
-  const usable = chatRef !== undefined && machine !== undefined && live && manages;
+  const usable = chatRef !== undefined && machine !== undefined && live;
   // Whether `ask` went out; the screen says so when it couldn't.
   const ask = (what: Ask): boolean => {
     if (chatRef === undefined || machine === undefined) {

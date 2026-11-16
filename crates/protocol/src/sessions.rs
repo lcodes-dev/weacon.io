@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AccountId, AgentKind, AgentSession, ChatEntry, MachineId, RequestId};
 
-/// A person asks their own machine about the agent sessions they ran outside Weacon, from a
-/// client to a core that offers `sessions.read`. No workspace holds these sessions.
+/// A person asks their own machine about the agent sessions they ran outside Weacon, from a client
+/// to a core. No workspace holds these sessions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsQuery {
     pub request: RequestId,
@@ -30,8 +30,7 @@ pub enum SessionsQueryKind {
     },
 }
 
-/// The core's answer to a [`SessionsQuery`] under the same `request`, to a client that has
-/// `sessions.read`.
+/// The core's answer to a [`SessionsQuery`] under the same `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionsAnswer {
     pub request: RequestId,

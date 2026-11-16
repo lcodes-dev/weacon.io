@@ -219,7 +219,6 @@ fn refusal(log: &Logger, workspace: &WorkspaceId, fault: &Fault) -> Message {
 
 #[cfg(test)]
 mod tests {
-    use weacon_protocol::{Capability, code};
 
     use super::*;
     use crate::db::test_support::{NOW, append, id, make, said};
@@ -243,11 +242,11 @@ mod tests {
         (server, body["token"].as_str().unwrap().to_owned())
     }
 
-    async fn feed(server: &Running, token: &str, offers: &[&str]) -> Socket {
+    async fn feed(server: &Running, token: &str) -> Socket {
         let mut client = open(server.address, "/api/workspaces/w1/feed", token)
             .await
             .unwrap();
-        say(&mut client, offers).await;
+        say(&mut client).await;
         assert!(matches!(next(&mut client).await, Message::Welcome(_)));
         client
     }
@@ -328,7 +327,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
+        let mut client = feed(&server, &token).await;
 
         ask(
             &mut client,
@@ -368,20 +367,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_client_that_doesnt_offer_chats_gets_no_answer_about_them() {
-        let fixture = Fixture::new().await;
-        let (server, token) = ada(&fixture).await;
-        make(&w1(&fixture).await, "c-1", "m1", NOW).await.unwrap();
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.tasks"]).await;
-        assert!(matches!(next(&mut client).await, Message::Workspace(_)));
-
-        ask(&mut client, 2, query("w1", ChatQueryKind::Snapshot)).await;
-
-        // Its ping is taken after the query, so a pong that comes first means no answer came.
-        assert!(socket::pongs(&mut client).await);
-    }
-
     fn prompt(chat: &str, machine: Option<&str>) -> Message {
         let machine = machine.map(id::<weacon_protocol::MachineId>);
         let asked = crate::db::test_support::prompt("r-9", chat, "MARKER-PROMPT", machine.as_ref());
@@ -397,16 +382,7 @@ mod tests {
         let workspace = w1(&fixture).await;
         make(&workspace, "c-1", "m1", NOW).await.unwrap();
         workspace.legs_took_prompts().await;
-        let mut client = feed(
-            &server,
-            &paired.session,
-            &[
-                "workspace.feed",
-                "workspace.chats",
-                "workspace.chat_commands",
-            ],
-        )
-        .await;
+        let mut client = feed(&server, &paired.session).await;
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
         assert_eq!(
@@ -446,8 +422,7 @@ mod tests {
             machine: id(&machine),
             owner: owner.unwrap(),
         };
-        let offers = vec![Capability::new(code!("chat.serve"))];
-        let attached = fixture.shared.links.open(connected, offers);
+        let attached = fixture.shared.links.open(connected);
         (paired.session, machine, attached)
     }
 
@@ -459,7 +434,7 @@ mod tests {
         quiet.sockets.ping_every = std::time::Duration::from_hours(1);
         let (server, token) = ada_on(&fixture, quiet).await;
         let workspace = w1(&fixture).await;
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
+        let mut client = feed(&server, &token).await;
         // Past what the feed sends first, which ends it once the membership has.
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
         workspace
@@ -481,16 +456,7 @@ mod tests {
         let server = run(quiet).await;
         let (session, machine, mut attached) = serving(&fixture, &server).await;
         let workspace = w1(&fixture).await;
-        let mut client = feed(
-            &server,
-            &session,
-            &[
-                "workspace.feed",
-                "workspace.chats",
-                "workspace.chat_commands",
-            ],
-        )
-        .await;
+        let mut client = feed(&server, &session).await;
         // Past what the feed sends first, which ends it once the membership has.
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
         workspace
@@ -510,16 +476,7 @@ mod tests {
         let fixture = Fixture::new().await;
         let server = run(fixture.shared.clone()).await;
         let (session, machine, _attached) = serving(&fixture, &server).await;
-        let mut client = feed(
-            &server,
-            &session,
-            &[
-                "workspace.feed",
-                "workspace.chats",
-                "workspace.chat_commands",
-            ],
-        )
-        .await;
+        let mut client = feed(&server, &session).await;
         assert!(matches!(next(&mut client).await, Message::Workspace(_)));
 
         ask(&mut client, 2, prompt("c-9", Some(&machine))).await;
@@ -534,19 +491,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_client_that_only_reads_chats_gets_no_answer_to_a_command() {
-        let fixture = Fixture::new().await;
-        let (server, token) = ada(&fixture).await;
-        make(&w1(&fixture).await, "c-1", "m1", NOW).await.unwrap();
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
-
-        ask(&mut client, 2, prompt("c-1", None)).await;
-        ask(&mut client, 3, query("w1", ChatQueryKind::Snapshot)).await;
-
-        assert!(matches!(heard(&mut client).await, Message::ChatAnswer(_)));
-    }
-
-    #[tokio::test]
     async fn a_subscription_at_the_chats_end_hears_the_next_event() {
         let fixture = Fixture::new().await;
         let (server, token) = ada(&fixture).await;
@@ -555,7 +499,7 @@ mod tests {
         append(&workspace, "c-1", &[(Some(1), said("a"))])
             .await
             .unwrap();
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
+        let mut client = feed(&server, &token).await;
 
         let at_end = query("w1", ChatQueryKind::Subscribe { after: 1 });
         ask(&mut client, 2, at_end).await;
@@ -631,7 +575,7 @@ mod tests {
         let more = u64::from(PAGE) + 5;
         let events: Vec<_> = (1..=more).map(|seq| (Some(seq), said("a"))).collect();
         append(&workspace, "c-1", &events).await.unwrap();
-        let mut client = feed(&server, &token, &["workspace.feed", "workspace.chats"]).await;
+        let mut client = feed(&server, &token).await;
 
         let from_start = query("w1", ChatQueryKind::Subscribe { after: 0 });
         ask(&mut client, 2, from_start).await;
@@ -689,11 +633,7 @@ mod tests {
         append(&workspace, "c-1", &[(Some(1), said("a"))])
             .await
             .unwrap();
-        let offers = ["workspace.feed", "workspace.chats"];
-        let (mut one, mut two) = (
-            feed(&server, &token, &offers).await,
-            feed(&server, &token, &offers).await,
-        );
+        let (mut one, mut two) = (feed(&server, &token).await, feed(&server, &token).await);
         subscribe(&mut one, 2).await;
         subscribe(&mut one, 3).await;
         subscribe(&mut two, 2).await;

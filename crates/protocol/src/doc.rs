@@ -91,8 +91,7 @@ pub struct DocAnchors {
     pub repo: Option<RepoId>,
 }
 
-/// A doc at one revision; `version` rises with each revision. The server sends it to clients
-/// that have the capability `workspace.docs`.
+/// A doc at one revision; `version` rises with each revision. The server sends it to clients.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DocRecord {
     pub id: DocId,

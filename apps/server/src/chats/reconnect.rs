@@ -111,7 +111,7 @@ mod tests {
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         chats(&ada).await;
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         assert_eq!(follow_again(shared, &connected(&ada)).await.unwrap(), 0);
 
@@ -133,7 +133,7 @@ mod tests {
         let shared = &fixture.shared;
         let ada = ada(&fixture).await;
         chats(&ada).await;
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada);
         let (notices, missed) = tokio::sync::broadcast::channel(1);
         let elsewhere = Connected {
             machine: id("mc-other"),
@@ -159,17 +159,15 @@ mod tests {
         chats(&ada).await;
         tokio::spawn(follow_machines(shared.clone()));
 
-        let mut attached = attach(shared, &ada, &["chat.serve"]);
+        let mut attached = attach(shared, &ada);
 
         let first = tokio::time::timeout(crate::test_support::PATIENCE, attached.incoming.recv());
         let first = first.await.unwrap().unwrap();
         assert_eq!(first.message, follow_query("c-1", 3));
         drop(attached);
-        let older = attach(shared, &ada, &["machine.connect"]);
         assert_eq!(follow_again(shared, &connected(&ada)).await.unwrap(), 2);
         pick_up(shared, &connected(&ada)).await;
         let warned = crate::test_support::messages(&fixture.records);
         assert!(warned.contains(&"chats not all picked up"), "{warned:?}");
-        drop(older);
     }
 }

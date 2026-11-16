@@ -3,11 +3,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AccessLevel, AgentKind, Asker, MachineId, RepoId, RequestId, WorkspaceId};
 
-/// From the owner of `machine` to its core, which offers `machine.settings`: what the machine
-/// keeps for `workspace`. The server relays it only from the machine's owner, and the core
-/// answers only when `by` is its owner; `repos` and `agents` are also relayed from, and answered
-/// to, any member of a workspace the machine is shared with. The answer is a
-/// [`MachineSettingsAnswer`] that echoes `request`.
+/// From the owner of `machine` to its core: what the machine keeps for `workspace`. The server
+/// relays it only from the machine's owner, and the core answers only when `by` is its owner;
+/// `repos` and `agents` are also relayed from, and answered to, any member of a workspace the
+/// machine is shared with. The answer is a [`MachineSettingsAnswer`] that echoes `request`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineSettingsQuery {
     pub request: RequestId,
@@ -25,17 +24,16 @@ pub struct MachineSettingsQuery {
 pub enum MachineSettingsQueryKind {
     /// The settings as they are now.
     Current,
-    /// The repositories the owner registered for the workspace, of a core that offers
-    /// `repo.list`.
+    /// The repositories the owner registered for the workspace.
     Repos,
     /// The agents signed in on the machine for the workspace.
     Agents,
 }
 
-/// From the owner of `machine` to its core, which offers `machine.settings`: changes what the
-/// machine keeps for `workspace`. The server relays it only from the machine's owner, and the
-/// core acts only when `by` is its owner; the answer is a [`MachineSettingsAnswer`] that echoes
-/// `request` and holds the settings after the change.
+/// From the owner of `machine` to its core: changes what the machine keeps for `workspace`. The
+/// server relays it only from the machine's owner, and the core acts only when `by` is its owner;
+/// the answer is a [`MachineSettingsAnswer`] that echoes `request` and holds the settings after the
+/// change.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineSettingsCommand {
     pub request: RequestId,
@@ -57,8 +55,8 @@ pub enum MachineSettingsAction {
     SetShared { shared: bool },
 }
 
-/// From the core to a client that has `machine.settings`, in answer to a
-/// [`MachineSettingsQuery`] or a [`MachineSettingsCommand`].
+/// From the core to a client, in answer to a [`MachineSettingsQuery`] or a
+/// [`MachineSettingsCommand`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineSettingsAnswer {
     pub request: RequestId,

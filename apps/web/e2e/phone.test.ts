@@ -193,7 +193,7 @@ test("on a phone the chats show first, a chat fills the screen, and every page f
   assert.equal(await page.getByText("All 12 tests pass.").count(), 1);
   await shown(page, page.locator(".composer"), "the message box");
   await page.getByRole("button", { name: "Changes" }).tap();
-  await page.getByRole("region", { name: "Worktree" }).getByRole("button", { name: "Open terminal" }).waitFor();
+  await page.getByRole("region", { name: "Worktree" }).waitFor();
   await fits(page, "a chat's worktree");
   await page.getByRole("button", { name: "Back", exact: true }).tap();
 
@@ -389,7 +389,7 @@ test("on a phone a prompt with a long command or a whole file keeps its text in 
   const served = await serve(PHONE);
   t.after(() => served.close());
   const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands"], answer: waitingChat });
+  const { sent } = await serveFeed(page, { answer: waitingChat });
   await signIn(served);
   await page.getByRole("button", { name: "Personal" }).waitFor();
   const member = await page.evaluate(async () => ((await (await fetch("/api/workspaces")).json()) as WorkspaceList).workspaces[0]?.member ?? "");

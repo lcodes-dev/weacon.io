@@ -2,39 +2,15 @@ import { PROTOCOL } from "../../../tooling/ts/version.ts";
 import { type Incoming, parse } from "./incoming.ts";
 import type { App, Envelope } from "./protocol.ts";
 
-/** Every capability the web app speaks of, in its hello or in the server's welcome. */
-export type WebCapability =
-  | "run.stream"
-  | "workspace.feed"
-  | "workspace.chats"
-  | "workspace.tasks"
-  | "workspace.docs"
-  | "workspace.proposals"
-  | "workspace.members"
-  | "workspace.chat_commands"
-  | "chat.live"
-  | "workspace.search"
-  | "diff.view"
-  | "machine.settings"
-  | "sessions.read"
-  | "symbols.search"
-  | "worktree.manage"
-  | "worktree.open_terminal"
-  | "terminal.relay";
-
 /** The hello's envelope id; a connection's requests take the ids after it. */
 export const HELLO_ID = 1;
-
-/** What a connection asks of the server: what it must offer, and what else this app can use. */
-export type Asks = { needs: WebCapability; offers: WebCapability[] };
 
 /** Why a connection ended. */
 export type End =
   | "connection.lost"
   | "connection.refused"
   | "connection.no_answer"
-  | "connection.other_protocol"
-  | "connection.server_too_old";
+  | "connection.other_protocol";
 
 // How long the server has to welcome this app once the socket is made.
 const WELCOME_MS = 10_000;
@@ -50,7 +26,7 @@ export type Socket = {
 /** What happened to the connection, for the view. */
 export type Status =
   | { state: "connecting" }
-  | { state: "live"; server: App; capabilities: string[] }
+  | { state: "live"; server: App }
   | { state: "ended"; code: End };
 
 /** Runs `run` once `ms` have passed; injected, so tests can run it at will. */
@@ -65,24 +41,22 @@ export type Listener = {
   message(envelope: Incoming): void;
 };
 
-/** Says hello as `me`, with what it `asks`, once `socket` opens, then passes on what the server sends. */
+/** Says hello as `me` once `socket` opens, then passes on what the server sends. */
 export class Connection {
   #socket: Socket;
   #listener: Listener;
-  #needs: WebCapability;
   #status: Status = { state: "connecting" };
 
-  constructor(socket: Socket, me: App, listener: Listener, asks: Asks, later: Later) {
+  constructor(socket: Socket, me: App, listener: Listener, later: Later) {
     this.#socket = socket;
     this.#listener = listener;
-    this.#needs = asks.needs;
     later(() => {
       if (this.#status.state === "connecting") {
         this.#end("connection.no_answer");
       }
     }, WELCOME_MS);
     socket.addEventListener("open", () => {
-      this.#send({ id: HELLO_ID, type: "hello", protocol: PROTOCOL, app: me, capabilities: [asks.needs, ...asks.offers] });
+      this.#send({ id: HELLO_ID, type: "hello", protocol: PROTOCOL, app: me });
     });
     socket.addEventListener("message", ({ data }) => {
       const envelope = parse(data);
@@ -118,12 +92,7 @@ export class Connection {
       this.#end(other ? "connection.other_protocol" : "connection.refused");
       return;
     }
-    const capabilities = envelope.capabilities ?? [];
-    if (!capabilities.includes(this.#needs)) {
-      this.#end("connection.server_too_old");
-      return;
-    }
-    this.#status = { state: "live", server: envelope.app, capabilities };
+    this.#status = { state: "live", server: envelope.app };
     this.#listener.status(this.#status);
   }
 
@@ -143,7 +112,6 @@ const ENDINGS: Record<End, string> = {
   "connection.refused": "The server can't be reached.",
   "connection.no_answer": "The server didn't answer.",
   "connection.other_protocol": "The server runs another version of Weacon. Reload the page.",
-  "connection.server_too_old": "The server is too old for this app.",
 };
 
 /** What the header says about the connection. */

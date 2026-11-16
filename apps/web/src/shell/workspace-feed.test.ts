@@ -15,8 +15,8 @@ test("the feed is opened again after a wait that doubles, up to half a minute", 
 
 test("a feed is opened again after an end another try may get past", () => {
   assert.deepEqual(
-    (["connection.lost", "connection.refused", "connection.no_answer", "connection.other_protocol", "connection.server_too_old"] as const).map(retries),
-    [true, true, true, false, false],
+    (["connection.lost", "connection.refused", "connection.no_answer", "connection.other_protocol"] as const).map(retries),
+    [true, true, true, false],
   );
 });
 

@@ -12,8 +12,6 @@ type Feed = {
   changes?: (opened: number, workspace: string) => Envelope[];
   /** Whether to close the nth socket after its changes. */
   close?: (opened: number) => boolean;
-  /** Capabilities to offer besides the feed and chats, or those the nth socket offers. */
-  also?: string[] | ((opened: number) => string[]);
   /** What the nth socket answers each envelope the page sends after its hello; `reply` answers later. */
   answer?: (sent: Envelope, opened: number, reply: (envelope: Envelope) => void) => Envelope[];
   /** Whether the nth socket closes once it has answered `sent`. */
@@ -21,13 +19,13 @@ type Feed = {
 };
 
 /**
- * Stands in for every workspace's feed: welcomes it offering chats and `also`, then does what
+ * Stands in for every workspace's feed: welcomes it, then does what
  * `feed` says. Gives the addresses opened, what the page sent after its hellos, and a way to
  * close the latest socket. Only pages loaded after this have their sockets routed, so it reloads the page.
  */
 export async function serveFeed(
   page: Page,
-  { changes = () => [], close = () => false, also = [], answer = () => [], drop = () => false }: Feed = {},
+  { changes = () => [], close = () => false, answer = () => [], drop = () => false }: Feed = {},
 ): Promise<{ opened: string[]; sent: Envelope[]; closeLatest(): Promise<void> }> {
   const opened: string[] = [];
   const sent: Envelope[] = [];
@@ -48,8 +46,7 @@ export async function serveFeed(
         return;
       }
       const app = { name: "weacon-server", version: "0.0.0", commit: "0000000" };
-      const capabilities = ["workspace.feed", "workspace.chats", ...(typeof also === "function" ? also(nth) : also)];
-      const welcome: Envelope = { id: hello.id, type: "welcome", app, capabilities };
+      const welcome: Envelope = { id: hello.id, type: "welcome", app };
       socket.send(JSON.stringify(welcome));
       const workspace = /workspaces\/([^/]+)\/feed/.exec(socket.url())?.[1] ?? "";
       // Changes come a moment after the welcome, as a server's would once something changes.

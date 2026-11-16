@@ -129,7 +129,7 @@ test("from an empty workspace, a person starts a chat that calls their agent on 
   const { page } = served;
   const chats: Chats = { made: new Map(), called: new Set(), offline: 0 };
   await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
+  const { sent } = await serveFeed(page, { answer: newChatServer(chats) });
   await openPersonal(served);
   await nav(page).getByText("No chats yet.").waitFor();
   await nav(page).getByRole("button", { name: "New chat" }).click();
@@ -181,7 +181,6 @@ test("a chat started with a call has the starter's agent before the chat list do
   let push: (envelope: Envelope) => void = () => {};
   const answers = newChatServer(chats);
   const { sent } = await serveFeed(page, {
-    also: ["workspace.chat_commands", "machine.settings"],
     answer: (asked, opened, reply) => {
       push = reply;
       return answers(asked, opened, reply);
@@ -239,7 +238,7 @@ test("with no machine paired, New chat says what calling an agent lacks, and sti
     failed = true;
     return route.fulfill({ status: 500 });
   });
-  const { sent } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
+  const { sent } = await serveFeed(page, { answer: newChatServer(chats) });
   await openPersonal(served);
   await nav(page).getByRole("button", { name: "New chat" }).click();
   const form = page.getByRole("region", { name: "New chat" });
@@ -268,7 +267,7 @@ test("with the machine offline, the first prompt is kept and can be sent again o
   const { page } = served;
   const chats: Chats = { made: new Map(), called: new Set(), offline: 1 };
   await standIn(page, { machines: [{ ...STUDIO, connected: true }] }, chats);
-  const { sent, opened, closeLatest } = await serveFeed(page, { also: ["workspace.chat_commands", "machine.settings"], answer: newChatServer(chats) });
+  const { sent, opened, closeLatest } = await serveFeed(page, { answer: newChatServer(chats) });
   await openPersonal(served);
   await nav(page).getByRole("button", { name: "New chat" }).click();
 

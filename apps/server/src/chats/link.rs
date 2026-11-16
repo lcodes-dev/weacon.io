@@ -2,17 +2,13 @@
 
 use weacon_observability::Fault;
 use weacon_protocol::{
-    Capability, ChatId, ChatQuery, ChatQueryKind, Code, Envelope, MachineId, Message, WorkspaceId,
-    code,
+    ChatId, ChatQuery, ChatQueryKind, Envelope, MachineId, Message, WorkspaceId, code,
 };
 
 use crate::shared::Shared;
 
-/// What a core must offer to be sent chats' commands and queries.
-pub(crate) const SERVE: Code = code!("chat.serve");
-
 /// Sends `messages` to `machine` under their envelope ids, all of them or none, refusing with
-/// `machine.offline` when it isn't connected, doesn't serve chats or hasn't room for them all.
+/// `machine.offline` when it isn't connected or hasn't room for them all.
 pub(crate) fn send_all(
     shared: &Shared,
     machine: &MachineId,
@@ -21,10 +17,9 @@ pub(crate) fn send_all(
     let envelopes = messages
         .into_iter()
         .map(|(id, message)| Envelope { id, message });
-    let serve = Capability::new(SERVE);
     shared
         .links
-        .send_all(machine, &serve, envelopes.collect())
+        .send_all(machine, envelopes.collect())
         .map_err(|_| offline())
 }
 

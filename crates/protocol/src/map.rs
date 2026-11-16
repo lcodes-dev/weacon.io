@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MapArgs, Secret};
 
-/// From a hook that an agent the core started runs, to that core over its socket, under
-/// `map.read`: the code map of `folder`, in the workspace of the run whose MCP token it holds.
+/// From a hook that an agent the core started runs, to that core over its socket: the code map of
+/// `folder`, in the workspace of the run whose MCP token it holds.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MapQuery {
     /// The run's token for the core's MCP.

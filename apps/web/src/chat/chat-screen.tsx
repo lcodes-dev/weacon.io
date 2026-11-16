@@ -12,8 +12,7 @@ import { ChatChanges } from "../diff/chat-changes.tsx";
 import { useChanges } from "../diff/use-changes.ts";
 import { ReviewBar } from "../worktree/review-bar.tsx";
 import { useWorktree } from "../worktree/use-worktree.ts";
-import { type WorkspaceSocket, useOffers } from "../shell/workspace-socket.ts";
-import { useChatAccess } from "./access.ts";
+import type { WorkspaceSocket } from "../shell/workspace-socket.ts";
 import { calling, named, working } from "./chat.ts";
 import { vendorName } from "./label.ts";
 import { useChatCommands, useLiveChat } from "./chat-hooks.ts";
@@ -64,14 +63,12 @@ export function ChatScreen({
   at?: number | undefined;
 }) {
   const [shown, setShown] = useState<"run" | "changes">("run");
-  const access = useChatAccess(link);
-  const reading = useLiveChat(link, chatRef, live, access.read);
+  const reading = useLiveChat(link, chatRef, live);
   const commands = useChatCommands(link, chatRef, live, reading.answered);
   const mine = agents.length > 0;
   // The agent whose changes show: the one picked, while it is still one to call, else the first.
   const [picked, setPicked] = useState<MachineId>();
   const reviewed = agents.find(({ leg }) => leg.machine_id === picked) ?? agents[0];
-  const diffs = useOffers(link, "diff.view");
   const { chat, state } = reading.sync;
   // A message named while the changes show brings the transcript back.
   useEffect(() => {
@@ -89,10 +86,10 @@ export function ChatScreen({
   }, [landed.kind, chat?.first, subscribed]);
   // A run that names the reader is theirs to stop, and to answer where its machine is theirs,
   // in any chat and before the list shows their agent there.
-  const answers = access.send && (mine || (chat !== undefined && named(chat, me)));
+  const answers = mine || (chat !== undefined && named(chat, me));
   const stop = answers && chat !== undefined && working(chat, me) ? commands.stop : undefined;
-  const why = blocked(live, chatRef, access.send);
-  const askable = mine && chatRef !== undefined && live && diffs;
+  const why = blocked(live, chatRef);
+  const askable = mine && chatRef !== undefined && live;
   return (
     <div className="chat-screen">
       {(stop !== undefined || askable || shown === "changes") && (
@@ -134,8 +131,7 @@ export function ChatScreen({
             older={chat !== undefined && state.kind === "live" && chat.first > 1 ? reading.more : undefined}
             answering={answers ? commands.answering : undefined}
             me={me}
-            // A chat is on its way while the connection is made, then only from a server that serves chats.
-            loading={chatRef !== undefined && chat === undefined && state.kind !== "failed" && (!live || access.read)}
+            loading={chatRef !== undefined && chat === undefined && state.kind !== "failed"}
             retry={state.kind === "failed" ? reading.open : undefined}
             away={away || shown !== "run"}
             landed={landed.kind === "line" ? landed.key : undefined}
@@ -150,7 +146,7 @@ export function ChatScreen({
             agent={reviewed}
             live={live}
             shown={shown === "changes"}
-            send={access.send ? commands.send() : undefined}
+            send={commands.send()}
             blocked={why}
             title={title ?? ""}
           />
@@ -258,7 +254,7 @@ function AgentChanges({
   agent: Reached;
   live: boolean;
   shown: boolean;
-  send: Send | undefined;
+  send: Send;
   blocked: string | undefined;
   title: string;
 }) {
@@ -266,7 +262,6 @@ function AgentChanges({
   const changes = useChanges(link, chatRef, machine, live, shown);
   const worktree = useWorktree(link, chatRef, machine, live, shown);
   // The worktree of an agent on a machine someone else shares is its owner's to change.
-  const bar = worktree.usable && agent.own && <ReviewBar bar={worktree} title={title} />;
-  const none: Send = () => Promise.resolve("refused");
-  return <ChatChanges changes={changes.changes} hidden={!shown} machine={send && machine} send={send ?? none} blocked={why} bar={bar} />;
+  const bar = worktree.usable && agent.own && <ReviewBar bar={worktree} title={title} terminal={agent.terminal} />;
+  return <ChatChanges changes={changes.changes} hidden={!shown} machine={machine} send={send} blocked={why} bar={bar} />;
 }
