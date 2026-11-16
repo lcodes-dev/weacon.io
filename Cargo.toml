@@ -21,7 +21,7 @@ hyper = { version = "1.12.0", default-features = false, features = ["http1", "se
 http-body-util = "0.1.5"
 hyper-util = { version = "0.1.21", default-features = false, features = ["service", "tokio"] }
 libc = "0.2.191"
-rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring"] }
 regex = { version = "1.13.1", default-features = false, features = ["std", "perf", "unicode-case", "unicode-perl"] }
 rmcp = { version = "3.9.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
 schemars = "1.2.3"

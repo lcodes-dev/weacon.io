@@ -43,7 +43,7 @@ Weacon is open source, under the MIT licence.
 
 - **Your agent sign-ins never touch Weacon.** Agents run as the vendors' own programs. You sign in with the vendor's own tool. Weacon only reads whether you are signed in, and never stores, logs or forwards a credential. The sign-in terminal in the web app passes through your server, which never stores or logs it; if you don't trust whoever runs the server, sign in over SSH on the machine instead.
 - **Workspaces never mix.** An agent only runs with a sign-in from its own workspace. Nothing one workspace sees reveals another.
-- **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies. What it serves to its own agents listens on 127.0.0.1 only.
+- **Nothing listens publicly but the server.** The core only dials out, over TLS it verifies, or to a server on the same machine. What it serves to its own agents listens on 127.0.0.1 only.
 - **Agents propose, people decide.** Changes that agents make to docs and tasks arrive as proposals that a person accepts.
 - **No content in logs.** Messages, prompts, code and credentials never reach a log line or an error report. The one exception: until the server sends mail itself, it prints each mail it would send, sign-in codes included, to its own log.
 
@@ -69,7 +69,7 @@ Weacon is in early development. This is what works on `main` today:
 
 ## Run it on your machine
 
-These steps run the server, a TLS front for it and the core on one Mac or Linux machine, for development and testing. Every piece keeps its data in the `.dev/` folder of your clone.
+These steps run the server and the core on one Mac or Linux machine, for development and testing. Every piece keeps its data in the `.dev/` folder of your clone.
 
 ### 1. Install the tools
 
@@ -113,19 +113,19 @@ Give your own email the first time. The first account on a server is its owner.
 scripts/dev.sh you@example.com
 ```
 
-It builds the web app, the server, the core and a TLS front, then starts them and prints:
+It builds the web app, the server and the core, then starts them and prints:
 
 ```text
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
   Sign-in codes:  shown here, in each mail the server prints
-  Pair the core:  WEACON_STATE_DIR=.dev/state target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
-  Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and .dev/state/logs/
+  Pair the core:  WEACON_STATE_DIR=.dev/state target/debug/weacon pair http://127.0.0.1:8080
+  Logs:           .dev/server.log, .dev/core.log and .dev/state/logs/
 ```
 
 Leave it running, and open a second terminal in the same folder for the next steps. Later runs need no email: `scripts/dev.sh`.
 
-`dev-tls` is there because the core only dials a server over TLS it can verify, and the server speaks plain HTTP. It makes a certificate for `localhost` once, in `.dev/tls/`, and the core pins it. It is for development only: a real deployment puts a reverse proxy with a real certificate in front of `weacon-server`.
+The core dials a server on its own machine over plain HTTP, at `http://127.0.0.1`. Any other server it dials only over TLS it can verify, and the server speaks plain HTTP: a real deployment puts a reverse proxy with a certificate from a public authority in front of `weacon-server`.
 
 ### 4. Sign in
 
@@ -144,7 +144,7 @@ In the second terminal:
 
 ```bash
 export WEACON_STATE_DIR="$PWD/.dev/state"
-target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop"
+target/debug/weacon pair http://127.0.0.1:8080 --name "Dev laptop"
 ```
 
 It prints a code, then waits. In the web app, open **Settings**, enter the code under **Pair a machine** and choose **Look up**. Check the machine's name and system, then choose **Confirm**. The terminal says `Paired.`
@@ -258,12 +258,11 @@ Every member of that workspace then finds the machine under **Machine** in **New
 
 ### Stop, data and starting over
 
-Ctrl-C in the first terminal stops the server, the TLS front and the core. `scripts/dev.sh` starts them again, with your account, workspaces and pairing as they were.
+Ctrl-C in the first terminal stops the server and the core. `scripts/dev.sh` starts them again, with your account, workspaces and pairing as they were.
 
 | Folder | What it holds |
 | --- | --- |
 | `.dev/server/` | The server's database and its key for pairing codes |
-| `.dev/tls/` | The TLS front's certificate and key |
 | `.dev/state/` | The core's state: its pairing, settings, sign-in folders and logs |
 | `.dev/work/` | The folders agents work in |
 
@@ -320,7 +319,7 @@ Then, in another terminal, pair it as a second machine and let Chrome reach it:
 
 ```bash
 unset WEACON_STATE_DIR
-target/debug/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem --name "Dev laptop, Chrome"
+target/debug/weacon pair http://127.0.0.1:8080 --name "Dev laptop, Chrome"
 target/debug/weacon connect-chrome
 ```
 
@@ -339,7 +338,7 @@ Click Weacon's button in Chrome's toolbar to open the side panel beside the page
 | `crates/client`, `crates/model` | What the core and server share about the server's API and its data |
 | `crates/codemap` | The code map |
 | `crates/observability`, `crates/appkit`, `crates/version` | Logs, error reports, app startup and build versions |
-| `crates/testing` | Fakes and test helpers, `fake-server` and `dev-tls` |
+| `crates/testing` | Fakes and test helpers, and `fake-server` |
 | `integrations/` | The plugin files, hooks and skills Weacon gives each vendor's agents |
 | `scripts/` | Setup, checks, the dev launcher and releases |
 | `tooling/` | The architecture test and the shared TypeScript tooling |
@@ -352,7 +351,7 @@ Start with [`AGENTS.md`](AGENTS.md): the rules every change keeps, the code styl
 
 - **The daemon doesn't start, with `daemon.start_failed`.** The core's socket is `weacon.sock` in its state folder, and a socket's path holds at most 103 bytes on macOS and 107 on Linux. Clone into a shorter path, or set `WEACON_STATE_DIR` to a short folder, such as `~/.weacon-dev/state`, for `scripts/dev.sh` and every `weacon` command. `scripts/dev.sh` checks the length first.
 - **`scripts/setup.sh` says Weacon needs another Node, or to install mise.** Install mise as in step 1, then run it again. Without mise, the Node on your `PATH` must be exactly the one in `.node-version`, and rustup must be installed.
-- **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080, or 8443 for the TLS front. Stop it, then run again. Read `.dev/server.log` and `.dev/tls.log`.
+- **`scripts/dev.sh` says the server didn't start.** Something else uses port 8080. Stop it, then run again. Read `.dev/server.log`.
 - **The machine shows no version after pairing.** The daemon looks for its pairing every 30 seconds. Check that `scripts/dev.sh` is still running, then read `.dev/state/logs/daemon.log`.
 - **Nobody can sign in.** If the first run stopped before it made your account, run `scripts/dev.sh you@example.com` again: it makes the account when it's missing.
 - **The sign-in page never accepts the code.** Use the newest mail `scripts/dev.sh` shows, and request a new code if it expired.

@@ -58,14 +58,11 @@ pub(crate) enum Command {
     },
     /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
     Pair {
-        /// The server's address, an https URL with no path.
+        /// The server's address: an https URL, or an http one to 127.0.0.1, with no path.
         server: String,
         /// What the web app calls this machine.
         #[arg(long)]
         name: Option<String>,
-        /// A PEM file of the certificates to trust for the server, in place of the public ones.
-        #[arg(long)]
-        pin: Option<PathBuf>,
     },
     /// Add a git repository a workspace's chats may work in, or list them.
     #[command(subcommand)]
@@ -287,11 +284,9 @@ mod tests {
     }
 
     #[test]
-    fn pair_takes_the_server_first_and_its_name_and_pin_as_options() {
+    fn pair_takes_the_server_first_and_its_name_as_an_option() {
         let url = "https://weacon.example.com";
-        let pair = run(&[
-            "weacon", "pair", url, "--name", "Studio", "--pin", "cert.pem",
-        ]);
+        let pair = run(&["weacon", "pair", url, "--name", "Studio"]);
         let bare = run(&["weacon", "pair", url]).unwrap().command;
 
         assert_eq!(
@@ -299,7 +294,6 @@ mod tests {
             Command::Pair {
                 server: url.to_owned(),
                 name: Some("Studio".to_owned()),
-                pin: Some(PathBuf::from("cert.pem")),
             }
         );
         assert_eq!((bare.name(), bare.log_name()), ("pair", "cli.log"));

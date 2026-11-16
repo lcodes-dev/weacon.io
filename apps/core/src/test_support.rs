@@ -8,7 +8,7 @@ use weacon_observability::Reporter;
 use weacon_protocol::{Message, Pick, RequestId};
 use weacon_version::Version;
 
-pub(crate) mod tls;
+pub(crate) mod local;
 
 pub(crate) use weacon_testing::fake_core::client_hello;
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};

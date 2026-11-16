@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Runs Weacon on this machine for development: the server on http://localhost:8080, a TLS front
-# for it on https://localhost:8443 that the core pins, and the core's daemon, with their data in
-# .dev/; the core's goes in WEACON_STATE_DIR when it is set. The first run needs your email, for
-# the server's owner. Ctrl-C stops all three.
+# Runs Weacon on this machine for development: the server on http://localhost:8080 and the
+# core's daemon, with their data in .dev/; the core's goes in WEACON_STATE_DIR when it is set.
+# The first run needs your email, for the server's owner. Ctrl-C stops both.
 # Usage: scripts/dev.sh [email]
 set -euo pipefail
 
@@ -56,20 +55,17 @@ fi
   || die "the web app's packages are missing or older than its package-lock.json; run scripts/setup.sh"
 mkdir -p "$data"
 
-log "Building the web app, the server, the core and the TLS front"
+log "Building the web app, the server and the core"
 npm --prefix apps/web run --silent build
 cargo build --locked --quiet -p weacon-server -p weacon-core
-cargo build --locked --quiet -p weacon-testing --bin dev-tls
 
-server='' tls='' core=''
-trap 'kill $server $tls $core 2>/dev/null || true; wait' EXIT
+server='' core=''
+trap 'kill $server $core 2>/dev/null || true; wait' EXIT
 trap 'exit 130' INT TERM
 
 "$bin/weacon-server" serve --db "$data/weacon.db" --secret "$data/secret" \
   > >(trap '' INT; tee -a .dev/server.log | show_mails) 2>&1 &
 server=$!
-"$bin/dev-tls" .dev/tls >>.dev/tls.log 2>&1 &
-tls=$!
 WEACON_STATE_DIR="$state" "$bin/weacon" daemon >>.dev/core.log 2>&1 &
 core=$!
 
@@ -83,7 +79,6 @@ until curl -fsS --max-time 2 -o /dev/null http://localhost:8080/version 2>/dev/n
   sleep 1
 done
 kill -0 "$server" 2>/dev/null || die "the server didn't start; is another one on port 8080?"
-kill -0 "$tls" 2>/dev/null || die "the TLS front didn't start; see .dev/tls.log"
 kill -0 "$core" 2>/dev/null || die "the core's daemon didn't start; see .dev/core.log"
 if [ -n "$email" ]; then
   if answer=$("$bin/weacon-server" add-account --db "$data/weacon.db" --email "$email" 2>&1 >/dev/null); then
@@ -104,7 +99,7 @@ cat <<EOF
 Weacon is running. Ctrl-C stops it.
   Web app:        http://localhost:8080
   Sign-in codes:  shown here, in each mail the server prints
-  Pair the core:  WEACON_STATE_DIR=$state $bin/weacon pair https://localhost:8443 --pin .dev/tls/cert.pem
-  Logs:           .dev/server.log, .dev/tls.log, .dev/core.log and $state/logs/
+  Pair the core:  WEACON_STATE_DIR=$state $bin/weacon pair http://127.0.0.1:8080
+  Logs:           .dev/server.log, .dev/core.log and $state/logs/
 EOF
 wait "$server"

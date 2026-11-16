@@ -154,7 +154,7 @@ impl Uplink {
         log: &Logger,
         from_daemon: &mut FromDaemon,
     ) -> Result<Ended, Fault> {
-        let server = Server::new(&paired.server, paired.pinned.as_deref().map(str::as_bytes))?;
+        let server = Server::new(&paired.server)?;
         let mut socket = match server.socket(PATH, &paired.token).await {
             Ok(socket) => socket,
             Err(Failure::Refused(401, Some(code))) if code == code!("machine.unpaired") => {
@@ -480,7 +480,6 @@ pub(crate) fn new(
 
 #[cfg(test)]
 mod tests {
-    use tokio_rustls::server::TlsStream;
     use tokio_tungstenite::WebSocketStream;
     use weacon_protocol::{
         Asker, ChatAction, ChatId, ChatQuery, ChatQueryKind, MachineId, MachineSettingsAction,
@@ -493,19 +492,18 @@ mod tests {
 
     use super::*;
     use crate::chats::test_support::{brief, soon};
-    use crate::test_support::tls::{Tls, answer, nowhere, read_request};
+    use crate::test_support::local::{Local, answer, nowhere, read_request};
     use crate::test_support::{VERSION, messages, recording_logger};
 
-    type Peer = WebSocketStream<TlsStream<tokio::net::TcpStream>>;
+    type Peer = WebSocketStream<tokio::net::TcpStream>;
 
     fn owner() -> AccountId {
         AccountId::try_from("a-owner".to_owned()).unwrap()
     }
 
-    fn paired(tls: &Tls) -> Paired {
+    fn paired(local: &Local) -> Paired {
         Paired {
-            server: tls.url(),
-            pinned: Some(tls.pem.clone()),
+            server: local.url(),
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: owner(),
             token: "t0ken".to_owned(),
@@ -569,21 +567,21 @@ mod tests {
 
     // A server that takes the socket, checks the hello and welcomes it with `offers`, past the
     // core's word on what its machine is shared with.
-    async fn welcoming(tls: &Tls, offers: &[Code]) -> Peer {
-        welcomed(tls, offers).await.0
+    async fn welcoming(local: &Local, offers: &[Code]) -> Peer {
+        welcomed(local, offers).await.0
     }
 
     // [`welcoming`], with what the core then says its machine is shared with.
-    async fn welcomed(tls: &Tls, offers: &[Code]) -> (Peer, Message) {
-        let mut peer = greeting(tls, offers).await;
+    async fn welcomed(local: &Local, offers: &[Code]) -> (Peer, Message) {
+        let mut peer = greeting(local, offers).await;
         let shares = heard(&mut peer).await;
         assert!(matches!(shares, Message::MachineShares(_)), "{shares:?}");
         (peer, shares)
     }
 
     // A server that takes the socket, checks the hello and welcomes it with `offers`.
-    async fn greeting(tls: &Tls, offers: &[Code]) -> Peer {
-        let stream = tls.accept().await.unwrap();
+    async fn greeting(local: &Local, offers: &[Code]) -> Peer {
+        let stream = local.accept().await;
         let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
         let Message::Hello(hello) = heard(&mut peer).await else {
             panic!("no hello");
@@ -603,8 +601,8 @@ mod tests {
     }
 
     // A server that refuses the socket's handshake with `status` and `code`.
-    async fn refusing(tls: &Tls, status: &str, code: Code) {
-        let mut stream = tls.accept().await.unwrap();
+    async fn refusing(local: &Local, status: &str, code: Code) {
+        let mut stream = local.accept().await;
         read_request(&mut stream).await;
         let body = ErrorBody {
             code,
@@ -664,12 +662,12 @@ mod tests {
 
     #[tokio::test]
     async fn only_the_owners_commands_are_taken_and_an_unpairing_ends_it() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let link = uplink(&dir);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let stranger = AccountId::try_from("a-other".to_owned()).unwrap();
         let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            let mut peer = welcoming(&local, &[CONNECT]).await;
             let sent = [
                 command("r-owner", Some(&owner())),
                 command("r-stranger", Some(&stranger)),
@@ -770,13 +768,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_stores_events_follows_a_chat_and_gets_its_messages_only() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let mut bench = crate::chats::test_support::bench();
         let link = Uplink {
             chats: bench.chats.clone(),
             ..uplink(&dir)
         };
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let follow = Envelope {
             id: 3,
             message: Message::ChatQuery(ChatQuery {
@@ -793,7 +791,7 @@ mod tests {
             }),
         };
         let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT, code!("chat.upload")]).await;
+            let mut peer = welcoming(&local, &[CONNECT, code!("chat.upload")]).await;
             peer.send(text(&follow)).await.unwrap();
             peer.send(text(&prompt)).await.unwrap();
             let agent = soon(bench.started.recv()).await.unwrap();
@@ -1026,10 +1024,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_server_is_told_what_the_machine_is_shared_with_as_it_connects_and_as_it_changes() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         share(&dir, "w-2", true);
         let link = uplink(&dir);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let (outgoing, mut from_daemon) = mpsc::channel(4);
         let shares = |workspaces: &[&str]| {
             Message::MachineShares(MachineShares {
@@ -1050,7 +1048,7 @@ mod tests {
             }),
         };
         let serve = async {
-            let (mut peer, first) = welcomed(&tls, &[CONNECT]).await;
+            let (mut peer, first) = welcomed(&local, &[CONNECT]).await;
             share(&dir, "w-1", true);
             outgoing.send(changed.clone()).await.unwrap();
             let answer = heard(&mut peer).await;
@@ -1124,10 +1122,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_owners_ask_reaches_the_daemon_and_its_own_messages_reach_the_server() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (to_daemon, mut taken) = mpsc::channel(4);
         let link = with_commands(&dir, to_daemon);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let (outgoing, mut from_daemon) = mpsc::channel(4);
         let query = Envelope {
             id: 5,
@@ -1143,7 +1141,7 @@ mod tests {
         outgoing.send(answer.clone()).await.unwrap();
         machine::write(&dir, &pairing).unwrap();
         let serve = async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            let mut peer = welcoming(&local, &[CONNECT]).await;
             peer.send(text(&query)).await.unwrap();
             heard(&mut peer).await
         };
@@ -1191,17 +1189,17 @@ mod tests {
 
     #[tokio::test]
     async fn a_connection_that_breaks_is_lost_and_tells_the_terminals_after_their_commands() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (terminals, told) = terminals();
         let link = Uplink {
             terminals,
             ..uplink(&dir)
         };
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let close = terminal_command("t-1");
 
         let (ended, ()) = tokio::join!(once(&link, &pairing), async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            let mut peer = welcoming(&local, &[CONNECT]).await;
             peer.send(text(&close)).await.unwrap();
             // Its answer shows the command was taken before the connection goes.
             peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
@@ -1247,24 +1245,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_that_doesnt_offer_the_connection_or_refuses_the_token_is_left() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (log, records) = recording_logger();
         let link = Uplink {
             log,
             ..uplink(&dir)
         };
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
 
         // The server goes once it has welcomed the core, which then mustn't stay.
-        let leaves = async { drop(greeting(&tls, &[]).await) };
+        let leaves = async { drop(greeting(&local, &[]).await) };
         let (unoffered, ()) = tokio::join!(once(&link, &pairing), leaves);
         let (unauthorized, ()) = tokio::join!(
             once(&link, &pairing),
-            refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
+            refusing(&local, "401 Unauthorized", code!("machine.unpaired"))
         );
         let (busy, ()) = tokio::join!(
             once(&link, &pairing),
-            refusing(&tls, "401 Unauthorized", code!("proxy.sign_in"))
+            refusing(&local, "401 Unauthorized", code!("proxy.sign_in"))
         );
 
         assert_eq!(unoffered.unwrap(), Ended::Unwelcome);
@@ -1275,21 +1273,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_connection_lost_at_once_or_gone_quiet_is_told_apart() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let mut link = uplink(&dir);
         link.timing = Timing {
             quiet_within: Duration::from_millis(100),
             steady_after: Duration::from_hours(1),
             look_every: Duration::from_hours(1),
         };
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
 
         let (at_once, ()) = tokio::join!(once(&link, &pairing), async {
-            drop(welcoming(&tls, &[CONNECT]).await);
+            drop(welcoming(&local, &[CONNECT]).await);
         });
         link.timing.steady_after = Duration::ZERO;
         let offers = [CONNECT];
-        let (quiet, _peer) = tokio::join!(once(&link, &pairing), welcoming(&tls, &offers));
+        let (quiet, _peer) = tokio::join!(once(&link, &pairing), welcoming(&local, &offers));
 
         assert_eq!(at_once.unwrap(), Ended::Unwelcome);
         assert_eq!(quiet.unwrap(), Ended::Lost);
@@ -1316,20 +1314,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_server_gone_quiet_is_lost_however_much_the_daemon_sends() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let mut link = uplink(&dir);
         link.timing = Timing {
             quiet_within: Duration::from_millis(100),
             steady_after: Duration::ZERO,
             look_every: Duration::from_hours(1),
         };
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let (outgoing, mut from_daemon) = mpsc::channel(4);
         let chatter = tokio::spawn(chatter(outgoing));
 
         // The server welcomes the core, then reads all it sends but says nothing more.
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
-        let listening = async { drain(welcoming(&tls, &[CONNECT]).await).await };
+        let listening = async { drain(welcoming(&local, &[CONNECT]).await).await };
         let (ended, ()) = tokio::join!(timeout(Duration::from_secs(10), connection), listening);
         chatter.abort();
 
@@ -1338,11 +1336,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_pairing_replaced_while_connected_ends_the_connection() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let mut link = uplink(&dir);
         link.timing.look_every = Duration::from_millis(10);
         link.timing.quiet_within = Duration::from_hours(1);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         machine::write(&dir, &pairing).unwrap();
         let mut replaced = pairing.clone();
         replaced.token = "n3wer".to_owned();
@@ -1351,7 +1349,7 @@ mod tests {
         let (_daemon, mut from_daemon) = mpsc::channel(1);
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
         let listening = async {
-            let peer = welcoming(&tls, &[CONNECT]).await;
+            let peer = welcoming(&local, &[CONNECT]).await;
             machine::write(&dir, &replaced).unwrap();
             drain(peer).await;
         };
@@ -1362,10 +1360,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_ask_that_comes_after_the_pairing_was_replaced_is_not_taken() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (to_daemon, mut taken) = mpsc::channel(4);
         let link = with_commands(&dir, to_daemon);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         machine::write(&dir, &pairing).unwrap();
         let mut replaced = pairing.clone();
         replaced.owner = AccountId::try_from("a-other".to_owned()).unwrap();
@@ -1374,7 +1372,7 @@ mod tests {
         let (_daemon, mut from_daemon) = mpsc::channel(1);
         let connection = link.connection(&pairing, &link.log, &mut from_daemon);
         let asking = async {
-            let mut peer = welcoming(&tls, &[CONNECT]).await;
+            let mut peer = welcoming(&local, &[CONNECT]).await;
             machine::write(&dir, &replaced).unwrap();
             let envelope = Envelope {
                 id: 9,
@@ -1391,11 +1389,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_ping_before_the_welcome_is_skipped() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let link = uplink(&dir);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let serve = async {
-            let stream = tls.accept().await.unwrap();
+            let stream = local.accept().await;
             let mut peer = tokio_tungstenite::accept_async(stream).await.unwrap();
             peer.send(Wire::Ping(Vec::new().into())).await.unwrap();
             heard(&mut peer).await;
@@ -1417,15 +1415,15 @@ mod tests {
 
     #[tokio::test]
     async fn after_an_unpairing_or_without_a_pairing_the_core_waits_to_look_again() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let link = uplink(&dir);
         let (mut retry, mut last) = (Retry::default(), None);
         let mut from_daemon = mpsc::channel(1).1;
-        machine::write(&dir, &paired(&tls)).unwrap();
+        machine::write(&dir, &paired(&local)).unwrap();
 
         let (unpaired, ()) = tokio::join!(
             link.step(&mut retry, &mut from_daemon, &mut last),
-            refusing(&tls, "401 Unauthorized", code!("machine.unpaired"))
+            refusing(&local, "401 Unauthorized", code!("machine.unpaired"))
         );
         let alone = link.step(&mut retry, &mut from_daemon, &mut last).await;
 
@@ -1436,9 +1434,9 @@ mod tests {
 
     #[tokio::test]
     async fn what_was_queued_for_one_pairing_goes_to_no_other() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let link = uplink(&dir);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         machine::write(&dir, &pairing).unwrap();
         let mut earlier = pairing.clone();
         earlier.token = "0lder".to_owned();
@@ -1446,7 +1444,7 @@ mod tests {
         // The server refuses each try, so nothing queued is sent.
         let mut tried = async |last: Paired| {
             daemon.try_send(command("r-1", None)).unwrap();
-            let refused = refusing(&tls, "403 Forbidden", code!("request.forbidden"));
+            let refused = refusing(&local, "403 Forbidden", code!("request.forbidden"));
             let (mut retry, mut last) = (Retry::default(), Some(last));
             let step = Box::pin(link.step(&mut retry, &mut from_daemon, &mut last));
             tokio::join!(step, refused);
@@ -1462,22 +1460,22 @@ mod tests {
 
     #[tokio::test]
     async fn an_unpaired_machine_forgets_its_pairing() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
-        machine::write(&dir, &paired(&tls)).unwrap();
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
+        machine::write(&dir, &paired(&local)).unwrap();
         let link = uplink(&dir);
 
         let found = link.paired().await;
-        link.unpaired(&paired(&tls), &link.log).await;
+        link.unpaired(&paired(&local), &link.log).await;
 
-        assert_eq!(found, Some(paired(&tls)));
+        assert_eq!(found, Some(paired(&local)));
         assert_eq!(link.paired().await, None);
     }
 
     #[tokio::test]
     async fn a_server_that_cant_be_reached_is_an_error() {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let link = uplink(&dir);
-        let mut gone = paired(&tls);
+        let mut gone = paired(&local);
         gone.server = nowhere();
 
         let failed = once(&link, &gone).await;
@@ -1488,10 +1486,10 @@ mod tests {
     /// What the server hears first when the daemon sends a proposal query, then a marker, to
     /// a server that offers `offers`, and what reaches the daemon of the server's answer.
     async fn proposals_through(offers: &[Code]) -> (Message, Option<Message>, Message) {
-        let (dir, tls) = (TempDir::new().unwrap(), Tls::new().await);
+        let (dir, local) = (TempDir::new().unwrap(), Local::new().await);
         let (to_daemon, mut asks) = mpsc::channel(4);
         let link = with_commands(&dir, to_daemon);
-        let pairing = paired(&tls);
+        let pairing = paired(&local);
         let request = RequestId::try_from("r-1".to_owned()).unwrap();
         let query = Message::ProposalQuery(weacon_protocol::ProposalQuery {
             request: request.clone(),
@@ -1514,7 +1512,7 @@ mod tests {
             },
         });
         let serve = async {
-            let mut peer = welcoming(&tls, offers).await;
+            let mut peer = welcoming(&local, offers).await;
             let first = heard(&mut peer).await;
             let envelope = Envelope {
                 id: 0,
