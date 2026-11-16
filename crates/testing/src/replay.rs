@@ -136,6 +136,19 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn each_printed_line_waits_for_the_pace() {
+        let start = tokio::time::Instant::now();
+        let recording = "< {\"a\":1}\n< {\"a\":2}".to_owned();
+        let pace = Duration::from_millis(5);
+
+        play(recording, tokio::io::empty(), tokio::io::sink(), pace)
+            .await
+            .unwrap();
+
+        assert_eq!(start.elapsed(), Duration::from_millis(10));
+    }
+
     #[tokio::test]
     async fn a_different_line_is_a_mismatch() {
         let (_, result) = run("> {\"b\":2}\n< {\"d\":4}", &["{\"b\":3}\n"]).await;

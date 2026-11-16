@@ -1,36 +1,8 @@
-//! A fake core that answers one client's hello, then replays a recorded run over the socket.
+//! The hello a test's client sends, and a fake core's answer to it.
 
-use std::time::Duration;
-
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use weacon_protocol::{App, Capability, Code, Envelope, Hello, Message, code, encode_line};
+use weacon_protocol::{App, Capability, Code, Envelope, Hello, Message, code};
 
 use crate::Failure;
-use crate::replay::play;
-
-/// Answers the hello that `stream`'s client sends, then plays `recording` to it, waiting `pace`
-/// after each line.
-///
-/// # Errors
-/// When the first line isn't a hello on this protocol that offers `run.stream`, the connection
-/// fails, or the client sends anything more before it hangs up.
-pub async fn serve(
-    stream: impl AsyncRead + AsyncWrite + Unpin,
-    recording: String,
-    pace: Duration,
-) -> Result<(), Failure> {
-    let (reader, mut writer) = tokio::io::split(stream);
-    let mut reader = BufReader::new(reader);
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    let answer = answer(&line, &[])?;
-    let welcomed = matches!(answer.message, Message::Welcome(_));
-    writer.write_all(&encode_line(&answer)?).await?;
-    if !welcomed {
-        return Err("the client speaks another protocol".into());
-    }
-    play(recording, reader, writer, pace).await
-}
 
 const RUN_STREAM: Capability = Capability::new(code!("run.stream"));
 
@@ -80,108 +52,48 @@ pub fn client_hello(
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
-    use tokio::io::{AsyncReadExt, duplex};
-    use weacon_protocol::PROTOCOL;
+    use weacon_protocol::{PROTOCOL, encode_line};
 
     use super::*;
 
-    fn hello(id: u32, protocol: u32, capabilities: impl IntoIterator<Item = Code>) -> Vec<u8> {
-        encode_line(&client_hello(id, protocol, capabilities)).unwrap()
+    fn hello(id: u32, protocol: u32, capabilities: impl IntoIterator<Item = Code>) -> String {
+        String::from_utf8(encode_line(&client_hello(id, protocol, capabilities)).unwrap()).unwrap()
     }
 
-    #[tokio::test]
-    async fn a_hello_is_welcomed_with_its_id_before_the_run_plays() {
-        let (mut client, core) = duplex(4096);
-        let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
-        client
-            .write_all(&hello(7, PROTOCOL, [code!("run.stream")]))
-            .await
-            .unwrap();
-        client.shutdown().await.unwrap();
-        let mut sent = String::new();
-        client.read_to_string(&mut sent).await.unwrap();
-        let lines: Vec<Value> = sent
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+    #[test]
+    fn a_hello_is_welcomed_with_its_id() {
+        let answer = answer(&hello(7, PROTOCOL, [code!("run.stream")]), &[]).unwrap();
 
-        assert_eq!(lines[0]["id"], 7);
-        assert_eq!(lines[0]["type"], "welcome");
-        assert_eq!(lines[0]["capabilities"], json!(["run.stream"]));
-        assert_eq!(lines[1], json!({ "a": 1 }));
-        served.await.unwrap().unwrap();
+        assert_eq!(answer.id, 7);
+        let Message::Welcome(welcome) = answer.message else {
+            panic!("not a welcome");
+        };
+        assert_eq!(welcome.capabilities, [RUN_STREAM]);
     }
 
-    #[tokio::test]
-    async fn a_client_that_cant_take_run_updates_is_refused() {
-        let (mut client, core) = duplex(4096);
-        let served = tokio::spawn(serve(core, String::new(), Duration::ZERO));
-        client
-            .write_all(&hello(1, PROTOCOL, [code!("chat.send")]))
-            .await
-            .unwrap();
-        client.shutdown().await.unwrap();
+    #[test]
+    fn a_client_that_cant_take_run_updates_is_refused() {
+        let refused = answer(&hello(1, PROTOCOL, [code!("chat.send")]), &[]).unwrap_err();
 
-        assert_eq!(
-            served.await.unwrap().unwrap_err().to_string(),
-            "the client didn't offer run.stream"
-        );
+        assert_eq!(refused.to_string(), "the client didn't offer run.stream");
     }
 
-    #[tokio::test]
-    async fn anything_but_a_hello_first_is_refused() {
-        let (mut client, core) = duplex(4096);
-        let served = tokio::spawn(serve(core, String::new(), Duration::ZERO));
-        client
-            .write_all(
-                b"{\"id\":1,\"type\":\"error\",\"code\":\"store.full\",\"retryable\":false}\n",
-            )
-            .await
-            .unwrap();
+    #[test]
+    fn anything_but_a_hello_first_is_refused() {
+        let line = r#"{"id":1,"type":"error","code":"store.full","retryable":false}"#;
 
-        assert!(
-            served
-                .await
-                .unwrap()
-                .is_err_and(|error| error.to_string().starts_with("expected a hello"))
-        );
+        let refused = answer(line, &[]).unwrap_err();
+
+        assert!(refused.to_string().starts_with("expected a hello"));
     }
 
-    #[tokio::test]
-    async fn another_protocol_is_refused_before_the_run_plays() {
-        let (mut client, core) = duplex(4096);
-        let served = tokio::spawn(serve(core, "< {\"a\":1}".to_owned(), Duration::ZERO));
-        client.write_all(&hello(1, PROTOCOL + 1, [])).await.unwrap();
-        client.shutdown().await.unwrap();
-        let mut sent = String::new();
-        client.read_to_string(&mut sent).await.unwrap();
-        let reply: Value = serde_json::from_str(sent.trim()).unwrap();
+    #[test]
+    fn another_protocol_is_answered_with_an_error() {
+        let answer = answer(&hello(1, PROTOCOL + 1, []), &[]).unwrap();
 
-        assert_eq!(reply["code"], "protocol.unsupported");
-        assert_eq!(
-            served.await.unwrap().unwrap_err().to_string(),
-            "the client speaks another protocol"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn each_printed_line_waits_for_the_pace() {
-        let (mut client, core) = duplex(4096);
-        let start = tokio::time::Instant::now();
-        let served = tokio::spawn(serve(
-            core,
-            "< {\"a\":1}\n< {\"a\":2}".to_owned(),
-            Duration::from_millis(5),
-        ));
-        client
-            .write_all(&hello(1, PROTOCOL, [code!("run.stream")]))
-            .await
-            .unwrap();
-        client.shutdown().await.unwrap();
-        client.read_to_string(&mut String::new()).await.unwrap();
-        served.await.unwrap().unwrap();
-
-        assert_eq!(start.elapsed(), Duration::from_millis(10));
+        let Message::Error(error) = answer.message else {
+            panic!("not an error");
+        };
+        assert_eq!(error.code, code!("protocol.unsupported"));
     }
 }
