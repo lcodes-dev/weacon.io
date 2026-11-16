@@ -74,7 +74,14 @@ function isLocalChat(value: unknown): boolean {
 
 function isStatus(value: unknown): boolean {
   const status = record(value);
-  return text(status, "run") && RUN_STATES.includes(status?.["state"] as string);
+  return text(status, "run") && RUN_STATES.includes(status?.["state"] as string) && (status?.["agent"] === undefined || isAgent(status["agent"]));
+}
+
+function isAgent(value: unknown): boolean {
+  const agent = record(value);
+  const owner = record(agent?.["owner"]);
+  const owned = (owner?.["kind"] === "shared" && text(owner, "member") && text(owner, "owner")) || (owner?.["kind"] === "member" && text(owner, "member"));
+  return AGENT_KINDS.includes(agent?.["kind"] as string) && owned && (agent?.["machine"] === undefined || text(agent, "machine"));
 }
 
 function isOutcome(value: unknown): boolean {
