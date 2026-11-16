@@ -513,37 +513,4 @@ mod tests {
         }
         assert_eq!(code(&stored_os("plan9").unwrap_err()), "db.unreadable");
     }
-
-    #[tokio::test]
-    async fn hashed_sessions_machines_and_pairings_are_dropped_and_pairing_after_works() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        let rows = "INSERT INTO accounts (account_id, email, owner) VALUES ('a1', 'ada@example.com', 1);
-             INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'Team');
-             INSERT INTO sessions VALUES (x'01', 'a1', 9999999999);
-             INSERT INTO machines (machine_id, account_id, name, os, machine_key, token_hash, paired_at)
-                 VALUES ('mc-old', 'a1', 'Studio', 'linux', '', x'02', 1);
-             INSERT INTO pairings (pairing_id, code_hash, secret_hash, name, os, machine_key, expires_at)
-                 VALUES ('p0', x'03', x'04', 'Studio', 'linux', '', 9999999999);
-             INSERT INTO shared_machines VALUES ('w1', 'mc-old')";
-        crate::db::schema::database_before(&path, crate::db::schema::steps::PLAIN_TOKENS, rows)
-            .await;
-        let db = Db::open(&path).await.unwrap();
-        let ada: AccountId = id("a1");
-
-        for table in ["sessions", "machines", "pairings", "shared_machines"] {
-            let counted = sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}"));
-            let left: i64 = sqlx::query_scalar(counted)
-                .fetch_one(&db.readers)
-                .await
-                .unwrap();
-            assert_eq!(left, 0, "{table}");
-        }
-        start(&db, "p1", NOW).await;
-        assert!(confirm(&db, &ada, "p1", "p1").await);
-        let claimed = claim(&db, "p1", "secret", NOW + 2).await;
-        assert!(matches!(claimed, Claim::Paired { token, .. } if token.expose() == "token-p1"));
-        let found = db.machine_with("token-p1").await.unwrap();
-        assert_eq!(found, Some((id("mc-p1"), ada)));
-    }
 }

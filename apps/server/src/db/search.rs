@@ -284,11 +284,9 @@ mod tests {
     use weacon_testing::TempDir;
 
     use super::*;
-    use crate::db::Db;
-    use crate::db::schema::{database_before, steps};
     use crate::db::test_support::{append, make_titled, said};
     use crate::search::query::{MAX_WORD, parse};
-    use crate::test_support::{email, fresh_account, member_id, new_task, two_teams, workspace_id};
+    use crate::test_support::{member_id, new_task, two_teams};
 
     fn by(at: i64) -> Attribution {
         Attribution::by(member_id("m1"), at)
@@ -529,77 +527,6 @@ mod tests {
         assert_eq!(snippet.marks, [Mark { start: 2, end: 9 }]);
     }
 
-    async fn index_rows(db: &Db) -> Vec<(String, String, String, String, String, i64)> {
-        sqlx::query_as(
-            "SELECT search.workspace_id, search.kind, search.item, title, body, at
-             FROM search JOIN search_rows
-                 ON search_rows.workspace_id = search.workspace_id AND row = search.rowid
-             ORDER BY search.kind, search.item",
-        )
-        .fetch_all(&db.readers)
-        .await
-        .unwrap()
-    }
-
-    // A task and a pinned doc as they were stored before search.
-    fn stored_before() -> String {
-        format!(
-            "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One');
-             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
-             INSERT INTO members (workspace_id, member_id, email, account_id)
-                 VALUES ('w1', 'm1', 'ada@example.com', 'a1');
-             INSERT INTO tasks VALUES ('w1', 't1', 'Ship it', 'todo', 'a', 2);
-             INSERT INTO task_versions (workspace_id, task_id, version, author_kind,
-                 author_member, accepted_by, at)
-                 VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 5),
-                        ('w1', 't1', 2, 'person', 'm1', 'm1', 6);
-             INSERT INTO docs VALUES ('w1', 'd1', 1);
-             INSERT INTO doc_versions (workspace_id, doc_id, version, title, body, commit_id,
-                 author_kind, author_member, accepted_by, at)
-                 VALUES ('w1', 'd1', 1, 'Framing', 'See{marks}[a](sym:a) and [b](area:b).',
-                     '{commit}', 'person', 'm1', 'm1', 7);
-             INSERT INTO doc_pins VALUES
-                 ('w1', 'd1', 1, 1, 'area:b#0123456789abcdef'),
-                 ('w1', 'd1', 1, 0, 'sym:a#0123456789abcdef');",
-            marks = "\u{1}\u{2}",
-            commit = "c".repeat(40),
-        )
-    }
-
-    #[tokio::test]
-    async fn what_was_stored_before_search_is_indexed_as_a_write_indexes_it() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("old.db");
-        database_before(&path, steps::SEARCH, &stored_before()).await;
-        let old = Db::open(&path).await.unwrap();
-        let new = Db::create(&dir.join("new.db")).await.unwrap();
-        let one = new
-            .create_workspace(&workspace_id("w1"), "One")
-            .await
-            .unwrap();
-        let ada = email("ada@example.com");
-        one.add_member(&member_id("m1"), &fresh_account(), &ada)
-            .await
-            .unwrap();
-        let task = new_task("t1", "Ship it", "a");
-        one.add_task(&task, &by(5)).await.unwrap();
-        let done = TaskEdit::Status(weacon_protocol::TaskStatus::Done);
-        one.edit_task(&task.id, Revision::FIRST, done, &by(6))
-            .await
-            .unwrap();
-        let pinned = doc(
-            "d1",
-            "Framing",
-            "See\u{1}\u{2}[a](sym:a) and [b](area:b).",
-            &["sym:a", "area:b"],
-        );
-        one.add_doc(&pinned, &by(7)).await.unwrap();
-
-        let rows = index_rows(&old).await;
-        assert_eq!(rows, index_rows(&new).await);
-        assert_eq!(rows.len(), 2);
-    }
-
     // c-1 titled "Fix the build" in w1, whose log holds a prompt, an agent's text, a text
     // being written and an outside prompt, at seqs 1 to 4.
     async fn chatted(workspace: &Workspace) {
@@ -707,69 +634,6 @@ mod tests {
                 "{hits:?}"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn chats_stored_before_their_search_are_indexed_as_a_write_indexes_them() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = two_teams(&dir).await;
-        chatted(&one).await;
-        let written = index_rows(&one.db).await;
-        sqlx::raw_sql(
-            "DELETE FROM search WHERE kind IN ('chat', 'message');
-             DELETE FROM search_rows WHERE kind IN ('chat', 'message');",
-        )
-        .execute(&one.db.writer)
-        .await
-        .unwrap();
-
-        sqlx::raw_sql(steps::SEARCH_CHATS)
-            .execute(&one.db.writer)
-            .await
-            .unwrap();
-        assert_eq!(index_rows(&one.db).await, written);
-        assert_eq!(written.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn chats_stored_before_search_are_found_in_their_own_workspace_only() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("old.db");
-        let rows = "INSERT INTO workspaces (workspace_id, name) VALUES ('w1', 'One'), ('w2', 'Two');
-             INSERT INTO accounts (account_id, email) VALUES ('a1', 'ada@example.com');
-             INSERT INTO members (workspace_id, member_id, email, account_id)
-                 VALUES ('w1', 'm1', 'ada@example.com', 'a1'), ('w2', 'm2', 'ada@example.com', 'a1');
-             INSERT INTO tasks VALUES ('w1', 't1', 'Ship the build', 'todo', 'a', 1);
-             INSERT INTO task_versions (workspace_id, task_id, version, author_kind,
-                 author_member, accepted_by, at) VALUES ('w1', 't1', 1, 'person', 'm1', 'm1', 5);
-             INSERT INTO chats (workspace_id, chat_id, owner_member, title, machine_id,
-                 machine_name, state, created_at, updated_at)
-                 VALUES ('w1', 'c-1', 'm1', 'Fix the build', 'mc1', 'Laptop', 'open', 6, 6),
-                        ('w2', 'c-2', 'm2', 'Fix the build', 'mc1', 'Laptop', 'open', 7, 7);
-             INSERT INTO chat_events (workspace_id, chat_id, seq, body, at) VALUES
-                 ('w1', 'c-1', 1, '{\"kind\":\"prompt\",\"request\":\"r-1\",\"text\":\"Why\\u0001 flaky\"}', 8),
-                 ('w1', 'c-1', 2, 'not json, flaky', 9),
-                 ('w2', 'c-2', 1, '{\"kind\":\"outside_prompt\",\"text\":\"Flaky deploy\"}', 10);";
-        database_before(&path, steps::SEARCH, rows).await;
-
-        let db = Db::open(&path).await.unwrap();
-        let (one, two) = (
-            db.workspace(&workspace_id("w1")).await.unwrap(),
-            db.workspace(&workspace_id("w2")).await.unwrap(),
-        );
-        assert_eq!(found(&one, "build").await, ["c-1", "t1"]);
-        assert_eq!(found(&one, "flaky").await, ["c-1/1"]);
-        assert_eq!(found(&two, "flaky").await, ["c-2/1"]);
-        assert_eq!(found(&two, "build").await, ["c-2"]);
-        let bodies: Vec<String> =
-            sqlx::query_scalar("SELECT body FROM search WHERE kind = 'message'")
-                .fetch_all(&db.readers)
-                .await
-                .unwrap();
-        assert!(
-            bodies.iter().all(|body| !body.contains('\u{1}')),
-            "{bodies:?}"
-        );
     }
 
     #[tokio::test]

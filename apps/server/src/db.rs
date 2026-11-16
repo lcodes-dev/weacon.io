@@ -58,13 +58,12 @@ impl Db {
             .map_err(failed)
     }
 
-    /// Opens the database at `path`, creating it if it's missing, and brings its schema up
-    /// to date.
+    /// Opens the database at `path`, creating it with its schema if it's missing.
     pub(crate) async fn create(path: &Path) -> Result<Self, Fault> {
         Self::connect(path, true).await
     }
 
-    /// Opens the database at `path`, which must exist, and brings its schema up to date.
+    /// Opens the database at `path`, which must exist.
     pub(crate) async fn open(path: &Path) -> Result<Self, Fault> {
         Self::connect(path, false).await
     }
@@ -81,7 +80,7 @@ impl Db {
             .await
             .map_err(open_failed)?;
         use_wal(&mut *writer.acquire().await.map_err(open_failed)?).await?;
-        schema::migrate(&writer).await?;
+        schema::prepare(&writer).await?;
         let readers = SqlitePoolOptions::new()
             .max_connections(READERS)
             .connect_with(options.read_only(true))
@@ -218,7 +217,7 @@ fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
     }
 }
 
-/// The author stored in [`author_columns`]' columns; a row an older build wrote has no agent.
+/// The author stored in [`author_columns`]' columns.
 fn stored_author(kind: &str, member: String, agent: Option<&str>) -> Result<Author, Fault> {
     let member = stored(member)?;
     match (kind, agent) {
@@ -328,7 +327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reopening_keeps_the_data_and_the_schema() {
+    async fn reopening_keeps_the_data() {
         let dir = TempDir::new().unwrap();
         let db = Db::create(&dir.join("weacon.db")).await.unwrap();
         db.create_workspace(&workspace_id("w1"), "Team")
@@ -338,10 +337,6 @@ mod tests {
         let again = Db::open(&dir.join("weacon.db")).await.unwrap();
 
         again.workspace(&workspace_id("w1")).await.unwrap();
-        assert_eq!(
-            pragma(&again, "user_version").await,
-            schema::STEPS.len().to_string()
-        );
     }
 
     #[tokio::test]

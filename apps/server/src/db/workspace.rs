@@ -158,7 +158,6 @@ mod tests {
     use weacon_protocol::ChallengeId;
 
     use super::*;
-    use crate::db::schema::{database_before, steps};
     use crate::db::{Attempt, NewChallenge, NewWorkspace};
     use crate::test_support::{email, fresh_account, member_id, two_teams, workspace_id};
 
@@ -273,70 +272,6 @@ mod tests {
         one.leave(&member_id("m1")).await.unwrap();
         assert_eq!(one.session_member("ada", 100).await.unwrap(), None);
         assert_eq!(two.session_member("ada", 100).await.unwrap(), member("m2"));
-    }
-
-    async fn rows(db: &Db, table: &str) -> i64 {
-        let count = format!("SELECT count(*) FROM {table}");
-        sqlx::query_scalar(sqlx::AssertSqlSafe(count))
-            .fetch_one(&db.readers)
-            .await
-            .unwrap()
-    }
-
-    async fn owners(db: &Db) -> Vec<String> {
-        sqlx::query_scalar("SELECT account_id FROM accounts WHERE owner = 1")
-            .fetch_all(&db.readers)
-            .await
-            .unwrap()
-    }
-
-    // A database at `path` from before accounts: ada in w1 and w2, bo in w1, and a session
-    // and a sign-in of ada's in w1.
-    async fn old_database(path: &std::path::Path) {
-        let rows = "INSERT INTO workspaces VALUES ('w1', 'One'), ('w2', 'Two');
-             INSERT INTO members VALUES
-                 ('w1', 'm1', 'ada@example.com'), ('w2', 'm1', 'ada@example.com'),
-                 ('w1', 'm2', 'bo@example.com');
-             INSERT INTO sessions VALUES ('w1', x'01', 'm1', 9999999999);
-             INSERT INTO sign_in_challenges VALUES ('w1', 'c1', 'm1', x'02', 9999999999, 0)";
-        database_before(path, steps::ACCOUNTS, rows).await;
-    }
-
-    #[tokio::test]
-    async fn members_from_before_accounts_get_one_per_address() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.join("weacon.db");
-        old_database(&path).await;
-
-        let db = Db::open(&path).await.unwrap();
-        let [(ada, ada_email), (bo, bo_email)] = accounts(&db).await.try_into().unwrap();
-        let of: Vec<_> = member_accounts(&db)
-            .await
-            .into_iter()
-            .map(|(_, _, account)| account.unwrap())
-            .collect();
-
-        assert_eq!(ada_email, "ada@example.com");
-        assert_eq!(bo_email, "bo@example.com");
-        assert_ne!(ada, bo);
-        AccountId::try_from(ada.clone()).unwrap();
-        assert_eq!(of, [ada.clone(), ada.clone(), bo]);
-        // Members from before may do what any member may.
-        let ada_id = AccountId::try_from(ada.clone()).unwrap();
-        let roles = db.account(ada_id).workspaces().await.unwrap();
-        assert!(roles.iter().all(|seen| seen.role == WorkspaceRole::Member));
-        assert_eq!(owners(&db).await, [ada.as_str()]);
-        // Sign-ins from before were to one workspace, and don't carry over.
-        assert_eq!(rows(&db, "sessions").await, 0);
-        assert_eq!(rows(&db, "sign_in_challenges").await, 0);
-        let twice = sqlx::query(
-            "INSERT INTO members (workspace_id, member_id, email, account_id)
-             VALUES ('w1', 'm9', 'x@example.com', ?)",
-        )
-        .bind(ada)
-        .execute(&db.writer)
-        .await;
-        assert_eq!(failed(twice.unwrap_err()).code().as_str(), "db.exists");
     }
 
     async fn with_members(db: &Db, id: &str, members: &[(&str, &str)]) -> Workspace {
