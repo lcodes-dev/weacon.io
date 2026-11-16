@@ -96,14 +96,7 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<Ending, Fa
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),
         Command::Hook(command) => return Ok(hook::run(app, command, &mut io::stdout().lock())),
-        Command::Map(command) => {
-            return map::run(
-                app,
-                command,
-                &mut io::stdin().lock(),
-                &mut io::stdout().lock(),
-            );
-        }
+        Command::Map(command) => map::run(app, command, &mut io::stdout().lock()),
         Command::Update(command) => {
             return update::run(app, command, env, &mut io::stdout().lock());
         }

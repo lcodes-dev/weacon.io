@@ -6,8 +6,9 @@ mod item;
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::contracts::ContractKind;
 use crate::graph::nodes;
-use crate::{Break, ContractKind, EdgeKind, Index};
+use crate::{Break, EdgeKind, Index};
 
 /// How often a file changed, as git counts it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,9 +19,6 @@ pub struct Churn {
 
 /// Room kept for the last line, which says how many lines were left out.
 const TAIL: usize = "… 4294967295 more lines\n".len();
-
-/// How many of a list's entries are named before the rest are counted.
-const NAMED: usize = 5;
 
 /// `lines` as an answer within `budget` bytes, as every answer here is cut: each line whole,
 /// and a last line saying how many were left out.
@@ -101,50 +99,6 @@ impl Index {
                 "- {}  {}  {items} items",
                 krate.name,
                 folder(&krate.folder)
-            ));
-        }
-        text.finish()
-    }
-
-    /// How the code is split: which crates use which, and the areas of files that go together.
-    #[must_use]
-    pub fn architecture(&self, budget: usize) -> String {
-        let mut text = Text::new(budget);
-        text.line(&format!(
-            "Architecture: {} crates in {} areas.",
-            self.crates.len(),
-            self.areas.len()
-        ));
-        text.line("Crates and the crates they use, with how many edges:");
-        let mut uses: BTreeMap<&str, BTreeMap<&str, usize>> = BTreeMap::new();
-        for edge in self
-            .edges
-            .iter()
-            .filter(|edge| edge.kind != EdgeKind::Tests)
-        {
-            let (from, to) = (crate_of(&edge.from), crate_of(&edge.to));
-            if from != to {
-                *uses.entry(from).or_default().entry(to).or_default() += 1;
-            }
-        }
-        for (from, targets) in &uses {
-            let mut targets: Vec<(&&str, &usize)> = targets.iter().collect();
-            targets.sort_by_key(|(to, count)| (Reverse(**count), **to));
-            let listed: Vec<String> = targets
-                .iter()
-                .map(|(to, count)| format!("{to} {count}"))
-                .collect();
-            text.line(&format!("- {from} uses {}", listed.join(", ")));
-        }
-        text.line("Areas, each named by its most central file, largest first:");
-        let mut areas: Vec<_> = self.areas.iter().collect();
-        areas.sort_by_key(|area| (Reverse(area.files.len()), &area.id));
-        for area in areas {
-            text.line(&format!(
-                "- area:{} ({} files): {}",
-                area.id,
-                area.files.len(),
-                named(&area.files)
             ));
         }
         text.finish()
@@ -234,27 +188,6 @@ impl Index {
             .collect()
     }
 
-    /// The contracts of one kind, or of every kind, in order.
-    #[must_use]
-    pub fn contracts(&self, kind: Option<ContractKind>, budget: usize) -> String {
-        let mut text = Text::new(budget);
-        let chosen = self
-            .contracts
-            .iter()
-            .filter(|contract| kind.is_none_or(|kind| contract.kind == kind));
-        for contract in chosen {
-            let line = format!(
-                "- {}  {}  {}:{}",
-                contract.describe(),
-                contract.item,
-                contract.file,
-                contract.line
-            );
-            text.line(&line);
-        }
-        text.finish()
-    }
-
     /// The binaries' `main`s, the subcommands and the routes.
     fn entry_points(&self, text: &mut Text) {
         text.line("Entry points:");
@@ -285,19 +218,6 @@ impl Index {
             ));
         }
     }
-}
-
-/// The first few of `names`, and how many more there are.
-fn named(names: &[String]) -> String {
-    let shown: Vec<&str> = names.iter().take(NAMED).map(String::as_str).collect();
-    match names.len().saturating_sub(NAMED) {
-        0 => shown.join(", "),
-        more => format!("{}, and {more} more", shown.join(", ")),
-    }
-}
-
-fn crate_of(path: &str) -> &str {
-    path.split("::").next().unwrap_or_default()
 }
 
 fn folder(folder: &str) -> &str {
@@ -474,17 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn describes_the_architecture() {
-        assert_eq!(
-            repo().architecture(10_000),
-            "Architecture: 2 crates in 1 areas.\n\
-             Crates and the crates they use, with how many edges:\n- app uses lib 1\n\
-             Areas, each named by its most central file, largest first:\n\
-             - area:lib/src/store (3 files): lib/src/store.rs, lib/src/lib.rs, app/src/main.rs\n"
-        );
-    }
-
-    #[test]
     fn ranks_hotspots_by_churn_and_what_depends_on_them() {
         let churn = [
             ("lib/src/lib.rs", 3),
@@ -502,16 +411,6 @@ mod tests {
              - lib/src/store.rs  3 commits, 3 edges in\n- app/src/main.rs  10 commits, 0 edges in\n\
              - lib/src/lib.rs  3 commits, 2 edges in\n"
         );
-    }
-
-    #[test]
-    fn lists_contracts_of_one_kind() {
-        let index = repo();
-        assert_eq!(
-            index.contracts(Some(ContractKind::ErrorCode), 10_000),
-            "- code store.full  lib::store::keep  lib/src/store.rs:1\n"
-        );
-        assert_eq!(index.contracts(None, 10_000).lines().count(), 2);
     }
 
     #[test]

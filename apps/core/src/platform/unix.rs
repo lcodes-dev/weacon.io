@@ -1,12 +1,9 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 pub(crate) use tokio::net::UnixStream as Stream;
-
-/// The user a client must be.
-pub(crate) type Owner = u32;
 
 pub(crate) struct Listener(tokio::net::UnixListener);
 
@@ -45,12 +42,6 @@ pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
     }
 }
 
-/// Removes `dir` and all it holds; read-only files go too, as the folder's own permission
-/// decides.
-pub(crate) fn remove_tree(dir: &Path) -> io::Result<()> {
-    fs::remove_dir_all(dir)
-}
-
 /// Bytes this user may still write on the disk holding `dir`.
 #[expect(unsafe_code, reason = "statvfs has no safe API in std")]
 #[cfg_attr(
@@ -84,6 +75,12 @@ pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {
         .create(dir)
 }
 
+/// Creates `dir` and makes it this user's alone, whatever it was.
+pub(crate) fn own_dir(dir: &Path) -> io::Result<()> {
+    private_dir(dir)?;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
 /// Lets anyone run `file`, and only its owner change it.
 pub(crate) fn make_runnable(file: &Path) -> io::Result<()> {
     fs::set_permissions(file, fs::Permissions::from_mode(0o755))
@@ -105,28 +102,11 @@ pub(crate) fn is_runnable(file: &Path) -> bool {
         } == 0
 }
 
-/// The user that owns `dir`, when only that user can reach it.
-pub(crate) fn private_owner(dir: &Path) -> io::Result<Option<Owner>> {
-    let metadata = fs::metadata(dir)?;
-    let private = metadata.is_dir() && weacon_appkit::is_private(&metadata) == Some(true);
-    Ok(private.then(|| metadata.uid()))
-}
-
 /// Listens on a socket at `path` that only this user can open.
 pub(crate) fn bind(path: &Path) -> io::Result<Listener> {
     let listener = tokio::net::UnixListener::bind(path)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     Ok(Listener(listener))
-}
-
-pub(crate) fn is_owner(stream: &Stream, owner: Owner) -> bool {
-    stream.peer_cred().is_ok_and(|cred| cred.uid() == owner)
-}
-
-/// Lets other users into `dir`; true, since here they can be.
-#[cfg(test)]
-pub(crate) fn open_to_others(dir: &Path) -> bool {
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).is_ok()
 }
 
 #[cfg(test)]

@@ -7,7 +7,6 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::Instant;
 use weacon_agents::SpawnPolicy;
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
@@ -21,7 +20,7 @@ use crate::mcp;
 use crate::memory;
 use crate::outside::Outside;
 use crate::picks::Picks;
-use crate::platform::{self, Listener, Owner, Stream};
+use crate::platform::{self, Listener, Stream};
 use crate::proposals;
 use crate::session::Session;
 
@@ -30,7 +29,6 @@ mod leave;
 mod route;
 mod worktrees;
 
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const READ_CHUNK: usize = 8192;
 pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 const DISK_CHECK: Duration = Duration::from_mins(1);
@@ -67,7 +65,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
                 path: app.path.clone(),
                 work_root: app.work_root.clone(),
                 mcp: None,
-                plugin: crate::integrations::Plugin::new(state_dir, &app.version, &app.log),
+                plugin: None,
             },
             app.log.clone(),
         )?;
@@ -90,13 +88,6 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
     })
 }
 
-fn not_private() -> Fault {
-    Fault::new(
-        code!("state.not_private"),
-        "Other users can reach the state folder; make it readable only by you",
-    )
-}
-
 #[derive(Clone)]
 struct Shared {
     app: App,
@@ -113,7 +104,6 @@ struct Shared {
 pub(crate) struct Daemon {
     listener: Listener,
     socket: PathBuf,
-    owner: Owner,
     shared: Shared,
     disk: disk::Watch,
     memory: memory::Watch,
@@ -138,9 +128,8 @@ impl Daemon {
         let failed = |error: io::Error| {
             Fault::new(code!("daemon.start_failed"), "The daemon couldn't start").because(error)
         };
-        platform::private_dir(state_dir).map_err(failed)?;
-        let owner = platform::private_owner(state_dir).map_err(failed)?;
-        let owner = owner.ok_or_else(not_private)?;
+        // The socket, the pairing and the plugin its agents run are in it.
+        platform::own_dir(state_dir).map_err(failed)?;
         let lock = weacon_appkit::private_append(&state_dir.join("weacon.lock")).map_err(failed)?;
         lock.try_lock().map_err(|error| match error {
             TryLockError::WouldBlock => Fault::new(
@@ -151,6 +140,8 @@ impl Daemon {
         })?;
         let socket = socket_path(state_dir);
         remove_stale(&socket).map_err(failed)?;
+        // Only under the lock: another daemon's runs may be reading its own.
+        places.plugin = crate::integrations::Plugin::new(state_dir, &app.version, &log);
         let (proposals, proposing) = proposals::channel();
         let maps = mcp::Maps::new(state_dir, &places).proposing(proposals);
         let (mcp, mcp_server) = mcp::start(&app, &log, maps.clone())?;
@@ -162,7 +153,6 @@ impl Daemon {
         Ok(Self {
             listener,
             socket,
-            owner,
             uplink: JoinSet::new(),
             proposing: Some(proposing),
             engine: tokio::spawn(engine.serve()),
@@ -232,9 +222,6 @@ impl Daemon {
     }
 
     fn admit(&self, stream: Stream, clients: &mut JoinSet<()>) {
-        if !platform::is_owner(&stream, self.owner) {
-            return self.shared.log.warn("client refused", &[]);
-        }
         let shared = self.shared.clone();
         clients.spawn(async move {
             if let Err(error) = serve_client(stream, &shared).await {
@@ -260,7 +247,6 @@ struct Connection {
 async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut buf = [0; READ_CHUNK];
-    let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
     let (push, mut pushed) = mpsc::channel(feed::QUEUE);
     let (late, mut answered) = mpsc::channel(worktrees::LATE);
     let mut connection = Connection {
@@ -271,10 +257,8 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
         leave: leave::Leave::default(),
     };
     loop {
-        // Until the hello, reading counts against the deadline, as `answer`'s replies do.
-        let limit = (!connection.session.greeted()).then_some(deadline);
         let read = tokio::select! {
-            read = within(limit, reader.read(&mut buf)) => read,
+            read = reader.read(&mut buf) => read?,
             Some(message) = pushed.recv() => {
                 if let Ok(line) = encode_line(&Envelope { id: 0, message }) {
                     writer.write_all(&line).await?;
@@ -288,35 +272,22 @@ async fn serve_client(stream: Stream, shared: &Shared) -> io::Result<()> {
                 continue;
             }
         };
-        let Some(read) = read.transpose()? else {
-            return Ok(());
-        };
         if read == 0 {
             return Ok(());
         }
         let bytes = buf.get(..read).unwrap_or_default();
-        if !answer(&mut connection, bytes, shared, &mut writer, deadline).await? {
+        if !answer(&mut connection, bytes, shared, &mut writer).await? {
             return Ok(());
         }
     }
 }
 
-// `future`'s output, or None when `deadline` comes first.
-async fn within<F: Future>(deadline: Option<Instant>, future: F) -> Option<F::Output> {
-    match deadline {
-        Some(deadline) => tokio::time::timeout_at(deadline, future).await.ok(),
-        None => Some(future.await),
-    }
-}
-
-// Answers what `bytes` completes; false once the connection should close. Replies before the
-// hello count against `deadline`; what follows the hello, even in the same read, doesn't.
+// Answers what `bytes` completes; false once the connection should close.
 async fn answer(
     connection: &mut Connection,
     bytes: &[u8],
     shared: &Shared,
     writer: &mut (impl AsyncWrite + Unpin),
-    deadline: Instant,
 ) -> io::Result<bool> {
     let Connection {
         session,
@@ -326,7 +297,6 @@ async fn answer(
         leave,
     } = connection;
     for received in decoder.push(bytes) {
-        let limit = (!session.greeted()).then_some(deadline);
         if let Ok(Envelope {
             message: Message::Error(body),
             ..
@@ -348,10 +318,7 @@ async fn answer(
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
         {
-            let Some(written) = within(limit, writer.write_all(&line)).await else {
-                return Ok(false);
-            };
-            written?;
+            writer.write_all(&line).await?;
         }
         if reply.close {
             return Ok(false);
@@ -432,8 +399,8 @@ mod tests {
         writer.write_all(bytes).await.unwrap();
         let mut lines = tokio::io::BufReader::new(reader).lines();
         let mut replies = Vec::new();
-        // Longer than the handshake deadline, so a daemon that never answers fails the test.
-        let wait = HANDSHAKE_TIMEOUT * 2;
+        // So a daemon that never answers fails the test.
+        let wait = Duration::from_secs(10);
         while replies.len() < count
             && let Some(line) = timeout(wait, lines.next_line()).await.unwrap().unwrap()
         {
@@ -587,6 +554,20 @@ mod tests {
         assert!(stopped.is_ok(), "the daemon never stopped");
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_state_folder_others_can_enter_is_made_its_users_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let running = start(&dir).unwrap();
+
+        let mode = fs::metadata(&*dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        running.stop().await;
+    }
+
     #[tokio::test]
     async fn one_daemon_per_state_folder_and_a_stale_socket_is_replaced() {
         let dir = TempDir::new().unwrap();
@@ -595,35 +576,12 @@ mod tests {
         let second = start(&dir).err().unwrap();
 
         assert_eq!(second.code().as_str(), "daemon.running");
+        let hooks = dir.join("claude-plugin/hooks/hooks.json");
+        fs::write(&hooks, "the first daemon's").unwrap();
+        start(&dir).err().unwrap();
+        assert_eq!(fs::read_to_string(&hooks).unwrap(), "the first daemon's");
         ask(&first.socket).await.unwrap();
         first.stop().await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_state_folder_others_can_reach_is_refused() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = TempDir::new().unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-
-        assert_eq!(
-            start(&dir).err().unwrap().code().as_str(),
-            "state.not_private"
-        );
-        assert!(!socket_path(&dir).exists());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn another_user_is_refused() {
-        let dir = TempDir::new().unwrap();
-        let running = start_as(&dir, |daemon| daemon.owner += 1).unwrap();
-        let refused = ask(&running.socket).await.unwrap_err();
-        let records = running.stop().await;
-
-        assert_eq!(refused.code().as_str(), "daemon.no_answer");
-        assert!(messages(&records).contains(&"client refused"));
     }
 
     #[tokio::test]
@@ -648,7 +606,7 @@ mod tests {
         let running = start(&dir).unwrap();
         let other = hello(PROTOCOL + 1);
         let talk = exchange(connect(&running.socket).await, &other, 9);
-        let (replies, _) = timeout(HANDSHAKE_TIMEOUT / 2, talk).await.unwrap();
+        let (replies, _) = timeout(Duration::from_secs(3), talk).await.unwrap();
 
         assert_eq!(replies.len(), 1);
         assert_eq!(error_code(&replies[0]), Some("protocol.unsupported"));
@@ -665,32 +623,6 @@ mod tests {
 
         assert!(matches!(replies[0], Message::Welcome(_)));
         assert_eq!(client.read(&mut [0; 16]).await.unwrap(), 0);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_hello_may_come_late_but_within_the_deadline() {
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let client = connect(&running.socket).await;
-        tokio::time::sleep(HANDSHAKE_TIMEOUT / 2).await;
-        let (replies, _) = exchange(client, &hello(PROTOCOL), 1).await;
-
-        assert!(matches!(replies[0], Message::Welcome(_)));
-        running.stop().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_client_that_never_says_hello_is_hung_up_on() {
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let mut client = connect(&running.socket).await;
-        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
-        // The hang-up itself comes in real time.
-        tokio::time::resume();
-        let read = timeout(HANDSHAKE_TIMEOUT, client.read(&mut [0; 16])).await;
-
-        assert_eq!(read.unwrap().unwrap(), 0);
-        running.stop().await;
     }
 
     fn pick(id: u32, request: &str, html: &str) -> Vec<u8> {
@@ -921,31 +853,6 @@ mod tests {
         assert!(reported.contains("extension.capture_failed"), "{reported}");
     }
 
-    // Writes 8 MiB of bad lines without reading the replies; far more than the socket buffers.
-    async fn flood(mut client: impl AsyncWrite + Unpin) -> io::Result<()> {
-        let junk = b"x\n".repeat(32 * 1024);
-        for _ in 0..128 {
-            client.write_all(&junk).await?;
-        }
-        Ok(())
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_client_that_floods_before_its_hello_is_hung_up_on() {
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let client = connect(&running.socket).await;
-
-        // The daemon stops reading while its replies back up, then hangs up at the deadline,
-        // which comes in real time.
-        let flooding = tokio::spawn(flood(client));
-        tokio::time::sleep(HANDSHAKE_TIMEOUT).await;
-        tokio::time::resume();
-        let flooded = timeout(HANDSHAKE_TIMEOUT, flooding).await;
-        flooded.unwrap().unwrap().unwrap_err();
-        running.stop().await;
-    }
-
     // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.
     fn worktree_asks(workspace: &WorkspaceId, chat: &ChatId) -> Vec<u8> {
         use weacon_protocol::{
@@ -1166,31 +1073,6 @@ mod tests {
         }
         running.stop().await;
         bench.started.try_recv().unwrap_err();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_command_read_with_the_hello_isnt_held_to_the_handshake_deadline() {
-        use crate::chats::test_support::{parts, prompt};
-
-        let dir = TempDir::new().unwrap();
-        // An engine that never runs: a command waits for its answer for good.
-        let (bench, _engine) = parts();
-        let chats = bench.chats.clone();
-        let running = start_as(&dir, |daemon| daemon.shared.chats = chats).unwrap();
-        let command = Message::ChatCommand(prompt("r-1", "Hi"));
-        let command = encode_line(&Envelope {
-            id: 2,
-            message: command,
-        })
-        .unwrap();
-
-        let stream = connect(&running.socket).await;
-        let (replies, mut stream) = exchange(stream, &[hello(PROTOCOL), command].concat(), 1).await;
-
-        assert!(matches!(replies[0], Message::Welcome(_)));
-        let read = timeout(HANDSHAKE_TIMEOUT * 2, stream.read(&mut [0; 16])).await;
-        assert!(read.is_err(), "the daemon hung up: {read:?}");
-        running.stop().await;
     }
 
     #[tokio::test]

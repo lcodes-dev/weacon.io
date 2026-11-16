@@ -47,7 +47,7 @@ impl Contract {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ContractKind {
+pub(crate) enum ContractKind {
     /// A subcommand, after the subcommands above it.
     Command,
     /// A code given to `code!`.

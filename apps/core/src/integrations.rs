@@ -2,17 +2,12 @@
 //! build's version and this program's path filled in, and Codex's hooks in `integrations/codex`.
 
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{code, to_hex};
-use weacon_version::Version;
-
-use crate::platform::remove_tree;
+use weacon_protocol::code;
 
 const MANIFEST: &str = include_str!("../../../integrations/claude/.claude-plugin/plugin.json");
 const HOOKS: &str = include_str!("../../../integrations/claude/hooks/hooks.json");
@@ -23,113 +18,81 @@ const COMMAND: &str = "/hooks/SessionStart/0/hooks/0/command";
 // So a program that moved or was removed still prints nothing and succeeds.
 const QUIET: &str = "2>/dev/null || true";
 
-/// The plugin each run is given, checked before every launch.
+/// The plugin each run is given, written when the daemon starts.
 #[derive(Clone, Debug)]
 pub(crate) struct Plugin {
     dir: PathBuf,
-    files: [(&'static str, String); 3],
     codex: String,
     log: Logger,
-    // Held through each launch, so two never clash; true once the folders beside it are swept.
-    swept: Arc<Mutex<bool>>,
 }
 
 impl Plugin {
-    /// This program's plugin under `state_dir`, or none, logged, when it can't be made.
-    pub(crate) fn new(state_dir: &Path, version: &Version, log: &Logger) -> Option<Self> {
-        let plugin = std::env::current_exe()
+    /// This program's plugin under `state_dir`, or none, logged, when it can't be written.
+    pub(crate) fn new(state_dir: &Path, version: &str, log: &Logger) -> Option<Self> {
+        std::env::current_exe()
             .map_err(|error| failed().because(error))
-            .and_then(|program| Self::at(state_dir, &program, version, log));
-        logged(log, plugin)
+            .and_then(|program| Self::at(state_dir, &program, version, log))
+            .inspect_err(|fault| log.warn("plugin failed", &[("err", Field::error(fault))]))
+            .ok()
     }
 
-    /// The plugin for `program`, which its hook runs.
+    /// Writes the plugin for `program`, which its hook runs, under `state_dir`.
     pub(crate) fn at(
         state_dir: &Path,
         program: &Path,
-        version: &Version,
+        version: &str,
         log: &Logger,
     ) -> Result<Self, Fault> {
-        let files = render(program, version)?;
-        let codex = hooks(CODEX_HOOKS, program)?;
-        let dir = state_dir
-            .join("integrations")
-            .join("claude")
-            .join(name(&files));
+        let dir = state_dir.join("claude-plugin");
+        // What an earlier build wrote there and this one doesn't would still be loaded.
+        match fs::remove_dir_all(&dir) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => {
+                return Err(failed().because(error));
+            }
+            _ => {}
+        }
+        for (path, text) in render(program, version)? {
+            let file = dir.join(path);
+            file.parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::write(&file, text))
+                .map_err(|error| failed().because(error))?;
+        }
         Ok(Self {
             dir,
-            files,
-            codex,
+            codex: hooks(CODEX_HOOKS, program)?,
             log: log.clone(),
-            swept: Arc::default(),
         })
     }
 
-    /// The plugin's folder, rewritten when anything in it differs; none, logged, when it
-    /// can't be. The first call also removes every other folder beside it.
-    pub(crate) fn folder(&self) -> Option<PathBuf> {
-        let mut swept = self.swept.lock().unwrap_or_else(PoisonError::into_inner);
-        if !*swept {
-            if let Err(error) = sweep(&self.dir) {
-                self.log
-                    .warn("plugin sweep failed", &[("err", Field::error(&error))]);
-            }
-            *swept = true;
-        }
-        logged(
-            &self.log,
-            self.ensure().map_err(|error| failed().because(error)),
-        )
+    pub(crate) fn folder(&self) -> PathBuf {
+        self.dir.clone()
     }
 
     /// Gives the Codex config folder `config` the start-of-session hook unless it has a hooks
     /// file already. Codex runs it only once a person has reviewed it there, in Codex's `/hooks`.
     pub(crate) fn give_codex(&self, config: &Path) {
-        let file = config.join("hooks.json");
-        // Written aside, then linked into place, which never replaces a file already there: it
-        // may be the person's own, a link, or another launch's.
-        let staged = aside(&file, "part");
-        let written = fs::write(&staged, &self.codex)
-            .and_then(|()| unless_there(fs::hard_link(&staged, &file)));
-        drop(fs::remove_file(&staged));
-        if let Err(error) = written {
+        let written =
+            weacon_appkit::create_private(&config.join("hooks.json"), self.codex.as_bytes());
+        if let Err(error) = unless_there(written) {
             let fault = failed().because(error);
             self.log
                 .warn("codex hooks failed", &[("err", Field::error(&fault))]);
         }
     }
-
-    // A folder an agent changed goes, since every later run would load it; it is renamed first
-    // so that a folder that can't be removed still isn't loaded.
-    fn ensure(&self) -> io::Result<PathBuf> {
-        if !holds(&self.dir, &self.files) {
-            if fs::symlink_metadata(&self.dir).is_ok() {
-                let stale = aside(&self.dir, "stale");
-                fs::rename(&self.dir, &stale)?;
-                drop(remove(&stale));
-            }
-            write(&self.dir, &self.files)?;
-        }
-        Ok(self.dir.clone())
-    }
 }
 
 // A file already there is kept, so that is no error.
-fn unless_there(linked: io::Result<()>) -> io::Result<()> {
-    match linked {
+fn unless_there(written: io::Result<()>) -> io::Result<()> {
+    match written {
         Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
         _ => Ok(()),
     }
 }
 
-fn logged<T>(log: &Logger, made: Result<T, Fault>) -> Option<T> {
-    made.inspect_err(|fault| log.warn("plugin failed", &[("err", Field::error(fault))]))
-        .ok()
-}
-
-fn render(program: &Path, version: &Version) -> Result<[(&'static str, String); 3], Fault> {
+fn render(program: &Path, version: &str) -> Result<[(&'static str, String); 3], Fault> {
     let mut manifest: Value = serde_json::from_str(MANIFEST).map_err(|_| failed())?;
-    *manifest.get_mut("version").ok_or_else(failed)? = version.version.into();
+    *manifest.get_mut("version").ok_or_else(failed)? = version.into();
     Ok([
         (".claude-plugin/plugin.json", manifest.to_string()),
         ("hooks/hooks.json", hooks(HOOKS, program)?),
@@ -151,118 +114,6 @@ fn quoted(path: &str) -> String {
     format!("'{}'", path.replace('\'', r"'\''"))
 }
 
-/// A folder name that changes whenever any file does.
-fn name(files: &[(&str, String)]) -> String {
-    let mut hash = Sha256::new();
-    for (path, text) in files {
-        hash.update(path.as_bytes());
-        hash.update([0]);
-        hash.update(text.as_bytes());
-        hash.update([0]);
-    }
-    to_hex(hash.finalize().get(..8).unwrap_or_default())
-}
-
-/// Whether `dir` holds exactly `files`, as plain files.
-fn holds(dir: &Path, files: &[(&str, String)]) -> bool {
-    let mut found = Vec::new();
-    if listed(dir, dir, &mut found).is_err() {
-        return false;
-    }
-    found.sort();
-    let mut expected: Vec<PathBuf> = files.iter().map(|(path, _)| PathBuf::from(path)).collect();
-    expected.sort();
-    found == expected
-        && files
-            .iter()
-            .all(|(path, text)| same_text(&dir.join(path), text))
-}
-
-/// Whether `path` holds exactly `text`, reading at most one byte more than it.
-fn same_text(path: &Path, text: &str) -> bool {
-    let limit = u64::try_from(text.len())
-        .unwrap_or(u64::MAX)
-        .saturating_add(1);
-    let mut held = Vec::new();
-    fs::File::open(path)
-        .and_then(|file| file.take(limit).read_to_end(&mut held))
-        .is_ok_and(|_| held == text.as_bytes())
-}
-
-fn listed(root: &Path, dir: &Path, found: &mut Vec<PathBuf>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let path = entry.path();
-        if kind.is_dir() {
-            listed(root, &path, found)?;
-        } else if kind.is_file() {
-            found.push(path.strip_prefix(root).unwrap_or(&path).to_path_buf());
-        } else {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-    }
-    Ok(())
-}
-
-/// Removes every folder beside `dir`: other builds' plugins, and any set aside or half written.
-fn sweep(dir: &Path) -> io::Result<()> {
-    let Some(parent) = dir.parent() else {
-        return Ok(());
-    };
-    // An unreadable folder is skipped; writing the plugin reports the error.
-    let Ok(entries) = fs::read_dir(parent) else {
-        return Ok(());
-    };
-    // Each is tried, so one that can't be removed leaves no other behind.
-    let mut first = Ok(());
-    for entry in entries {
-        let removed = entry.and_then(|entry| {
-            let path = entry.path();
-            if path == dir { Ok(()) } else { remove(&path) }
-        });
-        first = first.and(removed);
-    }
-    first
-}
-
-fn remove(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        remove_tree(path)
-    } else {
-        fs::remove_file(path)
-    }
-}
-
-// Written beside the folder, then renamed, so a folder that exists is always whole.
-fn write(dir: &Path, files: &[(&str, String)]) -> io::Result<()> {
-    let staging = aside(dir, "part");
-    let written = fill(&staging, files).and_then(|()| fs::rename(&staging, dir));
-    if written.is_err() {
-        drop(remove_tree(&staging));
-    }
-    written
-}
-
-fn fill(staging: &Path, files: &[(&str, String)]) -> io::Result<()> {
-    for (path, text) in files {
-        let file = staging.join(path);
-        if let Some(folder) = file.parent() {
-            fs::create_dir_all(folder)?;
-        }
-        fs::write(&file, text)?;
-        // Read-only, so an agent's edit can't change what every later run loads.
-        let mut permissions = fs::metadata(&file)?.permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&file, permissions)?;
-    }
-    Ok(())
-}
-
-fn aside(dir: &Path, what: &str) -> PathBuf {
-    dir.with_extension(format!("{what}-{:x}", weacon_appkit::random_id()))
-}
-
 fn failed() -> Fault {
     Fault::new(
         code!("plugin.write_failed"),
@@ -281,13 +132,7 @@ mod tests {
         serde_json::from_str(&fs::read_to_string(dir.join(path)).unwrap()).unwrap()
     }
 
-    // The files are read-only, so one is changed by replacing it.
-    fn replace(file: &Path, text: &str) {
-        fs::remove_file(file).unwrap();
-        fs::write(file, text).unwrap();
-    }
-
-    fn plugin(state: &Path, program: &str, version: &Version) -> Plugin {
+    fn plugin(state: &Path, program: &str, version: &str) -> Plugin {
         Plugin::at(state, Path::new(program), version, &recording_logger().0).unwrap()
     }
 
@@ -296,14 +141,14 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let state: &Path = &temp;
 
-        let dir = plugin(state, "/opt/it's here/weacon", &VERSION)
-            .folder()
-            .unwrap();
+        fs::create_dir_all(state.join("claude-plugin/skills/gone")).unwrap();
+        fs::write(state.join("claude-plugin/skills/gone/SKILL.md"), "old").unwrap();
 
-        assert_eq!(
-            dir.parent(),
-            Some(state.join("integrations/claude").as_path())
-        );
+        let dir = plugin(state, "/opt/it's here/weacon", VERSION.version).folder();
+
+        assert!(!dir.join("skills/gone").exists());
+
+        assert_eq!(dir, state.join("claude-plugin"));
         assert_eq!(json(&dir, ".claude-plugin/plugin.json")["version"], "0.1.0");
         let hooks = json(&dir, "hooks/hooks.json");
         let command = hooks.pointer(COMMAND).unwrap();
@@ -313,8 +158,6 @@ mod tests {
         );
         let skill = fs::read_to_string(dir.join("skills/weacon-map/SKILL.md")).unwrap();
         assert_eq!(skill, SKILL);
-        let manifest = dir.join(".claude-plugin/plugin.json");
-        assert!(fs::metadata(manifest).unwrap().permissions().readonly());
     }
 
     #[test]
@@ -333,7 +176,7 @@ mod tests {
     fn a_codex_folder_gets_the_hook_once_and_keeps_a_file_already_there() {
         let temp = TempDir::new().unwrap();
         let (log, records) = recording_logger();
-        let plugin = Plugin::at(&temp, Path::new("/opt/weacon"), &VERSION, &log).unwrap();
+        let plugin = Plugin::at(&temp, Path::new("/opt/weacon"), VERSION.version, &log).unwrap();
         let (fresh, own, missing) = (temp.join("fresh"), temp.join("own"), temp.join("missing"));
         fs::create_dir_all(&fresh).unwrap();
         fs::create_dir_all(&own).unwrap();
@@ -350,10 +193,6 @@ mod tests {
         let shipped: Value = serde_json::from_str(CODEX_HOOKS).unwrap();
         assert_eq!(hooks["description"], shipped["description"]);
         assert_eq!(fs::read_to_string(own.join("hooks.json")).unwrap(), "{}");
-        // Nothing set aside is left beside either.
-        for folder in [&fresh, &own] {
-            assert_eq!(fs::read_dir(folder).unwrap().count(), 1);
-        }
         assert!(messages(&records).is_empty());
         plugin.give_codex(&missing);
         assert_eq!(messages(&records), ["codex hooks failed"]);
@@ -365,9 +204,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let state: &Path = &temp;
         let gone = state.join("gone/weacon");
-        let dir = plugin(state, gone.to_str().unwrap(), &VERSION)
-            .folder()
-            .unwrap();
+        let dir = plugin(state, gone.to_str().unwrap(), VERSION.version).folder();
         let hooks = json(&dir, "hooks/hooks.json");
         let command = hooks.pointer(COMMAND).and_then(Value::as_str).unwrap();
 
@@ -381,132 +218,16 @@ mod tests {
     }
 
     #[test]
-    fn each_build_and_program_has_its_own_folder() {
-        let temp = TempDir::new().unwrap();
-        let state: &Path = &temp;
-        let newer = Version {
-            version: "0.2.0",
-            ..VERSION
-        };
-
-        let first = plugin(state, "/opt/weacon", &VERSION).folder().unwrap();
-        let again = plugin(state, "/opt/weacon", &VERSION).folder().unwrap();
-        let moved = plugin(state, "/usr/bin/weacon", &VERSION).folder().unwrap();
-        let updated = plugin(state, "/opt/weacon", &newer).folder().unwrap();
-
-        assert_eq!(first, again);
-        assert_ne!(first, moved);
-        assert_ne!(first, updated);
-        // Each new plugin removes the folders before it.
-        let folders: Vec<_> = fs::read_dir(state.join("integrations/claude"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        assert_eq!(folders, [updated]);
-    }
-
-    #[test]
-    fn a_folder_that_was_changed_is_set_aside_and_written_again() {
-        let temp = TempDir::new().unwrap();
-        let state: &Path = &temp;
-        let plugin = plugin(state, "/opt/weacon", &VERSION);
-        let dir = plugin.folder().unwrap();
-        let hooks = dir.join("hooks/hooks.json");
-
-        fs::remove_file(&hooks).unwrap();
-        assert_eq!(plugin.folder().unwrap(), dir);
-        fs::write(dir.join("hooks/more.json"), "{}").unwrap();
-        assert_eq!(plugin.folder().unwrap(), dir);
-        let skill = dir.join("skills/weacon-map/SKILL.md");
-        let mut longer = fs::read_to_string(&skill).unwrap();
-        longer.push('!');
-        replace(&skill, &longer);
-        assert_eq!(plugin.folder().unwrap(), dir);
-        assert_eq!(fs::read_to_string(&skill).unwrap(), SKILL);
-
-        assert!(!dir.join("hooks/more.json").exists());
-        assert_eq!(
-            json(&dir, "hooks/hooks.json").pointer(COMMAND).unwrap(),
-            "'/opt/weacon' hook session-start 2>/dev/null || true"
-        );
-        // The three it replaced are gone.
-        let folders = fs::read_dir(state.join("integrations/claude")).unwrap();
-        assert_eq!(folders.count(), 1);
-    }
-
-    #[test]
-    fn a_plugins_first_launch_removes_every_other_folder_beside_it() {
-        let temp = TempDir::new().unwrap();
-        let state: &Path = &temp;
-        let old = plugin(state, "/opt/weacon", &VERSION).folder().unwrap();
-        let claude = state.join("integrations/claude");
-        fs::create_dir_all(claude.join("abc.stale-1/hooks")).unwrap();
-        fs::write(claude.join("abc.stale-1/hooks/hooks.json"), "{}").unwrap();
-        fs::write(claude.join("loose"), "").unwrap();
-        let listed = || {
-            let mut names: Vec<_> = fs::read_dir(&claude)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .collect();
-            names.sort();
-            names
-        };
-        let before = listed();
-
-        // A daemon that never launches, such as one that finds another running, removes none.
-        let current = plugin(state, "/usr/bin/weacon", &VERSION);
-        assert_eq!(listed(), before);
-        let dir = current.folder().unwrap();
-
-        assert_eq!(listed(), std::slice::from_ref(&dir));
-        assert!(!old.exists());
-        assert!(dir.join("hooks/hooks.json").is_file());
-    }
-
-    #[test]
-    fn launches_at_once_all_get_the_same_whole_folder() {
-        let temp = TempDir::new().unwrap();
-        let plugin = plugin(&temp, "/opt/weacon", &VERSION);
-        let dir = plugin.folder().unwrap();
-        fs::write(dir.join("hooks/more.json"), "{}").unwrap();
-
-        let folders: Vec<_> = std::thread::scope(|scope| {
-            #[expect(
-                clippy::needless_collect,
-                reason = "every launch starts before the first is joined"
-            )]
-            let launches: Vec<_> = (0..8).map(|_| scope.spawn(|| plugin.folder())).collect();
-            launches
-                .into_iter()
-                .map(|launch| launch.join().unwrap())
-                .collect()
-        });
-
-        assert!(folders.iter().all(|folder| folder.as_ref() == Some(&dir)));
-        assert!(holds(&dir, &plugin.files));
-        let claude = temp.join("integrations/claude");
-        assert_eq!(fs::read_dir(claude).unwrap().count(), 1);
-    }
-
-    #[test]
     fn a_plugin_that_cant_be_written_is_none_and_logged() {
         let temp = TempDir::new().unwrap();
         let state: &Path = &temp;
-        fs::write(state.join("integrations"), "").unwrap();
+        fs::write(state.join("claude-plugin"), "").unwrap();
         let (log, records) = recording_logger();
 
-        let plugin = Plugin::new(state, &VERSION, &log).unwrap();
+        assert!(Plugin::new(state, VERSION.version, &log).is_none());
 
-        assert_eq!(plugin.folder(), None);
         assert_eq!(messages(&records), ["plugin failed"]);
-        assert_eq!(fs::read_dir(state).unwrap().count(), 1);
-        let elsewhere = Plugin::new(&state.join("elsewhere"), &VERSION, &log).unwrap();
-        assert!(
-            elsewhere
-                .folder()
-                .unwrap()
-                .join("hooks/hooks.json")
-                .is_file()
-        );
+        let elsewhere = Plugin::new(&state.join("elsewhere"), VERSION.version, &log).unwrap();
+        assert!(elsewhere.folder().join("hooks/hooks.json").is_file());
     }
 }
