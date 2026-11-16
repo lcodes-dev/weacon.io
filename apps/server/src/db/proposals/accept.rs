@@ -110,7 +110,7 @@ impl Workspace {
             Break(conflict) => return Ok(conflict),
         };
         let mut transaction = self.db.write().await?;
-        self.open_bytes(&mut transaction, id).await?;
+        self.still_open(&mut transaction, id).await?;
         let made = match self.apply_change(&mut transaction, ready).await? {
             Continue(made) => made,
             Break(conflict) => return Ok(conflict),
@@ -120,7 +120,6 @@ impl Workspace {
             by,
             version: version_number(version, unreadable)?,
         };
-        // Its own bytes leave the quota first, so that a full workspace can still accept it.
         self.close_proposal(&mut transaction, id, accepted, by)
             .await?;
         self.store_made(&mut transaction, &made, &attribution)
@@ -596,21 +595,6 @@ mod tests {
         let tasks = one.tasks().await.unwrap();
         let titles: Vec<&str> = tasks.iter().map(|task| task.title.as_str()).collect();
         assert_eq!(titles, ["Write", "Test", "Plan", "Ship"]);
-    }
-
-    #[tokio::test]
-    async fn a_proposal_a_full_workspace_holds_can_still_be_accepted() {
-        let dir = TempDir::new().unwrap();
-        let (one, _) = workspaces(&dir).await;
-        one.propose(&proposed("p1", "mc1", revise("d1", 1, "One\nTwo\n")))
-            .await
-            .unwrap();
-        one.fill_doc_quota().await;
-
-        assert_eq!(
-            accepted(&one, "p1").await,
-            ProposalOutcome::Accepted { version: 2 }
-        );
     }
 
     #[tokio::test]

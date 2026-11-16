@@ -1,18 +1,16 @@
 use std::future::Future;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tokio::time::timeout;
-use weacon_protocol::code;
 
 use crate::chats;
 use crate::connections;
@@ -34,8 +32,7 @@ mod body;
 
 use answer::Failed;
 pub(crate) use answer::{
-    Refusals, Refused, cross_site, error, failure, invalid, not_found, report, too_many,
-    unauthorized,
+    Refusals, Refused, cross_site, error, failure, invalid, not_found, report, unauthorized,
 };
 use body::MAX_BODY;
 pub(crate) use body::{Body, Unreadable, parsed};
@@ -43,8 +40,6 @@ pub(crate) use body::{Body, Unreadable, parsed};
 const REQUEST_ID: &str = "x-request-id";
 
 const GRACE: Duration = Duration::from_secs(10);
-/// How long a request may take from its head to its answer, its body included.
-const ANSWER_WITHIN: Duration = Duration::from_secs(30);
 static METHODS: [Method; 9] = [
     Method::GET,
     Method::POST,
@@ -68,13 +63,13 @@ pub(crate) async fn serve(
     if let Ok(address) = listener.local_addr() {
         log.info("listening", &[("address", address.to_string().into())]);
     }
-    let (head_within, room) = (shared.head_within, Arc::clone(&shared.connections));
+    let head_within = shared.head_within;
     let router = router(shared);
     let (close, _) = watch::channel(());
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            accepted = connections::accept(&listener, &room, &log) => {
+            accepted = connections::accept(&listener, &log) => {
                 connections::serve(accepted, router.clone(), head_within, close.subscribe());
             }
             () = &mut shutdown => break,
@@ -105,7 +100,6 @@ fn router(shared: Shared) -> Router {
         .merge(web::routes(shared.web))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::map_response(uncached))
-        .layer(middleware::from_fn(in_time))
         .layer(middleware::from_fn_with_state(shared.clone(), log_request))
         .with_state(shared)
 }
@@ -121,13 +115,6 @@ async fn uncached(mut response: Response) -> Response {
         .entry(header::CACHE_CONTROL)
         .or_insert(HeaderValue::from_static("no-store"));
     response
-}
-
-/// Answers that the request took too long, when it has: a body that never comes, for one.
-async fn in_time(request: Request, next: Next) -> Response {
-    timeout(ANSWER_WITHIN, next.run(request))
-        .await
-        .unwrap_or_else(|_| error(StatusCode::REQUEST_TIMEOUT, code!("request.too_slow"), true))
 }
 
 /// The id `log_request` gave the request, for handlers that log after answering it.
@@ -181,7 +168,6 @@ mod tests {
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
-    use tokio::sync::Semaphore;
 
     use super::*;
     use crate::test_support::{Fixture, PATIENCE, Running, header, messages, request};
@@ -285,83 +271,6 @@ mod tests {
             .expect("never closed")
             .unwrap();
         (rest.to_lowercase(), started.elapsed())
-    }
-
-    // Timers fire up to a millisecond late.
-    fn about(took: Duration, limit: Duration) -> bool {
-        (limit..limit + Duration::from_millis(10)).contains(&took)
-    }
-
-    #[tokio::test]
-    async fn a_head_that_never_ends_closes_the_connection() {
-        let server = start().await;
-        tokio::time::pause();
-        let mut slow = TcpStream::connect(server.running.address).await.unwrap();
-        slow.write_all(b"GET /version HTTP/1.1\r\nhost: test\r\n")
-            .await
-            .unwrap();
-
-        let (_, took) = until_closed(&mut slow).await;
-
-        assert!(about(took, connections::HEAD_WITHIN), "{took:?}");
-        assert_eq!(messages(&server.fixture.records), ["listening"]);
-    }
-
-    #[tokio::test]
-    async fn an_idle_connection_is_closed() {
-        let server = start().await;
-        tokio::time::pause();
-        let mut idle = TcpStream::connect(server.running.address).await.unwrap();
-        assert_eq!(exchange(&mut idle, "/version").await, "http/1.1 200 ok");
-
-        let (rest, took) = until_closed(&mut idle).await;
-
-        assert_eq!(rest, "");
-        assert!(about(took, connections::HEAD_WITHIN), "{took:?}");
-    }
-
-    #[tokio::test]
-    async fn a_body_that_never_comes_is_answered_as_too_slow() {
-        let server = start().await;
-        tokio::time::pause();
-        let mut slow = TcpStream::connect(server.running.address).await.unwrap();
-        slow.write_all(
-            b"POST /api/sign-in HTTP/1.1\r\nhost: test\r\ncontent-type: application/json\r\ncontent-length: 9\r\n\r\n",
-        )
-        .await
-        .unwrap();
-
-        let (answer, took) = until_closed(&mut slow).await;
-
-        assert!(answer.starts_with("http/1.1 408 "), "{answer}");
-        assert!(answer.ends_with(r#"{"code":"request.too_slow","retryable":true}"#));
-        assert!(about(took, ANSWER_WITHIN), "{took:?}");
-        let records = server.fixture.records.lock().unwrap();
-        assert_eq!(records[1].fields["status"], 408);
-    }
-
-    #[tokio::test]
-    async fn connections_past_the_cap_wait_for_room() {
-        let server = start_with(|shared| shared.connections = Arc::new(Semaphore::new(1))).await;
-        let mut first = TcpStream::connect(server.running.address).await.unwrap();
-        assert_eq!(exchange(&mut first, "/version").await, "http/1.1 200 ok");
-        let mut second = TcpStream::connect(server.running.address).await.unwrap();
-        ask(&mut second, "/nowhere").await;
-        // Long after the second asked, the first is still the only one served.
-        for _ in 0..20 {
-            assert_eq!(exchange(&mut first, "/version").await, "http/1.1 200 ok");
-        }
-        drop(first);
-
-        assert_eq!(answer(&mut second).await, "http/1.1 404 not found");
-        let records = server.fixture.records.lock().unwrap();
-        let routes: Vec<_> = records
-            .iter()
-            .filter(|record| record.msg == "request handled")
-            .map(|record| record.fields["route"].as_str().unwrap())
-            .collect();
-        assert_eq!(routes.len(), 22);
-        assert_eq!(routes.last(), Some(&"unmatched"));
     }
 
     #[tokio::test]

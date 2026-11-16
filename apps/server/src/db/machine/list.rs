@@ -90,7 +90,7 @@ mod tests {
     #[tokio::test]
     async fn a_machine_shows_its_cores_build_and_what_it_lacks_of_the_servers_offers() {
         let Setup { _dir, db, ada, .. } = setup().await;
-        assert!(start(&db, "p1", NOW).await);
+        start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
         claim(&db, "p1", b"secret", NOW + 1).await;
         let offered = [
@@ -137,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn a_stored_build_or_offers_this_build_cant_read_show_as_not_connected() {
         let Setup { _dir, db, ada, .. } = setup().await;
-        assert!(start(&db, "p1", NOW).await);
+        start(&db, "p1", NOW).await;
         assert!(confirm(&db, &ada, "p1", "p1").await);
         claim(&db, "p1", b"secret", NOW + 1).await;
         sqlx::query("UPDATE machines SET core_build = 'x', core_offers = 'y'")
