@@ -340,6 +340,7 @@ pre code {
 
   button.icon {
     width: 44px;
+    min-height: 44px;
   }
 
   .page {
