@@ -1240,7 +1240,7 @@
       ]
     },
     "ChatLive": {
-      "description": "A run's update that a viewer of its chat needs and no one stores: text as it is written, and\nthe tool a permission prompt names, never its input. From a core to the server, and from the\nserver to the feeds that follow the chat, each under `chat.live`.",
+      "description": "A run's update that a viewer of its chat needs and no one stores: text as it is written.\nFrom a core to the server, and from the server to the feeds that follow the chat, each\nunder `chat.live`.",
       "type": "object",
       "properties": {
         "after": {
@@ -4111,7 +4111,9 @@
               "type": "string",
               "const": "permission_asked"
             },
-            "input": true,
+            "input": {
+              "description": "Stays on the machine: the core sends `wants` up in its place."
+            },
             "prompt": {
               "type": "integer",
               "format": "uint32",
@@ -4122,6 +4124,9 @@
             },
             "tool": {
               "type": "string"
+            },
+            "wants": {
+              "$ref": "#/$defs/Wants"
             }
           },
           "required": [
@@ -5232,6 +5237,21 @@
           "type": "string",
           "const": "weekly"
         }
+      ]
+    },
+    "Wants": {
+      "description": "What a permission prompt's tool would do, as text the core makes of its input and every\nreader of the chat sees: at most [`WANTS_MAX`] bytes, `cut` when some was left out.",
+      "type": "object",
+      "properties": {
+        "cut": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
       ]
     },
     "Welcome": {

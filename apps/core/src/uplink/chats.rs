@@ -52,8 +52,6 @@ pub(super) struct ChatLink {
     /// The seq of the last event of each followed chat that came, to follow again after.
     came: HashMap<ChatKey, u64>,
     live: Live,
-    /// What goes up next, live beside the event that went up last.
-    beside: Option<Envelope>,
 }
 
 impl ChatLink {
@@ -72,7 +70,6 @@ impl ChatLink {
             waiting: VecDeque::new(),
             came: HashMap::new(),
             live: Live::new(live),
-            beside: None,
         }
     }
 
@@ -138,9 +135,6 @@ impl ChatLink {
     /// The next event to send up, passing on waiting asks as room frees meanwhile; safe to
     /// cancel, since an ask leaves `waiting` only as it is sent.
     pub(super) async fn next(&mut self) -> Option<Envelope> {
-        if let Some(beside) = self.beside.take() {
-            return Some(beside);
-        }
         loop {
             tokio::select! {
                 pushed = self.pushes.recv() => {
@@ -170,7 +164,7 @@ impl ChatLink {
         if let Message::Chat(update) = pushed {
             let key = ChatKey::new(&update.workspace, &update.chat);
             self.came.insert(key, update.entry.seq);
-            self.beside = self.live.saw(&update);
+            self.live.saw(&update);
             let message = Message::Chat(stored(update)?);
             return Some(Envelope { id: 0, message });
         }
@@ -191,15 +185,12 @@ impl ChatLink {
     }
 }
 
-/// `update` as the server keeps it: messages only, so never a tool's input, a run's start or
-/// text still being written.
+/// `update` as the server keeps it: never a tool's input, only what a prompt says it wants;
+/// nor a run's start, its tool calls or text still being written.
 fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
     match &mut update.entry.event {
         ChatEvent::Run { update: run } => match &mut run.event {
-            RunEvent::PermissionAsked { tool, input, .. } => {
-                tool.clear();
-                *input = serde_json::Value::Null;
-            }
+            RunEvent::PermissionAsked { input, .. } => *input = serde_json::Value::Null,
             RunEvent::Text { .. }
             | RunEvent::PermissionWithdrawn { .. }
             | RunEvent::PermissionAnswered { .. }
@@ -369,7 +360,7 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::{Value, json};
-    use weacon_protocol::{Outcome, Receipt, RunUpdate};
+    use weacon_protocol::{Outcome, Receipt, RunUpdate, Wants};
     use weacon_testing::{Records, recording_logger};
 
     use super::*;
@@ -391,7 +382,6 @@ mod tests {
             waiting: VecDeque::new(),
             came: HashMap::new(),
             live: Live::new(true),
-            beside: None,
         };
         (link, asked, Client { push })
     }
@@ -702,17 +692,18 @@ mod tests {
     #[test]
     fn messages_go_up_as_the_server_keeps_them_and_nothing_else_does() {
         let (mut link, _asked, _push) = link(true, 4);
-        let ask = |tool: &str, input: Value| RunEvent::PermissionAsked {
+        let ask = |input: Value| RunEvent::PermissionAsked {
             run: run("run-1"),
             prompt: 1,
-            tool: tool.to_owned(),
+            tool: "Bash".to_owned(),
             input,
+            wants: Some(Wants::of("cargo test")),
         };
         let (kept, dropped) = (kept(), dropped());
         let mut send = |seq, event| link.upload(update(seq, event));
         let ups: Vec<_> = kept.iter().map(|event| send(1, event.clone())).collect();
         let downs: Vec<_> = dropped.into_iter().map(|event| send(2, event)).collect();
-        let stripped = send(3, said(ask("Bash", json!({ "command": "MARKER" }))));
+        let stripped = send(3, said(ask(json!({ "command": "MARKER" }))));
         let live = link.upload(Message::Run(RunUpdate {
             run: run("run-1"),
             event: text("Hi"),
@@ -724,17 +715,8 @@ mod tests {
             .collect();
         assert_eq!(ups, expected);
         assert!(downs.iter().all(Option::is_none), "{downs:?}");
-        let cleared = said(ask("", Value::Null));
-        assert_eq!(stripped, Some(up(update(3, cleared))));
-        // Beside it, live, the tool it names and never its input.
-        let Some(Envelope {
-            message: Message::ChatLive(beside),
-            ..
-        }) = link.beside.take()
-        else {
-            panic!("no live prompt");
-        };
-        assert_eq!(beside.update.event, ask("Bash", Value::Null));
+        // Its tool and what it wants go up, and never its input.
+        assert_eq!(stripped, Some(up(update(3, said(ask(Value::Null))))));
         assert_eq!(live, None);
         assert_eq!(link.came.get(&key()), Some(&3));
     }

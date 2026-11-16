@@ -163,6 +163,7 @@ mod tests {
                 prompt,
                 tool,
                 input,
+                wants: None,
             },
         )
     }

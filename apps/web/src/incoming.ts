@@ -156,7 +156,7 @@ function isRunEvent(event: unknown): event is RunEvent {
     case "tool_done":
       return text(fields, "call") && typeof fields["failed"] === "boolean";
     case "permission_asked":
-      return text(fields, "run") && isSeq(fields["prompt"], 0) && text(fields, "tool");
+      return text(fields, "run") && isSeq(fields["prompt"], 0) && text(fields, "tool") && (fields["wants"] === undefined || isWants(fields["wants"]));
     case "permission_withdrawn":
       return text(fields, "run") && isSeq(fields["prompt"], 0);
     case "permission_answered": {
@@ -168,6 +168,11 @@ function isRunEvent(event: unknown): event is RunEvent {
     default:
       return typeof fields["event"] === "string";
   }
+}
+
+function isWants(value: unknown): boolean {
+  const wants = record(value);
+  return wants !== undefined && text(wants, "text") && (wants["cut"] === undefined || typeof wants["cut"] === "boolean");
 }
 
 function isSeq(value: unknown, least: number): value is number {

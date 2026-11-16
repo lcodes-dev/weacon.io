@@ -37,6 +37,14 @@ test("a turn shows the prompt, its note, the agent's text and its tools by name"
   ]);
 });
 
+test("a prompt carries what its tool wants, when its event says", () => {
+  const wants = { text: "cargo test", cut: true };
+  const said = run(2, { event: "permission_asked", run: "run-1", prompt: 1, tool: "Bash", input: null, wants });
+
+  assert.deepEqual(lines(chat([status(1, "waiting"), said], [2])), [{ key: "a2", kind: "ask", run: "run-1", prompt: 1, tool: "Bash", wants, state: "open" }]);
+  assert.deepEqual(lines(chat([status(1, "waiting"), asked(2, 1)], [2])), [{ key: "a2", kind: "ask", run: "run-1", prompt: 1, tool: "Bash", state: "open" }]);
+});
+
 test("a prompt is open only while the log says it waits, and shows how it was answered", () => {
   const events = [asked(1, 1), asked(2, 2), asked(3, 3), asked(4, 4)];
   const snapshot = chat(events, [2, 3, 4]);

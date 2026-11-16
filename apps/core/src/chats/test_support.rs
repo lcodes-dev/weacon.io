@@ -224,6 +224,7 @@ pub(crate) fn asks(run_id: &str, prompt: u32) -> RunEvent {
         prompt,
         tool: "Bash".to_owned(),
         input: serde_json::json!({ "command": "ls" }),
+        wants: None,
     }
 }
 

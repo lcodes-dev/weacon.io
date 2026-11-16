@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use serde_json::Value;
-use weacon_protocol::{AgentKind, AgentSession, RunEvent};
+use weacon_protocol::{AgentKind, AgentSession, RunEvent, Wants};
 
 use crate::{claude, codex};
 
@@ -72,6 +72,14 @@ impl Wire {
         match self {
             Self::Claude(wire) => wire.interrupt(),
             Self::Codex(wire) => wire.interrupt(),
+        }
+    }
+
+    /// What a prompt for `asked` shows of what its tool would do.
+    pub(crate) fn wants(&self, asked: &Asked) -> Option<Wants> {
+        match self {
+            Self::Claude(_) => claude::wants(&asked.tool, &asked.input),
+            Self::Codex(_) => codex::wants(&asked.input),
         }
     }
 

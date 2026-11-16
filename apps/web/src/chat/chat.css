@@ -38,6 +38,21 @@
   padding: 8px 10px;
 }
 
+.row.ask .wants {
+  flex-basis: 100%;
+  margin: 0;
+  max-height: 12em;
+  overflow: auto;
+  font: 13px/1.5 ui-monospace, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.row.ask .cut {
+  flex-basis: 100%;
+  color: var(--muted);
+}
+
 .row.ask .choices {
   display: flex;
   gap: 8px;
