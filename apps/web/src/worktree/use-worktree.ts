@@ -63,7 +63,6 @@ export function useWorktree(link: WorkspaceSocket, chatRef: ChatRef | undefined,
       }
     },
     cancel: () => setWorktree(cancelled),
-    restore: () => ask({ kind: "restore" }),
     draft,
     editDraft: setDraft,
     openPullRequest: () => draft !== undefined && ask({ kind: "open_pull_request", title: draft.title.trim(), body: draft.body }),

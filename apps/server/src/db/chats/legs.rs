@@ -94,24 +94,31 @@ fn served() -> String {
 }
 
 impl Workspace {
-    /// Fixes `member`'s leg of `chat`, in place of one whose machine never sent an event. One
-    /// whose machine did stays, as `chat.machine_fixed`; a machine that neither is `member`'s
-    /// nor is shared with the workspace is `machine.not_found`, and one that already holds
-    /// another member's leg of the chat `chat.machine_taken`.
+    /// Fixes `member`'s leg of `chat` for their call at `now`, which takes the chat's turn as
+    /// [`Self::call`] does, in place of one whose machine never sent an event. One whose machine
+    /// did, or that a call of theirs still on its way holds, stays, as `chat.machine_fixed`; a
+    /// machine that neither is `member`'s nor is shared with the workspace is
+    /// `machine.not_found`, and one that holds another member's leg of the chat
+    /// `chat.machine_taken`.
     pub(crate) async fn set_leg(
         &self,
         chat: &ChatId,
         member: &MemberId,
         leg: &NewLeg<'_>,
+        now: i64,
     ) -> Result<(), Fault> {
         let mut transaction = self.db.write().await?;
         sqlx::query(
-            "DELETE FROM chat_legs WHERE workspace_id = ? AND chat_id = ? AND member_id = ?
-                 AND core_seq = 0",
+            "DELETE FROM chat_legs WHERE workspace_id = ?1 AND chat_id = ?2 AND member_id = ?3
+                 AND core_seq = 0
+                 AND NOT EXISTS (SELECT 1 FROM chats WHERE workspace_id = ?1 AND chat_id = ?2
+                     AND called_by = ?3 AND called_at > ?4 - ?5)",
         )
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(member.as_str())
+        .bind(now)
+        .bind(CALL_SECS)
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;
@@ -119,6 +126,7 @@ impl Workspace {
             return Err(machine_fixed());
         }
         self.put_leg(&mut transaction, chat, member, leg).await?;
+        self.call_in(&mut transaction, chat, member, now).await?;
         transaction.commit().await.map_err(failed)
     }
 
@@ -276,6 +284,17 @@ impl Workspace {
         member: &MemberId,
         now: i64,
     ) -> Result<bool, Fault> {
+        let mut writer = self.db.writer.acquire().await.map_err(failed)?;
+        self.call_in(&mut writer, chat, member, now).await
+    }
+
+    async fn call_in(
+        &self,
+        connection: &mut SqliteConnection,
+        chat: &ChatId,
+        member: &MemberId,
+        now: i64,
+    ) -> Result<bool, Fault> {
         let called = sqlx::query(
             "UPDATE chats SET called_by = ?1, called_at = ?2
              WHERE workspace_id = ?3 AND chat_id = ?4
@@ -286,7 +305,7 @@ impl Workspace {
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .bind(CALL_SECS)
-        .execute(&self.db.writer)
+        .execute(connection)
         .await
         .map_err(failed)?;
         Ok(called.rows_affected() > 0)
@@ -418,6 +437,39 @@ mod tests {
     use crate::test_support::{member_id, two_teams};
 
     #[tokio::test]
+    async fn a_call_on_its_way_keeps_its_leg_from_another_call_of_the_same_member() {
+        let dir = TempDir::new().unwrap();
+        let (one, _two) = two_teams(&dir).await;
+        make(&one, "c-1", "m1", NOW).await.unwrap();
+        one.pair_for("m3", "mc-3").await;
+        one.pair_for("m3", "mc-4").await;
+        let (chat, bo) = (id::<ChatId>("c-1"), member_id("m3"));
+        let (name, desk, shelf) = (id("Bo's desk"), id("mc-3"), id("mc-4"));
+        let on = |machine_id| NewLeg {
+            machine_id,
+            machine: &name,
+            agent: AgentKind::Codex,
+            repo: None,
+        };
+
+        one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
+        let held = one.set_leg(&chat, &bo, &on(&desk), NOW + 1).await;
+
+        assert_eq!(code(&held.unwrap_err()), "chat.machine_fixed");
+        let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
+        assert_eq!(leg.machine.as_str(), "mc-4");
+        // The call took the chat's turn as it fixed the leg, so no one else's starts meanwhile.
+        assert!(!one.call(&chat, &member_id("m1"), NOW + 1).await.unwrap());
+        // Once the hold has run out with no prompt taken, the choice can change.
+        let later = NOW + CALL_SECS;
+        one.set_leg(&chat, &bo, &on(&desk), later).await.unwrap();
+        assert_eq!(
+            one.leg(&chat, &bo).await.unwrap().unwrap().machine.as_str(),
+            "mc-3"
+        );
+    }
+
+    #[tokio::test]
     async fn a_members_leg_is_read_in_its_own_workspace_only_and_stays_once_its_machine_took_a_prompt()
      {
         let dir = TempDir::new().unwrap();
@@ -436,10 +488,12 @@ mod tests {
             repo: None,
         };
 
-        one.set_leg(&chat, &bo, &on(&shelf)).await.unwrap();
-        // No prompt taken yet, so another choice takes its place.
-        one.set_leg(&chat, &bo, &on(&desk)).await.unwrap();
-        let stolen = one.set_leg(&chat, &bo, &on(&adas)).await;
+        one.set_leg(&chat, &bo, &on(&shelf), NOW).await.unwrap();
+        // Given back with no prompt taken, so another choice takes its place.
+        one.uncall(&chat, &bo).await.unwrap();
+        one.set_leg(&chat, &bo, &on(&desk), NOW).await.unwrap();
+        one.uncall(&chat, &bo).await.unwrap();
+        let stolen = one.set_leg(&chat, &bo, &on(&adas), NOW).await;
 
         assert_eq!(code(&stolen.unwrap_err()), "machine.not_found");
         let leg = one.leg(&chat, &bo).await.unwrap().unwrap();
@@ -460,7 +514,7 @@ mod tests {
         };
         let stored = one.append_from((&bo, &desk), &chat, &[first]).await;
         assert_eq!(stored.unwrap(), 1);
-        let fixed = one.set_leg(&chat, &bo, &on(&shelf)).await;
+        let fixed = one.set_leg(&chat, &bo, &on(&shelf), NOW).await;
         assert_eq!(code(&fixed.unwrap_err()), "chat.machine_fixed");
         let listed = one.chats().await.unwrap().remove(0).legs;
         let members: Vec<_> = listed.iter().map(|leg| leg.member.as_str()).collect();
@@ -490,12 +544,13 @@ mod tests {
             async move { db.set_shares(&desk, &workspaces).await.unwrap() }
         };
 
-        let unshared = one.set_leg(&chat, &ada, &on_desk).await;
+        let later = NOW + 2 * CALL_SECS;
+        let unshared = one.set_leg(&chat, &ada, &on_desk, later).await;
         shared_with(&["w1"]).await;
-        one.set_leg(&chat, &ada, &on_desk).await.unwrap();
+        one.set_leg(&chat, &ada, &on_desk, later).await.unwrap();
         let sharer = one.leg(&chat, &ada).await.unwrap().unwrap().shared_by;
         shared_with(&[]).await;
-        let second = one.set_leg(&chat, &bo, &on_desk).await;
+        let second = one.set_leg(&chat, &bo, &on_desk, later).await;
         shared_with(&["w1"]).await;
 
         assert_eq!(code(&unshared.unwrap_err()), "machine.not_found");
@@ -581,8 +636,13 @@ mod tests {
         assert!(one.call(&chat, &bo, NOW + 1 + CALL_SECS).await.unwrap());
         one.uncall(&chat, &bo).await.unwrap();
         assert!(one.call(&chat, &ada, NOW + 3 + CALL_SECS).await.unwrap());
-        // Her run's status ends the hold; anything else of hers doesn't.
-        for (event, held) in [(said("Hi"), true), (status(RunState::Running), false)] {
+        // Her run at work ends the hold; an earlier run of hers going idle doesn't.
+        let reports = [
+            (said("Hi"), true),
+            (status(RunState::Idle), true),
+            (status(RunState::Running), false),
+        ];
+        for (event, held) in reports {
             let incoming = Incoming {
                 core_seq: None,
                 event: &event,
@@ -609,7 +669,7 @@ mod tests {
             agent: AgentKind::Claude,
             repo: None,
         };
-        one.set_leg(&chat, &bo, &leg).await.unwrap();
+        one.set_leg(&chat, &bo, &leg, NOW).await.unwrap();
         let event = status(RunState::Idle);
         let at = |core_seq| Incoming {
             core_seq: Some(core_seq),

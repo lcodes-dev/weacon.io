@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { editDraft, EMPTY_DRAFT, opening, pickMention, query, unwritten, type Draft, type MentionItem } from "./draft.ts";
+import { callsAgent, editDraft, EMPTY_DRAFT, opening, pickMention, query, unwritten, type Draft, type MentionItem } from "./draft.ts";
 
 const jun: MentionItem = { id: "m-1", label: "Jun Sato" };
 const codex: MentionItem = { id: "a-1", label: "Codex" };
@@ -106,4 +106,13 @@ test("a box opens on the mention of the writer's agent while their messages go t
   // With the mention deleted, what is left goes to the chat's people.
   const plain = editDraft(calling.draft, "Codex hi", 8).draft;
   assert.deepEqual([plain.mentions.length, unwritten(plain)], [0, false]);
+});
+
+test("a draft calls the writer's agent only by a mention of the agent that is theirs now", () => {
+  const draft = opening(codex, true).draft;
+
+  assert.equal(callsAgent(draft, codex), true);
+  assert.equal(callsAgent(draft, { id: "claude", label: "Claude Code" }), false);
+  assert.equal(callsAgent(draft, undefined), false);
+  assert.equal(callsAgent(EMPTY_DRAFT, codex), false);
 });

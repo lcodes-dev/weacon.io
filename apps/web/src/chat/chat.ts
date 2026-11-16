@@ -5,7 +5,7 @@ import { EMPTY_TRANSCRIPT, type Transcript, apply } from "../transcript/transcri
 export type Ask = { prompt: number; tool: string; wants: Wants | undefined; at: number; state: "open" | "closed" | "allowed" | "denied" };
 
 /**
- * What one run did from its first event after a prompt until it finished; `key` names it for
+ * What one run did from its first event after someone wrote until it finished or someone wrote again; `key` names it for
  * as long as the chat is shown, as older events load before it. `texts` has the row each of its
  * committed messages shows in, by the message's seq.
  */
@@ -195,7 +195,8 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
   if (event.kind === "message" || event.kind === "prompt" || event.kind === "outside_prompt") {
     const pick = event.kind === "prompt" ? event.pick : undefined;
     const author = event.kind === "outside_prompt" ? undefined : event.author;
-    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author, calls: event.kind === "prompt", ...(pick === undefined ? {} : { pick }) });
+    const rest = cut(items, entry.seq);
+    items.push({ kind: "prompt", seq: entry.seq, text: event.text, author, calls: event.kind === "prompt", ...(pick === undefined ? {} : { pick }) }, ...rest);
     return;
   }
   closeBy(items, entry);
@@ -216,6 +217,36 @@ function step(items: Item[], entry: ChatEntry, waiting: boolean): void {
     const texts = done.event === "text" ? new Map(turn.texts).set(entry.seq, transcript.rows.length - 1) : turn.texts;
     return { ...turn, transcript, texts, open: turn.open && done.event !== "finished" };
   });
+}
+
+// Ends the open turns in `items` at what was written at `seq`, so what their runs do next shows
+// after it. Gives the turns to show after it now: the rows still changing, a text being written
+// or a tool still running and what follows it, which later events must find.
+function cut(items: Item[], seq: number): Item[] {
+  const rest: Item[] = [];
+  for (const [at, item] of [...items.entries()].reverse()) {
+    if (item.kind !== "turn" || !item.turn.open) {
+      continue;
+    }
+    const { turn } = item;
+    const { rows, writing } = turn.transcript;
+    const running = rows.findIndex((row) => row.kind === "tool" && row.state === "running");
+    const from = running >= 0 ? running : rows.length - (writing ? 1 : 0);
+    const asks = turn.asks.filter((ask) => ask.at > from).map((ask) => ({ ...ask, at: ask.at - from }));
+    const texts = new Map([...turn.texts].filter(([, row]) => row >= from).map(([text, row]) => [text, row - from]));
+    if (from < rows.length || asks.length > 0) {
+      rest.unshift({ kind: "turn", turn: { ...turn, key: turnKey(seq, turn.run), transcript: { rows: rows.slice(from), writing }, asks, texts } });
+    }
+    const kept = {
+      ...turn,
+      open: false,
+      transcript: { rows: rows.slice(0, from), writing: false },
+      asks: turn.asks.filter((ask) => ask.at <= from),
+      texts: new Map([...turn.texts].filter(([, row]) => row < from)),
+    };
+    items.splice(at, 1, ...(kept.transcript.rows.length > 0 || kept.asks.length > 0 ? [{ kind: "turn" as const, turn: kept }] : []));
+  }
+  return rest;
 }
 
 // Changes `run`'s open turn, starting one called `key` at the end when it has none.

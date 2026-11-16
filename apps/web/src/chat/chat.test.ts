@@ -79,7 +79,7 @@ test("each run's turn gathers its events until it finishes, beside another run's
   assert.deepEqual(shown(screen.items), [
     "> Both of you, look",
     "r-1 done: Looking., finished",
-    "r-2: Me too., Found it.",
+    "r-2 done: Me too., Found it.",
     "> Again",
     "r-1: Again.",
   ]);
@@ -363,4 +363,20 @@ test("text heard live after its message was stored is not shown again, and newer
   assert.deepEqual(rows(stream(started, "r-1", delta("lo"), 2)), ["Hello"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"), 3)), ["Hello", "Next"]);
   assert.deepEqual(rows(stream(started, "r-1", delta("Next"))), ["Hello", "Next"]);
+});
+
+test("what a run does after someone writes during its turn shows after their words, with the text and tool still under way", () => {
+  const tool = (seq: number, call: string) => ran(seq, "r-1", { event: "tool_call", call, tool: "Bash", input: {} });
+  const done = (seq: number, call: string) => ran(seq, "r-1", { event: "tool_done", call, failed: false });
+  const start = commitAll(chat([]), [said(1, "Go"), text(2, "r-1", "On it."), asked(3, "r-1", 1), tool(4, "c-1")]);
+  const between = commitAll(stream(start, "r-1", delta("Half")), [at(5, { kind: "message", author: "m-2", text: "Wait" })]);
+  const after = commitAll(between, [done(6, "c-1"), text(7, "r-1", "Half done."), asked(8, "r-1", 2), finished(9, "r-1")]);
+
+  assert.deepEqual(shown(between.items), ["> Go", "r-1 done: On it., ask 1@1 open", "> Wait", "r-1: tool, Half"]);
+  assert.deepEqual(shown(after.items), ["> Go", "r-1 done: On it., ask 1@1", "> Wait", "r-1 done: tool, Half done., finished, ask 2@2"]);
+  const last = after.items.at(-1);
+  assert.ok(last?.kind === "turn" && last.turn.transcript.rows[0]?.kind === "tool" && last.turn.transcript.rows[0].state === "done");
+  // A turn with nothing under way waits for its run's next event to show again.
+  const quiet = commitAll(chat([]), [said(1, "Go"), text(2, "r-1", "On it."), at(3, { kind: "message", author: "m-2", text: "Wait" }), text(4, "r-1", "More.")]);
+  assert.deepEqual(shown(quiet.items), ["> Go", "r-1 done: On it.", "> Wait", "r-1: More."]);
 });

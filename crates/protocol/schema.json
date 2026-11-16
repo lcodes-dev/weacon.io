@@ -5624,25 +5624,12 @@
     "WorktreeAction": {
       "oneOf": [
         {
-          "description": "Moves the worktree to the Trash; its branch stays.",
+          "description": "Deletes the worktree with what isn't committed; its branch stays, and the chat's next\nrun checks it out again.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "remove"
-            }
-          },
-          "required": [
-            "kind"
-          ]
-        },
-        {
-          "description": "Brings the worktree back from the Trash to where it was.",
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "const": "restore"
             }
           },
           "required": [
@@ -5712,7 +5699,7 @@
     "WorktreeAnswerKind": {
       "oneOf": [
         {
-          "description": "Where the worktree stands, in the Trash or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
+          "description": "Where the worktree stands, removed or not. A chat with no worktree yet gets the\nerror `worktree.none`.",
           "type": "object",
           "properties": {
             "kind": {
@@ -5720,7 +5707,6 @@
               "const": "state"
             },
             "removed": {
-              "description": "In the Trash.",
               "type": "boolean"
             },
             "uncommitted": {
@@ -5787,7 +5773,7 @@
       ]
     },
     "WorktreeCommand": {
-      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove` or `restore`, which a repeated one\nanswers too.",
+      "description": "From a client to a core that offers `worktree.manage`: what a person asks of a chat's\nworktree. The core acts only for someone who may act on the chat, and a client asks the\nperson before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that\nechoes `request`: the worktree's state after `remove`, which a repeated one answers too.",
       "type": "object",
       "properties": {
         "action": {
@@ -5845,7 +5831,7 @@
     "WorktreeQueryKind": {
       "oneOf": [
         {
-          "description": "Whether the worktree is in the Trash, and what removing it would set aside.",
+          "description": "Whether the worktree is there, and what removing it would delete.",
           "type": "object",
           "properties": {
             "kind": {

@@ -2,7 +2,7 @@ use futures_util::TryStreamExt as _;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, code};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RunState, code};
 
 use super::super::changes::Versioned;
 use super::super::{Workspace, failed, stored, unreadable};
@@ -143,8 +143,14 @@ impl Workspace {
             .await
             .map_err(failed)?;
         }
-        // Its run has reported, so the run's own state holds the chat's turn from here.
-        let reports = |row: &Row<'_>| matches!(row.event, ChatEvent::RunStatus { .. });
+        // Its run is at work, so the run's own state holds the chat's turn from here; an
+        // earlier run of theirs going idle says nothing of the call.
+        let reports = |row: &Row<'_>| {
+            matches!(row.event, ChatEvent::RunStatus { status } if matches!(
+                status.state,
+                RunState::Starting | RunState::Running | RunState::Waiting
+            ))
+        };
         if let Some(member) = from.filter(|_| rows.iter().any(reports)) {
             self.uncall_in(transaction, chat, member).await?;
         }

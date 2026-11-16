@@ -9,6 +9,17 @@ export type Sent = Settled | "too_long";
 /** Sends `text` under `request`: to the writer's own agent when it `calls` it, else to the chat's people. */
 export type Send = (text: string, request: RequestId, calls: boolean) => Promise<Sent>;
 
+/** `send`, telling `plain` once a message that calls no agent is taken. */
+export function notingPlain(send: Send, plain: () => void): Send {
+  return async (text, request, calls) => {
+    const sent = await send(text, request, calls);
+    if (sent === "accepted" && !calls) {
+      plain();
+    }
+    return sent;
+  };
+}
+
 // The server's limit on one message from a browser, in bytes: `MAX_MESSAGE` in its feed.
 const FEED_LIMIT = 1_015_808;
 

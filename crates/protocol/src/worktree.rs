@@ -20,7 +20,7 @@ pub struct WorktreeQuery {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorktreeQueryKind {
-    /// Whether the worktree is in the Trash, and what removing it would set aside.
+    /// Whether the worktree is there, and what removing it would delete.
     State,
     /// A query this build doesn't know, from a newer peer; only ever received.
     #[serde(other, skip_serializing)]
@@ -31,8 +31,7 @@ pub enum WorktreeQueryKind {
 /// From a client to a core that offers `worktree.manage`: what a person asks of a chat's
 /// worktree. The core acts only for someone who may act on the chat, and a client asks the
 /// person before `remove`, whatever the access level. The answer is a [`WorktreeAnswer`] that
-/// echoes `request`: the worktree's state after `remove` or `restore`, which a repeated one
-/// answers too.
+/// echoes `request`: the worktree's state after `remove`, which a repeated one answers too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorktreeCommand {
     pub request: RequestId,
@@ -48,10 +47,9 @@ pub struct WorktreeCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorktreeAction {
-    /// Moves the worktree to the Trash; its branch stays.
+    /// Deletes the worktree with what isn't committed; its branch stays, and the chat's next
+    /// run checks it out again.
     Remove,
-    /// Brings the worktree back from the Trash to where it was.
-    Restore,
     /// Pushes the chat's branch and opens a draft pull request from it.
     OpenPullRequest { title: String, body: String },
     /// Opens a terminal at the chat's worktree, or its working folder without one, on the core's
@@ -76,10 +74,9 @@ pub struct WorktreeAnswer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorktreeAnswerKind {
-    /// Where the worktree stands, in the Trash or not. A chat with no worktree yet gets the
+    /// Where the worktree stands, removed or not. A chat with no worktree yet gets the
     /// error `worktree.none`.
     State {
-        /// In the Trash.
         removed: bool,
         uncommitted: bool,
         unpushed: bool,
@@ -149,7 +146,6 @@ mod tests {
         );
         let actions = [
             (WorktreeAction::Remove, json!({ "kind": "remove" })),
-            (WorktreeAction::Restore, json!({ "kind": "restore" })),
             (
                 WorktreeAction::OpenPullRequest {
                     title: "Fix the build".to_owned(),

@@ -71,6 +71,11 @@ export function opening(agent: MentionItem | undefined, calling: boolean): Place
   return agent !== undefined && calling ? pickMention(EMPTY_DRAFT, { start: 0, text: "" }, agent) : { draft: EMPTY_DRAFT, caret: 0 };
 }
 
+/** Whether `draft` calls `agent`, the writer's own now: one of its mentions is of it. */
+export function callsAgent(draft: Draft, agent: MentionItem | undefined): boolean {
+  return agent !== undefined && draft.mentions.some(({ item }) => item.id === agent.id);
+}
+
 /** Whether `draft` says nothing yet: it is blank, or holds only mentions. */
 export function unwritten(draft: Draft): boolean {
   const said = draft.mentions.reduceRight((text, { start, end }) => text.slice(0, start) + text.slice(end), draft.text);

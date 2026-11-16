@@ -23,14 +23,19 @@ async function another(served: Served, email: string): Promise<Page> {
 const box = (page: Page) => page.getByRole("combobox", { name: "Message" });
 const hint = "Another person's agent is working in this chat, so the message wasn't sent. Try again once it's done.";
 
-// Picks the person's own agent for the open chat, then calls it with `text`.
-async function firstCall(page: Page, text: string): Promise<void> {
+// Picks the person's own agent for the open chat.
+async function addAgent(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Add your agent" }).click();
   const fields = page.getByRole("group", { name: "Your agent in this chat" });
   await fields.getByLabel("Repository").selectOption("demo");
   await fields.getByLabel("Agent").selectOption("claude");
   // The box opens on the agent's mention once it is picked.
   await page.waitForFunction(() => document.querySelector("textarea")?.value.startsWith("@Claude Code ") === true);
+}
+
+// Picks the person's own agent for the open chat, then calls it with `text`.
+async function firstCall(page: Page, text: string): Promise<void> {
+  await addAgent(page);
   await box(page).press("End");
   await page.keyboard.type(text);
   await page.keyboard.press("Enter");
@@ -66,6 +71,8 @@ test("two people talk in one chat, and each calls only their own agent, which re
   // Ada starts a chat with a plain message: no agent is asked for, and none starts.
   await ada.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "New chat" }).click();
   const form = ada.getByRole("region", { name: "New chat" });
+  // With her machine picked the box opens on her agent's mention; writing over it leaves a plain message.
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
   await box(form.page()).fill("Shall we fix the parser?");
   await form.getByRole("button", { name: "Send" }).click();
   await ada.getByRole("heading", { name: "Shall we fix the parser?" }).waitFor();
@@ -80,12 +87,21 @@ test("two people talk in one chat, and each calls only their own agent, which re
   assert.deepEqual([laptop.heard(), desk.heard()], [[], []]);
 
   // Ada calls her agent, which reads what was said as quotes and answers under her name and machine.
-  await firstCall(ada, "Run the parser tests");
+  await addAgent(ada);
+  // A plain message written over the opening mention leaves the box plain, so the call is one she writes.
+  await box(ada).fill("Good idea");
+  await ada.getByRole("button", { name: "Send" }).click();
+  await ada.locator(".row.prompt", { hasText: "Good idea" }).waitFor();
+  await ada.waitForFunction(() => document.querySelector("textarea")?.value === "");
+  await box(ada).pressSequentially("@");
+  await ada.keyboard.press("Enter");
+  await ada.keyboard.type("Run the parser tests");
+  await ada.keyboard.press("Enter");
   await ada.getByText("ada's Claude Code · Laptop").waitFor();
   await ada.getByRole("button", { name: "Allow" }).waitFor();
   const [told] = laptop.heard();
   assert.ok(told !== undefined && told.startsWith("@Claude Code Run the parser tests\n\n---\n"), told);
-  assert.ok(told.includes("[[chat messages]]\nada wrote:\nShall we fix the parser?\n\ngrace wrote:\nTry the cache first\n[[end of chat messages]]"), told);
+  assert.ok(told.includes("[[chat messages]]\nada wrote:\nShall we fix the parser?\n\ngrace wrote:\nTry the cache first\n\nada wrote:\nGood idea\n[[end of chat messages]]"), told);
 
   // Grace sees whose answer it waits for, and can neither answer nor stop it, nor call her own meanwhile.
   await grace.getByText("Waiting for ada").waitFor();

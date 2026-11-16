@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./composer.css";
-import { type Draft, type MentionItem, type Placed, editDraft, opening, pickMention, query, unwritten } from "./draft.ts";
+import { type Draft, type MentionItem, type Placed, callsAgent, editDraft, opening, pickMention, query, unwritten } from "./draft.ts";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
 import type { Send, Sent } from "./prompt.ts";
@@ -47,8 +47,11 @@ export function Composer({
   const { draft, caret } = placed;
   const at = query(draft, caret);
   const options = offered(at, dismissed, sending, agent);
-  const hint = problem ?? blocked;
-  const ready = !sending && blocked === undefined && !unwritten(draft);
+  const calls = callsAgent(draft, agent);
+  // A mention of an agent that isn't the writer's now would otherwise go as a plain message.
+  const stale = draft.mentions.length > 0 && !calls ? "The agent you mention can't be called now. Remove the mention, or pick your agent again." : undefined;
+  const hint = problem ?? blocked ?? stale;
+  const ready = !sending && blocked === undefined && stale === undefined && !unwritten(draft);
 
   useLayoutEffect(() => {
     const element = box.current;
@@ -66,7 +69,7 @@ export function Composer({
   };
   const submit = async () => {
     if (ready) {
-      await deliver(draft.text, draft.text, draft.mentions.length > 0);
+      await deliver(draft.text, draft.text, calls);
     }
   };
   const choose = (item: MentionItem | undefined) => {
