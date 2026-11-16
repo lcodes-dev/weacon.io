@@ -196,6 +196,7 @@ CREATE TABLE chat_calls (
     request_id TEXT NOT NULL,
     machine_id TEXT NOT NULL,
     member_id TEXT NOT NULL,
+    text TEXT NOT NULL,
     PRIMARY KEY (workspace_id, chat_id, request_id),
     FOREIGN KEY (workspace_id, chat_id) REFERENCES chats (workspace_id, chat_id),
     FOREIGN KEY (workspace_id, member_id) REFERENCES members (workspace_id, member_id)

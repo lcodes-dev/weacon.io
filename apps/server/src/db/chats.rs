@@ -11,7 +11,7 @@ use weacon_protocol::{ChatId, ChatState, ChatTask, MemberId, RunState, RunStatus
 
 pub(super) use events::Row;
 pub(crate) use events::{Incoming, chat_full, turns};
-pub(crate) use legs::{Leg, NewLeg, detached};
+pub(crate) use legs::{Asked, Leg, NewLeg, detached};
 pub(crate) use quotes::Said;
 pub(crate) use runs::Snapshot;
 
@@ -188,12 +188,40 @@ impl Workspace {
         let mut transaction = self.db.write().await?;
         let held = self.leg_on_in(&mut transaction, chat, machine).await?;
         if held.ok_or_else(chat_not_found)?.member != *member {
-            return Err(Fault::new(
-                code!("chat.leg_called"),
-                "The chat's agent there works for someone else now",
-            ));
+            return Err(leg_called());
         }
         self.append(transaction, chat, Some((by, machine)), events)
+            .await
+    }
+
+    /// [`Self::append`] for a prompt `machine` sent, as written by `by`: under `taken`, a
+    /// request the server took from them, whose record is used up, or else as its owner's own.
+    /// From then its leg of `chat` works for `by`. `chat.not_found` when the machine doesn't
+    /// serve the leg, and `chat.leg_called` when the record is no longer `by`'s.
+    pub(crate) async fn append_prompt(
+        &self,
+        (machine, by): (&weacon_protocol::MachineId, &MemberId),
+        taken: Option<&weacon_protocol::RequestId>,
+        chat: &ChatId,
+        prompt: Incoming<'_>,
+    ) -> Result<u64, Fault> {
+        let mut transaction = self.db.write().await?;
+        let held = self.leg_on_in(&mut transaction, chat, machine).await?;
+        let held = held.ok_or_else(chat_not_found)?;
+        // One the chat has already changes nothing.
+        if prompt.core_seq.is_some_and(|seq| seq > held.core_seq) {
+            if let Some(request) = taken
+                && self
+                    .take_in(&mut transaction, chat, machine, request)
+                    .await?
+                    .as_ref()
+                    != Some(by)
+            {
+                return Err(leg_called());
+            }
+            self.lend_in(&mut transaction, chat, machine, by).await?;
+        }
+        self.append(transaction, chat, Some((by, machine)), &[prompt])
             .await
     }
 
@@ -229,6 +257,13 @@ impl Workspace {
 
 pub(crate) fn machine_not_found() -> Fault {
     Fault::new(code!("machine.not_found"), "There is no such machine")
+}
+
+fn leg_called() -> Fault {
+    Fault::new(
+        code!("chat.leg_called"),
+        "The chat's agent there works for someone else now",
+    )
 }
 
 pub(crate) fn chat_not_found() -> Fault {

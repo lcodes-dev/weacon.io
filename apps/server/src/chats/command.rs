@@ -11,7 +11,7 @@ use weacon_protocol::{
 use super::admit::{Admitted, admit, not_owner};
 use super::{link, quotes};
 use crate::auth::Member;
-use crate::db::{Chat, Incoming, Leg, NewChat, NewLeg, Workspace};
+use crate::db::{Asked, Chat, Incoming, Leg, NewChat, NewLeg, Workspace};
 use crate::relay::{self, Back};
 use crate::shared::Shared;
 
@@ -182,7 +182,7 @@ async fn start(
     };
     stamp(workspace, task).await?;
     let (title, repo, task) = (chat_title(text), repo.clone(), task.clone());
-    let id = command.chat.clone();
+    let (id, words) = (command.chat.clone(), text.clone());
     let (machine_id, machine) = callable(from, &id, machine).await?;
     let chat = NewChat {
         id: &id,
@@ -198,8 +198,8 @@ async fn start(
         at: shared.now(),
     };
     workspace.add_chat(&chat).await?;
-    let called = (&machine_id, &member.id);
-    first_call(workspace, &id, called, &command.request, chat.at).await?;
+    let asked = (&command.request, words.as_str());
+    first_call(workspace, &id, (&machine_id, &member.id), asked, chat.at).await?;
     let follow = link::follow(workspace.id(), &id, 0);
     if let Err(fault) = relay::command(shared, &machine_id, command, follow, back) {
         workspace.forget_chat(&id).await?;
@@ -218,17 +218,22 @@ async fn start(
     Ok(())
 }
 
-// Takes a new chat's turn for its first prompt, `request`, and notes who made it; a chat it
-// can't note that for is taken back.
+// Takes a new chat's turn for its first prompt, `asked`, and notes it; a chat it can't note
+// that for is taken back.
 async fn first_call(
     workspace: &Workspace,
     id: &ChatId,
-    called: (&MachineId, &MemberId),
-    request: &RequestId,
+    (machine, member): (&MachineId, &MemberId),
+    (request, text): (&RequestId, &str),
     at: i64,
 ) -> Result<(), Fault> {
-    workspace.call(id, called, at).await?;
-    if let Err(fault) = workspace.asked(id, request, called).await {
+    let asked = Asked {
+        member,
+        request,
+        text,
+    };
+    workspace.call(id, (machine, member), at).await?;
+    if let Err(fault) = workspace.asked(id, machine, asked).await {
         workspace.forget_chat(id).await?;
         return Err(fault);
     }
@@ -253,20 +258,28 @@ async fn prompt(
     let (id, now) = (command.chat.clone(), from.shared.now());
     let (machine_id, machine) = callable(from, &id, machine).await?;
     one_at_a_time(from, &id, &machine_id).await?;
-    let ChatAction::Prompt { repo, agent, .. } = &command.action else {
+    let ChatAction::Prompt {
+        text, repo, agent, ..
+    } = &command.action
+    else {
         return Err(super::unsupported());
     };
+    let (request, words) = (command.request.clone(), text.clone());
     let new = NewLeg {
         machine_id: &machine_id,
         machine: &machine,
         agent: agent.unwrap_or(AgentKind::Claude),
         repo: repo.as_ref(),
     };
-    let asked = (&member.id, &command.request);
+    let asked = Asked {
+        member: &member.id,
+        request: &request,
+        text: &words,
+    };
     let called = workspace.call_leg(&id, asked, &new, now).await?;
     let leg = called.ok_or_else(agent_working)?;
     if let Err(fault) = relay_to(from, (chat, &leg), command, back).await {
-        workspace.uncall_leg(&id, &leg, &member.id).await?;
+        workspace.uncall_leg(&id, &leg.machine, asked).await?;
         return Err(fault);
     }
     workspace.quoted(&id, &leg.machine, chat.seq).await

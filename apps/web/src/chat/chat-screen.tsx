@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { Composer } from "../composer/composer.tsx";
@@ -203,11 +203,16 @@ function Calls({
   const [adding, setAdding] = useState(false);
   // After a plain message the box stays plain: the next call is one the person writes.
   const [plain, setPlain] = useState(false);
-  // An agent the chat has is called, not picked again; once it has the one picked, the fields go.
-  useEffect(() => setAdding(false), [agents.length]);
   const free = machines.filter(({ id }) => !agents.some(({ leg }) => leg.machine_id === id));
   // Nothing is asked of a machine until the person asks for their agent.
   const pick = useMyAgent(link, adding ? free : [], away);
+  // An agent the chat has is called, not picked again: once it has the one picked, or one of the
+  // reader's own, the fields go. Anyone else's arriving leaves the pick as it is.
+  const picking = useRef(pick.machine?.id);
+  useEffect(() => {
+    if (agents.some(({ leg, own }) => own || leg.machine_id === picking.current)) setAdding(false);
+    picking.current = pick.machine?.id;
+  });
   const fields = free.length > 0 ? <MyAgentFields pick={pick} workspace={link.workspace} openSettings={openSettings} /> : missing;
   const theirs = agents.map(({ leg, shared }) => agentItem(leg.machine_id, leg.agent, shared ? leg.machine : undefined));
   const names = new Map([...machines.map(({ id, name }) => [id, name] as const), ...agents.map(({ leg }) => [leg.machine_id, leg.machine] as const)]);

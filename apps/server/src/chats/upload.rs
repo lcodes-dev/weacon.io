@@ -4,10 +4,10 @@ use serde_json::Value;
 use weacon_observability::{Fault, Field};
 use weacon_protocol::{
     AgentOwner, AgentRef, ChatEntry, ChatEvent, ChatId, ChatUpdate, Code, MachineId, MemberId,
-    PermissionAnswer, RunEvent, RunStatus, RunUpdate, Wants, WorkspaceId, code,
+    PermissionAnswer, RequestId, RunEvent, RunStatus, RunUpdate, Wants, WorkspaceId, code,
 };
 
-use crate::db::{Incoming, Leg, turns};
+use crate::db::{Incoming, Leg, Workspace, turns};
 use crate::shared::Shared;
 use crate::socket::Closed;
 
@@ -113,7 +113,7 @@ fn kept(event: ChatEvent, leg: &Leg, by: &MemberId) -> Option<ChatEvent> {
 }
 
 // Whose agent `leg`'s is: its member's own, or the shared one of a machine shared with the
-// workspace, whoever of its members called it.
+// workspace, whichever of its members it works for.
 fn owner_of(leg: &Leg) -> AgentOwner {
     let member = leg.member.clone();
     match leg.shared_by.clone() {
@@ -179,36 +179,79 @@ async fn append(
         let Some(leg) = place.leg_on(chat, machine).await? else {
             return Ok(Stored::Refused);
         };
-        // A prompt is its asker's, whoever its agent works for by the time it is sent up; one
-        // the server never took was written on the machine itself, by its owner.
-        let asker = if let ChatEvent::Prompt { request, .. } = &entry.event {
-            place.asker(chat, machine, request).await?
+        let (at, sent) = (shared.now(), (chat, &leg));
+        let stored = if let ChatEvent::Prompt { request, .. } = &entry.event {
+            append_prompt(&place, sent, (request, &entry), at).await
         } else {
-            None
+            append_other(&place, sent, &entry, at).await
         };
-        let owner = leg.shared_by.as_ref().unwrap_or(&leg.member);
-        let prompted = matches!(entry.event, ChatEvent::Prompt { .. });
-        let by = asker
-            .as_ref()
-            .unwrap_or(if prompted { owner } else { &leg.member });
-        let Some(event) = kept(entry.event.clone(), &leg, by) else {
-            return Ok(Stored::Dropped);
-        };
-        let incoming = Incoming {
-            core_seq: Some(entry.seq),
-            event: &event,
-            at: shared.now(),
-        };
-        let from = (machine, &leg.member);
-        return match place.append_from(from, by, chat, &[incoming]).await {
-            // Called by someone else since it was read: named again, as theirs.
+        return match stored {
+            // Called or taken back since it was read: named again.
             Err(fault) if *fault.code() == code!("chat.leg_called") => continue,
             Err(fault) if *fault.code() == code!("chat.not_found") => Ok(Stored::Refused),
-            appended => appended.map(|_| Stored::Kept {
+            Err(fault) => Err(fault),
+            Ok(None) => Ok(Stored::Dropped),
+            Ok(Some(event)) => Ok(Stored::Kept {
                 turned: turns(&event),
             }),
         };
     }
+}
+
+// Stores the prompt `entry`, sent under `request` by `leg`'s machine: one the server took is
+// its asker's, in the words it took and only once; any other was written on the machine
+// itself, by its owner.
+async fn append_prompt(
+    place: &Workspace,
+    (chat, leg): (&ChatId, &Leg),
+    (request, entry): (&RequestId, &ChatEntry),
+    at: i64,
+) -> Result<Option<ChatEvent>, Fault> {
+    let asked = place.asker(chat, &leg.machine, request).await?;
+    let taken = asked.is_some().then_some(request);
+    let (by, words) = match asked {
+        Some((member, words)) => (member, Some(words)),
+        None => (
+            leg.shared_by.clone().unwrap_or_else(|| leg.member.clone()),
+            None,
+        ),
+    };
+    let Some(mut event) = kept(entry.event.clone(), leg, &by) else {
+        return Ok(None);
+    };
+    if let (ChatEvent::Prompt { text, .. }, Some(words)) = (&mut event, words) {
+        *text = words;
+    }
+    let incoming = Incoming {
+        core_seq: Some(entry.seq),
+        event: &event,
+        at,
+    };
+    let from = (&leg.machine, &by);
+    place.append_prompt(from, taken, chat, incoming).await?;
+    Ok(Some(event))
+}
+
+// Stores what else `leg`'s machine sent, as its agent's for the member it works for.
+async fn append_other(
+    place: &Workspace,
+    (chat, leg): (&ChatId, &Leg),
+    entry: &ChatEntry,
+    at: i64,
+) -> Result<Option<ChatEvent>, Fault> {
+    let Some(event) = kept(entry.event.clone(), leg, &leg.member) else {
+        return Ok(None);
+    };
+    let incoming = Incoming {
+        core_seq: Some(entry.seq),
+        event: &event,
+        at,
+    };
+    let from = (&leg.machine, &leg.member);
+    place
+        .append_from(from, &leg.member, chat, &[incoming])
+        .await?;
+    Ok(Some(event))
 }
 
 #[cfg(test)]
@@ -217,12 +260,13 @@ mod tests {
         ChatEntry, ChatEvent, Outcome, Receipt, RunState, WANTS_MAX, WorkspaceId,
     };
 
-    static R1: std::sync::LazyLock<weacon_protocol::RequestId> =
-        std::sync::LazyLock::new(|| id("r-1"));
+    static R1: std::sync::LazyLock<RequestId> = std::sync::LazyLock::new(|| id("r-1"));
 
     use super::*;
     use crate::chats::test_support::{Ada, ada, core_named, grace};
-    use crate::db::test_support::{NOW, append, asks, core_seq, id, make, said, status};
+    use crate::db::test_support::{
+        NOW, WORDS, append, ask, asks, core_seq, id, make, said, status,
+    };
     use crate::test_support::{Fixture, member_id};
 
     fn update(workspace: &str, chat: &str, seq: u64, event: ChatEvent) -> ChatUpdate {
@@ -420,49 +464,89 @@ mod tests {
         assert!(!logged.contains("MARKER"), "{logged}");
     }
 
-    #[tokio::test]
-    async fn what_a_shared_machine_sends_is_its_legs_callers_whatever_its_core_says() {
-        let fixture = Fixture::new().await;
-        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
-        let workspace = &ada.member.workspace;
-        let (chat, bo) = (id::<ChatId>("c-1"), grace(&fixture).await.member.id);
-        shared
-            .db
-            .set_shares(&ada.machine, &[id("w1")])
-            .await
-            .unwrap();
-        let name = id("Ada's laptop");
-        let on_hers = crate::db::NewLeg {
-            machine_id: &ada.machine,
-            machine: &name,
+    // Ada's shared machine and chat c-1 there, the other member, and that member's call of
+    // its agent under r-1 at `NOW`.
+    async fn called_by_another(fixture: &Fixture) -> (Ada, MemberId) {
+        let ada = ada_chatting(fixture).await;
+        let bo = grace(fixture).await.member.id;
+        let (db, chat, leg) = (&fixture.shared.db, id("c-1"), on(&ada.machine));
+        db.set_shares(&ada.machine, &[id("w1")]).await.unwrap();
+        let called = ada
+            .member
+            .workspace
+            .call_leg(&chat, ask(&bo, &R1), &leg, NOW);
+        assert!(called.await.unwrap().is_some());
+        (ada, bo)
+    }
+
+    static LAPTOP: std::sync::LazyLock<weacon_protocol::MachineName> =
+        std::sync::LazyLock::new(|| id("Ada's laptop"));
+
+    fn on(machine: &MachineId) -> crate::db::NewLeg<'_> {
+        crate::db::NewLeg {
+            machine_id: machine,
+            machine: &LAPTOP,
             agent: weacon_protocol::AgentKind::Claude,
             repo: None,
-        };
-        let called = workspace.call_leg(&chat, (&bo, &*R1), &on_hers, NOW);
-        assert!(called.await.unwrap().is_some());
-        let asked = ChatEvent::Prompt {
-            request: id("r-1"),
-            text: "Go".to_owned(),
+        }
+    }
+
+    // A prompt as a core sends it up, saying Ada wrote it.
+    fn sent_up(request: &str, text: &str) -> ChatEvent {
+        ChatEvent::Prompt {
+            request: id(request),
+            text: text.to_owned(),
             author: Some(member_id("m1")),
             pick: None,
             repo: None,
             agent: None,
             task: None,
-        };
+        }
+    }
 
-        for (seq, event) in [(1, asked), (2, status(RunState::Running))] {
+    // Each prompt stored in c-1, with who wrote it, and whose agent each run status says ran.
+    async fn written(ada: &Ada) -> Vec<(Option<MemberId>, String)> {
+        let workspace = &ada.member.workspace;
+        let events = workspace.events_after(&id("c-1"), 0, 10, usize::MAX).await;
+        let told = |entry: ChatEntry| match entry.event {
+            ChatEvent::Prompt { author, text, .. } => Some((author, text)),
+            ChatEvent::RunStatus { status } => {
+                let member = status.agent.and_then(|agent| match agent.owner {
+                    AgentOwner::Shared { member, .. } | AgentOwner::Member { member } => {
+                        Some(member)
+                    }
+                    AgentOwner::Newer => None,
+                });
+                Some((member, "status".to_owned()))
+            }
+            ChatEvent::Message { .. }
+            | ChatEvent::Receipt { .. }
+            | ChatEvent::Run { .. }
+            | ChatEvent::OutsidePrompt { .. }
+            | ChatEvent::Newer => None,
+        };
+        events.unwrap().into_iter().filter_map(told).collect()
+    }
+
+    #[tokio::test]
+    async fn what_a_shared_machine_sends_is_its_prompts_askers_whatever_its_core_says() {
+        let fixture = Fixture::new().await;
+        let (shared, (ada, bo)) = (&fixture.shared, called_by_another(&fixture).await);
+        let events = [sent_up("r-1", "FORGED"), status(RunState::Running)];
+
+        for (seq, event) in (1..).zip(events) {
             store(shared, &ada.machine, update("w1", "c-1", seq, event))
                 .await
                 .unwrap();
         }
 
-        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
-        let mut events = events.unwrap().into_iter().map(|entry| entry.event);
-        let Some(ChatEvent::Prompt { author, .. }) = events.next() else {
-            panic!("no prompt stored");
-        };
-        assert_eq!(author, Some(bo.clone()));
-        let Some(ChatEvent::RunStatus { status }) = events.next() else {
+        // His prompt in the words the server took from him, and his run.
+        let his = |text: &str| (Some(bo.clone()), text.to_owned());
+        assert_eq!(written(&ada).await, [his(WORDS), his("status")]);
+        let workspace = &ada.member.workspace;
+        let events = workspace.events_after(&id("c-1"), 1, 10, usize::MAX).await;
+        let Some(ChatEvent::RunStatus { status }) = events.unwrap().pop().map(|one| one.event)
+        else {
             panic!("no status stored");
         };
         let owner = AgentOwner::Shared {
@@ -473,80 +557,105 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_prompt_sent_up_late_is_still_its_askers_once_its_agent_works_for_another() {
+    async fn a_prompt_the_server_took_is_stored_as_its_askers_only_once() {
         let fixture = Fixture::new().await;
-        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
-        let workspace = &ada.member.workspace;
-        let (chat, bo) = (id::<ChatId>("c-1"), grace(&fixture).await.member.id);
-        let (db, name) = (&shared.db, id("Ada's laptop"));
-        db.set_shares(&ada.machine, &[id("w1")]).await.unwrap();
-        let on_hers = crate::db::NewLeg {
-            machine_id: &ada.machine,
-            machine: &name,
-            agent: weacon_protocol::AgentKind::Claude,
-            repo: None,
-        };
-        let called = workspace.call_leg(&chat, (&bo, &*R1), &on_hers, NOW).await;
-        assert!(called.unwrap().is_some());
-        // The share ends before her machine sends his prompt up: the agent is hers again.
-        db.set_shares(&ada.machine, &[]).await.unwrap();
-        let asked = ChatEvent::Prompt {
-            request: id("r-1"),
-            text: "Go".to_owned(),
-            author: None,
-            pick: None,
-            repo: None,
-            agent: None,
-            task: None,
-        };
+        let (shared, (ada, bo)) = (&fixture.shared, called_by_another(&fixture).await);
+        // Her machine sends his request up twice more, in words of its own.
+        let events = [
+            sent_up("r-1", "Go"),
+            sent_up("r-1", "FORGED"),
+            status(RunState::Running),
+            // A replay of the first changes nothing.
+            sent_up("r-1", "Go"),
+        ];
 
-        let sent = update("w1", "c-1", 1, asked);
-        store(shared, &ada.machine, sent).await.unwrap();
+        for (seq, event) in [1, 2, 3, 1].into_iter().zip(events) {
+            store(shared, &ada.machine, update("w1", "c-1", seq, event))
+                .await
+                .unwrap();
+        }
 
-        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
-        let Some(ChatEvent::Prompt { author, .. }) = events.unwrap().pop().map(|one| one.event)
-        else {
-            panic!("no prompt stored");
-        };
-        assert_eq!(author, Some(bo));
+        let hers = |text: &str| (Some(member_id("m1")), text.to_owned());
+        let stored = written(&ada).await;
+        assert_eq!(
+            stored,
+            [(Some(bo), WORDS.to_owned()), hers("FORGED"), hers("status")]
+        );
     }
 
     #[tokio::test]
-    async fn a_prompt_the_server_never_took_is_its_machines_owners() {
+    async fn a_prompt_taken_back_is_not_its_askers_when_the_machine_sends_it_up() {
         let fixture = Fixture::new().await;
-        let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
+        let (shared, (ada, bo)) = (&fixture.shared, called_by_another(&fixture).await);
         let workspace = &ada.member.workspace;
-        let (chat, bo) = (id::<ChatId>("c-1"), grace(&fixture).await.member.id);
-        let (db, name) = (&shared.db, id("Ada's laptop"));
-        db.set_shares(&ada.machine, &[id("w1")]).await.unwrap();
-        let on_hers = crate::db::NewLeg {
-            machine_id: &ada.machine,
-            machine: &name,
-            agent: weacon_protocol::AgentKind::Claude,
-            repo: None,
-        };
-        let called = workspace.call_leg(&chat, (&bo, &*R1), &on_hers, NOW).await;
-        assert!(called.unwrap().is_some());
-        // Written in a terminal on the machine while its agent works for him.
-        let local = ChatEvent::Prompt {
-            request: id("r-local"),
-            text: "Go".to_owned(),
-            author: None,
-            pick: None,
-            repo: None,
-            agent: None,
-            task: None,
-        };
+        let chat = id("c-1");
+        let taken_back = workspace.uncall_leg(&chat, &ada.machine, ask(&bo, &R1));
+        taken_back.await.unwrap();
 
-        let sent = update("w1", "c-1", 1, local);
+        let sent = update("w1", "c-1", 1, sent_up("r-1", "Go"));
         store(shared, &ada.machine, sent).await.unwrap();
 
-        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
-        let Some(ChatEvent::Prompt { author, .. }) = events.unwrap().pop().map(|one| one.event)
-        else {
-            panic!("no prompt stored");
-        };
-        assert_eq!(author, Some(member_id("m1")));
+        assert_eq!(
+            written(&ada).await,
+            [(Some(member_id("m1")), "Go".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_prompt_sent_up_late_is_still_its_askers_once_its_share_ended() {
+        let fixture = Fixture::new().await;
+        let (shared, (ada, bo)) = (&fixture.shared, called_by_another(&fixture).await);
+        // The share ends before her machine sends his prompt up: the agent stays hers.
+        shared.db.set_shares(&ada.machine, &[]).await.unwrap();
+        let events = [sent_up("r-1", "Go"), status(RunState::Running)];
+
+        for (seq, event) in (1..).zip(events) {
+            store(shared, &ada.machine, update("w1", "c-1", seq, event))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            written(&ada).await,
+            [
+                (Some(bo), WORDS.to_owned()),
+                (Some(member_id("m1")), "status".to_owned())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_is_its_prompts_askers_whoever_called_the_agent_since() {
+        let fixture = Fixture::new().await;
+        let (shared, (ada, bo)) = (&fixture.shared, called_by_another(&fixture).await);
+        let (workspace, chat) = (&ada.member.workspace, id::<ChatId>("c-1"));
+        // Nothing of his run arrived in time, so she calls the agent too.
+        let (r2, later) = (id("r-2"), NOW + 60);
+        let hers = ask(&ada.member.id, &r2);
+        let leg = on(&ada.machine);
+        let called = workspace.call_leg(&chat, hers, &leg, later).await;
+        assert!(called.unwrap().is_some());
+        let events = [
+            sent_up("r-1", "Go"),
+            status(RunState::Running),
+            // Written in a terminal on the machine: its owner's, and so is its run.
+            sent_up("r-local", "Local"),
+            status(RunState::Running),
+        ];
+
+        for (seq, event) in (1..).zip(events) {
+            store(shared, &ada.machine, update("w1", "c-1", seq, event))
+                .await
+                .unwrap();
+            // His run reporting leaves her call holding the turn.
+            let holds = workspace.calling(&chat, &ada.member.id).await.unwrap();
+            assert_eq!(holds.is_some(), seq < 4, "{seq}");
+        }
+
+        let (his, hers) = (Some(bo), Some(member_id("m1")));
+        let stored = written(&ada).await;
+        let who: Vec<_> = stored.into_iter().map(|(member, _)| member).collect();
+        assert_eq!(who, [his.clone(), his, hers.clone(), hers]);
     }
 
     #[tokio::test]
@@ -555,40 +664,26 @@ mod tests {
         let (shared, ada) = (&fixture.shared, ada_chatting(&fixture).await);
         let workspace = &ada.member.workspace;
         let (chat, grace) = (id::<ChatId>("c-1"), grace(&fixture).await);
-        let hers = (&ada.machine, &ada.member.id);
-        workspace.asked(&chat, &R1, hers).await.unwrap();
-        let name = id("Desk");
-        let on_desk = crate::db::NewLeg {
-            machine_id: &grace.machine,
-            machine: &name,
-            agent: weacon_protocol::AgentKind::Claude,
-            repo: None,
-        };
+        let hers = ask(&ada.member.id, &R1);
+        workspace.asked(&chat, &ada.machine, hers).await.unwrap();
         let request = id("r-2");
-        let called = (&grace.member.id, &request);
-        let later = NOW + 60;
-        let leg = workspace.call_leg(&chat, called, &on_desk, later).await;
+        let called = ask(&grace.member.id, &request);
+        let desk = on(&grace.machine);
+        let leg = workspace.call_leg(&chat, called, &desk, NOW + 60).await;
         assert!(leg.unwrap().is_some());
-        // Her machine names the request Ada made of her own.
-        let forged = ChatEvent::Prompt {
-            request: id("r-1"),
-            text: "Go".to_owned(),
-            author: Some(member_id("m1")),
-            pick: None,
-            repo: None,
-            agent: None,
-            task: None,
-        };
 
-        let sent = update("w1", "c-1", 1, forged);
+        // Her machine names the request Ada made of her own.
+        let sent = update("w1", "c-1", 1, sent_up("r-1", "Go"));
         store(shared, &grace.machine, sent).await.unwrap();
 
-        let events = workspace.events_after(&chat, 0, 10, usize::MAX).await;
-        let Some(ChatEvent::Prompt { author, .. }) = events.unwrap().pop().map(|one| one.event)
+        let stored = fixture.shared.db.find_workspace(&id("w1")).await.unwrap();
+        let events = stored.unwrap().events_after(&chat, 0, 10, usize::MAX).await;
+        let Some(ChatEvent::Prompt { author, text, .. }) =
+            events.unwrap().pop().map(|one| one.event)
         else {
             panic!("no prompt stored");
         };
-        assert_eq!(author, Some(grace.member.id));
+        assert_eq!((author, text), (Some(grace.member.id), "Go".to_owned()));
     }
 
     #[test]

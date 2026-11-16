@@ -156,8 +156,8 @@ pub enum ChatEvent {
     },
     /// A person's prompt to their own agent, accepted under `request`, with the repository, the
     /// agent and the task it named, and a note of the element it carried, if any. `author` is
-    /// who wrote it, which the server stamps from its own record of the machine that sent it;
-    /// left out when not known.
+    /// who wrote it, left out when not known: the server stamps it, and for a prompt it took
+    /// from a member `text` too, from its own record, never from the core that sent it.
     Prompt {
         request: RequestId,
         text: String,

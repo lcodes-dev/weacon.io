@@ -140,3 +140,66 @@ test("two members call the one agent of a machine shared with their workspace, a
   await grace.getByPlaceholder("Write to the chat", { exact: true }).waitFor();
   assert.equal(vps.heard().length, 2);
 });
+
+test("a shared agent someone else calls leaves the agent a member is picking as it was", { timeout: 900_000 }, async (t) => {
+  const served = await serve();
+  t.after(() => served.close());
+  const ada = served.page;
+  await signIn(served);
+  await ada.getByLabel("Name").fill("Crew");
+  await ada.getByRole("button", { name: "Create" }).click();
+  await ada.getByRole("heading", { name: "Crew" }).waitFor();
+  const workspace = new URL(ada.url()).searchParams.get("workspace");
+  assert.ok(workspace !== null);
+  await ada.getByRole("button", { name: "Settings", exact: true }).click();
+  const members = ada.getByRole("region", { name: "Members" });
+  await members.getByLabel("Email").fill("grace@example.com");
+  await members.getByRole("button", { name: "Invite" }).click();
+  await members.getByText("Invited grace@example.com.", { exact: false }).waitFor();
+  const vps = await machine(served, workspace, "Team VPS");
+  t.after(() => vps.close());
+  await share(ada, "Team VPS", true);
+  await ada.getByRole("button", { name: "Back" }).click();
+  const grace = await another(served, "grace@example.com");
+  await grace.getByRole("list", { name: "Invitations" }).getByRole("button", { name: "Accept" }).click();
+  await grace.getByRole("heading", { name: "Crew" }).waitFor();
+  await grace.getByRole("button", { name: "Settings", exact: true }).click();
+  const desk = await machine({ ...served, page: grace }, workspace, "Desk");
+  t.after(() => desk.close());
+  await grace.getByRole("button", { name: "Back" }).click();
+  await ada.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "New chat" }).click();
+  await ada.waitForFunction((opened) => document.querySelector("textarea")?.value === opened, SHARED);
+  await box(ada).fill("Shall we fix the parser?");
+  await ada.getByRole("region", { name: "New chat" }).getByRole("button", { name: "Send" }).click();
+  await ada.getByRole("heading", { name: "Shall we fix the parser?" }).waitFor();
+
+  // Grace picks her own machine, of the two she may call.
+  await grace.getByRole("navigation", { name: "Chats" }).getByRole("button", { name: "Shall we fix the parser?" }).click();
+  await grace.getByRole("button", { name: "Add your agent" }).click();
+  const fields = grace.getByRole("group", { name: "Your agent in this chat" });
+  const machines = fields.getByLabel("Machine").getByRole("option");
+  await fields.getByLabel("Machine").selectOption({ label: "Desk" });
+  await fields.getByLabel("Repository").selectOption("demo");
+  await fields.getByLabel("Agent").selectOption("claude");
+  await grace.waitForFunction(() => document.querySelector("textarea")?.value === "@Claude Code ");
+  assert.equal(await machines.count(), 2);
+
+  // Ada calls the shared machine's agent meanwhile, which Grace's chat then has.
+  await ada.getByRole("button", { name: "Add your agent" }).click();
+  const hers = ada.getByRole("group", { name: "Your agent in this chat" });
+  await hers.getByLabel("Repository").selectOption("demo");
+  await hers.getByLabel("Agent").selectOption("claude");
+  await call(ada, "Run the parser tests");
+  await ada.getByRole("button", { name: "Allow" }).click();
+  await grace.getByText("Done", { exact: true }).waitFor();
+  await grace.waitForFunction(() => document.querySelector(".my-agent select")?.querySelectorAll("option").length !== 2);
+
+  // Her pick stands, and her call goes to her own agent.
+  assert.deepEqual(await machines.allInnerTexts(), ["Desk"]);
+  assert.equal(await box(grace).inputValue(), "@Claude Code ");
+  await box(grace).press("End");
+  await grace.keyboard.type("Tidy the readme");
+  await grace.keyboard.press("Enter");
+  await grace.getByText("grace's Claude Code · Desk").waitFor();
+  assert.equal(desk.heard().length, 1);
+});

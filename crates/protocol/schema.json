@@ -1085,7 +1085,7 @@
           ]
         },
         {
-          "description": "A person's prompt to their own agent, accepted under `request`, with the repository, the\nagent and the task it named, and a note of the element it carried, if any. `author` is\nwho wrote it, which the server stamps from its own record of the machine that sent it;\nleft out when not known.",
+          "description": "A person's prompt to their own agent, accepted under `request`, with the repository, the\nagent and the task it named, and a note of the element it carried, if any. `author` is\nwho wrote it, left out when not known: the server stamps it, and for a prompt it took\nfrom a member `text` too, from its own record, never from the core that sent it.",
           "type": "object",
           "properties": {
             "agent": {

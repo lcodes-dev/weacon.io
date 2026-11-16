@@ -178,7 +178,7 @@ mod tests {
 
     use super::*;
     use crate::db::NewLeg;
-    use crate::db::test_support::{NOW, id, make};
+    use crate::db::test_support::{NOW, ask, id, make};
     use crate::test_support::{member_id, two_teams};
 
     async fn account_of(workspace: &Workspace, member: &str) -> AccountId {
@@ -260,7 +260,7 @@ mod tests {
 
         let begun = db.set_shares(&desk, &[id("w1"), id("w-none")]).await;
         let called = one
-            .call_leg(&chat, (&ada, &*R1), &on_desk, NOW + 1_000)
+            .call_leg(&chat, ask(&ada, &R1), &on_desk, NOW + 1_000)
             .await;
         called.unwrap().unwrap();
         // Saying the same again changes nothing.
@@ -310,7 +310,7 @@ mod tests {
         };
         let (chat, adas) = (id("c-1"), member_id("m1"));
         let called = one
-            .call_leg(&chat, (&adas, &*R1), &on_shelf, NOW + 1_000)
+            .call_leg(&chat, ask(&adas, &R1), &on_shelf, NOW + 1_000)
             .await;
         called.unwrap().unwrap();
         assert!(!detached(&one, "c-1", &shelf).await);

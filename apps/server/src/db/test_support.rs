@@ -2,10 +2,10 @@ use weacon_model::Attribution;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatId, MachineId, MachineName,
-    PermissionAnswer, RepoId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::{Incoming, NewChat, NewLeg, Workspace};
+use super::{Asked, Incoming, NewChat, NewLeg, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -148,6 +148,18 @@ async fn pair(
     .map_err(super::failed)?;
     Ok(paired.rows_affected() > 0)
 }
+
+/// The prompt [`WORDS`] as the server took it from `member` under `request`.
+pub(crate) fn ask<'a>(member: &'a weacon_protocol::MemberId, request: &'a RequestId) -> Asked<'a> {
+    Asked {
+        member,
+        request,
+        text: WORDS,
+    }
+}
+
+/// The words of [`ask`]'s prompt.
+pub(crate) const WORDS: &str = "Mend the gate";
 
 pub(crate) fn status(state: RunState) -> ChatEvent {
     let status = RunStatus {
