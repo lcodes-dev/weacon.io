@@ -42,8 +42,8 @@ pub enum ChatAction {
     /// names that `machine`, the sender's own or one shared with the workspace, which the
     /// server drops before relaying; the first prompt to a machine in a chat makes its agent
     /// there, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a
-    /// later prompt naming another is refused as `chat.agent_conflict`, and an agent the core
-    /// doesn't know as `message.unsupported`. `task` links a new chat to a task of its
+    /// later prompt naming another is refused as `chat.agent_conflict`. `task` links a new chat
+    /// to a task of its
     /// workspace; the server relays it with the task's title as it is then, and a later prompt
     /// naming a task with the chat's own, or none. `quotes` is what was written in the chat
     /// since that agent's last prompt there, which only the server fills in. `pick` names a
@@ -712,19 +712,6 @@ mod tests {
 
         let received = [
             entry_wire(&json!({ "kind": "note" })),
-            entry_wire(&json!({ "kind": "run_status",
-                                "status": { "run": "run-7", "state": "paused" } })),
-            entry_wire(&json!({ "kind": "run", "update": { "run": "run-7",
-                                "event": { "event": "thinking" } } })),
-            entry_wire(
-                &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
-                                "agent": { "kind": "gemini",
-                                           "owner": { "kind": "member", "member": "m-1" } } } }),
-            ),
-            entry_wire(
-                &json!({ "kind": "run_status", "status": { "run": "run-7", "state": "idle",
-                                "agent": { "kind": "claude", "owner": { "kind": "team" } } } }),
-            ),
             about("chat_query", "query", &json!({ "kind": "search" })),
         ];
         for wire in received {
@@ -735,13 +722,11 @@ mod tests {
     #[test]
     fn a_newer_peers_answers_parse_and_are_never_sent() {
         let event = json!({ "seq": 1, "event": { "kind": "note" } });
-        let state = json!({ "run": "run-7", "state": "paused" });
         let snapshot = |runs: Value, events: Value| json!({ "kind": "snapshot", "seq": 1, "runs": runs, "waiting": [], "events": events });
 
         let answers = [
             json!({ "kind": "moved" }),
             json!({ "kind": "window", "events": [event] }),
-            snapshot(json!([state]), json!([])),
             snapshot(json!([]), json!([event])),
         ];
         for answer in answers {

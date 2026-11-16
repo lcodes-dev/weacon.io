@@ -195,8 +195,8 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
 }
 
 /// How `author` is stored: its kind, its member and, for an agent that names one, the agent
-/// as JSON. `None` for an agent from a newer peer, or an agent that isn't `owner`'s
-/// own or the shared one, whose member the row's reference wouldn't cover.
+/// as JSON. `None` for an agent that isn't `owner`'s own or the shared one, whose member the
+/// row's reference wouldn't cover.
 fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<String>)> {
     match author {
         Author::Person { member } => Some(("person", member, None)),
@@ -214,7 +214,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
 fn answers_to(agent: &AgentRef, owner: &MemberId) -> bool {
     match &agent.owner {
         AgentOwner::Member { member } => member == owner,
-        AgentOwner::Shared { .. } | AgentOwner::Newer => true,
+        AgentOwner::Shared { .. } => true,
     }
 }
 

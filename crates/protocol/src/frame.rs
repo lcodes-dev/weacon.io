@@ -117,11 +117,7 @@ fn parse(line: &[u8]) -> Option<Result<Envelope, FrameError>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{chat, request, run, workspace};
-    use crate::{
-        AgentKind, App, ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatUpdate, ErrorBody,
-        Hello, Message, RunEvent, RunUpdate,
-    };
+    use crate::{App, ErrorBody, Hello, Message};
 
     fn envelope(id: u32) -> Envelope {
         Envelope {
@@ -224,54 +220,7 @@ mod tests {
 
     #[test]
     fn messages_only_received_are_never_sent() {
-        let messages = [
-            Message::Unknown,
-            Message::Run(RunUpdate {
-                run: run(),
-                event: RunEvent::Newer,
-            }),
-        ];
-
-        messages.into_iter().for_each(never_sent);
-    }
-
-    #[test]
-    fn a_prompt_naming_an_agent_this_build_doesnt_know_is_never_sent() {
-        let messages = [
-            Message::ChatCommand(ChatCommand {
-                request: request(),
-                workspace: workspace(),
-                chat: chat(),
-                action: ChatAction::Prompt {
-                    quotes: Vec::new(),
-                    pick: None,
-                    text: "Hi".to_owned(),
-                    repo: None,
-                    machine: None,
-                    agent: Some(AgentKind::Newer),
-                    task: None,
-                },
-                by: None,
-            }),
-            Message::Chat(ChatUpdate {
-                workspace: workspace(),
-                chat: chat(),
-                entry: ChatEntry {
-                    seq: 1,
-                    event: ChatEvent::Prompt {
-                        author: None,
-                        pick: None,
-                        request: request(),
-                        text: "Hi".to_owned(),
-                        repo: None,
-                        agent: Some(AgentKind::Newer),
-                        task: None,
-                    },
-                },
-            }),
-        ];
-
-        messages.into_iter().for_each(never_sent);
+        never_sent(Message::Unknown);
     }
 
     fn never_sent(message: Message) {

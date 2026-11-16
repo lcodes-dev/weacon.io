@@ -52,7 +52,7 @@ impl<A: Agent> Engine<A> {
                 self.close_if_unused(key);
                 Ok(())
             }
-            Some(RunState::Sleeping | RunState::Ended | RunState::Newer) | None => Ok(()),
+            Some(RunState::Sleeping | RunState::Ended) | None => Ok(()),
         }
     }
 

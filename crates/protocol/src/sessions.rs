@@ -182,30 +182,15 @@ mod tests {
     }
 
     #[test]
-    fn a_newer_peers_agents_and_events_parse_and_are_never_sent() {
-        let newer_session = json!({ "agent": "amp", "session": SESSION, "modified_at": 0 });
-        let newer = [
-            wire(
-                "sessions_query",
-                "query",
-                json!({ "kind": "open", "agent": "amp", "session": SESSION, "after": 0 }),
-            ),
-            wire(
-                "sessions_answer",
-                "answer",
-                json!({ "kind": "list", "sessions": [newer_session] }),
-            ),
-            wire(
-                "sessions_answer",
-                "answer",
-                json!({ "kind": "opened", "more": false,
+    fn a_newer_peers_chat_event_parses_and_is_never_sent() {
+        let newer = wire(
+            "sessions_answer",
+            "answer",
+            json!({ "kind": "opened", "more": false,
                 "events": [{ "seq": 1, "event": { "kind": "thought" } }] }),
-            ),
-        ];
-        for wire in newer {
-            let envelope: Envelope = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(envelope.to_json(), Err(FrameError::Invalid), "{wire}");
-        }
+        );
+        let envelope: Envelope = serde_json::from_value(newer).unwrap();
+        assert_eq!(envelope.to_json(), Err(FrameError::Invalid));
 
         let missing = wire("sessions_answer", "answer", json!({ "kind": "missing" }));
         let known: Envelope = serde_json::from_value(missing).unwrap();

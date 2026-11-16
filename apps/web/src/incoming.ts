@@ -1,5 +1,5 @@
 import { record } from "./fields.ts";
-import type { AccessLevel, App, ChatEntry, Envelope, Outcome, RunEvent, SignInState, SymbolKind, WorkspaceChange } from "./protocol.ts";
+import type { AccessLevel, AgentKind, App, ChatEntry, Envelope, Outcome, RunEvent, RunState, SignInState, SymbolKind, WorkspaceChange } from "./protocol.ts";
 
 /** A message from the server that this app acts on, its fields checked where it arrives. */
 export type Incoming = Extract<
@@ -141,13 +141,15 @@ function isStrings(list: unknown): list is string[] {
   return Array.isArray(list) && list.every((item) => typeof item === "string");
 }
 
-/** Whether `event` is a run event whose fields this app reads are all there; others it ignores. */
+/** Whether `event` is a run event the protocol names, with every field this app reads. */
 function isRunEvent(event: unknown): event is RunEvent {
   const fields = record(event);
   if (fields === undefined) {
     return false;
   }
   switch (fields["event"]) {
+    case "started":
+      return text(fields, "session");
     case "text_delta":
     case "text":
       return text(fields, "text");
@@ -166,7 +168,7 @@ function isRunEvent(event: unknown): event is RunEvent {
     case "finished":
       return isOutcome(record(fields["outcome"]));
     default:
-      return typeof fields["event"] === "string";
+      return false;
   }
 }
 
@@ -241,17 +243,18 @@ function isPickNote(value: unknown): boolean {
   return ["url", "title", "selector"].every((key) => typeof note?.[key] === "string");
 }
 
-// A malformed agent, or one whose owner is of a newer kind, is dropped as the message is parsed:
-// rejecting the status would leave a gap in the chat's log.
+/** The agents the protocol names. */
+export const AGENT_KINDS: readonly string[] = ["claude", "codex"] satisfies AgentKind[];
+/** The states of a run the protocol names. */
+export const RUN_STATES: readonly string[] = ["starting", "running", "waiting", "idle", "sleeping", "ended"] satisfies RunState[];
+
 function isStatus(value: unknown): boolean {
   const status = record(value);
-  if (typeof status?.["run"] !== "string" || typeof status["state"] !== "string") {
-    return false;
-  }
-  if (status["agent"] !== undefined && !isAgent(status["agent"])) {
-    delete status["agent"];
-  }
-  return true;
+  return (
+    typeof status?.["run"] === "string" &&
+    RUN_STATES.includes(status["state"] as string) &&
+    (status["agent"] === undefined || isAgent(status["agent"]))
+  );
 }
 
 function isAgent(value: unknown): boolean {
@@ -260,7 +263,7 @@ function isAgent(value: unknown): boolean {
   const known =
     (owner?.["kind"] === "shared" && typeof owner["member"] === "string" && typeof owner["owner"] === "string") ||
     (owner?.["kind"] === "member" && typeof owner["member"] === "string");
-  return typeof agent?.["kind"] === "string" && known && (agent["machine"] === undefined || typeof agent["machine"] === "string");
+  return AGENT_KINDS.includes(agent?.["kind"] as string) && known && (agent?.["machine"] === undefined || typeof agent["machine"] === "string");
 }
 
 const CHANGES: readonly string[] = [
@@ -302,14 +305,14 @@ function isMachineSettingsAnswer(answer: unknown): boolean {
         Array.isArray(signIns) &&
         signIns.every((signIn: unknown) => {
           const one = record(signIn);
-          return one !== undefined && text(one, "agent") && SIGN_IN_STATES.includes(one["state"] as string);
+          return one !== undefined && AGENT_KINDS.includes(one["agent"] as string) && SIGN_IN_STATES.includes(one["state"] as string);
         })
       );
     }
     case "repos":
       return isStrings(fields["repos"]);
     case "agents":
-      return isStrings(fields["agents"]);
+      return isStrings(fields["agents"]) && fields["agents"].every((agent) => AGENT_KINDS.includes(agent));
     default:
       return false;
   }
@@ -443,7 +446,7 @@ function isOutsideSession(session: unknown): boolean {
   const fields = record(session);
   return (
     fields !== undefined &&
-    text(fields, "agent") &&
+    AGENT_KINDS.includes(fields["agent"] as string) &&
     text(fields, "session") &&
     Number.isSafeInteger(fields["modified_at"]) &&
     (fields["folder"] === undefined || text(fields, "folder"))

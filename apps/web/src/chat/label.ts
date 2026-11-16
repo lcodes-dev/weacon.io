@@ -1,14 +1,14 @@
 import type { Names } from "../members/names.ts";
-import type { AgentRef, MemberId } from "../protocol.ts";
+import type { AgentKind, AgentRef, MemberId } from "../protocol.ts";
 
-const AGENTS = new Map([
-  ["claude", "Claude Code"],
-  ["codex", "Codex"],
-]);
+const AGENTS: Record<AgentKind, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
 
-/** What `kind` of agent is called, such as "Codex"; "Agent" for one this app doesn't know. */
-export function vendorName(kind: string | undefined): string {
-  return AGENTS.get(kind ?? "") ?? "Agent";
+/** What `kind` of agent is called, such as "Codex"; "Agent" when none is named. */
+export function vendorName(kind: AgentKind | undefined): string {
+  return kind === undefined ? "Agent" : AGENTS[kind];
 }
 
 const NO_NAMES: Names = new Map();

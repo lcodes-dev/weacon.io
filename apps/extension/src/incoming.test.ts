@@ -9,7 +9,7 @@ const ENTRIES: ChatEntry[] = [
   { seq: 1, event: { kind: "prompt", request: "r-1", text: "Hi", pick: { url: "http://localhost/", title: "Home", selector: "p" } } },
   { seq: 2, event: { kind: "outside_prompt", text: "Hi" } },
   { seq: 3, event: { kind: "receipt", receipt: { request: "r-1", state: "accepted" } } },
-  { seq: 4, event: { kind: "run_status", status: { run: "run-1", state: "running" } } },
+  { seq: 4, event: { kind: "run_status", status: { run: "run-1", state: "running", agent: { kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "laptop" } } } },
   { seq: 5, event: { kind: "run", update: { run: "run-1", event: { event: "text", text: "Done." } } } },
   { seq: 6, event: { kind: "run", update: { run: "run-1", event: { event: "tool_call", call: "t1", tool: "Bash", input: {} } } } },
   { seq: 7, event: { kind: "run", update: { run: "run-1", event: { event: "tool_done", call: "t1", failed: false } } } },
@@ -41,12 +41,12 @@ test("each message the panel acts on is parsed as it arrives", () => {
   }
 });
 
-test("newer kinds of event pass, to keep their place, and newer answers don't", () => {
+test("a newer kind of chat event passes, to keep its place, and newer run events and answers don't", () => {
   const newer = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "note" } } };
   const thinking = { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: "thinking" } } } } };
 
   assert.deepEqual(parse(newer), newer);
-  assert.deepEqual(parse(thinking), thinking);
+  assert.equal(parse(thinking), undefined);
   assert.equal(parse({ id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "moved" } }), undefined);
   assert.equal(parse({ id: 3, type: "chats_answer", answer: { kind: "page" } }), undefined);
 });
@@ -70,6 +70,8 @@ test("anything malformed, or that the panel doesn't act on, is dropped", () => {
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "prompt", text: "x" } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "receipt", receipt: {} } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run_status", status: { run: "r" } } } },
+    { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run_status", status: { run: "r", state: "running", agent: { kind: "gemini", owner: { kind: "member", member: "m-1" } } } } } },
+    { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run_status", status: { run: "r", state: "running", agent: { kind: "claude", owner: { kind: "team" } } } } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { event: { event: "text", text: "x" } } } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: "text" } } } } },
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: "tool_call", call: "c" } } } } },
@@ -83,6 +85,7 @@ test("anything malformed, or that the panel doesn't act on, is dropped", () => {
     { id: 0, type: "chat", ...ABOUT, entry: { seq: 1, event: { kind: "run", update: { run: "r", event: { event: 3 } } } } },
     { id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "window", events: [{ seq: 1 }] } },
     { id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "snapshot", seq: 1, runs: [{ run: "r" }], waiting: [], events: [] } },
+    { id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "snapshot", seq: 1, runs: [{ run: "r", state: "idle", agent: { kind: "gemini" } }], waiting: [], events: [] } },
     { id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "snapshot", seq: 1, runs: [], waiting: [0], events: [] } },
     { id: 3, type: "chat_answer", ...ABOUT, answer: { kind: "snapshot", seq: -1, runs: [], waiting: [], events: [] } },
     { id: 4, type: "chats_answer", answer: { kind: "list", chats: [{ ...ABOUT, title: "x", agent: "claude", updated_at: "1" }] } },

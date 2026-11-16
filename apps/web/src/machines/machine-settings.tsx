@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import type { Later } from "../connection.ts";
+import { vendorName } from "../chat/label.ts";
 import type { AccessLevel, AgentKind, MachineSettings, MachineSettingsAction, MachineSummary, SignInState } from "../protocol.ts";
 import { useAsk } from "../api/ask.ts";
 import { useLoaded } from "../api/loaded.ts";
@@ -17,11 +18,6 @@ const LEVELS: Array<[AccessLevel, string]> = [
   ["ask_first", "Ask first"],
   ["full", "Full"],
 ];
-
-const AGENTS = new Map<AgentKind | string, string>([
-  ["claude", "Claude Code"],
-  ["codex", "Codex"],
-]);
 
 const STATES: Record<SignInState, string> = {
   signed_in: "Signed in",
@@ -141,8 +137,8 @@ function Shown({ settings, busy, set, team, signIn }: ShownProps) {
       <ul aria-label="Sign-ins">
         {settings.sign_ins.map(({ agent, state }) => (
           <li key={agent}>
-            {AGENTS.get(agent) ?? "Another agent"}: {STATES[state]}{" "}
-            {signIn !== undefined && AGENTS.has(agent) && state !== "not_installed" && (
+            {vendorName(agent)}: {STATES[state]}{" "}
+            {signIn !== undefined && state !== "not_installed" && (
               <button type="button" onClick={() => signIn(agent)}>
                 {state === "signed_in" ? "Sign in again" : "Sign in"}
               </button>

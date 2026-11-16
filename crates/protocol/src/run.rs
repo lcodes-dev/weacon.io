@@ -12,20 +12,15 @@ use crate::{MachineName, MemberId, Outcome};
 pub enum AgentKind {
     Claude,
     Codex,
-    /// An agent this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 impl AgentKind {
-    /// The vendor's name, as on the wire; `None` for an agent this build doesn't know.
+    /// The vendor's name, as on the wire.
     #[must_use]
-    pub const fn name(self) -> Option<&'static str> {
+    pub const fn name(self) -> &'static str {
         match self {
-            Self::Claude => Some("claude"),
-            Self::Codex => Some("codex"),
-            Self::Newer => None,
+            Self::Claude => "claude",
+            Self::Codex => "codex",
         }
     }
 }
@@ -98,10 +93,6 @@ pub enum RunEvent {
     Finished {
         outcome: Outcome,
     },
-    /// An event this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// What a permission prompt's tool would do, as text the core makes of its input and every
@@ -186,10 +177,6 @@ pub enum AgentOwner {
     /// The workspace's shared agent, under the workspace's own credential, on a machine its
     /// `owner` shares: `member` called it, and only `owner` answers its permission prompts.
     Shared { member: MemberId, owner: MemberId },
-    /// An owner this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -207,10 +194,6 @@ pub enum RunState {
     Sleeping,
     /// Over for good.
     Ended,
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -274,16 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_kinds_travel_as_names_and_a_newer_one_still_parses() {
+    fn agent_kinds_travel_as_names() {
         for (kind, name) in [(AgentKind::Claude, "claude"), (AgentKind::Codex, "codex")] {
             round_trips(&kind, json!(name));
-            assert_eq!(kind.name(), Some(name));
+            assert_eq!(kind.name(), name);
         }
-        assert_eq!(
-            serde_json::from_value::<AgentKind>(json!("amp")).unwrap(),
-            AgentKind::Newer
-        );
-        assert_eq!(AgentKind::Newer.name(), None);
     }
 
     #[test]
@@ -304,17 +282,15 @@ mod tests {
     }
 
     #[test]
-    fn events_are_tagged_and_a_newer_one_still_parses() {
+    fn events_are_tagged_and_one_the_protocol_doesnt_name_is_refused() {
         let event = RunEvent::Finished {
             outcome: Outcome::Unknown,
         };
         let wire = json!({ "event": "finished", "outcome": { "state": "unknown" } });
 
         round_trips(&event, wire);
-        assert_eq!(
-            serde_json::from_value::<RunEvent>(json!({ "event": "thinking" })).unwrap(),
-            RunEvent::Newer
-        );
+        serde_json::from_value::<RunEvent>(json!({ "event": "thinking" })).unwrap_err();
+        serde_json::from_value::<RunState>(json!("paused")).unwrap_err();
     }
 
     #[test]
@@ -354,22 +330,18 @@ mod tests {
         for (status, wire) in cases {
             round_trips(&status, wire);
         }
-        let newer = |agent: Value| {
+        let odd = |agent: Value| {
             serde_json::from_value::<RunStatus>(
                 json!({ "run": "run-7", "state": "running", "agent": agent }),
             )
         };
         let mine = json!({ "kind": "member", "member": "m-1" });
-        let robot = newer(json!({ "kind": "robot", "owner": mine })).unwrap();
-        let team =
-            newer(json!({ "kind": "claude", "owner": { "kind": "team", "id": 1 } })).unwrap();
-        serde_json::to_value(&robot).unwrap_err();
-        serde_json::to_value(&team).unwrap_err();
-        assert_eq!(team.agent.map(|agent| agent.owner), Some(AgentOwner::Newer));
-        newer(json!({ "kind": "claude" })).unwrap_err();
-        newer(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();
-        newer(json!({ "kind": "claude", "owner": { "kind": "shared" } })).unwrap_err();
-        newer(json!({ "kind": "claude", "owner": mine, "machine": "" })).unwrap_err();
+        odd(json!({ "kind": "robot", "owner": mine })).unwrap_err();
+        odd(json!({ "kind": "claude", "owner": { "kind": "team", "id": 1 } })).unwrap_err();
+        odd(json!({ "kind": "claude" })).unwrap_err();
+        odd(json!({ "kind": "claude", "owner": { "kind": "member" } })).unwrap_err();
+        odd(json!({ "kind": "claude", "owner": { "kind": "shared" } })).unwrap_err();
+        odd(json!({ "kind": "claude", "owner": mine, "machine": "" })).unwrap_err();
     }
 
     #[test]

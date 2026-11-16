@@ -52,7 +52,6 @@ test("a finished turn ends the text and its running tools, and other events chan
   const after = apply(before, [
     { event: "started", session: "0b8f5c2e-7a1d-4e3b-9c6f-2d4a8e1b5c7f" },
     { event: "finished", outcome: { state: "completed" } },
-    { event: "newer" } as unknown as RunEvent,
     delta("Hi"),
   ]);
 

@@ -290,10 +290,10 @@ fn state_text(state: ChatState) -> Result<&'static str, Fault> {
     }
 }
 
-// `status` is a stored `RunStatus` in JSON; a state from a newer core is never sent on.
-fn stored_run_state(status: &str) -> Result<Option<RunState>, Fault> {
+// `status` is a stored `RunStatus` in JSON.
+fn stored_run_state(status: &str) -> Result<RunState, Fault> {
     let status = serde_json::from_str::<RunStatus>(status).map_err(|_| unreadable())?;
-    Ok(Some(status.state).filter(|state| *state != RunState::Newer))
+    Ok(status.state)
 }
 
 fn stored_state(text: &str) -> Result<ChatState, Fault> {
@@ -387,15 +387,17 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_run_gives_its_state_but_never_one_from_a_newer_core() {
+    fn a_stored_run_gives_its_state() {
         let status = |state: &str| format!(r#"{{"run":"run-1","state":"{state}"}}"#);
 
         assert_eq!(
             stored_run_state(&status("waiting")).unwrap(),
-            Some(RunState::Waiting)
+            RunState::Waiting
         );
-        assert_eq!(stored_run_state(&status("paused")).unwrap(), None);
-        assert_eq!(code(&stored_run_state("{").unwrap_err()), "db.unreadable");
+        for unreadable in [status("paused"), "{".to_owned()] {
+            let fault = stored_run_state(&unreadable).unwrap_err();
+            assert_eq!(code(&fault), "db.unreadable");
+        }
     }
 
     fn ids(list: &[ChatSummary]) -> Vec<&str> {

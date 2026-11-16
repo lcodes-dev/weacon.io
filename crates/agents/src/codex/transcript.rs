@@ -129,7 +129,7 @@ mod tests {
     use crate::test_support::{jsonl, text, tool_call, tool_done};
 
     fn read(lines: &[Value]) -> Transcript {
-        Transcript::read(AgentKind::Codex, jsonl(lines).as_bytes()).unwrap()
+        Transcript::read(AgentKind::Codex, jsonl(lines).as_bytes())
     }
 
     fn item(payload: &Value) -> Value {

@@ -3,7 +3,7 @@ import { say } from "./feedback.ts";
 import type { LocalChat, Pick, RunState } from "./protocol.ts";
 import type { ChatRef, Sync } from "./sync.ts";
 
-const STATES: Partial<Record<RunState, string>> = {
+const STATES: Record<RunState, string> = {
   starting: "Starting",
   running: "Working",
   waiting: "Needs you",
@@ -30,7 +30,7 @@ export function ChatList({ chats, choose }: { chats: readonly LocalChat[]; choos
                 <li key={chat.chat}>
                   <button type="button" onClick={() => choose({ workspace, chat: chat.chat })}>
                     <span className="title">{chat.title === "" ? "Untitled chat" : chat.title}</span>
-                    <span className="state">{chat.run === undefined ? "New" : (STATES[chat.run] ?? "")}</span>
+                    <span className="state">{chat.run === undefined ? "New" : STATES[chat.run]}</span>
                   </button>
                 </li>
               ))}

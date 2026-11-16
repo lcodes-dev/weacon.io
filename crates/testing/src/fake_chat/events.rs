@@ -6,8 +6,7 @@ use weacon_protocol::{
     MachineName, Message, RunEvent, RunId, RunUpdate, Wants,
 };
 
-/// Whether a chat query or command holds a part this build doesn't know, such as a prompt to
-/// an agent it can't name.
+/// Whether a chat query or command is of a kind this build doesn't know.
 pub(super) const fn unknown(message: &Message) -> bool {
     matches!(
         message,
@@ -15,11 +14,7 @@ pub(super) const fn unknown(message: &Message) -> bool {
             query: ChatQueryKind::Newer,
             ..
         }) | Message::ChatCommand(ChatCommand {
-            action: ChatAction::Newer
-                | ChatAction::Prompt {
-                    agent: Some(AgentKind::Newer),
-                    ..
-                },
+            action: ChatAction::Newer,
             ..
         })
     )

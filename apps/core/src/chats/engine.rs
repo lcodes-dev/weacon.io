@@ -631,17 +631,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_prompt_naming_an_agent_this_build_doesnt_know_fails() {
-        let bench = bench();
-        let mut pushes = watch(&bench).await;
-
-        let newer = prompt_naming("r-1", "Hi", AgentKind::Newer);
-        assert_eq!(code_of(bench.command(newer).await), "message.unsupported");
-
-        assert_eq!(pushed(&mut pushes, 1).await, ["nothing"]);
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn an_agent_that_cant_start_fails_the_prompt_and_the_next_one_tries_again() {
         let mut bench = bench();
         let mut pushes = watch(&bench).await;

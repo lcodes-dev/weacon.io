@@ -325,8 +325,8 @@ fn closed() -> Fault {
 mod tests {
     use weacon_model::Doc;
     use weacon_protocol::{
-        AgentKind, AgentOwner, Author, DocContent, ProposalAbout, ProposalRecord, ProposalState,
-        TaskEditBody, TaskStatus, WorkspaceChange,
+        AgentOwner, Author, DocContent, ProposalAbout, ProposalRecord, ProposalState, TaskEditBody,
+        TaskStatus, WorkspaceChange,
     };
     use weacon_testing::TempDir;
 
@@ -644,7 +644,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_agent_that_doesnt_answer_to_its_owner_or_isnt_known_is_refused() {
+    async fn an_agent_that_doesnt_answer_to_its_owner_is_refused() {
         let dir = TempDir::new().unwrap();
         let (one, _) = workspaces(&dir).await;
         let task = || ProposalChange::NewTask {
@@ -654,13 +654,9 @@ mod tests {
         someone_elses.agent.as_mut().unwrap().owner = AgentOwner::Member {
             member: member_id("m3"),
         };
-        let mut unknown = proposed("p2", "mc1", task());
-        unknown.agent.as_mut().unwrap().kind = AgentKind::Newer;
 
-        for refused in [someone_elses, unknown] {
-            let fault = one.propose(&refused).await.unwrap_err();
-            assert_eq!(code(&fault), "proposal.invalid");
-        }
+        let fault = one.propose(&someone_elses).await.unwrap_err();
+        assert_eq!(code(&fault), "proposal.invalid");
         assert!(one.proposals().await.unwrap().is_empty());
     }
 

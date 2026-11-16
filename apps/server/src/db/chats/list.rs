@@ -47,7 +47,7 @@ impl Workspace {
                 owner: stored(owner)?,
                 state: stored_state(&state)?,
                 updated_at,
-                run: run.as_deref().map(stored_run_state).transpose()?.flatten(),
+                run: run.as_deref().map(stored_run_state).transpose()?,
                 task: task.map(stored).transpose()?,
             })
         })

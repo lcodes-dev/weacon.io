@@ -207,7 +207,6 @@ impl Workspace {
         if !self.serves_in(transaction, leg.machine_id, member).await? {
             return Err(machine_not_found());
         }
-        let agent = leg.agent.name().ok_or_else(super::unstorable)?;
         sqlx::query(
             "INSERT INTO chat_legs (workspace_id, chat_id, member_id, machine_id, machine_name,
                  agent, repo)
@@ -218,7 +217,7 @@ impl Workspace {
         .bind(member.as_str())
         .bind(leg.machine_id.as_str())
         .bind(leg.machine.as_str())
-        .bind(agent)
+        .bind(leg.agent.name())
         .bind(leg.repo.map(RepoId::as_str))
         .execute(&mut *transaction)
         .await
@@ -704,7 +703,7 @@ pub(super) fn stored_leg(row: LegRow) -> Result<Leg, Fault> {
 pub(super) fn stored_agent(name: &str) -> Result<AgentKind, Fault> {
     [AgentKind::Claude, AgentKind::Codex]
         .into_iter()
-        .find(|kind| kind.name() == Some(name))
+        .find(|kind| kind.name() == name)
         .ok_or_else(unreadable)
 }
 

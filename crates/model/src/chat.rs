@@ -93,7 +93,7 @@ impl ChatRuns {
         let working = |state| {
             matches!(
                 state,
-                RunState::Starting | RunState::Running | RunState::Waiting | RunState::Newer
+                RunState::Starting | RunState::Running | RunState::Waiting
             )
         };
         let latest = self.run.as_ref();
@@ -102,10 +102,7 @@ impl ChatRuns {
         {
             return;
         }
-        let may_ask = matches!(
-            status.state,
-            RunState::Running | RunState::Waiting | RunState::Newer
-        );
+        let may_ask = matches!(status.state, RunState::Running | RunState::Waiting);
         self.waiting
             .retain(|waits| may_ask && waits.run == status.run);
         self.run = Some(status.clone());
@@ -128,8 +125,7 @@ impl ChatRuns {
             | RunEvent::TextDelta { .. }
             | RunEvent::Text { .. }
             | RunEvent::ToolCall { .. }
-            | RunEvent::ToolDone { .. }
-            | RunEvent::Newer => {}
+            | RunEvent::ToolDone { .. } => {}
         }
     }
 

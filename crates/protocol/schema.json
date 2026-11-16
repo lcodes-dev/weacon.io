@@ -543,14 +543,10 @@
     },
     "AgentKind": {
       "description": "Which vendor's agent.",
-      "oneOf": [
-        {
-          "type": "string",
-          "enum": [
-            "claude",
-            "codex"
-          ]
-        }
+      "type": "string",
+      "enum": [
+        "claude",
+        "codex"
       ]
     },
     "AgentOwner": {
@@ -808,7 +804,7 @@
           ]
         },
         {
-          "description": "Starts or queues a turn of the chat's agent on one machine. To the server every prompt\nnames that `machine`, the sender's own or one shared with the workspace, which the\nserver drops before relaying; the first prompt to a machine in a chat makes its agent\nthere, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a\nlater prompt naming another is refused as `chat.agent_conflict`, and an agent the core\ndoesn't know as `message.unsupported`. `task` links a new chat to a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince that agent's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
+          "description": "Starts or queues a turn of the chat's agent on one machine. To the server every prompt\nnames that `machine`, the sender's own or one shared with the workspace, which the\nserver drops before relaying; the first prompt to a machine in a chat makes its agent\nthere, in `repo`. `agent` fixes that agent's kind on that prompt, Claude when missing; a\nlater prompt naming another is refused as `chat.agent_conflict`. `task` links a new chat\nto a task of its\nworkspace; the server relays it with the task's title as it is then, and a later prompt\nnaming a task with the chat's own, or none. `quotes` is what was written in the chat\nsince that agent's last prompt there, which only the server fills in. `pick` names a\n[`Pick`](crate::Pick) the core keeps, from a local client only; the agent gets it as\nquoted page content.",
           "type": "object",
           "properties": {
             "agent": {

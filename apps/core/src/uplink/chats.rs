@@ -194,8 +194,7 @@ fn stored(mut update: ChatUpdate) -> Option<ChatUpdate> {
             RunEvent::Started { .. }
             | RunEvent::TextDelta { .. }
             | RunEvent::ToolCall { .. }
-            | RunEvent::ToolDone { .. }
-            | RunEvent::Newer => return None,
+            | RunEvent::ToolDone { .. } => return None,
         },
         ChatEvent::Prompt { .. }
         | ChatEvent::OutsidePrompt { .. }
@@ -646,7 +645,7 @@ mod tests {
     }
 
     // Events the server never keeps: none goes up.
-    fn dropped() -> [ChatEvent; 6] {
+    fn dropped() -> [ChatEvent; 5] {
         [
             said(RunEvent::Started { session: session() }),
             said(RunEvent::TextDelta {
@@ -661,7 +660,6 @@ mod tests {
                 call: "t-1".to_owned(),
                 failed: false,
             }),
-            said(RunEvent::Newer),
             ChatEvent::Newer,
         ]
     }

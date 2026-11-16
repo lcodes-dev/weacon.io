@@ -298,15 +298,5 @@ mod tests {
         for action in [ChatAction::Newer, ChatAction::Hold, ChatAction::Release] {
             assert_eq!(refused(None, "m1", action), "message.unsupported");
         }
-        let newer_agent = ChatAction::Prompt {
-            quotes: Vec::new(),
-            pick: None,
-            text: "Go".to_owned(),
-            repo: None,
-            machine: Some(id("mc-1")),
-            agent: Some(weacon_protocol::AgentKind::Newer),
-            task: None,
-        };
-        assert_eq!(refused(None, "m1", newer_agent), "message.unsupported");
     }
 }

@@ -210,19 +210,7 @@ mod tests {
             "capabilities": ["chat.send", "future.thing"] }))
             .unwrap();
 
-        let newer_event: Envelope = serde_json::from_value(
-            json!({ "id": 0, "type": "run", "run": "r-1", "event": { "event": "thinking" } }),
-        )
-        .unwrap();
-
         assert_eq!(unknown.message, Message::Unknown);
-        assert!(matches!(
-            newer_event.message,
-            Message::Run(RunUpdate {
-                event: RunEvent::Newer,
-                ..
-            })
-        ));
         assert!(matches!(extra.message, Message::Error(_)));
         assert!(
             matches!(newer.message, Message::Hello(hello) if hello.capabilities == capabilities(&["chat.send", "future.thing"]))
