@@ -17,10 +17,6 @@ pub enum TaskStatus {
     Todo,
     InProgress,
     Done,
-    /// A status this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// Who made a change, such as one to a task.
@@ -37,10 +33,6 @@ pub enum Author {
         #[schemars(with = "AgentRef")]
         agent: Option<AgentRef>,
     },
-    /// An author this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A task as it travels: `order` is its order key and `version` rises with each change. The
@@ -94,10 +86,6 @@ pub enum TaskEditBody {
         #[schemars(with = "TaskId")]
         before: Option<TaskId>,
     },
-    /// An edit this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -113,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn statuses_are_snake_case_and_a_newer_one_still_parses() {
+    fn statuses_are_snake_case() {
         for (status, wire) in [
             (TaskStatus::Todo, "todo"),
             (TaskStatus::InProgress, "in_progress"),
@@ -121,14 +109,10 @@ mod tests {
         ] {
             round_trips(&status, json!(wire));
         }
-        assert_eq!(
-            serde_json::from_value::<TaskStatus>(json!("blocked")).unwrap(),
-            TaskStatus::Newer
-        );
     }
 
     #[test]
-    fn authors_are_tagged_and_a_newer_one_still_parses() {
+    fn authors_are_tagged() {
         let person = Author::Person { member: member() };
         let agent = Author::Agent {
             owner: member(),
@@ -139,10 +123,6 @@ mod tests {
 
         round_trips(&person, person_wire);
         round_trips(&agent, agent_wire);
-        assert_eq!(
-            serde_json::from_value::<Author>(json!({ "kind": "robot", "x": 1 })).unwrap(),
-            Author::Newer
-        );
         serde_json::from_value::<Author>(json!({ "kind": "person" })).unwrap_err();
     }
 
@@ -243,10 +223,6 @@ mod tests {
 
             round_trips(&change, wire);
         }
-        assert_eq!(
-            serde_json::from_value::<TaskEditBody>(json!({ "kind": "archive" })).unwrap(),
-            TaskEditBody::Newer
-        );
         serde_json::from_value::<TaskChange>(json!({ "edit": { "kind": "move" } })).unwrap_err();
     }
 }

@@ -1529,10 +1529,8 @@ export type ProposalRecord = {
 );
 
 export type ProposalVerdict = (
-  | (
-    | "accept"
-    | "reject"
-  )
+  | "accept"
+  | "reject"
 );
 
 /**
@@ -2015,11 +2013,9 @@ export type TaskRecord = {
  * How far along a task is.
  */
 export type TaskStatus = (
-  | (
-    | "todo"
-    | "in_progress"
-    | "done"
-  )
+  | "todo"
+  | "in_progress"
+  | "done"
 );
 
 export type TerminalAction = (

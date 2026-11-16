@@ -22,8 +22,6 @@ pub enum TaskEdit {
 pub enum EditError {
     /// The task changed since the version the edit was made against.
     Stale,
-    /// The status is one this build doesn't know.
-    UnknownStatus,
     /// The task is at the last version there is.
     LastVersion,
 }
@@ -45,15 +43,13 @@ impl Task {
     /// against: any other than the current one is refused.
     ///
     /// # Errors
-    /// When the task has changed since `read_at`, the edit sets a status this build doesn't
-    /// know, or no version is left.
+    /// When the task has changed since `read_at`, or no version is left.
     pub fn edit(mut self, read_at: Revision, edit: TaskEdit) -> Result<Self, EditError> {
         if read_at != self.version {
             return Err(EditError::Stale);
         }
         match edit {
             TaskEdit::Title(title) => self.title = title,
-            TaskEdit::Status(TaskStatus::Newer) => return Err(EditError::UnknownStatus),
             TaskEdit::Status(status) => self.status = status,
             TaskEdit::Order(order) => self.order = order,
         }
@@ -144,16 +140,6 @@ mod tests {
             let edit = TaskEdit::Title(title("Ship"));
             assert_eq!(task.clone().edit(read_at, edit), Err(EditError::Stale));
         }
-    }
-
-    #[test]
-    fn a_status_this_build_doesnt_know_is_refused() {
-        let edit = TaskEdit::Status(TaskStatus::Newer);
-
-        assert_eq!(
-            task().edit(Revision::FIRST, edit),
-            Err(EditError::UnknownStatus)
-        );
     }
 
     #[test]

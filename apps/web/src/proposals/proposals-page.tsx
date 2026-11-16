@@ -115,7 +115,7 @@ function Changes({ api, workspace, change, tasks }: { api: Api; workspace: Works
           <p className="muted">{askText(change)}</p>
         </>
       );
-    default:
+    case "new_task":
       return null;
   }
 }
