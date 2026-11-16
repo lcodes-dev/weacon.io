@@ -46,8 +46,6 @@ impl<A: Agent> Engine<A> {
         (request, author): (RequestId, Option<MemberId>),
         action: ChatAction,
     ) -> Result<(), Fault> {
-        // Before the log, so a chat a newer core runs gets nothing from this one.
-        self.runs.refuse_newer(key)?;
         match action {
             ChatAction::Prompt {
                 text,
@@ -251,49 +249,12 @@ impl<A: Agent> Engine<A> {
 
 #[cfg(test)]
 mod tests {
-    use weacon_testing::{TempDir, messages};
 
     use super::super::by_hand::{allow_one, hear, launched, on_ask, on_turn};
     use super::*;
     use crate::chats::test_support::{
-        Told, allow, asks, chat, command, key, parts, prompt, prompt_in, prompt_naming, run, soon,
+        Told, asks, command, key, parts, prompt, prompt_in, prompt_naming, run, soon,
     };
-    use crate::runs::Runs;
-
-    #[tokio::test(start_paused = true)]
-    async fn a_chat_a_newer_core_ran_takes_no_prompt_and_another_still_runs() {
-        let (mut bench, mut engine) = parts();
-        let dir = TempDir::new().unwrap();
-        let newer = r#"{"workspace":"w-1","chat":"c-1","agent":"gemini","state":"idle"}"#;
-        let journal = format!(r#"{{"issued":3,"chats":[{newer}]}}"#);
-        std::fs::write(dir.join("runs.json"), journal).unwrap();
-        engine.runs = Runs::load(&dir).unwrap();
-        engine.reconcile().await;
-        assert!(messages(&bench.records).contains(&"runs records kept unread"));
-
-        let interrupt = command("r-0", "c-1", ChatAction::Interrupt);
-        for asked in [
-            prompt("r-1", "Hi"),
-            allow("r-2", "c-1", "run-2", 1),
-            interrupt,
-        ] {
-            let refused = engine.command(&key(), asked).await;
-            assert_eq!(refused.unwrap_err().code().as_str(), "runs.newer_record");
-        }
-        assert_eq!(engine.open(&key()).await.unwrap().log.seq(), 0);
-
-        let other = ChatKey {
-            chat: chat("c-2"),
-            ..key()
-        };
-        let next = command("r-2", "c-2", prompt("r-2", "More").action);
-        engine.command(&other, next).await.unwrap();
-        let started = soon(bench.started.recv()).await.unwrap();
-        assert_eq!(
-            (started.run_as.key, started.run_as.run),
-            (other, run("run-4"))
-        );
-    }
 
     #[tokio::test]
     async fn the_repository_a_first_prompt_named_is_the_chats_for_good() {
