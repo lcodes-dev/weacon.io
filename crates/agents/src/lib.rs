@@ -9,7 +9,6 @@ pub mod outside;
 mod platform;
 mod run;
 pub mod sessions;
-mod spawn;
 mod terminal;
 #[cfg(test)]
 mod test_support;
@@ -21,7 +20,6 @@ pub use access::resolve;
 pub use claude::TOKEN_VARIABLE;
 pub use launch::{Launch, McpServer, SignIn};
 pub use run::{AgentRun, Run};
-pub use spawn::SpawnPolicy;
 pub use terminal::{Event, Events, Size, Terminal};
 pub use transcript::{Step, Transcript};
 pub use wire::takes_images;
