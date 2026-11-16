@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { callsAgent, editDraft, EMPTY_DRAFT, opening, pickMention, query, unwritten, type Draft, type MentionItem } from "./draft.ts";
+import { called, editDraft, EMPTY_DRAFT, opening, pickMention, query, unwritten, type Draft, type MentionItem } from "./draft.ts";
 
-const jun: MentionItem = { id: "m-1", label: "Jun Sato" };
-const codex: MentionItem = { id: "a-1", label: "Codex" };
+const jun: MentionItem = { id: "m-1", label: "Jun Sato", note: "Your agent" };
+const codex: MentionItem = { id: "a-1", label: "Codex", note: "Your agent" };
 
 // "hi @Jun Sato and @Codex ok"
 const both: Draft = {
@@ -108,11 +108,14 @@ test("a box opens on the mention of the writer's agent while their messages go t
   assert.deepEqual([plain.mentions.length, unwritten(plain)], [0, false]);
 });
 
-test("a draft calls the writer's agent only by a mention of the agent that is theirs now", () => {
+test("a draft calls the first agent it mentions that the writer may call now", () => {
   const draft = opening(codex, true).draft;
+  const claude: MentionItem = { id: "mc-2", label: "Claude Code", note: "Your agent" };
 
-  assert.equal(callsAgent(draft, codex), true);
-  assert.equal(callsAgent(draft, { id: "claude", label: "Claude Code" }), false);
-  assert.equal(callsAgent(draft, undefined), false);
-  assert.equal(callsAgent(EMPTY_DRAFT, codex), false);
+  assert.equal(called(draft, [codex]), codex);
+  assert.equal(called(draft, [claude, codex]), codex);
+  assert.equal(called(both, [codex, jun]), jun);
+  assert.equal(called(draft, [claude]), undefined);
+  assert.equal(called(draft, []), undefined);
+  assert.equal(called(EMPTY_DRAFT, [codex]), undefined);
 });

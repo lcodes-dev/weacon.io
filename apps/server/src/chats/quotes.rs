@@ -1,23 +1,22 @@
-//! What a prompt's agent is given of its chat: what the others said since its owner's last
-//! prompt there, as quotes.
+//! What a prompt's agent is given of its chat: what the others said since the last prompt it
+//! took there, as quotes.
 
 use std::collections::HashMap;
 
 use weacon_observability::Fault;
-use weacon_protocol::{ChatId, MemberId, Quote};
+use weacon_protocol::{ChatId, MachineId, MemberId, Quote};
 
 use crate::db::{Said, Workspace};
 
 /// The most bytes the quotes on one prompt take as JSON: 16 KiB.
 pub(crate) const QUOTED_MAX: usize = 16 << 10;
 
-/// What `chat`'s people and its other members' agents said after its event `after` and up to
-/// `upto`, for `member`'s agent, the oldest first: as much of the newest as fits
-/// [`QUOTED_MAX`].
+/// What `chat`'s people and its other agents said after its event `after` and up to `upto`,
+/// for the agent on `machine`, the oldest first: as much of the newest as fits [`QUOTED_MAX`].
 pub(crate) async fn between(
     workspace: &Workspace,
     chat: &ChatId,
-    member: &MemberId,
+    machine: &MachineId,
     stretch: (u64, u64),
 ) -> Result<Vec<Quote>, Fault> {
     let names = crate::workspaces::names(&workspace.members().await?);
@@ -26,7 +25,7 @@ pub(crate) async fn between(
         read = read.saturating_add(one.text.len());
         read >= QUOTED_MAX
     };
-    let said = workspace.said_between(chat, member, stretch, enough);
+    let said = workspace.said_between(chat, machine, stretch, enough);
     let said = said.await?;
     let quotes = said.into_iter().map(|one| quote(one, &names));
     Ok(fit(quotes.collect(), QUOTED_MAX))

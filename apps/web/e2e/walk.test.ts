@@ -13,7 +13,7 @@ async function call(page: Page, text: string): Promise<void> {
   await box.focus();
   if ((await box.inputValue()) === "") {
     await page.keyboard.type("@cl");
-    await page.getByRole("listbox", { name: "Your agent" }).getByRole("option", { name: "Claude Code" }).waitFor();
+    await page.getByRole("listbox", { name: "Agents" }).getByRole("option", { name: "Claude Code" }).waitFor();
     await page.keyboard.press("Enter");
   }
   await box.press("End");

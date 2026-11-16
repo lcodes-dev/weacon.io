@@ -40,6 +40,9 @@ pub(crate) struct ChatLog {
     end: u64,
     /// Each request a receipt is in for, and whether one other than `accepted` ended it.
     receipts: HashMap<RequestId, bool>,
+    /// Who wrote the first prompt under each request: a member, or none for one written on
+    /// the machine.
+    authors: HashMap<RequestId, Option<MemberId>>,
     /// Set by a failed write, which may have left half an entry; opening the log again mends it.
     broken: bool,
     /// How many more writes succeed before the log behaves as after a failed one.
@@ -95,6 +98,7 @@ impl ChatLog {
                 starts: Vec::new(),
                 end: 0,
                 receipts: HashMap::new(),
+                authors: HashMap::new(),
                 broken: false,
                 #[cfg(test)]
                 writes_left: None,
@@ -148,12 +152,15 @@ impl ChatLog {
         self.runs.apply(entry);
         match &entry.event {
             ChatEvent::Prompt {
+                request,
                 agent,
                 author,
                 repo,
                 task,
                 ..
             } => {
+                let first = self.authors.entry(request.clone());
+                first.or_insert_with(|| author.clone());
                 // The first prompt names the chat's agent, repository and task; later ones can't.
                 if self.agent.is_none() {
                     self.agent = Some(agent.unwrap_or(AgentKind::Claude));
@@ -179,11 +186,6 @@ impl ChatLog {
     /// The chat's agent, once a prompt is in the log.
     pub(crate) const fn agent(&self) -> Option<AgentKind> {
         self.agent
-    }
-
-    /// The member whose agent the chat's is, once the log's first prompt says.
-    pub(crate) const fn owner(&self) -> Option<&MemberId> {
-        self.owner.as_ref()
     }
 
     /// The chat's agent as people know it, once the log's first prompt says whose it is.
@@ -294,6 +296,12 @@ impl ChatLog {
     /// Whether a receipt that ends the command under `request` is in the log.
     pub(crate) fn has_ended(&self, request: &RequestId) -> bool {
         self.receipts.get(request) == Some(&true)
+    }
+
+    /// Who wrote the prompt under `request`, if a member did; none for one written on the
+    /// machine.
+    pub(crate) fn author(&self, request: &RequestId) -> Option<&MemberId> {
+        self.authors.get(request)?.as_ref()
     }
 
     /// Whether any receipt for the command under `request` is in the log.

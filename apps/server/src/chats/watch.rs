@@ -419,10 +419,17 @@ mod tests {
             ("machine.not_found", false)
         );
         // c-1 runs on a machine that isn't paired any more.
-        ask(&mut client, 4, prompt("c-1", None)).await;
+        ask(&mut client, 4, prompt("c-1", Some("mc-1"))).await;
         assert_eq!(refused(&heard(&mut client).await), ("chat.detached", false));
+        ask(&mut client, 5, prompt("c-1", None)).await;
+        let unnamed = ("chat.machine_required", false);
+        assert_eq!(refused(&heard(&mut client).await), unnamed);
 
-        let leg = workspace.leg(&id("c-1"), &id("m1")).await.unwrap().unwrap();
+        let leg = workspace
+            .leg(&id("c-1"), &id("mc-1"))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(leg.detached);
         assert!(workspace.chat(&id("c-9")).await.unwrap().is_none());
         let logged = serde_json::to_string(&*fixture.records.lock().unwrap()).unwrap();

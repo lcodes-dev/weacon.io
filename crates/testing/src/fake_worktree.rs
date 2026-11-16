@@ -110,6 +110,7 @@ mod tests {
     fn query(chat: &str, query: WorktreeQueryKind) -> Envelope {
         asked(chat, |request, workspace, chat| {
             Message::WorktreeQuery(WorktreeQuery {
+                machine: None,
                 request,
                 workspace,
                 chat,
@@ -122,6 +123,7 @@ mod tests {
     fn command(chat: &str, action: WorktreeAction) -> Envelope {
         asked(chat, |request, workspace, chat| {
             Message::WorktreeCommand(WorktreeCommand {
+                machine: None,
                 request,
                 workspace,
                 chat,

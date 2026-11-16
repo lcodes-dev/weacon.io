@@ -2,10 +2,10 @@ use weacon_model::Attribution;
 use weacon_observability::Fault;
 use weacon_protocol::{
     ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatId, MachineId, MachineName,
-    PermissionAnswer, RepoId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
+    PermissionAnswer, RepoId, RequestId, RunEvent, RunId, RunState, RunStatus, RunUpdate,
 };
 
-use super::{Incoming, NewChat, NewLeg, Workspace};
+use super::{Asked, Incoming, NewChat, NewLeg, Workspace};
 use crate::test_support::member_id;
 
 /// When the db tests' changes are made, in seconds since the Unix epoch.
@@ -149,6 +149,19 @@ async fn pair(
     Ok(paired.rows_affected() > 0)
 }
 
+/// The prompt [`WORDS`] as the server took it from `member` under `request`.
+pub(crate) fn ask<'a>(member: &'a weacon_protocol::MemberId, request: &'a RequestId) -> Asked<'a> {
+    Asked {
+        member,
+        request,
+        text: WORDS,
+        away: None,
+    }
+}
+
+/// The words of [`ask`]'s prompt.
+pub(crate) const WORDS: &str = "Mend the gate";
+
 pub(crate) fn status(state: RunState) -> ChatEvent {
     let status = RunStatus {
         run: id("run-1"),
@@ -214,12 +227,11 @@ pub(crate) async fn append(
     }
 }
 
-/// The last of its owner's machine's events `chat` has.
+/// The last of its first leg's machine's events `chat` has.
 pub(crate) async fn core_seq(workspace: &Workspace, chat: &str) -> u64 {
     let chat = id::<ChatId>(chat);
-    let owner = workspace.chat(&chat).await.unwrap().unwrap().owner;
-    let leg = workspace.leg(&chat, &owner).await.unwrap().unwrap();
-    leg.core_seq
+    let legs = workspace.legs(&chat).await.unwrap();
+    legs.first().unwrap().core_seq
 }
 
 pub(crate) fn seqs(entries: &[ChatEntry]) -> Vec<u64> {
@@ -310,6 +322,17 @@ impl Workspace {
         .execute(&self.db.writer)
         .await
         .unwrap();
+    }
+
+    /// Makes taking a chat's turn (`turn`) or noting a prompt fail in the database, as a full
+    /// disk would.
+    pub(crate) async fn break_calls(&self, turn: bool) {
+        let broken = if turn {
+            "CREATE TRIGGER broken_turns BEFORE UPDATE OF called_by ON chats BEGIN SELECT RAISE(ABORT, 'broken'); END"
+        } else {
+            "CREATE TRIGGER broken_calls BEFORE INSERT ON chat_calls BEGIN SELECT RAISE(ABORT, 'broken'); END"
+        };
+        sqlx::query(broken).execute(&self.db.writer).await.unwrap();
     }
 
     /// Makes every share of a machine fail in the database, as a full disk would.

@@ -1,6 +1,6 @@
 import type { ChatRef } from "../chat-ref.ts";
 import type { Incoming } from "../incoming.ts";
-import type { Envelope, RequestId, WorktreeAction } from "../protocol.ts";
+import type { Envelope, MachineId, RequestId, WorktreeAction } from "../protocol.ts";
 
 /** A worktree's state, as its core last said. */
 export type State = { kind: "state"; removed: boolean; uncommitted: boolean; unpushed: boolean };
@@ -30,8 +30,8 @@ export type Worktree = {
 
 export const UNASKED: Worktree = { standing: { kind: "unknown" }, pending: [], shown: 0, outcome: undefined, confirming: undefined };
 
-/** The envelope that asks `ask` of the worktree at `ref` as message `id` under `request`. */
-export function envelopeFor(ref: ChatRef, id: number, request: RequestId, ask: Ask): Envelope {
+/** The envelope that asks `ask` of the worktree at `ref`, the chat's on a machine, as message `id` under `request`. */
+export function envelopeFor(ref: ChatRef & { machine: MachineId }, id: number, request: RequestId, ask: Ask): Envelope {
   if (ask.kind === "state") {
     return { id, type: "worktree_query", ...ref, request, query: { kind: "state" } };
   }

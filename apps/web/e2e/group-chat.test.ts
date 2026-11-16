@@ -20,7 +20,7 @@ async function another(served: Served, email: string): Promise<Page> {
 }
 
 const box = (page: Page) => page.getByRole("combobox", { name: "Message" });
-const hint = "Another person's agent is working in this chat, so the message wasn't sent. Try again once it's done.";
+const hint = "Another agent is working in this chat, so the message wasn't sent. Try again once it's done.";
 
 // Picks the person's own agent for the open chat.
 async function addAgent(page: Page): Promise<void> {

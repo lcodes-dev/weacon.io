@@ -1,4 +1,5 @@
-import type { ChatId, DiffFile, Envelope, Hunk, LineOp, RequestId, WorkspaceId } from "../protocol.ts";
+import type { ChatRef } from "../chat-ref.ts";
+import type { ChatId, DiffFile, Envelope, Hunk, LineOp, MachineId, RequestId, WorkspaceId } from "../protocol.ts";
 
 /** What the core has sent of a chat's changes under the latest request. */
 export type Changes = {
@@ -14,16 +15,15 @@ export type Changes = {
 
 export const NO_CHANGES: Changes = { asked: undefined, files: [], total: undefined, cut: false, held: false };
 
-/** The query, as message `id`, for `chat`'s changes under `request`; what is `shown` stays until its first answer. */
+/** The query, as message `id`, for the changes of `chat`'s agent on `machine` under `request`; what is `shown` stays until its first answer. */
 export function ask(
   id: number,
   request: RequestId,
-  workspace: WorkspaceId,
-  chat: ChatId,
+  { workspace, chat, machine }: ChatRef & { machine: MachineId },
   shown: Changes,
 ): { query: Envelope; changes: Changes } {
   return {
-    query: { id, type: "diff_query", request, workspace, chat, query: { kind: "changes" } },
+    query: { id, type: "diff_query", request, workspace, chat, machine, query: { kind: "changes" } },
     changes: { ...shown, asked: { id, request, workspace, chat }, cut: false, held: shown.files.length > 0 },
   };
 }

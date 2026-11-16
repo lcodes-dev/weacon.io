@@ -2,7 +2,7 @@ use futures_util::TryStreamExt as _;
 use sqlx::{Sqlite, SqliteConnection, Transaction};
 use weacon_model::ChatRuns;
 use weacon_observability::Fault;
-use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MemberId, Outcome, RunState, code};
+use weacon_protocol::{ChatEntry, ChatEvent, ChatId, MachineId, MemberId, Outcome, RunState, code};
 
 use super::super::changes::Versioned;
 use super::super::{Workspace, failed, stored, unreadable};
@@ -34,16 +34,16 @@ impl Workspace {
         &self,
         mut transaction: Transaction<'static, Sqlite>,
         chat: &ChatId,
-        from: Option<&MemberId>,
+        from: Option<(&MemberId, &MachineId)>,
         events: &[Incoming<'_>],
     ) -> Result<u64, Fault> {
         let (seq, core_seq, state, owner) = sqlx::query_as::<_, (i64, i64, String, String)>(
             "SELECT c.seq, COALESCE(l.core_seq, 0), c.state, c.owner_member FROM chats AS c
              LEFT JOIN chat_legs AS l ON l.workspace_id = c.workspace_id
-                 AND l.chat_id = c.chat_id AND l.member_id = ?
+                 AND l.chat_id = c.chat_id AND l.machine_id = ?
              WHERE c.workspace_id = ? AND c.chat_id = ?",
         )
-        .bind(from.map(MemberId::as_str))
+        .bind(from.map(|(_, machine)| machine.as_str()))
         .bind(self.id.as_str())
         .bind(chat.as_str())
         .fetch_optional(&mut *transaction)
@@ -66,8 +66,13 @@ impl Workspace {
         }
         self.store(&mut transaction, (chat, from), &rows, &runs)
             .await?;
-        self.advance(&mut transaction, chat, seq, from.zip(Some(core_seq)))
-            .await?;
+        self.advance(
+            &mut transaction,
+            chat,
+            seq,
+            from.map(|(_, machine)| (machine, core_seq)),
+        )
+        .await?;
         transaction.commit().await.map_err(failed)?;
         count(seq)
     }
@@ -116,19 +121,21 @@ impl Workspace {
     async fn store(
         &self,
         transaction: &mut SqliteConnection,
-        (chat, from): (&ChatId, Option<&MemberId>),
+        (chat, from): (&ChatId, Option<(&MemberId, &MachineId)>),
         rows: &[Row<'_>],
         runs: &ChatRuns,
     ) -> Result<(), Fault> {
         for row in rows {
             sqlx::query(
-                "INSERT INTO chat_events (workspace_id, chat_id, seq, member_id, body, at)
-                 VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO chat_events
+                     (workspace_id, chat_id, seq, member_id, machine_id, body, at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(self.id.as_str())
             .bind(chat.as_str())
             .bind(row.seq)
-            .bind(from.map(MemberId::as_str))
+            .bind(from.map(|(member, _)| member.as_str()))
+            .bind(from.map(|(_, machine)| machine.as_str()))
             .bind(&row.body)
             .bind(row.at)
             .execute(&mut *transaction)
@@ -143,8 +150,8 @@ impl Workspace {
                 RunState::Starting | RunState::Running | RunState::Waiting
             ))
         };
-        if let Some(member) = from.filter(|_| rows.iter().any(reports)) {
-            self.uncall_in(transaction, chat, member).await?;
+        if let Some((member, machine)) = from.filter(|_| rows.iter().any(reports)) {
+            self.uncall_in(transaction, chat, (machine, member)).await?;
         }
         self.index_messages(transaction, chat, rows).await?;
         let moved = self.keep_runs(&mut *transaction, chat, runs).await?;
@@ -181,7 +188,7 @@ impl Workspace {
         transaction: &mut SqliteConnection,
         chat: &ChatId,
         seq: i64,
-        leg: Option<(&MemberId, i64)>,
+        leg: Option<(&MachineId, i64)>,
     ) -> Result<(), Fault> {
         sqlx::query("UPDATE chats SET seq = ? WHERE workspace_id = ? AND chat_id = ?")
             .bind(seq)
@@ -190,17 +197,17 @@ impl Workspace {
             .execute(&mut *transaction)
             .await
             .map_err(failed)?;
-        let Some((member, core_seq)) = leg else {
+        let Some((machine, core_seq)) = leg else {
             return Ok(());
         };
         sqlx::query(
             "UPDATE chat_legs SET core_seq = ?
-             WHERE workspace_id = ? AND chat_id = ? AND member_id = ?",
+             WHERE workspace_id = ? AND chat_id = ? AND machine_id = ?",
         )
         .bind(core_seq)
         .bind(self.id.as_str())
         .bind(chat.as_str())
-        .bind(member.as_str())
+        .bind(machine.as_str())
         .execute(&mut *transaction)
         .await
         .map_err(failed)?;

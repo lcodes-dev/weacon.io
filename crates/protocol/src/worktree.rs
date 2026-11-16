@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Asker, ChatId, DownloadUrl, RequestId, WorkspaceId};
+use crate::{Asker, ChatId, DownloadUrl, MachineId, RequestId, WorkspaceId};
 
 /// From a client to a core that offers `worktree.manage`: a question about a chat's worktree.
 /// The answer is a [`WorktreeAnswer`] that echoes `request`.
@@ -11,6 +11,11 @@ pub struct WorktreeQuery {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub query: WorktreeQueryKind,
+    /// The machine whose agent's work in the chat is meant, which a client names for the server
+    /// to send this on to; a core answers for its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MachineId")]
+    pub machine: Option<MachineId>,
     /// Who asked, when the server relays the query to a machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
@@ -38,6 +43,11 @@ pub struct WorktreeCommand {
     pub workspace: WorkspaceId,
     pub chat: ChatId,
     pub action: WorktreeAction,
+    /// The machine whose agent's work in the chat is meant, which a client names for the server
+    /// to send this on to; a core answers for its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "MachineId")]
+    pub machine: Option<MachineId>,
     /// Who asked, when the server relays the command to a machine.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Asker")]
@@ -111,6 +121,7 @@ mod tests {
 
     fn query(by: Option<Asker>) -> Envelope {
         envelope(Message::WorktreeQuery(WorktreeQuery {
+            machine: None,
             request: request(),
             workspace: workspace(),
             chat: chat(),
@@ -121,6 +132,7 @@ mod tests {
 
     fn command(action: WorktreeAction, by: Option<Asker>) -> Envelope {
         envelope(Message::WorktreeCommand(WorktreeCommand {
+            machine: None,
             request: request(),
             workspace: workspace(),
             chat: chat(),

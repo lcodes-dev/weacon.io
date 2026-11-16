@@ -1,7 +1,7 @@
 import { type KeyboardEvent, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import "./composer.css";
-import { type Draft, type MentionItem, type Placed, callsAgent, editDraft, opening, pickMention, query, unwritten } from "./draft.ts";
+import { type Draft, type MentionItem, type Placed, called, editDraft, opening, pickMention, query, unwritten } from "./draft.ts";
 import { composing, picker, sends } from "./keys.ts";
 import { offered } from "./mentionables.ts";
 import type { Send, Sent } from "./prompt.ts";
@@ -10,30 +10,32 @@ import { useSend } from "./send.ts";
 /**
  * The message box. While `blocked` says why, it still takes text, but can't send it. It keeps the
  * text until its machine accepts it, and says so when it doesn't, as `explain` words it. Typing `@`
- * offers `agent`, the writer's own in this chat, and a message that mentions it calls it. While
- * `calling`, the box opens on that mention, so a dialogue with the agent needs none typed.
+ * offers `agents`, those the writer may call in this chat, and a message that mentions one calls
+ * it. While `calling`, the box opens on the first one's mention, so a dialogue with it needs none
+ * typed.
  */
 export function Composer({
   send,
   blocked,
   hidden,
   explain,
-  agent,
+  agents,
   calling,
 }: {
   send: Send;
   blocked: string | undefined;
   hidden: boolean;
   explain?: (sent: Sent) => string | undefined;
-  agent: MentionItem | undefined;
-  /** Whether the writer's messages here go to their agent unless they say otherwise. */
+  agents: readonly MentionItem[];
+  /** Whether the writer's messages here go to an agent unless they say otherwise. */
   calling: boolean;
 }) {
+  const agent = agents[0];
   const [placed, setPlaced] = useState<Placed>(() => opening(agent, calling));
   const opens = useRef(() => opening(agent, calling));
   opens.current = () => opening(agent, calling);
   // A box nothing was written in follows where the writer's messages now go.
-  useEffect(() => setPlaced((now) => (unwritten(now.draft) ? opens.current() : now)), [agent?.id, calling]);
+  useEffect(() => setPlaced((now) => (unwritten(now.draft) ? opens.current() : now)), [agent?.id, agent?.label, calling]);
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   // A draft edited after it was sent stays in the box.
@@ -46,10 +48,10 @@ export function Composer({
   const backdrop = useRef<HTMLDivElement>(null);
   const { draft, caret } = placed;
   const at = query(draft, caret);
-  const options = offered(at, dismissed, sending, agent);
-  const calls = callsAgent(draft, agent);
-  // A mention of an agent that isn't the writer's now would otherwise go as a plain message.
-  const stale = draft.mentions.length > 0 && !calls ? "The agent you mention can't be called now. Remove the mention, or pick your agent again." : undefined;
+  const options = offered(at, dismissed, sending, agents);
+  const calls = called(draft, agents)?.id;
+  // A mention of an agent the writer can't call now would otherwise go as a plain message.
+  const stale = draft.mentions.length > 0 && calls === undefined ? "The agent you mention can't be called now. Remove the mention, or pick your agent again." : undefined;
   const hint = problem ?? blocked ?? stale;
   const ready = !sending && blocked === undefined && stale === undefined && !unwritten(draft);
 
@@ -111,7 +113,7 @@ export function Composer({
         <textarea
           ref={box}
           aria-label="Message"
-          placeholder={agent === undefined ? "Write to the chat" : `Write to the chat, or type @ to call ${agent.label}`}
+          placeholder={agent === undefined ? "Write to the chat" : `Write to the chat, or type @ to call ${agents.length === 1 ? agent.label : "an agent"}`}
           role="combobox"
           aria-expanded={options.length > 0}
           aria-controls="mentions"
@@ -169,7 +171,7 @@ function Options({
   choose: (item: MentionItem) => void;
 }) {
   return (
-    <ul className="mentions" id="mentions" role="listbox" aria-label="Your agent">
+    <ul className="mentions" id="mentions" role="listbox" aria-label="Agents">
       {options.map((item, index) => (
         <li
           key={item.id}
@@ -181,7 +183,7 @@ function Options({
           onClick={() => choose(item)}
         >
           {item.label}
-          <span className="muted">Your agent</span>
+          <span className="muted">{item.note}</span>
         </li>
       ))}
     </ul>

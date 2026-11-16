@@ -68,7 +68,7 @@ export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef
       </header>
       <main>
         <div className={settings ? "pane away" : "pane"}>
-          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} me={FAKE_LEG.member} leg={FAKE_LEG} machines={[]} missing={undefined} openSettings={() => {}} away={settings} />
+          <ChatScreen link={socket} live={status.state === "live"} chatRef={chatRef} me={FAKE_LEG.member} agents={[{ leg: FAKE_LEG, own: true, shared: false }]} machines={[]} missing={undefined} openSettings={() => {}} away={settings} />
         </div>
         {settings && (
           <div className="pane">

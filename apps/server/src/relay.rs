@@ -22,7 +22,7 @@ use crate::socket::refusal;
 mod kinds;
 
 pub(crate) use kinds::needs;
-use kinds::{About, Asked, answering, for_members, machine_needs, stamped};
+use kinds::{About, Asked, answering, for_members, machine_needs, on_machine, stamped};
 
 /// How long an ask waits for its answer, or a diff for its next file.
 const ANSWER_WITHIN: Duration = Duration::from_secs(30);
@@ -138,7 +138,7 @@ pub(crate) async fn forward(
     let (asked, message) = stamped(envelope.message, ask.asker).ok_or_else(unknown)?;
     let needs = machine_needs(&message).ok_or_else(unknown)?;
     let message = crate::socket::sendable(message).ok_or_else(unknown)?;
-    let machine = machine_for(shared, ask, &asked, for_members(&message)).await?;
+    let machine = machine_for(shared, ask, &asked, &message).await?;
     let relayed = shared.links.next_id();
     let sent_to = Sent {
         asked,
@@ -200,13 +200,14 @@ pub(crate) fn command(
     sent
 }
 
-/// The machine that `asked` goes to: the asker's own, or for what is `for_members` one shared
+/// The machine that `message`, which asks `asked`, goes to: the one it names, for a chat one
+/// that has an agent there, if it is the asker's own or, for what is [`for_members`], shared
 /// with their workspace.
 async fn machine_for(
     shared: &Shared,
     ask: &Ask<'_>,
     asked: &Asked,
-    for_members: bool,
+    message: &Message,
 ) -> Result<MachineId, Refusal> {
     let elsewhere = asked
         .workspace
@@ -225,14 +226,13 @@ async fn machine_for(
         About::Diff(chat) | About::Worktree(chat) | About::Command(chat) => {
             let found = ask.workspace.chat(chat).await.map_err(Refusal::Failed)?;
             found.ok_or_else(|| refused(code!("chat.not_found"), false))?;
-            // Each member reaches only their own agent's machine in a chat.
-            let leg = ask.workspace.leg(chat, &ask.asker.member).await;
-            let leg = leg.map_err(Refusal::Failed)?;
-            let leg = leg.ok_or_else(|| refused(code!("chat.not_owner"), false))?;
-            leg.machine
+            let not_owner = || refused(code!("chat.not_owner"), false);
+            let named = on_machine(message).ok_or_else(not_owner)?;
+            let leg = ask.workspace.leg(chat, named).await;
+            leg.map_err(Refusal::Failed)?.ok_or_else(not_owner)?.machine
         }
     };
-    if for_members {
+    if for_members(message) {
         let callable = ask.workspace.callable(&ask.asker.account, &machine).await;
         let callable = callable.map_err(Refusal::Failed)?;
         callable.ok_or_else(|| refused(code!("machine.not_found"), false))?;
@@ -1385,6 +1385,7 @@ mod tests {
 
     fn diff_query(chat: &str, in_workspace: &str) -> Message {
         Message::DiffQuery(DiffQuery {
+            machine: None,
             request: request(),
             workspace: workspace_id(in_workspace),
             chat: chat_id(chat),
@@ -1395,6 +1396,7 @@ mod tests {
 
     fn worktree_query(chat: &str) -> Message {
         Message::WorktreeQuery(WorktreeQuery {
+            machine: None,
             request: request(),
             workspace: workspace_id("w1"),
             chat: chat_id(chat),
@@ -1403,8 +1405,24 @@ mod tests {
         })
     }
 
+    // `message`, about a chat's agent, naming the machine it is on.
+    fn on(machine: &MachineId, mut message: Message) -> Message {
+        let named = if let Message::DiffQuery(query) = &mut message {
+            &mut query.machine
+        } else if let Message::WorktreeQuery(query) = &mut message {
+            &mut query.machine
+        } else if let Message::WorktreeCommand(command) = &mut message {
+            &mut command.machine
+        } else {
+            panic!("not about a chat's agent: {message:?}");
+        };
+        *named = Some(machine.clone());
+        message
+    }
+
     fn worktree_command(chat: &str, action: WorktreeAction) -> Message {
         Message::WorktreeCommand(WorktreeCommand {
+            machine: None,
             request: request(),
             workspace: workspace_id("w1"),
             chat: chat_id(chat),
@@ -1498,7 +1516,7 @@ mod tests {
     ];
 
     #[tokio::test]
-    async fn a_member_reads_the_changes_of_their_agent_on_a_shared_machine_and_changes_nothing() {
+    async fn a_member_reads_the_changes_of_an_agent_on_a_shared_machine_and_changes_nothing() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
         let paired = pair_machine(&fixture, server.address).await;
@@ -1514,24 +1532,18 @@ mod tests {
         db.set_shares(&machine, &[workspace_id("w1")])
             .await
             .unwrap();
-        let hers = Making {
-            chat: "c-1",
-            owner: "m5",
-            title: "Fix the build",
-            machine: machine.as_str(),
-            at: 1,
-            task: None,
-        };
-        let w1 = db.workspace(&workspace_id("w1")).await.unwrap();
-        make_as(&w1, &hers).await.unwrap();
+        chat_on(&fixture, "c-1", &machine).await;
 
-        send(&mut grace, envelope(41, diff_query("c-1", "w1"))).await;
+        let diff_of = || on(&machine, diff_query("c-1", "w1"));
+        send(&mut grace, envelope(41, diff_of())).await;
         let diff = next_envelope(&mut core).await;
-        send(&mut grace, envelope(42, worktree_query("c-1"))).await;
+        let state_of = on(&machine, worktree_query("c-1"));
+        send(&mut grace, envelope(42, state_of)).await;
         let state = next_envelope(&mut core).await;
-        let remove = worktree_command("c-1", WorktreeAction::Remove);
+        let remove = on(&machine, worktree_command("c-1", WorktreeAction::Remove));
         let changed = answer_to(&mut grace, 43, remove).await;
-        let owners = answer_to(&mut ada, 44, diff_query("c-1", "w1")).await;
+        send(&mut ada, envelope(45, diff_of())).await;
+        let owners = next_envelope(&mut core).await;
 
         let Message::DiffQuery(diff) = diff.message else {
             panic!("{diff:?}");
@@ -1539,11 +1551,18 @@ mod tests {
         let Message::WorktreeQuery(state) = state.message else {
             panic!("{state:?}");
         };
-        assert_eq!(diff.by.unwrap().account, account);
-        assert_eq!(state.by.unwrap().account, account);
-        // The worktree is its machine's owner's to change, and her agent's changes hers to read.
+        let asked = [diff.by, state.by].map(|by| by.map(|by| by.account));
+        assert_eq!(asked, [Some(account.clone()), Some(account.clone())]);
+        // The worktree is its machine's owner's to change; the agent's changes both read.
         assert_eq!(error_of(&changed), (43, "machine.not_found", false));
-        assert_eq!(error_of(&owners), (44, "chat.not_owner", false));
+        let Message::DiffQuery(owners) = owners.message else {
+            panic!("{owners:?}");
+        };
+        assert_ne!(owners.by.unwrap().account, account);
+        // Once sharing ends, they are its owner's alone to read.
+        db.set_shares(&machine, &[]).await.unwrap();
+        let ended = answer_to(&mut grace, 46, diff_of()).await;
+        assert_eq!(error_of(&ended), (46, "machine.not_found", false));
     }
 
     #[tokio::test]
@@ -1552,15 +1571,17 @@ mod tests {
         let server = fixture.run().await;
         let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
         let (_, session) = ask(server.address, "GET /api/session", &paired.proof, "").await;
+        let machine = paired.machine_id();
 
-        send(&mut browser, envelope(41, diff_query("c-1", "w1"))).await;
+        let diff = on(&machine, diff_query("c-1", "w1"));
+        send(&mut browser, envelope(41, diff)).await;
         let relayed = next_envelope(&mut core).await;
         for (path, text) in [("a.rs", "one"), ("b.rs", "two"), ("c.rs", "extra")] {
             send(&mut core, envelope(relayed.id, file(2, path, text))).await;
         }
         let first = next_envelope(&mut browser).await;
         let second = next_envelope(&mut browser).await;
-        let remove = worktree_command("c-1", WorktreeAction::Remove);
+        let remove = on(&machine, worktree_command("c-1", WorktreeAction::Remove));
         send(&mut browser, envelope(42, remove)).await;
         let commanded = next_envelope(&mut core).await;
         send(&mut core, envelope(commanded.id, state())).await;
@@ -1587,9 +1608,11 @@ mod tests {
     async fn nothing_of_a_diff_or_a_pull_request_is_stored_or_logged() {
         let fixture = Fixture::new().await;
         let server = fixture.run().await;
-        let (_paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+        let (paired, mut core, mut browser) = chat_and_feed(&fixture, server.address, &ALL).await;
+        let machine = paired.machine_id();
 
-        send(&mut browser, envelope(41, diff_query("c-1", "w1"))).await;
+        let diff = on(&machine, diff_query("c-1", "w1"));
+        send(&mut browser, envelope(41, diff)).await;
         let relayed = next_envelope(&mut core).await;
         let marked = file(1, "MARKER-PATH.rs", "MARKER-LINE");
         send(&mut core, envelope(relayed.id, marked.clone())).await;
@@ -1600,7 +1623,7 @@ mod tests {
         };
         send(
             &mut browser,
-            envelope(42, worktree_command("c-1", pull_request)),
+            envelope(42, on(&machine, worktree_command("c-1", pull_request))),
         )
         .await;
         let commanded = next_envelope(&mut core).await;
@@ -1628,7 +1651,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_not_theirs_unknown_or_on_a_machine_not_theirs_is_refused() {
+    async fn a_chat_unknown_or_an_agent_on_no_machine_or_one_not_theirs_is_refused() {
         let fixture = Fixture::new().await;
         let (machine, asker, _attached) = adas_offering(&fixture, &[DIFF]).await;
         chat_on(&fixture, "c-1", &machine).await;
@@ -1640,10 +1663,6 @@ mod tests {
             .workspace(&workspace_id("w1"))
             .await
             .unwrap();
-        let someone = Asker {
-            member: member_id("m2"),
-            ..asker.clone()
-        };
         let back = mpsc::channel(4).0;
         let codes = async |by: &Asker, message| {
             let ask = Ask {
@@ -1654,18 +1673,21 @@ mod tests {
         };
 
         let refused = [
-            codes(&asker, diff_query("c-9", "w1")).await,
-            codes(&asker, diff_query("c-1", "w2")).await,
-            codes(&someone, diff_query("c-1", "w1")).await,
-            codes(&asker, diff_query("c-2", "w1")).await,
+            codes(&asker, on(&machine, diff_query("c-9", "w1"))).await,
+            codes(&asker, on(&machine, diff_query("c-1", "w2"))).await,
+            codes(&asker, diff_query("c-1", "w1")).await,
+            codes(&asker, on(&machine, diff_query("c-2", "w1"))).await,
+            codes(&asker, on(&elsewhere, diff_query("c-2", "w1"))).await,
         ];
-        let mine = codes(&asker, diff_query("c-1", "w1")).await;
+        let mine = codes(&asker, on(&machine, diff_query("c-1", "w1"))).await;
 
         assert_eq!(
             refused.map(Option::unwrap),
             [
                 "chat.not_found",
                 "chat.not_found",
+                // No machine named, and one with no agent in the chat.
+                "chat.not_owner",
                 "chat.not_owner",
                 "machine.not_found"
             ]
@@ -1689,20 +1711,30 @@ mod tests {
             workspace: &w1,
         };
         let back = mpsc::channel(8).0;
-        let terminal = || worktree_command("c-1", WorktreeAction::OpenTerminal);
+        let terminal = || {
+            on(
+                &machine,
+                worktree_command("c-1", WorktreeAction::OpenTerminal),
+            )
+        };
         let sent = async |message| {
             code_of(forward(&fixture.shared, &ask, envelope(1, message), &back).await)
         };
 
         let offered = [
-            sent(diff_query("c-1", "w1")).await,
-            sent(worktree_query("c-1")).await,
-            sent(worktree_command("c-1", WorktreeAction::Remove)).await,
+            sent(on(&machine, diff_query("c-1", "w1"))).await,
+            sent(on(&machine, worktree_query("c-1"))).await,
+            sent(on(
+                &machine,
+                worktree_command("c-1", WorktreeAction::Remove),
+            ))
+            .await,
         ];
         let no_terminal = sent(terminal()).await;
         drop(attached);
         let _with_terminal = relink(&fixture, &machine, &asker, &[TERMINAL]);
-        let only_terminal = [sent(terminal()).await, sent(worktree_query("c-1")).await];
+        let state_of = on(&machine, worktree_query("c-1"));
+        let only_terminal = [sent(terminal()).await, sent(state_of).await];
 
         assert_eq!(offered, [None, None, None]);
         assert_eq!(no_terminal.as_deref(), Some("machine.offline"));
