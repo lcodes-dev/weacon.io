@@ -130,7 +130,6 @@ impl Fake {
                     code: code!("doc.not_found"),
                 },
             },
-            ProposalQueryKind::Newer => ProposalAnswerKind::Newer,
         };
         ProposalAnswer { request, answer }
     }

@@ -28,10 +28,6 @@ pub struct DiffQuery {
 pub enum DiffQueryKind {
     /// Every file the chat's agents changed in its worktree.
     Changes,
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From the core to a client that has `diff.view`, in answer to a [`DiffQuery`].
@@ -51,10 +47,6 @@ pub enum DiffAnswerKind {
     File { files: u32, file: DiffFile },
     /// Nothing changed.
     Unchanged,
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -71,13 +63,7 @@ pub enum FileChange {
     Added,
     Removed,
     Modified,
-    Renamed {
-        from: String,
-    },
-    /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
+    Renamed { from: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -90,10 +76,6 @@ pub enum DiffContent {
     Binary,
     /// The file's changes wouldn't fit one frame.
     TooLarge,
-    /// Content this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A run of changed lines and their context. Lines count from 1; the start of a side with no
@@ -121,10 +103,6 @@ pub enum LineOp {
     Context,
     Added,
     Removed,
-    /// An operation this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -132,7 +110,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::test_support::{chat, envelope, request, travels, workspace};
     use crate::{Envelope, Message};
 
     fn query(query: DiffQueryKind, by: Option<Asker>) -> Envelope {
@@ -264,27 +242,5 @@ mod tests {
             &answer(DiffAnswerKind::Unchanged),
             wire("diff_answer", "answer", json!({ "kind": "unchanged" })),
         );
-    }
-
-    #[test]
-    fn a_newer_peers_queries_and_answers_parse_and_are_never_sent() {
-        let text = |op: &str| {
-            json!({ "kind": "text", "hunks": [{ "old_start": 1, "new_start": 1,
-                                       "lines": [{ "op": op, "text": "x" }] }] })
-        };
-        let modified = json!({ "kind": "modified" });
-        let newer = [
-            wire("diff_query", "query", json!({ "kind": "since" })),
-            wire("diff_answer", "answer", json!({ "kind": "summary" })),
-            file_wire(&json!({ "kind": "copied" }), &json!({ "kind": "binary" })),
-            file_wire(&modified, &json!({ "kind": "symlink" })),
-            file_wire(&modified, &text("moved")),
-        ];
-        for wire in newer {
-            never_sent(wire);
-        }
-
-        let known: Envelope = serde_json::from_value(file_wire(&modified, &text("added"))).unwrap();
-        known.to_json().unwrap();
     }
 }

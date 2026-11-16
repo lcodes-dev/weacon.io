@@ -8,7 +8,6 @@ import { agents, change, current, repos } from "./remote-settings.ts";
 
 const PLACE = { machine: "mc-1", workspace: "w-1" };
 const SETTINGS: MachineSettings = {
-  reports: true,
   access: "ask_first",
   sign_ins: [{ agent: "claude", state: "signed_in" }],
 };
@@ -22,7 +21,7 @@ test("a query names the machine and the socket's workspace, and takes the answer
   const core = fake();
   const asked = current(core.socket, "mc-1", core.later);
   const [query] = core.sent;
-  core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, reports: false } });
+  core.deliver({ id: 1, type: "machine_settings_answer", request: "someone-else", ...PLACE, answer: { kind: "current", ...SETTINGS, access: "full" } });
   core.deliver({ id: 2, type: "machine_settings_answer", request: request(query), ...PLACE, answer: { kind: "current", ...SETTINGS } });
   core.expire();
 
@@ -58,7 +57,7 @@ test("no answer in time, a newer answer, a closed socket or a reconnecting one e
   assert.deepEqual(await waiting, { ok: false, code: NO_ANSWER });
   assert.deepEqual(await odd, { ok: false, code: "answer.malformed" });
   assert.deepEqual(await current(closed.socket, "mc-1", closed.later), { ok: false, code: "connection.refused" });
-  assert.deepEqual(await change(dropped.socket, "mc-1", { kind: "set_reports", send: true }, dropped.later), {
+  assert.deepEqual(await change(dropped.socket, "mc-1", { kind: "set_shared", shared: true }, dropped.later), {
     ok: false,
     code: RECONNECTING,
   });

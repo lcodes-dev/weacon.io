@@ -25,10 +25,6 @@ pub enum SymbolsQueryKind {
     /// The items whose path, or a contract they declare, holds every word, or a word's start,
     /// best first.
     Search { words: String },
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The core's answer to a [`SymbolsQuery`] under the same `request`, to a client that has
@@ -46,10 +42,6 @@ pub struct SymbolsAnswer {
 pub enum SymbolsAnswerKind {
     /// The best of each repository in turn; `more` when some were left out.
     Found { symbols: Vec<Symbol>, more: bool },
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// An item of a repository's code: where it is, never what it holds.
@@ -78,10 +70,6 @@ pub enum SymbolKind {
     Trait,
     Type,
     Union,
-    /// A kind this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -90,7 +78,7 @@ mod tests {
 
     use super::*;
     use crate::Message;
-    use crate::test_support::{envelope, never_sent, request, travels, workspace};
+    use crate::test_support::{envelope, request, travels, workspace};
 
     fn machine() -> MachineId {
         "mc-1".parse().unwrap()
@@ -134,25 +122,5 @@ mod tests {
             "repo": "site", "kind": "fn", "name": "a::to_json", "path": "src/frame.rs", "line": 42,
         }]});
         travels(&answer, wire);
-    }
-
-    #[test]
-    fn what_a_newer_peer_sends_parses_and_is_never_sent_on() {
-        let ids = json!({"id": 4, "request": "r-1", "machine": "mc-1", "workspace": "w-1"});
-        let mut query = ids.clone();
-        query["type"] = json!("symbols_query");
-        query["query"] = json!({"kind": "later"});
-        let Message::SymbolsQuery(query) = never_sent(query).message else {
-            panic!("not a query");
-        };
-        assert_eq!(query.query, SymbolsQueryKind::Newer);
-        let mut answer = ids;
-        answer["type"] = json!("symbols_answer");
-        answer["answer"] = json!({"kind": "found", "more": false, "symbols": [{
-            "repo": "site", "kind": "class", "name": "A", "path": "a.ts", "line": 1,
-        }]});
-        never_sent(answer);
-        let kind: SymbolKind = serde_json::from_value(json!("struct")).unwrap();
-        assert_eq!(kind, SymbolKind::Struct);
     }
 }

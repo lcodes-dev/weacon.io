@@ -11,8 +11,8 @@ mod runtime;
 #[cfg(test)]
 mod test_support;
 
-pub use app::{App, build, reporter, reports, root_logger};
-pub use deliver::deliver_over_https;
+pub use app::{App, build, reporter, root_logger};
+pub use deliver::deliver_over_http;
 pub use id::random_id;
 pub use logs::RotatingFile;
 pub use platform::{

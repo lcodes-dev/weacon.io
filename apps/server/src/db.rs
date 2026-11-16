@@ -195,7 +195,7 @@ fn stored_version(version: i64) -> Result<Revision, Fault> {
 }
 
 /// How `author` is stored: its kind, its member and, for an agent that names one, the agent
-/// as JSON. `None` for an author or agent from a newer peer, or an agent that isn't `owner`'s
+/// as JSON. `None` for an agent from a newer peer, or an agent that isn't `owner`'s
 /// own or the shared one, whose member the row's reference wouldn't cover.
 fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<String>)> {
     match author {
@@ -207,7 +207,7 @@ fn author_columns(author: &Author) -> Option<(&'static str, &MemberId, Option<St
         } if answers_to(agent, owner) => {
             Some(("agent", owner, Some(serde_json::to_string(agent).ok()?)))
         }
-        Author::Agent { .. } | Author::Newer => None,
+        Author::Agent { .. } => None,
     }
 }
 

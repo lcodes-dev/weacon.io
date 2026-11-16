@@ -1,13 +1,13 @@
 //! How the fake core listens and test folders are made, per OS.
 
 #[cfg(unix)]
-pub use unix::{Listener, listen, write_program};
+pub(crate) use unix::create_private_dir;
 #[cfg(unix)]
-pub(crate) use unix::{create_private_dir, write_private};
+pub use unix::{Listener, listen, write_program};
+#[cfg(windows)]
+pub(crate) use windows::create_private_dir;
 #[cfg(windows)]
 pub use windows::{Listener, listen};
-#[cfg(windows)]
-pub(crate) use windows::{create_private_dir, write_private};
 
 #[cfg(unix)]
 mod unix {
@@ -24,19 +24,6 @@ mod unix {
         use std::os::unix::fs::DirBuilderExt;
 
         fs::DirBuilder::new().mode(0o700).create(path)
-    }
-
-    /// Writes a new file `path` that only this user can read.
-    pub(crate) fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?
-            .write_all(contents)
     }
 
     /// Listens at `path`, replacing anything left there.
@@ -86,13 +73,6 @@ mod windows {
     /// Creates the folder `path`, which inherits its parent's access list.
     pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
         std::fs::create_dir(path)
-    }
-
-    /// Writes a new file `path`, which inherits its folder's access list.
-    pub(crate) fn write_private(path: &Path, contents: &[u8]) -> io::Result<()> {
-        use std::io::Write;
-
-        std::fs::File::create_new(path)?.write_all(contents)
     }
 
     /// The fake core listens only on Unix sockets for now, so nothing connects here.
@@ -154,19 +134,5 @@ mod tests {
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o755);
         write_program(&dir.join("missing/hello"), "").unwrap_err();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn writes_a_new_file_only_this_user_reads() {
-        let dir = crate::TempDir::new().unwrap();
-        let path = dir.join("key.pem");
-
-        write_private(&path, b"secret").unwrap();
-
-        assert_eq!(fs::read(&path).unwrap(), b"secret");
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
-        write_private(&path, b"again").unwrap_err();
     }
 }

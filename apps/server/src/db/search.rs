@@ -327,7 +327,6 @@ mod tests {
                     Some(seq) => format!("{}/{seq}", chat.as_str()),
                     None => chat.as_str().to_owned(),
                 },
-                SearchHit::Newer => "newer".to_owned(),
             })
             .collect()
     }

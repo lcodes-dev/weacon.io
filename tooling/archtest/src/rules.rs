@@ -113,7 +113,6 @@ pub(crate) const RESTRICTED: &[(&str, &[&str])] = &[
     ("libsql", &["weacon-core", "weacon-server"]),
     ("postgres", &[]),
     ("rusqlite", &["weacon-core", "weacon-server"]),
-    ("sentry", &["weacon-observability"]),
     ("sqlx", &["weacon-core", "weacon-server"]),
     ("tokio-postgres", &[]),
 ];

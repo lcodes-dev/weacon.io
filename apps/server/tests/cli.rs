@@ -11,7 +11,7 @@ mod tests {
 
     fn server() -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_weacon-server"));
-        command.env_remove("WEACON_SENTRY_DSN");
+        command.env_remove("OTEL_EXPORTER_OTLP_ENDPOINT");
         command
     }
 
@@ -65,13 +65,11 @@ mod tests {
         let (code, logs) = exits(
             server()
                 .args(["serve", "--listen", &address, "--db"])
-                .arg(db.join("weacon.db"))
-                .env("WEACON_SENTRY_DSN", ""),
+                .arg(db.join("weacon.db")),
         );
 
         assert_eq!(code, Some(2));
         assert!(logs.contains("server.bind_failed"), "{logs}");
-        assert!(!logs.contains("report setup failed"), "{logs}");
     }
 
     // One HTTP/1.1 exchange with a JSON body; the whole response.

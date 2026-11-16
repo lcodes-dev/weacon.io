@@ -8,7 +8,7 @@ use weacon_observability::Reporter;
 use weacon_protocol::{Message, Pick, RequestId};
 use weacon_version::Version;
 
-pub(crate) mod tls;
+pub(crate) mod local;
 
 pub(crate) use weacon_testing::fake_core::client_hello;
 pub(crate) use weacon_testing::{Records, messages, recording_logger, recording_sink};
@@ -36,14 +36,7 @@ pub(crate) fn app(state_dir: Option<&Path>, log_file: Option<&Path>) -> App {
         base: weacon_appkit::App {
             version: VERSION,
             log: recording_logger().0,
-            reporter: Reporter::new(
-                None,
-                true,
-                Box::new(|_| Ok(())),
-                Box::new(|| 0),
-                Box::new(SystemTime::now),
-            )
-            .into(),
+            reporter: Reporter::new(None, Box::new(|_| Ok(())), Box::new(SystemTime::now)).into(),
         },
         state_dir: state_dir.map(Path::to_path_buf),
         work_root: None,

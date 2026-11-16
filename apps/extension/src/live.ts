@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ME } from "./build.ts";
-import { Failure, HOST, type Link, connect } from "./core.ts";
+import { Failure, HOST, type Link, codeOf, connect } from "./core.ts";
 import { fitsFrame } from "./fit.ts";
 import type { Incoming } from "./incoming.ts";
 import type { ChatAction, Envelope, LocalChat, Pick } from "./protocol.ts";
 import { type ChatRef, type Sync, hear, open } from "./sync.ts";
-import { codeOf, tell } from "./tell.ts";
 
 /** Where the panel stands with the core. */
 export type Status = { kind: "connecting" } | { kind: "ready" } | { kind: "failed"; code: string };
@@ -88,7 +87,6 @@ export function useLive(ref: ChatRef | undefined): Live {
       })
       .catch((error: unknown) => {
         const code = codeOf(error);
-        tell(code);
         return current && setStatus({ kind: "failed", code });
       });
     return () => {

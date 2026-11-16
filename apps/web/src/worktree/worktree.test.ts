@@ -131,8 +131,6 @@ test("a pull request or a terminal says what came of it, with the page to open",
     url: "https://example.com/compare",
   });
   assert.deepEqual(hear(terminal, answer(4, "terminal_opened")).outcome, { kind: "note", text: "A terminal opened on the chat's machine." });
-  const newer = hear(terminal, answer(4, "later"));
-  assert.deepEqual([newer.outcome, newer.pending], [undefined, []]);
 });
 
 test("the state line and Remove's question say what is there, what goes and what stays", () => {

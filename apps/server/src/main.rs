@@ -5,7 +5,6 @@ mod app;
 mod auth;
 mod chats;
 mod cli;
-mod client_log;
 mod codes;
 mod connections;
 mod db;
@@ -60,9 +59,7 @@ fn main() -> ExitCode {
             return u8::try_from(error.exit_code()).map_or(ExitCode::FAILURE, ExitCode::from);
         }
     };
-    let dsn = std::env::var("WEACON_SENTRY_DSN")
-        .ok()
-        .filter(|dsn| !dsn.is_empty());
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
     // The server logs to stdout; admin commands print their output there instead.
     let logs = match cli.command {
         Command::Serve(_) => json_lines(io::stdout()),
@@ -71,8 +68,8 @@ fn main() -> ExitCode {
     let app = app::start(
         version,
         logs,
-        weacon_appkit::deliver_over_https(),
-        dsn.as_deref(),
+        weacon_appkit::deliver_over_http(),
+        endpoint.as_deref(),
     );
     std::panic::set_hook(app.panic_hook(app::panicked));
     let runtime = weacon_appkit::runtime(tokio::runtime::Builder::new_multi_thread());

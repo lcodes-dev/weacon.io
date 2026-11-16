@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio::task::{JoinHandle, JoinSet};
 pub(crate) use weacon_appkit::build;
 use weacon_observability::{Fault, Field, Logger};
-use weacon_protocol::{App, Envelope, LineDecoder, Message, code, encode_line};
+use weacon_protocol::{App, Envelope, LineDecoder, code, encode_line};
 
 use crate::chats::feed::{self, Client};
 use crate::chats::{self, Chats, Places};
@@ -70,8 +70,7 @@ pub(crate) fn run(app: &crate::app::App) -> Result<(), Fault> {
             let server = route::server(app, state_dir, chats, worktrees, (maps, proposing));
             daemon.uplink.spawn(server);
         }
-        let serve = daemon.serve(signals.wait());
-        crate::reports::following(state_dir, &app.reporter, &app.log, serve).await;
+        daemon.serve(signals.wait()).await;
         Ok(())
     })
 }
@@ -271,17 +270,6 @@ async fn answer(
         late,
     } = connection;
     for received in decoder.push(bytes) {
-        if let Ok(Envelope {
-            message: Message::Error(body),
-            ..
-        }) = &received
-            && session.greeted()
-        {
-            let code = body.code.as_str().into();
-            shared
-                .log
-                .warn("client reported an error", &[("code", code)]);
-        }
         let reply = route::route(shared, session, received, client, late).await;
         if let Some(envelope) = reply.envelope
             && let Ok(line) = encode_line(&envelope)
@@ -300,7 +288,7 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncRead};
     use tokio::sync::oneshot;
     use tokio::time::timeout;
-    use weacon_protocol::{Capability, ChatId, ErrorBody, Outcome, PROTOCOL, Welcome, WorkspaceId};
+    use weacon_protocol::{Capability, ChatId, Message, Outcome, PROTOCOL, Welcome, WorkspaceId};
     use weacon_testing::TempDir;
 
     use super::*;
@@ -413,10 +401,12 @@ mod tests {
     #[tokio::test]
     async fn a_paired_daemon_dials_its_server_and_still_stops() {
         use crate::machine::{self, Paired};
-        let (dir, tls) = (TempDir::new().unwrap(), test_support::tls::Tls::new().await);
+        let (dir, local) = (
+            TempDir::new().unwrap(),
+            test_support::local::Local::new().await,
+        );
         let paired = Paired {
-            server: tls.url(),
-            pinned: Some(tls.pem.clone()),
+            server: local.url(),
             machine: "mc-1".parse().unwrap(),
             owner: "a-owner".parse().unwrap(),
             token: "t0ken".to_owned(),
@@ -434,9 +424,8 @@ mod tests {
         })
         .unwrap();
 
-        let dialed = tls.accept().await;
+        local.accept().await;
 
-        assert!(dialed.is_some(), "the daemon never dialed its server");
         // Its uplink, which holds a way to the engine, must not hold the engine up.
         let stopped = timeout(Duration::from_secs(10), running.stop()).await;
         assert!(stopped.is_ok(), "the daemon never stopped");
@@ -684,37 +673,6 @@ mod tests {
 
         assert_eq!(error_code(&replies[0]), Some("handshake.required"));
         assert!(!dir.join("picks").exists());
-    }
-
-    #[tokio::test]
-    async fn a_clients_errors_are_logged_by_code_after_its_hello() {
-        let dir = TempDir::new().unwrap();
-        let running = start(&dir).unwrap();
-        let error = encode_line(&Envelope {
-            id: 2,
-            message: Message::Error(ErrorBody {
-                code: code!("extension.capture_failed"),
-                retryable: false,
-            }),
-        })
-        .unwrap();
-        let mut bytes = hello(PROTOCOL);
-        bytes.extend(&error);
-        bytes.extend(pick(3, "p-4", "<p/>"));
-        let (replies, _) = exchange(connect(&running.socket).await, &bytes, 2).await;
-        let records = running.stop().await;
-        let reported: Vec<_> = records
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|record| record.msg == "client reported an error")
-            .cloned()
-            .collect();
-
-        assert_eq!(receipt(&replies[1]), Some(&Outcome::Completed));
-        assert_eq!(reported.len(), 1);
-        let reported = serde_json::to_string(&reported).unwrap();
-        assert!(reported.contains("extension.capture_failed"), "{reported}");
     }
 
     // A diff of `chat`, then a diff, a state query and a removal of `c-2`, which has no worktree.

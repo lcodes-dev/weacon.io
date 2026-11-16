@@ -44,10 +44,6 @@ pub enum ProposalAction {
     /// Proposes `proposals` together, as the core's own for its owner rather than an agent's:
     /// what one move of the code did to one doc's anchors. All are stored, or none is.
     Batch { proposals: Vec<Batched> },
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// One proposal of a [`ProposalAction::Batch`].
@@ -84,10 +80,6 @@ pub enum ProposalChange {
         base: u64,
         anchors: Vec<StaleAnchor>,
     },
-    /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// An anchor of a doc whose code a move changed.
@@ -103,17 +95,8 @@ pub struct StaleAnchor {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AnchorChange {
-    Changed {
-        was: String,
-        now: String,
-    },
-    Gone {
-        was: String,
-    },
-    /// A change this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
+    Changed { was: String, now: String },
+    Gone { was: String },
 }
 
 /// What a core asks a server that offers `workspace.proposals` about its owner's workspace,
@@ -136,10 +119,6 @@ pub enum ProposalQueryKind {
     },
     /// One doc as it is now, or as the core's own open re-anchor of its revision would make it.
     Doc { doc: DocId },
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// The server's answer to a [`ProposalQuery`], under its `request`.
@@ -163,10 +142,6 @@ pub enum ProposalAnswerKind {
     Failed {
         code: Code,
     },
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A doc's anchors at its revision `version`.
@@ -181,22 +156,10 @@ pub struct PinnedDoc {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProposalAbout {
-    Doc {
-        doc: DocId,
-    },
-    Task {
-        task: TaskId,
-    },
-    NewDoc {
-        doc: DocId,
-    },
-    NewTask {
-        task: TaskId,
-    },
-    /// A subject this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
+    Doc { doc: DocId },
+    Task { task: TaskId },
+    NewDoc { doc: DocId },
+    NewTask { task: TaskId },
 }
 
 /// Where a proposal stands. It is open until a person accepts or rejects it, the same
@@ -215,10 +178,6 @@ pub enum ProposalState {
     },
     Superseded,
     Withdrawn,
-    /// A state this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A proposal, from the server to clients that have the capability `workspace.proposals`, at
@@ -256,10 +215,6 @@ pub struct ProposalDecision {
 pub enum ProposalVerdict {
     Accept,
     Reject,
-    /// A verdict this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// What a [`ProposalDecision`] came to. A conflict changes nothing: the proposal stays open,
@@ -283,10 +238,6 @@ pub enum ProposalOutcome {
     TaskConflict {
         edits: Vec<TaskEditBody>,
     },
-    /// An outcome this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// A run of a doc's body in a [`ProposalOutcome::DocConflict`]; the hunks in order are the
@@ -302,10 +253,6 @@ pub enum MergeHunk {
         current: String,
         proposed: String,
     },
-    /// A hunk this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -420,22 +367,10 @@ mod tests {
     }
 
     #[test]
-    fn a_command_with_any_part_this_build_does_not_know_is_never_sent() {
-        let edits = |edit: Value| {
-            let title = json!({ "kind": "title", "title": "A" });
-            json!({ "kind": "task_edit", "task": "t-1", "base": 1, "edits": [title, edit] })
-        };
-
-        never_sent(command(json!({ "kind": "retract" })));
+    fn a_proposal_by_an_agent_this_build_does_not_know_is_never_sent() {
         never_sent(proposed(
             "gemini",
             json!({ "kind": "new_task", "title": "A" }),
-        ));
-        never_sent(proposed("claude", json!({ "kind": "new_chat" })));
-        never_sent(proposed("claude", edits(json!({ "kind": "archive" }))));
-        never_sent(proposed(
-            "claude",
-            edits(json!({ "kind": "status", "status": "blocked" })),
         ));
     }
 
@@ -555,20 +490,6 @@ mod tests {
     }
 
     #[test]
-    fn a_record_in_a_state_this_build_does_not_know_still_parses() {
-        let mut wire = record_wire(
-            json!({ "kind": "chat", "chat": "c-1" }),
-            json!({ "state": "parked", "until": 9 }),
-        );
-
-        let parsed: ProposalRecord = serde_json::from_value(wire.clone()).unwrap();
-        assert_eq!(parsed, record(ProposalAbout::Newer, ProposalState::Newer));
-        wire["change"] = json!({ "kind": "new_chat" });
-        let parsed: ProposalRecord = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed.change, Some(ProposalChange::Newer));
-    }
-
-    #[test]
     fn a_decision_answers_with_its_outcome_or_what_conflicts() {
         for (verdict, wire) in [
             (ProposalVerdict::Accept, "accept"),
@@ -613,19 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn every_part_from_a_newer_peer_still_parses() {
-        assert_eq!(
-            serde_json::from_value::<ProposalVerdict>(json!("defer")).unwrap(),
-            ProposalVerdict::Newer
-        );
-        assert_eq!(
-            serde_json::from_value::<ProposalOutcome>(json!({ "outcome": "queued" })).unwrap(),
-            ProposalOutcome::Newer
-        );
-        assert_eq!(
-            serde_json::from_value::<MergeHunk>(json!({ "kind": "moved" })).unwrap(),
-            MergeHunk::Newer
-        );
+    fn a_proposal_id_is_checked() {
         let id = serde_json::from_value::<ProposalId>(json!("../p")).unwrap_err();
         assert!(id.to_string().contains("not a proposal id"), "{id}");
     }
@@ -672,11 +581,6 @@ mod tests {
                 json!({ "kind": "batch", "proposals": [{ "proposal": "p-2", "change": change }] }),
             ),
         );
-        let mut later = json!({ "kind": "needs_update", "doc": "d-1", "base": 3 });
-        later["anchors"] = json!([{ "pin": PIN, "change": { "kind": "renamed" } }]);
-        never_sent(command(
-            json!({ "kind": "batch", "proposals": [{ "proposal": "p-2", "change": later }] }),
-        ));
     }
 
     #[test]
@@ -710,7 +614,6 @@ mod tests {
             wire(json!({ "kind": "pinned", "after": "d-1" })),
         );
         travels(&query(doc), wire(json!({ "kind": "doc", "doc": "d-1" })));
-        never_sent(wire(json!({ "kind": "tasks" })));
     }
 
     fn answer(answer: ProposalAnswerKind) -> Envelope {
@@ -762,7 +665,6 @@ mod tests {
             &answer(failed),
             answered(&json!({ "kind": "failed", "code": "proposal.invalid" })),
         );
-        never_sent(answered(&json!({ "kind": "tasks" })));
     }
 
     #[test]

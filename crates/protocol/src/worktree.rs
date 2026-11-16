@@ -27,10 +27,6 @@ pub struct WorktreeQuery {
 pub enum WorktreeQueryKind {
     /// Whether the worktree is there, and what removing it would delete.
     State,
-    /// A query this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From a client to a core that offers `worktree.manage`: what a person asks of a chat's
@@ -65,10 +61,6 @@ pub enum WorktreeAction {
     /// Opens a terminal at the chat's worktree, or its working folder without one, on the core's
     /// machine; only its owner may ask, of a core that offers `worktree.open_terminal`.
     OpenTerminal,
-    /// An action this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 /// From the core to a client that has `worktree.manage`, in answer to a [`WorktreeQuery`] or a
@@ -98,10 +90,6 @@ pub enum WorktreeAnswerKind {
     PullRequestPage { url: DownloadUrl },
     /// A terminal was opened on the core's machine.
     TerminalOpened,
-    /// An answer this build doesn't know, from a newer peer; only ever received.
-    #[serde(other, skip_serializing)]
-    #[schemars(skip)]
-    Newer,
 }
 
 #[cfg(test)]
@@ -109,7 +97,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::test_support::{chat, envelope, never_sent, request, travels, workspace};
+    use crate::test_support::{chat, envelope, request, travels, workspace};
     use crate::{Envelope, Message};
 
     fn wire(message: &str, field: &str, body: Value) -> Value {
@@ -241,18 +229,6 @@ mod tests {
         let mut command_wire = wire("worktree_command", "action", json!({ "kind": "remove" }));
         command_wire["by"] = asked;
         travels(&command(WorktreeAction::Remove, by), command_wire);
-    }
-
-    #[test]
-    fn a_newer_peers_worktree_messages_parse_and_are_never_sent() {
-        let newer = [
-            wire("worktree_query", "query", json!({ "kind": "history" })),
-            wire("worktree_command", "action", json!({ "kind": "merge" })),
-            wire("worktree_answer", "answer", json!({ "kind": "merged" })),
-        ];
-        for wire in newer {
-            never_sent(wire);
-        }
     }
 
     #[test]

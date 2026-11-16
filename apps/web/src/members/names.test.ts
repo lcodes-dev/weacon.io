@@ -11,7 +11,6 @@ test("an author is named by their member's name, and an agent by its kind, owner
     [{ kind: "person", member: "m-2" }, "A member"],
     [{ kind: "agent", owner: "m-1", agent: { kind: "claude", owner: { kind: "member", member: "m-1" }, machine: "laptop" } }, "ada's Claude Code · laptop"],
     [{ kind: "agent", owner: "m-1" }, "ada's agent"],
-    [{ kind: "robot" } as unknown as Author, "Someone"],
   ];
 
   for (const [author, expected] of cases) {

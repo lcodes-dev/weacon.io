@@ -28,29 +28,19 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use weacon_observability::{Level, Reports};
+    use weacon_observability::Level;
     use weacon_protocol::code;
     use weacon_testing::{messages, recording_logger};
 
     use super::*;
-    use crate::test_support::recording_reporter;
+    use crate::test_support::{VERSION, recording_reporter};
 
     #[test]
     fn success_and_failure_have_their_own_exit_codes_and_only_a_failure_is_reported() {
         let (log, records) = recording_logger();
-        let reports = Reports::new(
-            "https://key@sentry.example.com/1",
-            "weacon/0.1.0",
-            "weacon-core@0.1.0+1a2b3c4",
-        )
-        .ok();
-        let (reporter, uploads) = recording_reporter(reports);
+        let (reporter, uploads) = recording_reporter(Some("http://localhost:4318"));
         let app = App {
-            version: weacon_version::Version {
-                name: "weacon-core",
-                version: "0.1.0",
-                commit: "1a2b3c4",
-            },
+            version: VERSION,
             log,
             reporter: reporter.into(),
         };

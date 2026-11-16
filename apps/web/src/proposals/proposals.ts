@@ -20,8 +20,6 @@ export function aboutText(proposal: ProposalRecord, tasks: readonly TaskRecord[]
       return change?.kind === "new_doc" ? `New doc “${change.content.title}”` : "New doc";
     case "new_task":
       return change?.kind === "new_task" ? `New task “${change.title}”` : (title(about.task) ?? "New task");
-    default:
-      return "A change this app can't show";
   }
 }
 
@@ -36,8 +34,6 @@ export function taskEditText(edit: TaskEditBody, tasks: readonly TaskRecord[]): 
       const before = tasks.find((task) => task.id === edit.before)?.title;
       return edit.before === undefined ? "Move it last" : before === undefined ? "Move it" : `Move it before “${before}”`;
     }
-    default:
-      return "An edit this app can't show";
   }
 }
 
@@ -55,8 +51,6 @@ export function stateText(proposal: ProposalRecord, names: Names): string | unde
       return "Replaced by a newer edit";
     case "withdrawn":
       return "Withdrawn";
-    default:
-      return "Closed";
   }
 }
 
@@ -87,8 +81,6 @@ export function staleText({ pin, change }: StaleAnchor): string {
       return `${anchor} changed. It was “${change.was}”, and is now “${change.now}”.`;
     case "gone":
       return `${anchor} is gone. It was “${change.was}”.`;
-    default:
-      return `${anchor} changed.`;
   }
 }
 

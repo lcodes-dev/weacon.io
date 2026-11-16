@@ -28,9 +28,6 @@ export type Envelope = {
     type: "workspace";
   } & WorkspaceUpdate
   | {
-    type: "log";
-  } & ClientLog
-  | {
     type: "chat_command";
   } & ChatCommand
   | {
@@ -548,19 +545,6 @@ export type ChatsQueryKind = (
 );
 
 /**
- * A log record from a client that has no log of its own, such as the web app: an event name
- * and typed ids, sent only to a peer that offers `log.forward`. The receiver logs only events
- * it knows, so no other text reaches its log.
- */
-export type ClientLog = {
-  code?: Code;
-  level: Level;
-  msg: LogEvent;
-  request_id?: RequestId;
-  run_id?: RunId;
-};
-
-/**
  * A dotted code such as `store.full`: two or more lowercase words joined by dots. It names
  * errors, and capabilities too.
  */
@@ -812,21 +796,10 @@ export type InvitationOffer = {
   workspace: WorkspaceId;
 };
 
-export type Level = (
-  | "trace"
-  | "debug"
-  | "info"
-  | "warn"
-  | "error"
-  | "fatal"
-);
-
 export type LineOp = (
-  | (
-    | "context"
-    | "added"
-    | "removed"
-  )
+  | "context"
+  | "added"
+  | "removed"
 );
 
 /**
@@ -844,12 +817,6 @@ export type LocalChat = {
   updated_at: number;
   workspace: WorkspaceId;
 };
-
-/**
- * What happened, such as `run started`: one to four words of lowercase letters or `_`, one
- * space apart, at most 40 bytes; no digits, so ids and secrets can't be spelt in it.
- */
-export type LogEvent = string;
 
 /**
  * A machine paired with an account, 1–64 ASCII letters, digits, `-` or `_`.
@@ -881,14 +848,10 @@ export type MachineOs = (
 );
 
 /**
- * What a machine keeps for one workspace, and whether it sends error reports.
+ * What a machine keeps for one workspace.
  */
 export type MachineSettings = {
   access: AccessLevel;
-  /**
-   * The owner's answer to error reports; absent until they give one, when none are sent.
-   */
-  reports?: boolean;
   /**
    * Whether every member of the workspace may call agents on the machine.
    */
@@ -900,10 +863,6 @@ export type MachineSettings = {
 };
 
 export type MachineSettingsAction = (
-  | {
-    kind: "set_reports";
-    send: boolean;
-  }
   | {
     kind: "set_access";
     level: AccessLevel;
@@ -1524,10 +1483,8 @@ export type ProposalRecord = {
 );
 
 export type ProposalVerdict = (
-  | (
-    | "accept"
-    | "reject"
-  )
+  | "accept"
+  | "reject"
 );
 
 /**
@@ -1889,18 +1846,16 @@ export type Symbol = {
 };
 
 export type SymbolKind = (
-  | (
-    | "const"
-    | "enum"
-    | "fn"
-    | "macro"
-    | "mod"
-    | "static"
-    | "struct"
-    | "trait"
-    | "type"
-    | "union"
-  )
+  | "const"
+  | "enum"
+  | "fn"
+  | "macro"
+  | "mod"
+  | "static"
+  | "struct"
+  | "trait"
+  | "type"
+  | "union"
 );
 
 /**
@@ -2010,11 +1965,9 @@ export type TaskRecord = {
  * How far along a task is.
  */
 export type TaskStatus = (
-  | (
-    | "todo"
-    | "in_progress"
-    | "done"
-  )
+  | "todo"
+  | "in_progress"
+  | "done"
 );
 
 export type TerminalAction = (

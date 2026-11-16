@@ -7,7 +7,7 @@ export const HOST = "io.weacon.core";
 
 const DEADLINE_MS = 30_000;
 
-/** A failure named by a dotted code, the only part of it that reaches the core's log. */
+/** A failure named by a dotted code, which the panel words. */
 export class Failure extends Error {
   readonly code: string;
 
@@ -55,19 +55,6 @@ export async function connect(
     throw error;
   }
   return link;
-}
-
-/** Tells the core about a failure by its code, over `port`, which it then closes. */
-export async function report(port: Port, me: App, code: string, deadline = DEADLINE_MS): Promise<void> {
-  const link = conversation(port, () => {}, () => {});
-  try {
-    await greet(link, me, deadline);
-    link.send({ id: link.next(), type: "error", code, retryable: false });
-  } catch {
-    // With no core to tell, there is nowhere else to send it.
-  } finally {
-    link.close();
-  }
 }
 
 async function greet(link: Link, me: App, deadline: number): Promise<void> {
@@ -127,4 +114,9 @@ function conversation(port: Port, heard: (message: Incoming) => void, closed: ()
       waiting.forEach((answer) => answer(new Failure("extension.core_unreachable")));
     },
   };
+}
+
+/** A code for `error`, which is a `Failure` when the extension knows what went wrong. */
+export function codeOf(error: unknown): string {
+  return error instanceof Failure ? error.code : "extension.failed";
 }

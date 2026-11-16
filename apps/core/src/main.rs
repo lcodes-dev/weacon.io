@@ -22,7 +22,6 @@ mod pair;
 mod picks;
 mod platform;
 mod proposals;
-mod reports;
 mod resume;
 mod runs;
 mod server;
@@ -60,7 +59,7 @@ fn main() -> ExitCode {
         Setup {
             env: &env,
             stderr: json_lines(io::stderr()),
-            deliver: weacon_appkit::deliver_over_https(),
+            deliver: weacon_appkit::deliver_over_http(),
             verbose: cli.prints_info(io::stderr().is_terminal()),
             mode: cli.command.name(),
             log_name: cli.command.log_name(),
@@ -84,11 +83,8 @@ fn run(app: &App, command: Command, env: platform::Env<'_>) -> Result<(), Fault>
         Command::Share { workspace, shared } => {
             workspaces::sharing::run(app, &workspace, shared, &mut io::stdout().lock())
         }
-        Command::Pair { server, name, pin } => {
-            pair::run(app, &server, name, pin.as_deref(), &mut io::stdout().lock())
-        }
+        Command::Pair { server, name } => pair::run(app, &server, name, &mut io::stdout().lock()),
         Command::Repo(command) => git::repos::run(app, command, &mut io::stdout().lock()),
-        Command::Reports { answer } => reports::run(app, answer, &mut io::stdout().lock()),
         Command::Resume { workspace, chat } => resume::run(app, &workspace, &chat),
         Command::ConnectChrome => native_host::connect_chrome(app, env, &mut io::stdout().lock()),
         Command::NativeHost { origin } => native_host::run(app, &origin),

@@ -15,11 +15,8 @@ use crate::platform;
 /// The pairing, as `machine.json` keeps it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Paired {
-    /// The server's `https://` URL.
+    /// The server's URL.
     pub(crate) server: String,
-    /// The certificates the person pinned for it, as PEM, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) pinned: Option<String>,
     pub(crate) machine: MachineId,
     pub(crate) owner: AccountId,
     pub(crate) token: String,
@@ -119,7 +116,6 @@ mod tests {
     fn paired() -> Paired {
         Paired {
             server: "https://weacon.example.com".to_owned(),
-            pinned: None,
             machine: MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: AccountId::try_from("a-1".to_owned()).unwrap(),
             token: "t0ken-marker".to_owned(),

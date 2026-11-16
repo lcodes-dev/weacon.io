@@ -82,7 +82,6 @@ impl Worktrees {
         self.blocking(move |inner| {
             let answer = match query.query {
                 WorktreeQueryKind::State => inner.state(&query.workspace, &query.chat)?,
-                WorktreeQueryKind::Newer => return Err(unknown()),
             };
             Ok(WorktreeAnswer {
                 request: query.request,
@@ -210,12 +209,9 @@ impl Inner {
         let Some(found) = self.chat(workspace, chat)? else {
             return match action {
                 WorktreeAction::Remove => Ok(REMOVED),
-                WorktreeAction::OpenPullRequest { .. }
-                | WorktreeAction::OpenTerminal
-                | WorktreeAction::Newer => Err(Fault::new(
-                    code!("worktree.none"),
-                    "The chat has no worktree",
-                )),
+                WorktreeAction::OpenPullRequest { .. } | WorktreeAction::OpenTerminal => Err(
+                    Fault::new(code!("worktree.none"), "The chat has no worktree"),
+                ),
             };
         };
         match action {
@@ -231,7 +227,7 @@ impl Inner {
             WorktreeAction::OpenPullRequest { title, body } => {
                 self.pull_request(&found, &title, &body)
             }
-            WorktreeAction::OpenTerminal | WorktreeAction::Newer => Err(unknown()),
+            WorktreeAction::OpenTerminal => Err(unknown()),
         }
     }
 
@@ -770,7 +766,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_chat_without_a_worktree_or_a_newer_ask_is_refused() {
+    async fn a_chat_without_a_worktree_is_refused() {
         let bench = bench();
         let other = DiffQuery {
             machine: None,
@@ -783,20 +779,6 @@ mod tests {
 
         let error = bench.worktrees.diff(other).await.unwrap_err();
         assert_eq!(code(&error), "worktree.none");
-        assert_eq!(
-            code(&bench.act(Action::Newer).await.unwrap_err()),
-            "request.unknown"
-        );
-        let newer = WorktreeQuery {
-            machine: None,
-            request: request(),
-            workspace: bench.workspace.clone(),
-            chat: bench.chat.clone(),
-            query: WorktreeQueryKind::Newer,
-            by: None,
-        };
-        let error = bench.worktrees.query(newer).await.unwrap_err();
-        assert_eq!(code(&error), "request.unknown");
     }
 
     #[test]

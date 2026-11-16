@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use weacon_appkit::{RotatingFile, root_logger};
-use weacon_observability::{Deliver, Fault, Field, Level, Logger, Reports, Sink, json_lines, tee};
+use weacon_observability::{Deliver, Fault, Field, Level, Logger, Sink, json_lines, tee};
 use weacon_protocol::code;
 use weacon_version::Version;
 
@@ -60,14 +60,13 @@ impl App {
         if let Some(error) = failure {
             log.warn("log file unavailable", &[("err", Field::error(&error))]);
         }
-        let reports = reports_from_env(setup.env, &version, &log);
-        let agreed = state_dir
-            .as_deref()
-            .is_some_and(|dir| crate::reports::agreed(dir, &log));
+        let endpoint = platform::var(setup.env, "OTEL_EXPORTER_OTLP_ENDPOINT");
+        let endpoint = endpoint.as_deref().and_then(|endpoint| endpoint.to_str());
+        let reporter = weacon_appkit::reporter(endpoint, &version, setup.deliver);
         Self {
             base: weacon_appkit::App {
                 version,
-                reporter: Arc::new(weacon_appkit::reporter(reports, agreed, setup.deliver)),
+                reporter: Arc::new(reporter),
                 log,
             },
             work_root: platform::work_root(setup.env),
@@ -169,16 +168,6 @@ fn nothing() -> Sink {
     Box::new(|_| {})
 }
 
-fn reports_from_env(env: Env<'_>, version: &Version, log: &Logger) -> Option<Reports> {
-    let dsn = platform::var(env, "WEACON_SENTRY_DSN")?;
-    weacon_appkit::reports(
-        &dsn.to_string_lossy(),
-        &format!("weacon/{}", version.version),
-        version,
-        log,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -190,7 +179,7 @@ mod tests {
     use super::*;
     use crate::test_support::{Records, VERSION, env, messages, recording_logger, recording_sink};
 
-    const DSN: &str = "https://key@sentry.example.com/1";
+    const ENDPOINT: &str = "http://localhost:4318";
 
     #[tokio::test]
     async fn blocking_work_that_panics_fails_with_io() {
@@ -279,49 +268,24 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_dsn_turns_reports_off_with_a_warning() {
-        let (app, stderr, _) = start(&[("WEACON_SENTRY_DSN", "not a dsn")], false);
-
-        assert!(!app.reporter.is_on());
-        assert_eq!(messages(&stderr), ["report setup failed"]);
-    }
-
-    #[test]
-    fn a_dsn_alone_sends_nothing() {
-        let (app, _, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
-        let fault = Fault::new(code!("store.full"), "The store is full");
-
-        assert!(app.reporter.is_on());
-        assert!(!app.reporter.agreed());
-        assert_eq!(app.finish(Err(fault)), ExitCode::from(2));
-        assert!(uploads.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_stored_answer_decides_whether_reports_are_sent() {
+    fn an_endpoint_turns_reports_on_and_a_failure_is_sent_to_it() {
+        let (off, _, unsent) = start(&[("OTEL_EXPORTER_OTLP_ENDPOINT", "")], false);
+        let (on, _, uploads) = start(&[("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT)], false);
         let fault = || Fault::new(code!("store.full"), "The store is full");
-        let sent = |answer: Option<&str>| {
-            let dir = TempDir::new().unwrap();
-            if let Some(answer) = answer {
-                fs::write(dir.join("reports.json"), answer).unwrap();
-            }
-            let (app, stderr, uploads) = start(&[state(&dir), ("WEACON_SENTRY_DSN", DSN)], false);
-            assert_eq!(app.finish(Err(fault())), ExitCode::from(2));
-            (uploads.lock().unwrap().len(), messages(&stderr))
-        };
 
-        assert_eq!(sent(None).0, 0);
-        assert_eq!(sent(Some(r#"{"send":false}"#)).0, 0);
-        assert_eq!(sent(Some(r#"{"send":true}"#)).0, 1);
-        let (broken, warnings) = sent(Some("not json"));
-        assert_eq!(broken, 0);
-        assert_eq!(warnings.first(), Some(&"reports unreadable"));
+        assert!(!off.reporter.is_on());
+        assert_eq!(off.finish(Err(fault())), ExitCode::from(2));
+        assert!(unsent.lock().unwrap().is_empty());
+        assert!(on.reporter.is_on());
+        assert_eq!(on.finish(Err(fault())), ExitCode::from(2));
+        let uploads = uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(uploads[0].url, "http://localhost:4318/v1/logs");
     }
 
     #[test]
     fn success_exits_cleanly_reports_nothing_and_says_nothing_on_stderr() {
-        let (app, stderr, uploads) = start(&[("WEACON_SENTRY_DSN", DSN)], false);
-        app.reporter.set_agreed(true);
+        let (app, stderr, uploads) = start(&[("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT)], false);
 
         assert!(app.reporter.is_on());
         assert_eq!(app.finish(Ok(())), ExitCode::SUCCESS);
@@ -339,12 +303,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let vars = [
             state(&dir),
-            ("WEACON_SENTRY_DSN", DSN),
+            ("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT),
             ("HOME", "/home/ada"),
         ];
         let (app, stderr, uploads) = start(&vars, false);
-        // Agreed, so the markers go through a real report.
-        app.reporter.set_agreed(true);
         let leak = io::Error::other(
             "could not open /home/ada/MARKER-PATH: token MARKER-TOKEN, MARKER-MESSAGE",
         );

@@ -62,8 +62,7 @@ fn report(app: &App) -> String {
             |path| path.display().to_string(),
         )
     };
-    let on = app.reporter.is_on() && app.reporter.agreed();
-    let reports = if on { "on" } else { "off" };
+    let reports = if app.reporter.is_on() { "on" } else { "off" };
     format!(
         "weacon {}\nState folder: {}\nLog file: {}\nError reports: {reports}\n",
         app.version.with_commit(),
@@ -111,7 +110,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let paired = Paired {
             server: "https://weacon.example.com".to_owned(),
-            pinned: None,
             machine: weacon_protocol::MachineId::try_from("mc-1".to_owned()).unwrap(),
             owner: weacon_protocol::AccountId::try_from("a-1".to_owned()).unwrap(),
             token: "t0ken-marker".to_owned(),
@@ -144,26 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn reports_are_on_only_with_a_dsn_and_consent() {
+    fn reports_are_on_only_with_an_endpoint() {
         let mut app = app(Some("/srv"), None);
-        let reports = weacon_observability::Reports::new(
-            "https://key@sentry.example.com/1",
-            "weacon/0.1.0",
-            "weacon-core@0.1.0+1a2b3c4",
-        )
-        .ok();
+        let without = report(&app);
         app.base.reporter = std::sync::Arc::new(weacon_appkit::reporter(
-            reports,
-            false,
+            Some("http://localhost:4318"),
+            &app.version,
             Box::new(|_| Ok(())),
         ));
-        let without_consent = report(&app);
-        app.reporter.set_agreed(true);
 
-        assert!(
-            without_consent.contains("Error reports: off\n"),
-            "{without_consent}"
-        );
+        assert!(without.contains("Error reports: off\n"), "{without}");
         assert!(report(&app).contains("Error reports: on\n"));
     }
 

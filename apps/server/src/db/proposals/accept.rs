@@ -284,7 +284,6 @@ fn checked(
             title: Title::try_from(title).ok()?,
         },
         ProposalChange::NeedsUpdate { doc, .. } => Change::Seen(doc),
-        ProposalChange::Newer => return None,
     })
 }
 
@@ -382,7 +381,10 @@ mod tests {
         let doc = one.doc(&id("new-p1"), None).await.unwrap();
         assert_eq!(doc.text.body(), "A\n");
         let history = one.doc_history(&id("new-p1"), 5).await.unwrap();
-        let agent = proposed("p1", "mc1", ProposalChange::Newer).agent;
+        let change = ProposalChange::NewTask {
+            title: String::new(),
+        };
+        let agent = proposed("p1", "mc1", change).agent;
         let author = Author::Agent {
             owner: member_id("m1"),
             agent,

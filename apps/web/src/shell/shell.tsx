@@ -5,7 +5,6 @@ import { useAsk } from "../api/ask.ts";
 import { Problem } from "../api/problem.tsx";
 import { problemText } from "../api/problems.ts";
 import { later } from "../connection.ts";
-import type { Log } from "../log.ts";
 import { Machines } from "../machines/machines.tsx";
 import { ME } from "../me.ts";
 import { MembersSection, isTeam } from "../members/members-section.tsx";
@@ -25,7 +24,7 @@ type Screen =
   | { name: "signed in"; account: AccountSignedIn };
 
 /** The app as the server serves it: sign-in, then the signed-in person's screens. */
-export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
+export function Shell({ fetch }: { fetch: Fetch }) {
   const [screen, setScreen] = useState<Screen>({ name: "loading" });
   // However a session ends, the workspace it last opened is forgotten, so the next person starts afresh.
   const signedOut = useCallback(() => {
@@ -56,7 +55,7 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
     };
   }, [api, signedOut]);
   if (screen.name === "signed in") {
-    return <SignedIn api={api} log={log} account={screen.account} left={left} signedOut={signedOut} />;
+    return <SignedIn api={api} account={screen.account} left={left} signedOut={signedOut} />;
   }
   return (
     <Frame>
@@ -68,13 +67,11 @@ export function Shell({ fetch, log }: { fetch: Fetch; log: Log }) {
 // The signed-in person's workspaces, or their settings, with who they are and Sign out.
 function SignedIn({
   api,
-  log,
   account,
   left,
   signedOut,
 }: {
   api: Api;
-  log: Log;
   account: AccountSignedIn;
   left: { workspace: WorkspaceId } | undefined;
   signedOut(): void;
@@ -119,7 +116,7 @@ function SignedIn({
     setOpened(machine);
     setSettings(true);
   };
-  return <Workspaces api={api} log={log} who={who} email={account.email} left={left} page={page} openSettings={openSettings} />;
+  return <Workspaces api={api} who={who} email={account.email} left={left} page={page} openSettings={openSettings} />;
 }
 
 // The open workspace's members, and what each of the person's machines keeps for it, which is

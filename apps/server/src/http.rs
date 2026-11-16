@@ -117,18 +117,11 @@ async fn uncached(mut response: Response) -> Response {
     response
 }
 
-/// The id `log_request` gave the request, for handlers that log after answering it.
-#[derive(Clone)]
-pub(crate) struct RequestTag(pub(crate) String);
-
 /// Logs one record per request: never its path or query, which can hold content, only the
 /// route it matched.
-async fn log_request(State(shared): State<Shared>, mut request: Request, next: Next) -> Response {
+async fn log_request(State(shared): State<Shared>, request: Request, next: Next) -> Response {
     let started = Instant::now();
     let request_id = crate::app::new_id();
-    request
-        .extensions_mut()
-        .insert(RequestTag(request_id.clone()));
     // Any other method is a client's own text.
     let method = METHODS
         .iter()

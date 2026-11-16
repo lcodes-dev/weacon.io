@@ -184,7 +184,7 @@ mod tests {
     fn hunks(file: &DiffFile) -> &[Hunk] {
         match &file.content {
             DiffContent::Text { hunks } => hunks,
-            DiffContent::Binary | DiffContent::TooLarge | DiffContent::Newer => &[],
+            DiffContent::Binary | DiffContent::TooLarge => &[],
         }
     }
 
@@ -337,14 +337,5 @@ mod tests {
             message: Message::Unknown,
         };
         assert_eq!(super::answers(&other), Vec::new());
-        let Message::DiffQuery(mut newer) = query.message else {
-            panic!("not a query");
-        };
-        newer.query = DiffQueryKind::Newer;
-        let newer = Envelope {
-            id: 7,
-            message: Message::DiffQuery(newer),
-        };
-        assert_eq!(super::answers(&newer), Vec::new());
     }
 }

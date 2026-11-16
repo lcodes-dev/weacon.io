@@ -2,14 +2,13 @@ import { useEffect, useState } from "react";
 
 import type { ChatRef } from "../chat-ref.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
-import { type Asks, Connection, type Status, later, offers, statusText } from "../connection.ts";
-import type { Log } from "../log.ts";
+import { type Asks, Connection, type Status, later, statusText } from "../connection.ts";
 import type { ChatLeg } from "../protocol.ts";
 import { ME } from "../me.ts";
 import { Settings } from "../settings/settings.tsx";
 import { useSocketFor } from "../shell/workspace-socket.ts";
 
-const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "workspace.chats", "workspace.chat_commands", "worktree.manage", "worktree.open_terminal", "log.forward"] };
+const TRANSCRIPT: Asks = { needs: "run.stream", offers: ["diff.view", "workspace.chats", "workspace.chat_commands", "worktree.manage", "worktree.open_terminal"] };
 // The fake server keeps one workspace; a page without a chat in its address still needs a name for it.
 const FAKE_WORKSPACE = "w-1";
 // The fake server's one person, with their agent in its one chat.
@@ -19,7 +18,7 @@ const FAKE_LEG: ChatLeg = { member: "m-1", machine_id: "mc-1", machine: "laptop"
  * The chat at `chatRef` on the fake server, over a connection of its own behind a workspace
  * socket, for development and the end-to-end tests. Its one person owns its one chat.
  */
-export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef: ChatRef | undefined }) {
+export function ChatPage({ url, chatRef }: { url: string; chatRef: ChatRef | undefined }) {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   const [settings, setSettings] = useState(false);
   const socket = useSocketFor(chatRef?.workspace ?? FAKE_WORKSPACE);
@@ -40,11 +39,8 @@ export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef
           setStatus(next);
           if (next.state === "live") {
             socket.attach((envelope) => connection.send(envelope), next.capabilities);
-            log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
           } else if (next.state === "ended") {
             socket.attach(undefined);
-            log.detach();
-            log.warn(next.code === "connection.lost" ? "connection lost" : "connection refused", { code: next.code });
           }
         },
         message: (envelope) => socket.heard(envelope),
@@ -54,7 +50,6 @@ export function ChatPage({ url, log, chatRef }: { url: string; log: Log; chatRef
     );
     return () => {
       socket.attach(undefined);
-      log.detach();
       connection.close();
     };
   }, [url, socket]);

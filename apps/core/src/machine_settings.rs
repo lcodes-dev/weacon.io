@@ -2,10 +2,9 @@
 
 use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use weacon_agents::Launch;
-use weacon_observability::{Fault, Logger, Reporter};
+use weacon_observability::{Fault, Logger};
 use weacon_protocol::{
     AccessLevel, AccountId, AgentKind, AgentSignIn, Asker, MachineId, MachineSettings,
     MachineSettingsAction, MachineSettingsAnswer, MachineSettingsAnswerKind,
@@ -13,10 +12,10 @@ use weacon_protocol::{
     SignInState, WorkspaceId, code,
 };
 
+use crate::app;
 use crate::git::state::Stores;
 use crate::outside::Outside;
 use crate::workspaces::{Settings, Workspaces, sharing, sign_ins, store_access};
-use crate::{app, reports};
 
 /// Who this core is, as pairing made it: the machine and its owner's account.
 pub(crate) struct Identity {
@@ -24,13 +23,11 @@ pub(crate) struct Identity {
     pub(crate) account: AccountId,
 }
 
-/// Where the settings live, the reporter a new answer to error reports applies to, and the
-/// person's own agent folders.
+/// Where the settings live, and the person's own agent folders.
 #[derive(Clone)]
 pub(crate) struct Host {
     pub(crate) state_dir: PathBuf,
     pub(crate) path: Option<OsString>,
-    pub(crate) reporter: Arc<Reporter>,
     pub(crate) outside: Outside,
     pub(crate) log: Logger,
 }
@@ -133,12 +130,6 @@ fn change(
     action: &MachineSettingsAction,
 ) -> Result<(), Fault> {
     match action {
-        MachineSettingsAction::SetReports { send } => {
-            // Settings the answer couldn't then show stop the change before it is made.
-            let workspaces = Workspaces::new(&host.state_dir, None);
-            Settings::read(&workspaces.settings_file(workspace))?;
-            reports::store(&host.state_dir, *send, &host.reporter, &host.log)
-        }
         MachineSettingsAction::SetAccess { level } if *level != AccessLevel::Newer => {
             let workspaces = Workspaces::new(&host.state_dir, None);
             store_access(&workspaces, workspace, *level, &host.log).map(drop)
@@ -159,12 +150,11 @@ async fn answer(
 ) -> Result<MachineSettingsAnswer, Fault> {
     let reading = host.clone();
     let asked = workspace.clone();
-    let (reports, settings, places, known) = blocking(move || {
+    let (settings, places, known) = blocking(move || {
         let workspaces = Workspaces::new(&reading.state_dir, reading.path.clone());
-        let reports = reports::current(&reading.state_dir);
         let settings = Settings::read(&workspaces.settings_file(&asked))?;
         let known = workspaces.root(&asked).is_dir();
-        Ok((reports, settings, workspaces.places(&asked), known))
+        Ok((settings, workspaces.places(&asked), known))
     })
     .await?;
     let (agents, launches): (Vec<AgentKind>, Vec<Option<Launch>>) = places.into_iter().unzip();
@@ -187,7 +177,6 @@ async fn answer(
         machine,
         workspace,
         answer: MachineSettingsAnswerKind::Current(MachineSettings {
-            reports,
             access: settings.access,
             shared: settings.shared,
             sign_ins,
@@ -243,11 +232,9 @@ mod tests {
 
     fn host(dir: &TempDir, path: Option<OsString>) -> Host {
         let app = test_support::app(Some(dir), None);
-        app.reporter.set_agreed(false);
         Host {
             state_dir: dir.to_path_buf(),
             path,
-            reporter: Arc::clone(&app.reporter),
             outside: Outside::default(),
             log: app.log.clone(),
         }
@@ -328,7 +315,6 @@ mod tests {
         assert_eq!(
             current(answer),
             MachineSettings {
-                reports: None,
                 access: AccessLevel::AskFirst,
                 shared: false,
                 sign_ins: not_installed(),
@@ -343,7 +329,7 @@ mod tests {
         let code = |result: Result<MachineSettingsAnswer, Fault>| {
             result.unwrap_err().code().as_str().to_owned()
         };
-        let set = || MachineSettingsAction::SetReports { send: true };
+        let set = || MachineSettingsAction::SetShared { shared: true };
 
         for (machine, asker, expected) in [
             ("mc-2", Some(by("a-1")), "settings.other_machine"),
@@ -360,24 +346,16 @@ mod tests {
             assert_eq!(code(read), expected);
             assert_eq!(code(changed), expected);
         }
-        assert_eq!(reports::current(&dir), None);
-        assert!(!host.reporter.agreed());
+        assert!(!sharing::shares(&dir, &id("w1")).await);
     }
 
     #[tokio::test]
-    async fn the_owner_sets_reports_at_once_and_a_workspaces_access() {
+    async fn the_owner_sets_a_workspaces_access() {
         let dir = TempDir::new().unwrap();
         let host = host(&dir, None);
         let owner = owner();
         let set = |action| command(&host, &owner, told(action, "mc-1", Some(by("a-1"))));
 
-        let reported = current(
-            set(MachineSettingsAction::SetReports { send: true })
-                .await
-                .unwrap(),
-        );
-        assert_eq!(reported.reports, Some(true));
-        assert!(host.reporter.agreed());
         let kept = current(
             set(MachineSettingsAction::SetAccess {
                 level: AccessLevel::ReadOnly,
@@ -385,18 +363,8 @@ mod tests {
             .await
             .unwrap(),
         );
-        let off = set(MachineSettingsAction::SetReports { send: false })
-            .await
-            .unwrap();
 
-        assert_eq!(
-            (kept.access, kept.reports),
-            (AccessLevel::ReadOnly, Some(true))
-        );
-        assert_eq!(off.request.as_str(), "r-2");
-        assert_eq!(current(off).reports, Some(false));
-        assert!(!host.reporter.agreed());
-        assert_eq!(reports::current(&dir), Some(false));
+        assert_eq!(kept.access, AccessLevel::ReadOnly);
     }
 
     #[tokio::test]
@@ -462,7 +430,6 @@ mod tests {
             machine: id("mc-1"),
             workspace: id("w1"),
             answer: MachineSettingsAnswerKind::Current(MachineSettings {
-                reports: Some(true),
                 access: AccessLevel::Full,
                 shared: true,
                 sign_ins: vec![
@@ -550,14 +517,6 @@ mod tests {
         );
     }
 
-    fn set_reports() -> MachineSettingsCommand {
-        told(
-            MachineSettingsAction::SetReports { send: true },
-            "mc-1",
-            Some(by("a-1")),
-        )
-    }
-
     #[tokio::test]
     async fn settings_that_cant_be_read_are_an_error_and_stop_a_change_first() {
         let dir = TempDir::new().unwrap();
@@ -567,26 +526,15 @@ mod tests {
         let asking = asked(MachineSettingsQueryKind::Current, "mc-1", Some(by("a-1")));
 
         let read = query(&host, &owner(), asking).await;
-        let changed = command(&host, &owner(), set_reports()).await;
+        let share = MachineSettingsAction::SetShared { shared: true };
+        let changed = command(&host, &owner(), told(share, "mc-1", Some(by("a-1")))).await;
 
         for result in [read, changed] {
             let code = result.unwrap_err().code().as_str().to_owned();
             assert_eq!(code, "workspace.settings_unreadable");
         }
-        assert_eq!(reports::current(&dir), None);
-        assert!(!host.reporter.agreed());
-    }
-
-    #[tokio::test]
-    async fn an_answer_that_cant_be_saved_is_an_error() {
-        let dir = TempDir::new().unwrap();
-        let host = host(&dir, None);
-        fs::create_dir_all(dir.join("reports.json")).unwrap();
-
-        let unsaved = command(&host, &owner(), set_reports()).await;
-
-        assert_eq!(unsaved.unwrap_err().code().as_str(), "reports.not_saved");
-        assert!(!host.reporter.agreed());
+        let kept = fs::read_to_string(dir.join("settings/w-w1.json")).unwrap();
+        assert_eq!(kept, "not json");
     }
 
     #[tokio::test]

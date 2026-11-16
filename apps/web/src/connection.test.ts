@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Connection, type Listener, type Socket, type Status, offers, statusText } from "./connection.ts";
+import { Connection, type Listener, type Socket, type Status, statusText } from "./connection.ts";
 import type { App, Envelope } from "./protocol.ts";
 
 const ME: App = { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" };
@@ -54,7 +54,7 @@ const welcome = (capabilities: string[]) => JSON.stringify({ id: 1, type: "welco
 test("it says hello, and once welcomed passes on each message and sends", () => {
   const { socket, connection, statuses, messages } = open();
   connection.send({ id: 0, type: "error", code: "web.early", retryable: false });
-  socket.fire("message", welcome(["run.stream", "log.forward"]));
+  socket.fire("message", welcome(["run.stream", "diff.view"]));
   socket.fire("message", "not json");
   socket.fire("message", JSON.stringify({ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }));
   connection.send({ id: 0, type: "error", code: "web.crashed", retryable: false });
@@ -65,7 +65,7 @@ test("it says hello, and once welcomed passes on each message and sends", () => 
     { id: 0, type: "error", code: "web.crashed", retryable: false },
   ]);
   assert.deepEqual(statuses, [
-    { state: "live", server: SERVER, capabilities: ["run.stream", "log.forward"] },
+    { state: "live", server: SERVER, capabilities: ["run.stream", "diff.view"] },
     { state: "ended", code: "connection.lost" },
   ]);
   assert.deepEqual(messages, [{ id: 0, type: "run", run: "r-1", event: { event: "text_delta", text: "Hi" } }]);
@@ -133,14 +133,6 @@ test("the header says how the connection stands", () => {
     "The server runs another version of Weacon. Reload the page.",
   );
   assert.equal(statusText({ state: "ended", code: "connection.server_too_old" }), "The server is too old for this app.");
-});
-
-test("a capability counts only while the server is live and offers it", () => {
-  const live: Status = { state: "live", server: SERVER, capabilities: ["run.stream", "workspace.chats"] };
-  assert.equal(offers(live, "workspace.chats"), true);
-  assert.equal(offers(live, "diff.view"), false);
-  assert.equal(offers({ state: "connecting" }, "workspace.chats"), false);
-  assert.equal(offers({ state: "ended", code: "connection.lost" }, "workspace.chats"), false);
 });
 
 test("a connection that needs another capability asks for it and takes only a server that offers it", () => {

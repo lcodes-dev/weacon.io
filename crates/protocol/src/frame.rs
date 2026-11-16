@@ -120,8 +120,7 @@ mod tests {
     use crate::test_support::{chat, request, run, workspace};
     use crate::{
         AgentKind, App, ChatAction, ChatCommand, ChatEntry, ChatEvent, ChatUpdate, ErrorBody,
-        Hello, Message, Outcome, ProposalAction, ProposalCommand, Receipt, RunEvent, RunUpdate,
-        WorkspaceChange, WorkspaceUpdate,
+        Hello, Message, Outcome, Receipt, RunEvent, RunUpdate, WorkspaceChange, WorkspaceUpdate,
     };
 
     fn envelope(id: u32) -> Envelope {
@@ -245,11 +244,6 @@ mod tests {
                 workspace: workspace(),
                 seq: 1,
                 change: WorkspaceChange::Newer,
-            }),
-            Message::ProposalCommand(ProposalCommand {
-                request: request(),
-                workspace: workspace(),
-                action: ProposalAction::Newer,
             }),
         ];
 

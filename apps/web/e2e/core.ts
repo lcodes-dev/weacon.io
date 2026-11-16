@@ -1,4 +1,4 @@
-// The real core's daemon, paired through the page with the real server behind a TLS front, and a
+// The real core's daemon, paired through the page with the real server, and a
 // stand-in that replays recorded Claude Code sessions in place of the agent.
 
 import { type ChildProcess, execFile, spawn } from "node:child_process";
@@ -26,13 +26,13 @@ export type Machine = {
   close(): Promise<void>;
 };
 
-/** Builds the core, the TLS front and the stand-in agent, and gives where each program is. */
-async function build(): Promise<{ core: string; tls: string; agent: string }> {
+/** Builds the core and the stand-in agent, and gives where each program is. */
+async function build(): Promise<{ core: string; agent: string }> {
   // Apart, as scripts/dev.sh builds them, so neither changes the other's features.
   const core = await executables("-p", "weacon-core", "--bin", "weacon");
-  const testing = await executables("-p", "weacon-testing", "--bin", "dev-tls", "--bin", "fake-agent");
+  const testing = await executables("-p", "weacon-testing", "--bin", "fake-agent");
   const at = (built: Map<string, string>, name: string) => built.get(name) ?? fail(`cargo built no ${name}`);
-  return { core: at(core, "weacon"), tls: at(testing, "dev-tls"), agent: at(testing, "fake-agent") };
+  return { core: at(core, "weacon"), agent: at(testing, "fake-agent") };
 }
 
 /** Builds what `args` select, and gives each program's path by its name. */
@@ -86,10 +86,8 @@ async function setUp(served: Served, workspace: string, name: string, dir: strin
     return child;
   };
 
-  const server = new URL(served.page.url()).port;
-  const tls = started(spawn(programs.tls, [join(dir, "tls"), "0", server], { stdio: ["ignore", "pipe", "inherit"] }));
-  const address = await firstLine(tls, 10_000);
-  const pairing = started(spawn(programs.core, ["pair", address, "--pin", join(dir, "tls", "cert.pem"), "--name", name], { env, stdio: ["ignore", "pipe", "inherit"] }));
+  const address = `http://127.0.0.1:${new URL(served.page.url()).port}`;
+  const pairing = started(spawn(programs.core, ["pair", address, "--name", name], { env, stdio: ["ignore", "pipe", "inherit"] }));
   const code = await firstLine(pairing, 10_000, (line) => /pair this machine: (\S+)$/.exec(line)?.[1]);
   await confirm(served.page, code);
   // It claims the pairing every 2 seconds.

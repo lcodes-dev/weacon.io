@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Capability, ChatAnswer, ChatCommand, ChatLive, ChatQuery, ChatUpdate, ChatsAnswer, ChatsQuery,
-    ClientLog, Code, DiffAnswer, DiffQuery, MachineSettingsAnswer, MachineSettingsCommand,
+    Code, DiffAnswer, DiffQuery, MachineSettingsAnswer, MachineSettingsCommand,
     MachineSettingsQuery, MachineShares, MapAnswer, MapQuery, Pick, ProposalAnswer,
     ProposalCommand, ProposalQuery, Receipt, RunUpdate, SessionsAnswer, SessionsQuery,
     SymbolsAnswer, SymbolsQuery, TerminalCommand, TerminalUpdate, WorkspaceUpdate, WorktreeAnswer,
@@ -32,7 +32,6 @@ pub enum Message {
     Pick(Pick),
     Run(RunUpdate),
     Workspace(WorkspaceUpdate),
-    Log(ClientLog),
     ChatCommand(ChatCommand),
     Chat(ChatUpdate),
     ChatQuery(ChatQuery),

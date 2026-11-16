@@ -55,24 +55,15 @@ pub(crate) enum Command {
     },
     /// Pair this machine with your Weacon account: confirm the code it shows in the web app.
     Pair {
-        /// The server's address, an https URL with no path.
+        /// The server's address: an https URL, or an http one to 127.0.0.1, with no path.
         server: String,
         /// What the web app calls this machine.
         #[arg(long)]
         name: Option<String>,
-        /// A PEM file of the certificates to trust for the server, in place of the public ones.
-        #[arg(long)]
-        pin: Option<PathBuf>,
     },
     /// Add a git repository a workspace's chats may work in, or list them.
     #[command(subcommand)]
     Repo(RepoCommand),
-    /// Choose whether this core sends error reports, or show the answer.
-    Reports {
-        /// on or off; left out, shows the answer.
-        #[arg(value_enum)]
-        answer: Option<crate::reports::Answer>,
-    },
     /// Carry on a chat's agent by hand in this terminal, on the session the chat holds, once
     /// its run here sleeps.
     ///
@@ -197,7 +188,6 @@ impl Command {
             | Self::Share { .. }
             | Self::Pair { .. }
             | Self::Repo(_)
-            | Self::Reports { .. }
             | Self::Resume { .. }
             | Self::ConnectChrome
             | Self::Map(_)
@@ -217,7 +207,6 @@ impl Command {
             Self::Share { .. } => "share",
             Self::Pair { .. } => "pair",
             Self::Repo(_) => "repo",
-            Self::Reports { .. } => "reports",
             Self::Resume { .. } => "resume",
             Self::ConnectChrome => "connect-chrome",
             Self::NativeHost { .. } => "native-host",
@@ -256,7 +245,6 @@ mod tests {
     use clap::error::ErrorKind;
 
     use super::*;
-    use crate::reports::Answer;
     use crate::test_support::VERSION;
 
     fn run(args: &[&str]) -> Result<Cli, clap::Error> {
@@ -293,11 +281,9 @@ mod tests {
     }
 
     #[test]
-    fn pair_takes_the_server_first_and_its_name_and_pin_as_options() {
+    fn pair_takes_the_server_first_and_its_name_as_an_option() {
         let url = "https://weacon.example.com";
-        let pair = run(&[
-            "weacon", "pair", url, "--name", "Studio", "--pin", "cert.pem",
-        ]);
+        let pair = run(&["weacon", "pair", url, "--name", "Studio"]);
         let bare = run(&["weacon", "pair", url]).unwrap().command;
 
         assert_eq!(
@@ -305,7 +291,6 @@ mod tests {
             Command::Pair {
                 server: url.to_owned(),
                 name: Some("Studio".to_owned()),
-                pin: Some(PathBuf::from("cert.pem")),
             }
         );
         assert_eq!((bare.name(), bare.log_name()), ("pair", "cli.log"));
@@ -490,25 +475,6 @@ mod tests {
             &["weacon", "access", "w-1"],
         ] {
             run(bad).unwrap_err();
-        }
-    }
-
-    #[test]
-    fn reports_takes_on_off_or_nothing() {
-        let answer = |args: &[&str]| {
-            let Command::Reports { answer } = run(args).unwrap().command else {
-                panic!("not a reports command");
-            };
-            answer
-        };
-        let shown = run(&["weacon", "reports"]).unwrap().command;
-
-        assert_eq!(answer(&["weacon", "reports"]), None);
-        assert_eq!(answer(&["weacon", "reports", "on"]), Some(Answer::On));
-        assert_eq!(answer(&["weacon", "reports", "off"]), Some(Answer::Off));
-        assert_eq!((shown.name(), shown.log_name()), ("reports", "cli.log"));
-        for bad in ["yes", "On", "true", ""] {
-            run(&["weacon", "reports", bad]).unwrap_err();
         }
     }
 

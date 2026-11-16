@@ -34,7 +34,6 @@ impl Maps {
         let (args, task) = match query.query {
             MapQueryKind::Map(args) => (args, None),
             MapQueryKind::SessionStart(args) => (args, run.task.clone()),
-            MapQueryKind::Newer => return None,
         };
         let log = log.child(&[
             ("workspace_id", run.workspace.as_str().into()),

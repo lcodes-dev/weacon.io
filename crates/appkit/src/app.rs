@@ -7,8 +7,6 @@ use weacon_observability::{
 };
 use weacon_version::Version;
 
-use crate::random_id;
-
 /// What every app runs with: its build, logger and error reporter.
 pub struct App {
     pub version: Version,
@@ -53,24 +51,14 @@ pub fn root_logger(sink: Sink, version: &Version) -> Logger {
     ])
 }
 
-/// Reports for `dsn`, from `client` running `version`; a bad DSN is logged and turns them off.
+/// A reporter for `version` that sends to the OTLP endpoint at `endpoint`, or nowhere when
+/// there is none.
 #[must_use]
-pub fn reports(dsn: &str, client: &str, version: &Version, log: &Logger) -> Option<Reports> {
-    Reports::new(dsn, client, &version.release())
-        .inspect_err(|fault| log.warn("report setup failed", &[("err", Field::error(fault))]))
-        .ok()
-}
-
-/// A reporter with random ids and the system clock; see [`Reporter::new`] for `agreed`.
-#[must_use]
-pub fn reporter(reports: Option<Reports>, agreed: bool, deliver: Deliver) -> Reporter {
-    Reporter::new(
-        reports,
-        agreed,
-        deliver,
-        Box::new(random_id),
-        Box::new(SystemTime::now),
-    )
+pub fn reporter(endpoint: Option<&str>, version: &Version, deliver: Deliver) -> Reporter {
+    let reports = endpoint
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .map(|endpoint| Reports::new(endpoint, build(version)));
+    Reporter::new(reports, deliver, Box::new(SystemTime::now))
 }
 
 fn panicked(log: &Logger, reporter: &Reporter, fault: &Fault) {
@@ -86,14 +74,9 @@ mod tests {
     use weacon_testing::{messages, recording_sink};
 
     use super::*;
-    use crate::test_support::recording_reporter;
+    use crate::test_support::{VERSION, recording_reporter};
 
-    const VERSION: Version = Version {
-        name: "weacon-core",
-        version: "0.1.0",
-        commit: "1a2b3c4",
-    };
-    const DSN: &str = "https://key@sentry.example.com/1";
+    const ENDPOINT: &str = "http://localhost:4318";
 
     #[test]
     fn a_build_introduces_itself_by_name_version_and_commit() {
@@ -120,20 +103,19 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_dsn_turns_reports_off_with_a_warning() {
-        let (sink, records) = recording_sink();
-        let log = root_logger(sink, &VERSION);
+    fn reports_are_on_only_with_an_endpoint() {
+        let on = |endpoint| recording_reporter(endpoint).0.is_on();
 
-        assert!(reports("not a dsn", "weacon/0.1.0", &VERSION, &log).is_none());
-        assert!(reports(DSN, "weacon/0.1.0", &VERSION, &log).is_some());
-        assert_eq!(messages(&records), ["report setup failed"]);
+        assert!(on(Some(ENDPOINT)));
+        assert!(!on(Some(" ")));
+        assert!(!on(None));
     }
 
     #[test]
     fn a_panic_is_logged_and_reported_without_its_text() {
         let (sink, records) = recording_sink();
         let log = root_logger(sink, &VERSION);
-        let (reporter, uploads) = recording_reporter(reports(DSN, "weacon/0.1.0", &VERSION, &log));
+        let (reporter, uploads) = recording_reporter(Some(ENDPOINT));
         panicked(
             &log,
             &reporter,
@@ -147,6 +129,6 @@ mod tests {
         assert_eq!(record.level, Level::Error);
         assert_eq!(uploads.len(), 1);
         assert!(body.contains("core.panicked"), "{body}");
-        assert!(body.contains("weacon-core@0.1.0+1a2b3c4"), "{body}");
+        assert!(body.contains("1a2b3c4"), "{body}");
     }
 }

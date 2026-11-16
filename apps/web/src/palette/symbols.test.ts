@@ -38,7 +38,7 @@ test("the open chat's machine is asked when it offers symbols, else the first ma
   assert.equal(searcher([], undefined), undefined);
 });
 
-test("a search asks the machine for the open workspace and takes its own answer, leaving out kinds it doesn't know", async () => {
+test("a search asks the machine for the open workspace and takes its own answer", async () => {
   const core = fake();
   const asking = symbols(core.socket, "mc-2", "run", core.later);
   const [query] = core.sent;
@@ -55,20 +55,13 @@ test("a search asks the machine for the open workspace and takes its own answer,
     core.deliver({ id: 11, type: "symbols_answer", request, machine: "mc-2", workspace: "w-1", answer: { kind: "found", symbols: found, more: false } });
   answer("r-other", []);
   core.deliver({ id: 11, type: "sessions_answer", request: query.request, machine: "mc-2", answer: { kind: "missing" } });
-  answer(query.request, [RUN, { ...RUN, kind: "class" as CodeSymbol["kind"] }]);
+  answer(query.request, [RUN]);
 
   assert.deepEqual(await asking, { ok: true, value: [RUN] });
   assert.equal(core.listeners(), 0);
 });
 
-test("a newer answer is malformed, and an error answers by the envelope's id", async () => {
-  const newer = fake();
-  const asking = symbols(newer.socket, "mc-2", "run", newer.later);
-  const [query] = newer.sent;
-  assert.ok(query?.type === "symbols_query");
-  newer.deliver({ id: 11, type: "symbols_answer", request: query.request, machine: "mc-2", workspace: "w-1", answer: { kind: "later" } as never });
-  assert.deepEqual(await asking, { ok: false, code: "answer.malformed" });
-
+test("an error answers by the envelope's id", async () => {
   const refused = fake();
   const refusing = symbols(refused.socket, "mc-2", "run", refused.later);
   refused.deliver({ id: 11, type: "error", code: "symbols.not_owner", retryable: false });
