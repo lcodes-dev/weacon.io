@@ -246,7 +246,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_chat_no_one_holds_queues_more_than_a_held_one() {
         let bench = bench();
-        bench.chats.disk_full(true);
+        let _slow = bench.hold_next_start();
 
         for at in 0..=HELD_QUEUE {
             let asked = prompt(&format!("r-{at}"), "More");

@@ -42,29 +42,6 @@ pub(crate) fn lock_for_process(file: &fs::File) -> io::Result<()> {
     }
 }
 
-/// Bytes this user may still write on the disk holding `dir`.
-#[expect(unsafe_code, reason = "statvfs has no safe API in std")]
-#[cfg_attr(
-    target_os = "linux",
-    expect(clippy::useless_conversion, reason = "f_bavail is u32 on macOS")
-)]
-pub(crate) fn free_space(dir: &Path) -> io::Result<u64> {
-    use std::ffi::CString;
-    use std::mem::MaybeUninit;
-    use std::os::unix::ffi::OsStrExt;
-
-    let path = CString::new(dir.as_os_str().as_bytes())
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    let mut stats = MaybeUninit::<libc::statvfs>::uninit();
-    // SAFETY: `path` is NUL-terminated and `stats` is writable space for one statvfs.
-    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: statvfs returned 0, so it filled `stats`.
-    let stats = unsafe { stats.assume_init() };
-    Ok(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
-}
-
 /// Creates `dir` and any missing parents readable only by this user; existing folders keep
 /// their permissions.
 pub(crate) fn private_dir(dir: &Path) -> io::Result<()> {

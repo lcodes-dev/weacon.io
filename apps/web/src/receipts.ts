@@ -51,7 +51,6 @@ const REFUSALS = new Map<string, Settled>([
   ["machine.offline", "offline"],
   ["chat.detached", "detached"],
   ["chat.quota_full", "full"],
-  ["store.full", "full"],
   ["message.unsupported", "unsupported"],
   ["chat.agent_working", "working"],
   ["machine.no_answer", "unsure"],
