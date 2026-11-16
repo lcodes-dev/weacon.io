@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { ChatSummary, RunState } from "../protocol.ts";
-import { reached, newestFirst, rowNote, stateNote } from "./chat-list.ts";
+import { firstLeg, reached, newestFirst, rowNote, stateNote, withFirst } from "./chat-list.ts";
 
 const chat = (id: string, updated_at: number): ChatSummary => ({ id, title: id, owner: "m-1", legs: [], state: "open", updated_at });
 
@@ -65,4 +65,23 @@ test("a chat's row says what its latest run is doing, in plain words, where it i
     assert.equal(rowNote(run === undefined ? chat : { ...chat, run }, names), expected, String(run));
   }
   assert.equal(rowNote({ ...chat, run: "running", state: "full" }, names), "ada · Running · Full");
+});
+
+test("a chat just started has the agent its first message called, on a machine the person may call", () => {
+  const studio = { id: "mc-1", name: "Studio", own: true, shared: false };
+  const called = { machine: "mc-1", repo: "garden", agent: "claude" as const };
+
+  assert.deepEqual(firstLeg(called, [studio], "m-1"), [{ agent: "claude", detached: false, machine: "Studio", machine_id: "mc-1", member: "m-1", repo: "garden" }]);
+  assert.deepEqual(firstLeg(undefined, [studio], "m-1"), []);
+  assert.deepEqual(firstLeg(called, [], "m-1"), []);
+  assert.deepEqual(firstLeg(called, [studio], undefined), []);
+});
+
+test("a chat keeps the agent it started with until the list has one on that machine", () => {
+  const leg = (machine_id: string, agent: "claude" | "codex") => ({ member: "m-1", machine_id, machine: "Studio", agent, detached: false });
+
+  assert.deepEqual(withFirst([], [leg("mc-1", "claude")]), [leg("mc-1", "claude")]);
+  assert.deepEqual(withFirst([leg("mc-2", "codex")], [leg("mc-1", "claude")]), [leg("mc-2", "codex"), leg("mc-1", "claude")]);
+  assert.deepEqual(withFirst([leg("mc-1", "codex")], [leg("mc-1", "claude")]), [leg("mc-1", "codex")]);
+  assert.deepEqual(withFirst([leg("mc-1", "codex")], []), [leg("mc-1", "codex")]);
 });

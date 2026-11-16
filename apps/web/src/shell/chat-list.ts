@@ -1,5 +1,6 @@
 import type { Names } from "../members/names.ts";
-import type { ChatLeg, ChatState, ChatSummary, MachineId, RunState } from "../protocol.ts";
+import type { Callable, Choice } from "../new-chat/start.ts";
+import type { ChatLeg, ChatState, ChatSummary, MachineId, MemberId, RunState } from "../protocol.ts";
 
 /** `chats`, the one last written in or whose turn ended last first. */
 export function newestFirst(chats: readonly ChatSummary[]): ChatSummary[] {
@@ -17,6 +18,20 @@ export function reached(own: readonly MachineId[], shared: readonly MachineId[],
   const machines = [...own, ...shared.filter((machine) => !own.includes(machine))];
   const on = (machine: MachineId) => chat?.legs.filter((leg) => leg.machine_id === machine && !leg.detached) ?? [];
   return machines.flatMap((machine) => on(machine).map((leg) => ({ leg, own: own.includes(machine), shared: shared.includes(machine) })));
+}
+
+/** The agents of a chat `member` just started, until the list has it: the one its first message `called`, on one of `machines`. */
+export function firstLeg(called: Choice | undefined, machines: readonly Callable[], member: MemberId | undefined): ChatLeg[] {
+  const on = machines.find(({ id }) => id === called?.machine);
+  if (called === undefined || on === undefined || member === undefined) {
+    return [];
+  }
+  return [{ agent: called.agent, detached: false, machine: on.name, machine_id: on.id, member, repo: called.repo }];
+}
+
+/** A chat's `listed` agents with those it `started` with: the list has one only once its machine took a prompt. */
+export function withFirst(listed: readonly ChatLeg[], started: readonly ChatLeg[]): ChatLeg[] {
+  return [...listed, ...started.filter((leg) => !listed.some((one) => one.machine_id === leg.machine_id))];
 }
 
 const NOTES: Partial<Record<ChatState, string>> = { full: "Full" };
