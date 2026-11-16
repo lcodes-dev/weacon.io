@@ -217,8 +217,7 @@ impl Inner {
         // The terminal needs only the chat's folder, not its worktree.
         if matches!(action, WorktreeAction::OpenTerminal) {
             let key = ChatKey::new(workspace, chat);
-            let (state_dir, work_root) = (self.workspaces.state_dir(), self.work_root.as_deref());
-            return terminals::open_in_chat(state_dir, work_root, &key, self.open_terminal);
+            return terminals::open_in_chat(self.work_root.as_deref(), &key, self.open_terminal);
         }
         let found = self.chat(workspace, chat)?;
         let journal = self.stores(workspace).removed(found.git.clone());
@@ -832,16 +831,9 @@ mod tests {
         assert_eq!(fitted(small.clone()), small);
     }
 
-    fn terminals_on(bench: &Bench) {
-        fs::write(bench.dir.join("state/terminals.json"), r#"{"open":true}"#).unwrap();
-    }
-
     #[tokio::test]
-    async fn a_terminal_opens_in_the_chats_folder_on_its_own_resume_once_turned_on() {
+    async fn a_terminal_opens_in_the_chats_folder_on_its_own_resume() {
         let bench = bench();
-        let off = bench.act(Action::OpenTerminal).await.unwrap_err();
-        assert_eq!(code(&off), "terminal.off");
-        terminals_on(&bench);
 
         let answer = bench.act(Action::OpenTerminal).await.unwrap();
         assert_eq!(answer, WorktreeAnswerKind::TerminalOpened);
@@ -856,7 +848,6 @@ mod tests {
     #[tokio::test]
     async fn a_terminal_needs_the_chats_folder_and_a_desktop() {
         let bench = bench();
-        terminals_on(&bench);
         let other = WorktreeCommand {
             request: request(),
             workspace: bench.workspace.clone(),

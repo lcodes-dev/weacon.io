@@ -29,7 +29,9 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   await form.getByRole("button", { name: "Send" }).click();
   await page.getByRole("heading", { name: "Run the parser tests" }).waitFor();
   await page.getByText("I'll run them.").waitFor();
-  await page.getByText("Asks to use Bash").waitFor();
+  // A page that starts following after the prompt was asked isn't told its tool's name.
+  await page.getByText("Asks to use").waitFor();
+  await page.getByRole("button", { name: "Allow" }).waitFor();
 
   // The tool's name isn't kept, so the waiting prompt reads more plainly after a reload.
   await page.reload();
@@ -39,6 +41,10 @@ test("a person walks a whole chat on their machine's own core: prompts, Allow, D
   await page.getByText("Done", { exact: true }).waitFor();
   assert.equal(await page.getByText("All 12 tests pass.").count(), 1);
   assert.equal(await page.getByText("Allowed", { exact: true }).count(), 1);
+
+  await page.getByRole("button", { name: "Changes" }).click();
+  await page.getByRole("region", { name: "Worktree" }).getByRole("button", { name: "Open terminal" }).waitFor();
+  await page.getByRole("button", { name: "Back" }).click();
 
   const box = page.getByRole("combobox", { name: "Message" });
   const send = page.getByRole("button", { name: "Send" });
