@@ -58,7 +58,7 @@ pub use doc::{
 };
 pub use frame::{FrameError, LineDecoder, MAX_FRAME, encode_line};
 pub use hex::to_hex;
-pub use log::{ClientLog, Level, LogEvent};
+pub use log::Level;
 pub use machine::{
     MachineId, MachineList, MachineName, MachineOs, MachineShares, MachineSummary, PairClaim,
     PairClaimed, PairConfirm, PairLookup, PairPending, PairStart, PairStarted, PairingId,

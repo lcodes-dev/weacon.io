@@ -84,7 +84,11 @@ impl Fixture {
         let shared = Shared {
             app: weacon_appkit::build(&VERSION),
             log,
-            reporter: Arc::new(weacon_appkit::reporter(None, true, Box::new(|_| Ok(())))),
+            reporter: Arc::new(weacon_appkit::reporter(
+                None,
+                &VERSION,
+                Box::new(|_| Ok(())),
+            )),
             db,
             secret: Arc::new(secret),
             head_within: connections::HEAD_WITHIN,

@@ -32,12 +32,6 @@ macro_rules! version {
 }
 
 impl Version {
-    /// The release that error reports carry: `weacon-core@0.1.0+<commit>`.
-    #[must_use]
-    pub fn release(&self) -> String {
-        format!("{}@{}+{}", self.name, self.version, self.commit)
-    }
-
     /// `0.1.0 (<commit>)`: what `--version` prints after the name.
     #[must_use]
     pub fn with_commit(&self) -> String {
@@ -152,7 +146,6 @@ mod tests {
     #[test]
     fn shows_name_version_and_commit() {
         assert_eq!(version().to_string(), format!("weacon-core 0.1.0 ({SHA})"));
-        assert_eq!(version().release(), format!("weacon-core@0.1.0+{SHA}"));
         assert_eq!(version().with_commit(), format!("0.1.0 ({SHA})"));
     }
 

@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { Api } from "../api/api.ts";
-import { Connection, type Status, later, offers } from "../connection.ts";
+import { Connection, type Status, later } from "../connection.ts";
 import type { Incoming } from "../incoming.ts";
-import type { Log } from "../log.ts";
 import { ME } from "../me.ts";
 import type { WorkspaceChange, WorkspaceId } from "../protocol.ts";
 import { FEED, STAYED_MS, failedAfter, feedUrl, heardAfter, retries, retryAfter } from "./workspace-feed.ts";
@@ -12,9 +11,8 @@ import type { WorkspaceSocket } from "./workspace-socket.ts";
 /**
  * Where `workspace`'s feed stands; it gives `socket` what the server offered at each welcome, hands
  * each message to `socket`, a workspace change only once, and opens again after the last one heard.
- * While it is live, `log` forwards through it.
  */
-export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket, log: Log): Status {
+export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocket): Status {
   const [status, setStatus] = useState<Status>({ state: "connecting" });
   // Kept apart from `status`, which a feed that ends at once may replace before it is shown.
   useEffect(() => {
@@ -37,11 +35,9 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
             stayed = false;
             staying = setTimeout(() => (stayed = true), STAYED_MS);
             socket.attach((envelope) => connection.send(envelope), next.capabilities);
-            log.attach((envelope) => connection.send(envelope), offers(next, "log.forward"));
           } else if (next.state === "ended") {
             clearTimeout(staying);
             socket.attach(undefined);
-            log.detach();
             // Asking for the workspace lets a session that ended reach sign-in, and a member removed leave it.
             void api.workspace(workspace);
             failed = failedAfter(failed, stayed);
@@ -69,10 +65,9 @@ export function useFeed(workspace: WorkspaceId, api: Api, socket: WorkspaceSocke
       clearTimeout(retry);
       clearTimeout(staying);
       socket.attach(undefined);
-      log.detach();
       opened?.close();
     };
-  }, [workspace, api, socket, log]);
+  }, [workspace, api, socket]);
   return status;
 }
 

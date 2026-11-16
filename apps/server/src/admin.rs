@@ -323,12 +323,7 @@ mod tests {
     fn reported(failures: impl IntoIterator<Item = Fault>) -> (String, Vec<String>) {
         let (stdout, records) = recording_sink();
         let (deliver, uploads) = recording_deliver();
-        let app = app::start(
-            VERSION,
-            stdout,
-            deliver,
-            Some("https://key@sentry.example.com/1"),
-        );
+        let app = app::start(VERSION, stdout, deliver, Some("http://localhost:4318"));
         for fault in failures {
             assert_eq!(app.finish(Err(fault)), std::process::ExitCode::from(2));
         }

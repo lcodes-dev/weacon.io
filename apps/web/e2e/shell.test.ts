@@ -365,25 +365,6 @@ test("a chat change on the feed reloads the list, and a feed that ends opens aga
   assert.equal(listed(), 3);
 });
 
-test("the served app forwards its logs and crash reports on a feed that offers it", { timeout: 600_000 }, async (t) => {
-  const served = await serve();
-  t.after(() => served.close());
-  const { page } = served;
-  const { sent } = await serveFeed(page, { also: ["log.forward"] });
-  await signIn(served);
-  await page.getByRole("button", { name: "Personal" }).click();
-  await page.getByText("Connected").waitFor();
-  await page.evaluate(() =>
-    setTimeout(() => {
-      throw new Error("MARKER-MESSAGE in /home/ada/MARKER-PATH with token MARKER-TOKEN");
-    }),
-  );
-  await waitFor(() => sent.some((envelope) => JSON.stringify(envelope).includes("web.crashed")));
-
-  assert.deepEqual(sent[0], { id: 0, type: "log", level: "info", msg: "app started" });
-  assert.doesNotMatch(JSON.stringify(sent), /MARKER/);
-});
-
 // A chat's snapshot as the server answers it: a prompt, and Claude Code's answer so far, waiting
 // on a permission prompt. Each chat's answer says which chat it is.
 function snapshot(asked: Envelope): Envelope[] {

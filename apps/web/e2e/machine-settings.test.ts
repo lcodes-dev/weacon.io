@@ -41,7 +41,7 @@ test("a person reads and changes a machine's settings for the open workspace, th
   t.after(() => machine.close());
   await row.getByRole("button", { name: "Try again" }).click();
   const settings = row.getByRole("region", { name: "Studio settings" });
-  await settings.getByText("Not chosen yet, so none are sent.").waitFor();
+  await settings.getByLabel("What this workspace's agents may do on this machine").waitFor();
   const signIns = await settings.getByRole("list", { name: "Sign-ins" }).getByRole("listitem").allInnerTexts();
   assert.deepEqual(
     signIns.map((text) => text.trim()),
@@ -62,13 +62,6 @@ test("a person reads and changes a machine's settings for the open workspace, th
 
   const warning = settings.getByText("Full access is on in a team workspace. Its agents change files on this machine without asking.");
   const level = settings.getByLabel("What this workspace's agents may do on this machine");
-
-  await settings.getByRole("button", { name: "Keep off" }).click();
-  await settings.getByText("Off.", { exact: true }).waitFor();
-  assert.equal(machine.settings.reports, false);
-  await settings.getByRole("button", { name: "Turn on" }).click();
-  await settings.getByText("On.", { exact: true }).waitFor();
-  assert.equal(await settings.getByRole("button", { name: "Turn on" }).count(), 0);
 
   // The warning is for full access in a team workspace only: alone, there is none.
   await level.selectOption("full");
@@ -93,13 +86,13 @@ test("a person reads and changes a machine's settings for the open workspace, th
   await waitFor(() => machine.settings.team);
 
   machine.refuse();
-  await settings.getByRole("button", { name: "Turn off" }).click();
+  await level.selectOption("read_only");
   await settings.getByText("Only this machine's owner can see or change its settings.").waitFor();
-  await settings.getByText("On.", { exact: true }).waitFor();
-  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, reports: true, sign_ins: [] });
+  assert.equal(await level.inputValue(), "ask_first");
+  assert.deepEqual({ ...machine.settings, sign_ins: [] }, { access: "ask_first", team: true, sign_ins: [] });
 });
 
-test("a machine paired with a workspace open shows its settings at once, to ask about error reports", { timeout: 600_000 }, async (t) => {
+test("a machine paired with a workspace open shows its settings at once", { timeout: 600_000 }, async (t) => {
   const served = await serve();
   t.after(() => served.close());
   const { page } = served;
@@ -119,11 +112,7 @@ test("a machine paired with a workspace open shows its settings at once, to ask 
   connected.resolve();
   const row = page.getByRole("list", { name: "Machines" }).getByRole("listitem").filter({ hasText: "Studio" });
 
-  // Nobody opened them; they ask until the person answers, and nothing is sent meanwhile.
+  // Nobody opened them.
   const settings = row.getByRole("region", { name: "Studio settings" });
-  await settings.getByText("Not chosen yet, so none are sent.").waitFor();
-  assert.equal(machine.settings.reports, undefined);
-  await settings.getByRole("button", { name: "Keep off" }).click();
-  await settings.getByText("Off.", { exact: true }).waitFor();
-  assert.equal(machine.settings.reports, false);
+  await settings.getByLabel("What this workspace's agents may do on this machine").waitFor();
 });

@@ -40,8 +40,8 @@ type Props = {
 };
 
 /**
- * What one of the person's machines keeps for the open workspace, asked of its core: error
- * reports, what the workspace's agents may do there, and whether they are signed in.
+ * What one of the person's machines keeps for the open workspace, asked of its core: what the
+ * workspace's agents may do there, and whether they are signed in.
  */
 export function MachineSettingsView({ machine, socket, later, relays, team }: Props) {
   const settings = useLoaded(() => current(socket, machine.id, later), `${machine.id} ${socket.workspace}`);
@@ -104,24 +104,9 @@ type ShownProps = {
 };
 
 function Shown({ settings, busy, set, team, signIn }: ShownProps) {
-  const { reports, access } = settings;
+  const { access } = settings;
   return (
     <>
-      <h4>Error reports</h4>
-      <p className="muted">Reports say what went wrong in this machine's core. They hold no messages, prompts, code or file contents.</p>
-      <p>
-        <span>{reports === undefined ? "Not chosen yet, so none are sent." : reports ? "On." : "Off."}</span>{" "}
-        {reports !== true && (
-          <button type="button" disabled={busy} onClick={() => set({ kind: "set_reports", send: true })}>
-            Turn on
-          </button>
-        )}
-        {reports !== false && (
-          <button type="button" disabled={busy} onClick={() => set({ kind: "set_reports", send: false })}>
-            {reports === undefined ? "Keep off" : "Turn off"}
-          </button>
-        )}
-      </p>
       <h4>Agent access</h4>
       <label>
         What this workspace's agents may do on this machine

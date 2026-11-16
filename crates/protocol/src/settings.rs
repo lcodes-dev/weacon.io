@@ -55,8 +55,6 @@ pub struct MachineSettingsCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MachineSettingsAction {
-    /// Whether the machine sends error reports; for the whole machine, not one workspace.
-    SetReports { send: bool },
     /// What `workspace`'s agents may do on the machine, and whether other people are in it;
     /// `team` is kept as it was when left out.
     SetAccess {
@@ -102,13 +100,9 @@ pub enum MachineSettingsAnswerKind {
     Newer,
 }
 
-/// What a machine keeps for one workspace, and whether it sends error reports.
+/// What a machine keeps for one workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MachineSettings {
-    /// The owner's answer to error reports; absent until they give one, when none are sent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    pub reports: Option<bool>,
     pub access: AccessLevel,
     /// Whether other people are in the workspace.
     pub team: bool,
@@ -196,9 +190,8 @@ mod tests {
         wire
     }
 
-    fn settings(reports: Option<bool>, sign_ins: Vec<AgentSignIn>) -> MachineSettings {
+    fn settings(sign_ins: Vec<AgentSignIn>) -> MachineSettings {
         MachineSettings {
-            reports,
             access: AccessLevel::AskFirst,
             team: true,
             shared: false,
@@ -225,13 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn commands_set_reports_or_a_workspaces_access_keeping_the_team_mark_when_left_out() {
+    fn commands_set_a_workspaces_access_keeping_the_team_mark_when_left_out() {
         let action = |body: Value| stamped(wire("machine_settings_command", "action", body));
 
-        travels(
-            &command(MachineSettingsAction::SetReports { send: false }),
-            action(json!({ "kind": "set_reports", "send": false })),
-        );
         travels(
             &command(MachineSettingsAction::SetAccess {
                 level: AccessLevel::Full,
@@ -249,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answer_holds_the_settings_and_leaves_out_an_answer_not_given() {
+    fn an_answer_holds_the_settings() {
         let sign_ins = vec![
             AgentSignIn {
                 agent: AgentKind::Claude,
@@ -260,25 +249,14 @@ mod tests {
                 state: SignInState::NotInstalled,
             },
         ];
-        let body = |reports: Option<bool>| {
-            let mut body = json!({ "kind": "current", "access": "ask_first", "team": true,
-                "sign_ins": [{ "agent": "claude", "state": "signed_in" },
-                             { "agent": "codex", "state": "not_installed" }] });
-            if let Some(reports) = reports {
-                body["reports"] = json!(reports);
-            }
-            body
-        };
+        let body = json!({ "kind": "current", "access": "ask_first", "team": true,
+            "sign_ins": [{ "agent": "claude", "state": "signed_in" },
+                         { "agent": "codex", "state": "not_installed" }] });
 
-        for reports in [None, Some(true), Some(false)] {
-            travels(
-                &answer(MachineSettingsAnswerKind::Current(settings(
-                    reports,
-                    sign_ins.clone(),
-                ))),
-                wire("machine_settings_answer", "answer", body(reports)),
-            );
-        }
+        travels(
+            &answer(MachineSettingsAnswerKind::Current(settings(sign_ins))),
+            wire("machine_settings_answer", "answer", body),
+        );
         let states = ["signed_out", "unknown"]
             .map(|state| serde_json::from_value::<SignInState>(json!(state)).unwrap());
         assert_eq!(states, [SignInState::SignedOut, SignInState::Unknown]);
@@ -322,7 +300,7 @@ mod tests {
         );
         let shared = MachineSettings {
             shared: true,
-            ..settings(None, Vec::new())
+            ..settings(Vec::new())
         };
         travels(
             &answer(MachineSettingsAnswerKind::Current(shared)),

@@ -7,7 +7,6 @@ import { workspaceOf } from "../chat-ref.ts";
 import { useChatAccess } from "../chat/access.ts";
 import { ChatScreen } from "../chat/chat-screen.tsx";
 import { type Status, statusText } from "../connection.ts";
-import type { Log } from "../log.ts";
 import { Palette } from "../palette/palette.tsx";
 import type { Names } from "../members/names.ts";
 import { DocsPage } from "../docs/docs-page.tsx";
@@ -41,7 +40,6 @@ export type OpenWorkspace = { workspace: WorkspaceSummary; socket: WorkspaceSock
  */
 export function Workspaces({
   api,
-  log,
   who,
   email,
   left,
@@ -49,7 +47,6 @@ export function Workspaces({
   openSettings,
 }: {
   api: Api;
-  log: Log;
   who: ReactNode;
   email: string;
   left: { workspace: WorkspaceId } | undefined;
@@ -101,7 +98,7 @@ export function Workspaces({
     <Frame right={who}>
       <div className={page === undefined ? "pane" : "pane away"}>
         {workspace !== undefined && socket !== undefined ? (
-          <Workspace key={workspace.id} api={api} log={log} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} menu={menu} />
+          <Workspace key={workspace.id} api={api} workspace={workspace} socket={socket} away={covered} place={place} go={go} openSettings={openSettings} menu={menu} />
         ) : (
           <Landing
             api={api}
@@ -169,9 +166,9 @@ type Open = {
 };
 
 /** The open workspace on its feed: its sections, and its chats or the section `place` names. */
-function Workspace({ log, ...open }: Open & { log: Log }) {
+function Workspace(open: Open) {
   const { api, workspace, socket, place } = open;
-  const status = useFeed(workspace.id, api, socket, log);
+  const status = useFeed(workspace.id, api, socket);
   // Whether the server serves chats, known once the feed is welcomed.
   const { read, send } = useChatAccess(socket);
   const names = useNames(useMembers(api, workspace.id, socket));

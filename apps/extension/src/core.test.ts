@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { PROTOCOL } from "../../../tooling/ts/version.ts";
-import { Failure, type Port, connect, report } from "./core.ts";
+import { Failure, type Port, connect } from "./core.ts";
 import type { Incoming } from "./incoming.ts";
 import type { Envelope } from "./protocol.ts";
 
@@ -127,16 +127,4 @@ test("closing the link disconnects and fails what waits", async () => {
   assert.ok(disconnected());
   assert.equal(await failure(waiting), "extension.core_unreachable");
   assert.equal([link.next(), link.next()].join(), "2,3");
-});
-
-test("failures are reported by code after a hello, and quietly dropped without a core", async () => {
-  const told = core(() => []);
-  const gone = port(() => undefined);
-
-  await report(told.fake, ME, "extension.capture_failed");
-  await report(gone.fake, ME, "extension.capture_failed");
-
-  assert.deepEqual(told.sent.at(-1), { id: 2, type: "error", code: "extension.capture_failed", retryable: false });
-  assert.ok(told.disconnected() && gone.disconnected());
-  assert.equal(gone.sent.length, 1);
 });

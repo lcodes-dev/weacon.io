@@ -8,8 +8,7 @@ import type { Envelope } from "../src/protocol.ts";
 // The type checker rejects these if the generated types stop matching what the app sends.
 export const SAMPLES: Envelope[] = [
   { id: 1, type: "hello", protocol: 1, app: { name: "weacon-web", version: "0.1.0", commit: "1a2b3c4" } },
-  { id: 0, type: "log", level: "warn", msg: "connection lost", code: "connection.lost" },
-  { id: 0, type: "error", code: "web.crashed", retryable: false },
+  { id: 0, type: "error", code: "connection.lost", retryable: false },
 ];
 
 test("the committed types are current", () => {

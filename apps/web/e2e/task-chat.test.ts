@@ -60,6 +60,9 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
   await page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "Tasks" }).click();
   await page.getByRole("textbox", { name: "New task" }).fill("Turn the compost");
   await page.getByRole("button", { name: "Add" }).click();
+  const start = page.getByRole("button", { name: "Start a chat for Turn the compost" });
+  // Listed first: the hold below would catch the add's own request too.
+  await start.waitFor();
   // The tasks are held back from the chats' view, so the message goes before it knows the title.
   let release = () => {};
   const held = new Promise<void>((resolve) => {
@@ -69,7 +72,7 @@ test("a task starts a chat for it, and the chat links back to the task", { timeo
     await held;
     return route.fallback();
   });
-  await page.getByRole("button", { name: "Start a chat for Turn the compost" }).click();
+  await start.click();
 
   const form = page.getByRole("region", { name: "New chat" });
   await form.getByLabel("Repository").waitFor();
