@@ -35,7 +35,7 @@ export function Composer({
   const opens = useRef(() => opening(agent, calling));
   opens.current = () => opening(agent, calling);
   // A box nothing was written in follows where the writer's messages now go.
-  useEffect(() => setPlaced((now) => (unwritten(now.draft) ? opens.current() : now)), [agent?.id, calling]);
+  useEffect(() => setPlaced((now) => (unwritten(now.draft) ? opens.current() : now)), [agent?.id, agent?.label, calling]);
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState<number>();
   // A draft edited after it was sent stays in the box.
