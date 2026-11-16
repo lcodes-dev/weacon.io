@@ -174,7 +174,10 @@ function FirstCall({
       {adding ? (
         fields
       ) : (
-        <button type="button" className="add-agent" onClick={() => setAdding(true)}>
+        <button type="button" className="add-agent" onClick={() => {
+            setAdding(true);
+            setPlain(false);
+          }}>
           Add your agent
         </button>
       )}
