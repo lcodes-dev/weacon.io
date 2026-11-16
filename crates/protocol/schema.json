@@ -1356,7 +1356,7 @@
           "const": "open"
         },
         {
-          "description": "Its workspace has no room for more of its events, so it takes none until it has.",
+          "description": "It has too many prompts waiting, so it takes no more events.",
           "type": "string",
           "const": "full"
         }

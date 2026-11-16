@@ -115,6 +115,9 @@ mod tests {
 
         // Hyper answers 408 or just hangs up; either way the connection ends.
         let mut rest = Vec::new();
-        slow.read_to_end(&mut rest).await.unwrap();
+        tokio::time::timeout(crate::test_support::PATIENCE, slow.read_to_end(&mut rest))
+            .await
+            .expect("the connection stayed open")
+            .unwrap();
     }
 }
