@@ -9,19 +9,14 @@ use super::failed;
 const SCHEMA: &str = "
 CREATE TABLE workspaces (
     workspace_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    doc_bytes INTEGER NOT NULL DEFAULT 0,
-    chat_bytes INTEGER NOT NULL DEFAULT 0
+    name TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE accounts (
     account_id TEXT PRIMARY KEY,
     email TEXT NOT NULL UNIQUE,
-    personal_made INTEGER NOT NULL DEFAULT 0,
-    owner INTEGER NOT NULL DEFAULT 0
+    personal_made INTEGER NOT NULL DEFAULT 0
 ) STRICT;
-
-CREATE UNIQUE INDEX accounts_owner ON accounts (owner) WHERE owner = 1;
 
 CREATE TABLE members (
     workspace_id TEXT NOT NULL REFERENCES workspaces (workspace_id),
@@ -47,8 +42,7 @@ CREATE TABLE sign_in_challenges (
     email TEXT NOT NULL,
     code TEXT NOT NULL,
     expires_at INTEGER NOT NULL,
-    attempts INTEGER NOT NULL,
-    mailed INTEGER NOT NULL
+    attempts INTEGER NOT NULL
 ) STRICT;
 
 CREATE INDEX sign_in_challenges_email ON sign_in_challenges (email);
@@ -166,7 +160,6 @@ CREATE TABLE proposals (
     change TEXT,
     change_hash BLOB NOT NULL,
     snapshot TEXT,
-    bytes INTEGER NOT NULL,
     author_member TEXT NOT NULL,
     agent TEXT NOT NULL,
     machine_id TEXT NOT NULL,
