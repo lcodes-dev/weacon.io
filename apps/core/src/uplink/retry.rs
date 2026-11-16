@@ -9,9 +9,8 @@ use super::Ended;
 const FIRST_WAIT: Duration = Duration::from_secs(1);
 const LONGEST_WAIT: Duration = Duration::from_mins(1);
 
-/// When to dial again: a wait doubling from a second to a minute, each cut by up to a fifth
-/// at random so that cores don't all dial at once, and back to a second once a connection was
-/// up.
+/// When to dial again: a wait doubling from a second to a minute, and back to a second once a
+/// connection was up.
 #[derive(Debug, Default)]
 pub(super) struct Retry {
     failures: u32,
@@ -20,12 +19,7 @@ pub(super) struct Retry {
 }
 
 impl Retry {
-    pub(super) fn after(
-        &mut self,
-        ended: Result<Ended, Fault>,
-        log: &Logger,
-        random: u128,
-    ) -> Duration {
+    pub(super) fn after(&mut self, ended: Result<Ended, Fault>, log: &Logger) -> Duration {
         match ended {
             Ok(Ended::Lost) => {
                 self.failures = 0;
@@ -44,9 +38,7 @@ impl Retry {
             .saturating_mul(1 << self.failures.min(6))
             .min(LONGEST_WAIT);
         self.failures = self.failures.saturating_add(1);
-        let fifth = (wait / 5).as_millis().max(1);
-        let cut = u64::try_from(random % fifth).unwrap_or(0);
-        wait.saturating_sub(Duration::from_millis(cut))
+        wait
     }
 }
 
@@ -65,21 +57,19 @@ mod tests {
     }
 
     #[test]
-    fn the_wait_doubles_to_a_minute_less_a_random_fifth_and_resets_once_up() {
+    fn the_wait_doubles_to_a_minute_and_resets_once_up() {
         let (log, records) = recording_logger();
         let mut retry = Retry::default();
         let mut waits: Vec<_> = (0..4)
-            .map(|_| retry.after(unreachable(), &log, 0).as_secs())
+            .map(|_| retry.after(unreachable(), &log).as_secs())
             .collect();
-        waits.extend((0..4).map(|_| retry.after(Ok(Ended::Unwelcome), &log, 0).as_secs()));
-        let jittered = retry.after(unreachable(), &log, 11_999);
-        let after_up = retry.after(Ok(Ended::Lost), &log, 0);
-        let failing_again = retry.after(unreachable(), &log, 1_999);
+        waits.extend((0..4).map(|_| retry.after(Ok(Ended::Unwelcome), &log).as_secs()));
+        let after_up = retry.after(Ok(Ended::Lost), &log);
+        let failing_again = retry.after(unreachable(), &log);
 
         assert_eq!(waits, [1, 2, 4, 8, 16, 32, 60, 60]);
-        assert_eq!(jittered, Duration::from_millis(48_001));
         assert_eq!(after_up, Duration::from_secs(1));
-        assert_eq!(failing_again, Duration::from_millis(1_601));
+        assert_eq!(failing_again, Duration::from_secs(2));
         assert_eq!(
             messages(&records),
             ["uplink failed", "uplink lost", "uplink failed"]
