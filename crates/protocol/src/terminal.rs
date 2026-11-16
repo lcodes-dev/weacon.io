@@ -17,7 +17,7 @@ token_id!(
     "not a terminal id"
 );
 
-/// The most [`Bytes`] carries.
+// The most `Bytes` carries.
 const BYTES_MAX: usize = 65535;
 
 /// A sign-in terminal's input, from the owner of `machine`'s browser to its core, which offers
@@ -84,7 +84,7 @@ pub enum TerminalEvent {
     Newer,
 }
 
-/// Bytes that travel as lowercase hex, at most [`BYTES_MAX`] of them. Its `Debug` shows only
+/// Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
 /// how many, since they are terminal content.
 #[derive(Clone, PartialEq, Eq, JsonSchema)]
 pub struct Bytes(
@@ -96,7 +96,7 @@ const BYTES_PATTERN: &str = r"^([0-9a-f]{2})*$";
 const HEX_MAX: usize = 2 * BYTES_MAX;
 
 impl Bytes {
-    /// `None` when there are more than [`BYTES_MAX`].
+    /// `None` when there are more than that.
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Option<Self> {
         (bytes.len() <= BYTES_MAX).then_some(Self(bytes))

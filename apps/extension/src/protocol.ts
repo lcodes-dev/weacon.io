@@ -265,7 +265,7 @@ export type Batched = {
 };
 
 /**
- * Bytes that travel as lowercase hex, at most [`BYTES_MAX`] of them. Its `Debug` shows only
+ * Bytes that travel as lowercase hex, at most 65,535 of them. Its `Debug` shows only
  * how many, since they are terminal content.
  */
 export type Bytes = string;
