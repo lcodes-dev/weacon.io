@@ -1,0 +1,26 @@
+# Possible improvements
+
+Things noticed while working that could be better and that nobody has asked for. None is planned. To do one, give it a plan or fold it into the feature that touches it, then remove it from this list.
+
+## Server
+
+- **The fallback test needs a web build.** `unknown_path_serves_the_web_app` reads the real `apps/web/dist/index.html`, so it fails on a checkout where the web app was never built.
+- **Missing asset files get `index.html`.** A request for a file that doesn't exist, such as `/assets/old-hash.js`, answers 200 with the HTML page. A path whose last part has a file extension could answer 404 instead.
+- **No clean shutdown.** Ctrl-C kills the server without letting open requests finish.
+- **A failed health check has no body.** It answers 503 with nothing in it, while other API errors are JSON.
+
+## Web app
+
+- **The status dot starts red.** Until the first health call answers, the dot shows "unreachable" for a moment.
+- **The shell is plainer than the reference.** It has no search field, no icons beside Tasks and Docs, and no workspace and account rows at the bottom of the sidebar.
+
+## Setup
+
+- **`npm install` runs on every `scripts/dev.sh` start.** It takes about a second when nothing changed; it could run only when `package-lock.json` is newer than `node_modules`.
+- **mise's `lts` alias can be stale.** An old mise resolves `node@lts` to Node 24, so `mise.toml` pins the exact version, which then has to be raised by hand.
+- **No formatting or lint check.** Nothing runs `cargo fmt`, `cargo clippy` or a TypeScript linter.
+- **`.legacy/` holds about 4 GB of build output.** Its `target/` and `node_modules` folders are ignored by git and can be deleted to free space.
+
+## Docs
+
+- **Plan 01 shows the planned paths.** Its file list says `server/` and `web/`; the code now lives in `apps/`.

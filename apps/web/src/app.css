@@ -1,0 +1,58 @@
+@layer ui-sdk;
+
+@import "tailwindcss";
+
+/* The reference's colors. Add the rest of its palette as screens need them. */
+:root {
+  color-scheme: light dark;
+  --bg: #fbfaf7;
+  --side: #f4f2ed;
+  --hov: #ebe8e2;
+  --line: #e7e3dc;
+  --ink: #1f1d1a;
+  --ink2: #6b665e;
+  --ink3: #77716a;
+  --acc: #b83a1b;
+  --ok: #3d8b5a;
+  --pri: #1f1d1a;
+  --pri-text: #ffffff;
+  --pri-hover: #38342f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1a1917;
+    --side: #141312;
+    --hov: #2c2a27;
+    --line: #2e2b28;
+    --ink: #ece7df;
+    --ink2: #aaa398;
+    --ink3: #918b81;
+    --acc: #e8714a;
+    --ok: #67b986;
+    --pri: #ece7df;
+    --pri-text: #1a1917;
+    --pri-hover: #ffffff;
+  }
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-side: var(--side);
+  --color-hov: var(--hov);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink2: var(--ink2);
+  --color-ink3: var(--ink3);
+  --color-acc: var(--acc);
+  --color-ok: var(--ok);
+  --color-pri: var(--pri);
+  --color-pri-text: var(--pri-text);
+  --color-pri-hover: var(--pri-hover);
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.4 -apple-system, system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
