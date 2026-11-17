@@ -5,7 +5,6 @@ import { OTPInput, OTPInputGroup, OTPInputSlot } from "@ui-sdk/react/otp-input"
 import { useState } from "react"
 import { api } from "./api"
 
-/** Registers or signs in: name and email, then the code that was mailed. */
 export function SignIn({ setup }: { setup: boolean }) {
   const queryClient = useQueryClient()
   const [registering, setRegistering] = useState(setup)

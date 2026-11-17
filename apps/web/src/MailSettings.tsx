@@ -7,7 +7,6 @@ import { api, type Smtp } from "./api"
 
 const empty: Smtp = { host: "", port: 587, security: "starttls", username: null, from: "" }
 
-/** The owner's SMTP settings, in a dialog opened by `trigger`. */
 export function MailSettings({ saved, trigger }: { saved: Smtp | null; trigger: string }) {
   const queryClient = useQueryClient()
   const [smtp, setSmtp] = useState(saved ?? empty)

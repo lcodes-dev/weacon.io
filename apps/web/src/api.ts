@@ -16,14 +16,14 @@ export type Smtp = {
   port: number
   security: "tls" | "starttls" | "none"
   username: string | null
-  /** Never read back. Leave it out when saving to keep the saved one. */
+  /** Never read back; leave it out to keep the saved one. */
   password?: string
   from: string
 }
 
 export type MailConfig = { smtp: Smtp | null }
 
-/** Calls the API. A failure throws an `Error` with the server's message. */
+/** A failure throws an `Error` with the server's message. */
 export async function api<T = void>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method,

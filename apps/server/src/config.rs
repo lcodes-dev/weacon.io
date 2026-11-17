@@ -3,36 +3,26 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 
-use crate::db::{self, User};
+use crate::auth::Owner;
+use crate::db;
 use crate::mail::Smtp;
 use crate::{ApiError, AppState};
-
-fn owner(user: &User) -> Result<(), ApiError> {
-    if user.is_owner {
-        return Ok(());
-    }
-    let message = "Only the server's owner can do that";
-    Err(ApiError(StatusCode::FORBIDDEN, message.into()))
-}
 
 fn bad_settings(error: impl std::fmt::Display) -> ApiError {
     ApiError(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
 
-/// The settings without the password, which `Smtp` never serializes.
-pub async fn mail(State(state): State<AppState>, user: User) -> Result<Json<Value>, ApiError> {
-    owner(&user)?;
+pub async fn mail(State(state): State<AppState>, _: Owner) -> Result<Json<Value>, ApiError> {
     let smtp = db::smtp(&state.pool).await?;
     Ok(Json(json!({"smtp": smtp})))
 }
 
-/// A missing password keeps the saved one, since the settings are read back without it.
+/// A missing password keeps the saved one.
 pub async fn save_mail(
     State(state): State<AppState>,
-    user: User,
+    _: Owner,
     Json(mut smtp): Json<Smtp>,
 ) -> Result<StatusCode, ApiError> {
-    owner(&user)?;
     if smtp.password.is_none() {
         smtp.password = db::smtp(&state.pool)
             .await?
@@ -43,15 +33,16 @@ pub async fn save_mail(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn clear_mail(State(state): State<AppState>, user: User) -> Result<StatusCode, ApiError> {
-    owner(&user)?;
+pub async fn clear_mail(State(state): State<AppState>, _: Owner) -> Result<StatusCode, ApiError> {
     db::save_smtp(&state.pool, None).await?;
     state.mailer.set(None).map_err(bad_settings)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn test_mail(State(state): State<AppState>, user: User) -> Result<StatusCode, ApiError> {
-    owner(&user)?;
+pub async fn test_mail(
+    State(state): State<AppState>,
+    Owner(user): Owner,
+) -> Result<StatusCode, ApiError> {
     let text = "This is a test mail from Weacon. Your mail settings work.";
     state
         .mailer

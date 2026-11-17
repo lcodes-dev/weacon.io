@@ -69,12 +69,11 @@ function Account({ user }: { user: User }) {
   )
 }
 
-/** The owner's way into the mail settings, with a notice while mail isn't set up. */
 function OwnerMail() {
   const config = useQuery({ queryKey: ["mail-config"], queryFn: () => api<MailConfig>("GET", "/config/mail") })
   if (!config.data) return null
   const { smtp } = config.data
-  // One element in both states, so the dialog stays open when saving changes which it is.
+  // One element for both states, so saving doesn't close the dialog.
   return (
     <div className={smtp ? "flex flex-col" : "flex flex-col items-start gap-2 rounded-md border border-amb-line bg-amb-soft p-2 text-amb"}>
       {!smtp && "Mail isn't set up. Sign-in codes are only printed to the server's log."}

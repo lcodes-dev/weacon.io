@@ -137,6 +137,7 @@ Built as planned, with these differences:
 - During setup the code step says the code is in the server's log, since no SMTP can be set yet.
 - The mail settings dialog stays open after saving, so "Send a test mail" is one click away.
 - `serde_json` moved from a test dependency to a real one, so the small JSON answers are written inline instead of as one struct each.
+- The tests moved out of `main.rs` into `apps/server/tests/api.rs`, all as integration tests over HTTP. For that the server became a library, `lib.rs`, with `main.rs` only starting it.
 - The last step is open: no mail has gone through a real SMTP server yet. A test mail to an unreachable server shows the connection error as intended.
 
 ## Left out on purpose

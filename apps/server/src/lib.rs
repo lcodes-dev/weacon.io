@@ -1,0 +1,81 @@
+mod auth;
+mod config;
+pub mod db;
+pub mod mail;
+mod web;
+
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde_json::{Value, json};
+use sqlx::SqlitePool;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
+
+use mail::Mailer;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub pool: SqlitePool,
+    pub mailer: Arc<Mailer>,
+}
+
+/// Seconds since 1970.
+fn now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64)
+}
+
+pub fn router(state: AppState) -> Router {
+    let log = TraceLayer::new_for_http()
+        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
+    let api = Router::new()
+        .route("/session", get(auth::session))
+        .route("/sign-in/code", post(auth::request_code))
+        .route("/sign-in/verify", post(auth::verify))
+        .route("/sign-out", post(auth::sign_out))
+        .route(
+            "/config/mail",
+            get(config::mail)
+                .put(config::save_mail)
+                .delete(config::clear_mail),
+        )
+        .route("/config/mail/test", post(config::test_mail))
+        .fallback(async || ApiError(StatusCode::NOT_FOUND, "not found".into()))
+        .layer(log)
+        // Added after the layer, so health checks aren't logged.
+        .route("/health", get(health))
+        .with_state(state);
+    Router::new().nest("/api", api).fallback(web::serve)
+}
+
+async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    sqlx::query("SELECT 1").execute(&state.pool).await?;
+    Ok(Json(json!({"status": "ok"})))
+}
+
+#[derive(Debug)]
+pub struct ApiError(StatusCode, String);
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.0, Json(json!({"error": self.1}))).into_response()
+    }
+}
+
+impl From<sqlx::Error> for ApiError {
+    fn from(error: sqlx::Error) -> Self {
+        tracing::error!("database error: {error}");
+        Self(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Something went wrong".into(),
+        )
+    }
+}

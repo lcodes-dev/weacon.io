@@ -29,6 +29,7 @@ The result is `target/release/weacon-server`, with the web app inside it.
 | --- | --- | --- |
 | `WEACON_ADDR` | `127.0.0.1:8080` | Where the server listens |
 | `WEACON_DB` | `weacon.db` | The database file, created if missing |
+| `RUST_LOG` | `info` | How much the server logs; `debug` adds every SQL query and SMTP exchange |
 
 ## Docs
 

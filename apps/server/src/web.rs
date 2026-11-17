@@ -6,7 +6,7 @@ use rust_embed::RustEmbed;
 #[folder = "../web/dist"]
 struct Dist;
 
-/// Serves the built web app: the file at the path, or `index.html` so client-side routes load.
+/// Falls back to `index.html` so client-side routes load.
 pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let (path, file) = match Dist::get(path) {

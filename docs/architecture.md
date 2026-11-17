@@ -7,7 +7,9 @@ Weacon is one Rust server that holds the data in SQLite and serves a React web a
 ```
 apps/
   server/        the Rust server: axum, tokio, sqlx
+    src/         lib.rs holds the router; main.rs only starts it
     migrations/  numbered .sql files
+    tests/       the server's tests
   web/           React, TypeScript, Vite, Tailwind, UI SDK
 crates/          Rust code shared between apps; none yet
 docs/            these docs
@@ -23,6 +25,20 @@ The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and 
 - JSON API under `/api/...`.
 - One WebSocket at `/ws` for live updates.
 - Everything else is the web app (see below).
+
+## Logging
+
+The server logs with the `tracing` crate to its standard output: a timestamp, a level, where the line came from, and the message.
+
+- Every API request gets one line with its method, path, status and duration. The path is shown without its `/api` prefix. The health check and the web app's files are left out, since they would drown the rest.
+- A line logged while a request is handled carries that request's method and path.
+- The level is `info` unless the `RUST_LOG` environment variable says otherwise. `RUST_LOG=debug` also shows what sqlx, lettre and axum log, such as each SQL query.
+
+## Tests
+
+The server's tests are integration tests in `apps/server/tests/`. Each one builds the router over an in-memory database and sends it HTTP requests, cookie included, so it checks what a browser would see. The server is a library (`lib.rs`) with a small binary (`main.rs`) so that those tests can import the router.
+
+There are no unit tests inside `src/`. One is added only for something no request can reach.
 
 ## Database
 

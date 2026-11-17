@@ -15,8 +15,7 @@ pub async fn open(path: &str) -> sqlx::Result<SqlitePool> {
     migrated(SqlitePool::connect_with(options).await?).await
 }
 
-/// An in-memory database. One connection that never closes, because each connection has its own.
-#[cfg(test)]
+/// For tests. One connection, because each in-memory connection is its own database.
 pub async fn memory() -> SqlitePool {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -75,7 +74,6 @@ pub async fn user_by_session(pool: &SqlitePool, token: &str) -> sqlx::Result<Opt
     .await
 }
 
-/// Replaces any code the email already had.
 pub async fn save_code(
     pool: &SqlitePool,
     email: &str,
@@ -95,8 +93,7 @@ pub async fn save_code(
     Ok(())
 }
 
-/// Checks the code and, if it is right, starts a session under `token`, creating the account and
-/// its team when the code was for a registration. Returns whether the person is now signed in.
+/// Returns whether the code was right. A registration's code also creates the account and team.
 pub async fn sign_in(
     pool: &SqlitePool,
     email: &str,
@@ -198,7 +195,7 @@ pub async fn save_smtp(pool: &SqlitePool, smtp: Option<&Smtp>) -> sqlx::Result<(
     )
     .bind(smtp.map(|smtp| &smtp.host))
     .bind(smtp.map(|smtp| smtp.port))
-    .bind(smtp.map(|smtp| &smtp.security))
+    .bind(smtp.map(|smtp| smtp.security))
     .bind(smtp.and_then(|smtp| smtp.username.as_ref()))
     .bind(smtp.and_then(|smtp| smtp.password.as_ref()))
     .bind(smtp.map(|smtp| &smtp.from))

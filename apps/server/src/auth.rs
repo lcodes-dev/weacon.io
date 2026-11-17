@@ -13,14 +13,28 @@ use crate::{ApiError, AppState, now};
 const COOKIE_NAME: &str = "weacon_session";
 const CODE_SECONDS: i64 = 10 * 60;
 
-/// The signed-in person; a route that takes one answers 401 to anyone else.
 impl FromRequestParts<AppState> for User {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         signed_in(state, &parts.headers)
             .await?
-            .ok_or(ApiError(StatusCode::UNAUTHORIZED, "Sign in first".into()))
+            .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "Sign in first".into()))
+    }
+}
+
+pub struct Owner(pub User);
+
+impl FromRequestParts<AppState> for Owner {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let user = User::from_request_parts(parts, state).await?;
+        if user.is_owner {
+            return Ok(Self(user));
+        }
+        let message = "Only the server's owner can do that";
+        Err(ApiError(StatusCode::FORBIDDEN, message.into()))
     }
 }
 
@@ -40,7 +54,7 @@ fn session_token(headers: &HeaderMap) -> Option<&str> {
         .find_map(|cookie| cookie.strip_prefix(COOKIE_NAME)?.strip_prefix('='))
 }
 
-/// The header that sets the session cookie; a `max_age` of 0 removes it.
+/// A `max_age` of 0 removes the cookie.
 fn session_cookie(token: &str, max_age: u32) -> [(HeaderName, String); 1] {
     let cookie =
         format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
@@ -74,7 +88,7 @@ pub async fn request_code(
     }
     let name = request.name.as_deref().map(str::trim);
     let name = name.filter(|name| !name.is_empty());
-    // Signing in with an unknown email looks the same from outside, and mails nothing.
+    // An unknown email gets the same answer, and no mail.
     if name.is_none() && !db::user_exists(&state.pool, &email).await? {
         return Ok(StatusCode::NO_CONTENT);
     }
@@ -86,7 +100,7 @@ pub async fn request_code(
         .send(&email, "Your Weacon sign-in code", &text)
         .await
         .map_err(|error| {
-            eprintln!("mail failed: {error}");
+            tracing::error!("mail to {email} failed: {error}");
             ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
         })?;
     Ok(StatusCode::NO_CONTENT)
