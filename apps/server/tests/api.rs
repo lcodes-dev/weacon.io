@@ -1,13 +1,16 @@
-use std::sync::Arc;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, to_bytes};
+use axum::extract::{Path, State};
 use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use tower::ServiceExt;
-use weacon_server::{AppState, db, router};
+use weacon_server::{AppState, db, map, router};
 
 /// Keeps the session cookie, as a browser does.
 struct Client {
@@ -21,6 +24,7 @@ async fn server() -> AppState {
         mailer: Arc::default(),
         url: "http://weacon.test".into(),
         github_api: "http://127.0.0.1:1".into(),
+        map_wake: Arc::default(),
     }
 }
 
@@ -514,13 +518,45 @@ async fn an_expired_invite_is_refused_until_it_is_sent_again() {
     assert_eq!(marco.post(&accept, Value::Null).await.0, StatusCode::OK);
 }
 
+/// The repository `northwind/storefront` on the fake GitHub: its branches and commits.
+#[derive(Clone, Default)]
+struct Repo(Arc<Mutex<RepoState>>);
+
+#[derive(Default)]
+struct RepoState {
+    /// Branch to its latest commit.
+    heads: BTreeMap<String, String>,
+    /// Commit to its files, as path and content.
+    commits: HashMap<String, Vec<(String, String)>>,
+    /// How many archives were downloaded.
+    archives: usize,
+}
+
+impl Repo {
+    /// Makes `commit`, with these files, the latest on the branch.
+    fn push(&self, branch: &str, commit: &str, files: &[(&str, &str)]) {
+        let mut repo = self.0.lock().unwrap();
+        repo.heads.insert(branch.into(), commit.into());
+        let files = files
+            .iter()
+            .map(|(path, text)| (path.to_string(), text.to_string()));
+        repo.commits.insert(commit.into(), files.collect());
+    }
+
+    fn archives(&self) -> usize {
+        self.0.lock().unwrap().archives
+    }
+}
+
 /// Starts a GitHub that knows one app, installed on `northwind` with two repositories.
-async fn fake_github() -> String {
+async fn fake_github() -> (String, Repo) {
     // The app's calls must carry a token signed with the key GitHub handed out.
     fn signed(headers: &HeaderMap) -> bool {
         let token = headers["authorization"].to_str().unwrap();
         token.strip_prefix("Bearer ").unwrap().split('.').count() == 3
     }
+    let first_page = |request: &Request<Body>| request.uri().query().unwrap().ends_with("page=1");
+    let repo = Repo::default();
     let github = Router::new()
         .route(
             "/app-manifests/good-code/conversions",
@@ -545,10 +581,9 @@ async fn fake_github() -> String {
         )
         .route(
             "/installation/repositories",
-            get(async |headers: HeaderMap, request: Request<Body>| {
+            get(async move |headers: HeaderMap, request: Request<Body>| {
                 assert_eq!(headers["authorization"], "Bearer installation-token");
-                let first = request.uri().query().unwrap().ends_with("page=1");
-                let names: &[&str] = if first {
+                let names: &[&str] = if first_page(&request) {
                     &["northwind/storefront", "northwind/docs"]
                 } else {
                     &[]
@@ -559,11 +594,68 @@ async fn fake_github() -> String {
                     .collect();
                 Json(json!({"repositories": repositories}))
             }),
-        );
+        )
+        .route(
+            "/repos/northwind/storefront",
+            get(async || Json(json!({"default_branch": "main"}))),
+        )
+        .route(
+            "/repos/northwind/storefront/branches",
+            get(
+                async move |State(repo): State<Repo>, request: Request<Body>| {
+                    let repo = repo.0.lock().unwrap();
+                    let heads = repo.heads.iter().filter(|_| first_page(&request));
+                    let branches: Vec<Value> = heads
+                        .map(|(name, commit)| json!({"name": name, "commit": {"sha": commit}}))
+                        .collect();
+                    Json(json!(branches))
+                },
+            ),
+        )
+        .route(
+            "/repos/northwind/storefront/git/trees/{commit}",
+            get(
+                async |State(repo): State<Repo>, Path(commit): Path<String>| {
+                    let repo = repo.0.lock().unwrap();
+                    let entries: Vec<Value> = repo.commits[&commit]
+                        .iter()
+                        .map(|(path, text)| {
+                            let mut hasher = DefaultHasher::new();
+                            text.hash(&mut hasher);
+                            let blob = format!("{:x}", hasher.finish());
+                            json!({"path": path, "type": "blob", "sha": blob})
+                        })
+                        .collect();
+                    Json(json!({"tree": entries}))
+                },
+            ),
+        )
+        .route(
+            "/repos/northwind/storefront/tarball/{commit}",
+            get(
+                async |State(repo): State<Repo>, Path(commit): Path<String>| {
+                    let mut repo = repo.0.lock().unwrap();
+                    repo.archives += 1;
+                    let gzip = flate2::write::GzEncoder::new(Vec::new(), Default::default());
+                    let mut archive = tar::Builder::new(gzip);
+                    for (path, text) in &repo.commits[&commit] {
+                        let mut header = tar::Header::new_gnu();
+                        header.set_size(text.len() as u64);
+                        header.set_mode(0o644);
+                        let path = format!("northwind-storefront-{commit}/{path}");
+                        archive
+                            .append_data(&mut header, path, text.as_bytes())
+                            .unwrap();
+                    }
+                    archive.into_inner().unwrap().finish().unwrap()
+                },
+            ),
+        )
+        .with_state(repo.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async { axum::serve(listener, github).await.unwrap() });
-    address
+    (address, repo)
 }
 
 #[tokio::test]
@@ -575,10 +667,7 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
         .post("/api/teams/1/projects", json!({"name": " Storefront "}))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        project,
-        json!({"id": 1, "name": "Storefront", "repo": null})
-    );
+    assert_eq!(project, json!({"id": 1}));
     assert_eq!(
         marco
             .post("/api/teams/1/projects", json!({"name": " "}))
@@ -597,7 +686,10 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
         StatusCode::NOT_FOUND
     );
     let (_, projects) = ada.get("/api/teams/1/projects").await;
-    assert_eq!(projects, json!([{"id": 1, "name": "Shop", "repo": null}]));
+    assert_eq!(
+        projects,
+        json!([{"id": 1, "name": "Shop", "repo": null, "branches": []}])
+    );
 
     assert_eq!(
         marco.delete("/api/teams/1/projects/1").await,
@@ -619,7 +711,7 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
 #[tokio::test]
 async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositories() {
     let mut state = server().await;
-    state.github_api = fake_github().await;
+    state.github_api = fake_github().await.0;
     let (mut ada, mut marco) = ada_and_marco(&state).await;
 
     let nothing = json!({"app": null, "account": null, "repos": []});
@@ -656,9 +748,12 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
         })
     );
 
-    let (status, project) = marco.post("/api/teams/1/projects", with_repo).await;
+    let (status, _) = marco.post("/api/teams/1/projects", with_repo).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(project["repo"], "northwind/storefront");
+    assert_eq!(
+        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        "northwind/storefront"
+    );
     let elsewhere = json!({"name": "Storefront", "repo": "someone/else"});
     assert_eq!(
         marco.put("/api/teams/1/projects/1", elsewhere).await,
@@ -678,7 +773,7 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
 #[tokio::test]
 async fn forgetting_the_github_app_keeps_the_projects() {
     let mut state = server().await;
-    state.github_api = fake_github().await;
+    state.github_api = fake_github().await.0;
     let (mut ada, mut marco) = ada_and_marco(&state).await;
     ada.post("/api/teams/1/github", json!({"code": "good-code"}))
         .await;
@@ -697,5 +792,189 @@ async fn forgetting_the_github_app_keeps_the_projects() {
     assert_eq!(
         ada.get("/api/teams/1/projects").await.1[0]["repo"],
         "northwind/docs"
+    );
+}
+
+const PRICE_TS: &str = "export function formatPrice(cents: number): string {
+  return String(cents)
+}
+export function init() {}
+";
+const APP_TS: &str = "import { formatPrice } from \"./price\"
+export class Cart {
+  total() {
+    return formatPrice(1)
+  }
+}
+init()
+";
+const UTIL_PY: &str = "def init():
+    pass
+
+class Basket:
+    pass
+";
+const LIB_RS: &str = "pub struct Order;
+
+pub fn ship(order: Order) {}
+";
+
+/// Ada's team with its GitHub App, and project 1 tracking `main` of `northwind/storefront`.
+async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
+    let mut state = server().await;
+    let (address, repo) = fake_github().await;
+    state.github_api = address;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    ada.post("/api/teams/1/github", json!({"code": "good-code"}))
+        .await;
+    repo.push("main", "c1", files);
+    let project =
+        json!({"name": "Storefront", "repo": "northwind/storefront", "branches": ["main"]});
+    let (status, _) = ada.post("/api/teams/1/projects", project).await;
+    assert_eq!(status, StatusCode::OK);
+    map::round(&state).await;
+    (state, ada, repo)
+}
+
+/// The names of the symbols the map has for a file.
+fn symbols(map: &Value, path: &str) -> Vec<String> {
+    let files = map["files"].as_array().unwrap();
+    let file = files.iter().find(|file| file["path"] == path).unwrap();
+    let symbols = file["symbols"].as_array().unwrap().iter();
+    symbols
+        .map(|symbol| symbol["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
+    let files = [
+        ("src/app.ts", APP_TS),
+        ("src/price.ts", PRICE_TS),
+        ("tools/util.py", UTIL_PY),
+        ("server/lib.rs", LIB_RS),
+        ("README.md", "# Storefront\n\nA shop.\n"),
+    ];
+    let (_, mut ada, _) = mapped_project(&files).await;
+
+    let (_, branches) = ada
+        .get("/api/teams/1/github/branches?repo=northwind/storefront")
+        .await;
+    assert_eq!(branches, json!({"default": "main", "branches": ["main"]}));
+    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    assert_eq!(
+        projects[0]["branches"],
+        json!([{"name": "main", "head_sha": "c1", "commit_sha": "c1", "error": null}])
+    );
+
+    let (status, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(map["commit"], "c1");
+    assert_eq!(map["files"].as_array().unwrap().len(), 5);
+    assert_eq!(symbols(&map, "src/price.ts"), ["formatPrice", "init"]);
+    assert_eq!(symbols(&map, "src/app.ts"), ["Cart", "total"]);
+    assert_eq!(symbols(&map, "tools/util.py"), ["init", "Basket"]);
+    assert_eq!(symbols(&map, "server/lib.rs"), ["Order", "ship"]);
+    assert_eq!(
+        map["files"][0],
+        json!({"path": "README.md", "language": null, "lines": 3, "symbols": []})
+    );
+    assert_eq!(
+        map["files"][2]["symbols"][1],
+        json!({"name": "total", "kind": "method", "line": 3, "end_line": 5})
+    );
+    // `init` has two definitions, so mentioning it links nothing.
+    assert_eq!(map["uses"], json!([["src/app.ts", "src/price.ts"]]));
+
+    assert_eq!(
+        ada.get("/api/teams/1/projects/1/map?branch=other").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_new_commit_reads_only_the_content_that_is_new() {
+    let files = [("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)];
+    let (state, mut ada, repo) = mapped_project(&files).await;
+    assert_eq!(repo.archives(), 1);
+
+    // Nothing moved, so nothing is mapped.
+    map::round(&state).await;
+    assert_eq!(repo.archives(), 1);
+
+    // A commit that only moves a file brings no new content.
+    repo.push(
+        "main",
+        "c2",
+        &[("app.ts", APP_TS), ("src/price.ts", PRICE_TS)],
+    );
+    map::round(&state).await;
+    assert_eq!(repo.archives(), 1);
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(map["commit"], "c2");
+    assert_eq!(symbols(&map, "app.ts"), ["Cart", "total"]);
+
+    repo.push("main", "c3", &[("app.ts", "export function start() {}\n")]);
+    map::round(&state).await;
+    assert_eq!(repo.archives(), 2);
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(map["files"].as_array().unwrap().len(), 1);
+    assert_eq!(symbols(&map, "app.ts"), ["start"]);
+    // The contents no commit lists any more are forgotten.
+    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+}
+
+#[tokio::test]
+async fn each_tracked_branch_has_its_own_map() {
+    let files = [("src/price.ts", PRICE_TS), ("old/price.ts", PRICE_TS)];
+    let (state, mut ada, repo) = mapped_project(&files).await;
+    repo.push(
+        "dev",
+        "d1",
+        &[("src/price.ts", PRICE_TS), ("src/app.ts", APP_TS)],
+    );
+    let mut project = json!({
+        "name": "Storefront", "repo": "northwind/storefront", "branches": ["main", "dev", "gone"],
+    });
+    ada.put("/api/teams/1/projects/1", project.clone()).await;
+    map::round(&state).await;
+
+    let (_, main) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, dev) = ada.get("/api/teams/1/projects/1/map?branch=dev").await;
+    assert_eq!(main["files"].as_array().unwrap().len(), 2);
+    assert_eq!(dev["files"].as_array().unwrap().len(), 2);
+    // The same content at two paths is read once.
+    assert_eq!(symbols(&main, "old/price.ts"), ["formatPrice", "init"]);
+    assert_eq!(dev["commit"], "d1");
+    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    assert_eq!(projects[0]["branches"][1]["name"], "gone");
+    assert_eq!(
+        projects[0]["branches"][1]["error"],
+        "This branch isn't on GitHub"
+    );
+
+    project["branches"] = json!(["main"]);
+    ada.put("/api/teams/1/projects/1", project.clone()).await;
+    assert_eq!(
+        ada.get("/api/teams/1/projects/1/map?branch=dev").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(kept, 1);
+
+    // Without a repository there is nothing to map.
+    project["repo"] = Value::Null;
+    ada.put("/api/teams/1/projects/1", project).await;
+    assert_eq!(
+        ada.get("/api/teams/1/projects").await.1[0]["branches"],
+        json!([])
     );
 }

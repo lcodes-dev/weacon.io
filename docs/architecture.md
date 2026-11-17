@@ -112,6 +112,20 @@ Each team has its own private GitHub App, registered and installed by the team's
 - **Access.** The app may read the code of the chosen repositories and nothing else. It has no webhook, so GitHub never calls the server.
 - GitHub's API address is part of the router's state, so the tests point it at a fake GitHub they start themselves.
 
+## Code map
+
+A project tracks chosen branches of its repository, and the server keeps a map of each: every file, the symbols defined in it, and which file uses which. `map.rs` holds it.
+
+- **The queue.** A row of `branches` has `head_sha`, the latest commit GitHub has, and `commit_sha`, the commit its map describes. A branch waits to be mapped while they differ.
+- **The worker.** One task, started by `main.rs`, runs a round every minute and at once when a project's branches change. A round asks GitHub for each tracked repository's branches and notes their commits, then maps every waiting branch.
+- **Mapping.** The server asks GitHub for the commit's files, which come with git's id of each content. Contents it has already read for the project are skipped. If any is new, it downloads the commit as one archive and reads only the new ones. The branch's file list and commit are saved in one transaction.
+- **By content.** What is read from a file is stored against git's id of its content (`blobs`, `blob_symbols`, `blob_mentions`), so a version of a file is read once, across commits and branches. `branch_files` says which contents a branch has. Contents no branch lists are deleted.
+- **Reading.** tree-sitter parses a file, and the tags query shipped with each grammar says which nodes define a name and which mention one. `LANGUAGES` in `map.rs` lists the languages: JavaScript, TypeScript, Rust, Python and PHP. Other files are listed with their line count only, and files over 500 KB or not text are not read.
+- **Uses.** File A uses file B when A mentions a name that only B defines on that branch. It is matching by name, computed when the map is asked for.
+- **A new reader.** `READER` in `map.rs` is raised when what is read changes, such as with a new language. At startup a server with another number forgets every map, and the worker reads them all again.
+- **The picture.** The web app draws a branch as a graph: a dot is a file, inside the circle of its folder, and a line joins a file to one it uses, bent toward the folder both share so that lines gather into bundles. `d3-hierarchy` packs the circles once, so nothing moves afterwards but the view: the wheel zooms, dragging moves, and clicking a folder fits it. Clicking a file shows its symbols and lights up its lines, solid to what it uses and dashed from what uses it. The layout is worked out in the browser and saved nowhere.
+- The server asks GitHub; GitHub never calls it. A webhook would only have to write `head_sha`.
+
 ## Mail
 
 `mail.rs` has one way to send: `Mailer::send(to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
@@ -143,9 +157,11 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/teams/{id}/invites` | the team's owner | Invites the `emails` and mails each its link. No mail goes out if one address is wrong or already a member |
 | `DELETE /api/teams/{id}/invites/{invite_id}` | the team's owner | Revokes an invite |
 | `DELETE /api/teams/{id}/members/{user_id}` | the team's owner, or that member | Removes a member, or leaves. Refused for the owner |
-| `GET`, `POST /api/teams/{id}/projects` | a member | Lists the team's projects, or creates one from `name` and an optional `repo` |
-| `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name and repository; leaving `repo` out removes it |
+| `GET`, `POST /api/teams/{id}/projects` | a member | Lists the team's projects with their tracked branches, or creates one from `name`, an optional `repo` and the `branches` to track |
+| `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name, repository and tracked branches; leaving `repo` out removes it |
 | `DELETE /api/teams/{id}/projects/{project_id}` | the team's owner | Deletes the project |
+| `GET /api/teams/{id}/projects/{project_id}/map?branch=` | a member | A branch's map: its commit, every file with its symbols, and which file uses which |
+| `GET /api/teams/{id}/github/branches?repo=` | a member | A repository's branches and which is the default |
 | `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |
 | `POST /api/teams/{id}/github` | the team's owner | Trades GitHub's `code` for the new app and saves it |
 | `DELETE /api/teams/{id}/github` | the team's owner | Forgets the app; it stays on GitHub |
@@ -162,6 +178,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. The shell is still the empty layout from the reference.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks. The shell is still the empty layout from the reference.
 
-Not built yet, each waiting for the first feature that needs it: the WebSocket, reading a repository's code.
+Not built yet, each waiting for the first feature that needs it: the WebSocket.

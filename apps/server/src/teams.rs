@@ -18,7 +18,7 @@ pub fn refused(message: impl Into<String>) -> ApiError {
 /// A team the user isn't in looks like one that doesn't exist.
 pub fn membership(user: &User, team_id: i64) -> Result<&Team, ApiError> {
     let team = user.teams.iter().find(|team| team.id == team_id);
-    team.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "not found".into()))
+    team.ok_or_else(crate::not_found)
 }
 
 pub fn owned(user: &User, team_id: i64) -> Result<&Team, ApiError> {

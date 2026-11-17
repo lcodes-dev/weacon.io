@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 use weacon_server::mail::Mailer;
-use weacon_server::{AppState, db, router};
+use weacon_server::{AppState, db, map, router};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -28,7 +28,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         mailer,
         url,
         github_api: "https://api.github.com".into(),
+        map_wake: Arc::default(),
     };
+    tokio::spawn(map::worker(state.clone()));
     axum::serve(listener, router(state)).await?;
     Ok(())
 }

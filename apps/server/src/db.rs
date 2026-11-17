@@ -1,8 +1,11 @@
+use std::collections::{HashMap, HashSet};
+
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{FromRow, SqlitePool};
 
 use crate::mail::Smtp;
+use crate::map::{Reading, Symbol};
 
 const CODE_TRIES: i64 = 5;
 
@@ -74,6 +77,57 @@ pub struct Project {
     pub name: String,
     /// `owner/name` on GitHub.
     pub repo: Option<String>,
+    #[sqlx(skip)]
+    pub branches: Vec<Branch>,
+}
+
+/// A branch a project tracks. Its map is behind while the two commits differ.
+#[derive(Serialize, FromRow)]
+pub struct Branch {
+    #[serde(skip)]
+    pub project_id: i64,
+    pub name: String,
+    /// The latest commit GitHub has.
+    pub head_sha: Option<String>,
+    /// The commit the map describes.
+    pub commit_sha: Option<String>,
+    pub error: Option<String>,
+}
+
+/// A project with a repository and at least one tracked branch.
+#[derive(FromRow)]
+pub struct Tracked {
+    pub id: i64,
+    pub team_id: i64,
+    pub repo: String,
+}
+
+/// A branch whose map is behind `head_sha`.
+#[derive(FromRow)]
+pub struct Waiting {
+    pub project_id: i64,
+    pub team_id: i64,
+    pub repo: String,
+    pub name: String,
+    pub head_sha: String,
+}
+
+/// A branch's map.
+#[derive(Serialize)]
+pub struct Map {
+    /// The commit it describes; `None` until the branch is first mapped.
+    pub commit: Option<String>,
+    pub files: Vec<MapFile>,
+    /// Pairs of a file and a file it uses.
+    pub uses: Vec<(String, String)>,
+}
+
+#[derive(Serialize)]
+pub struct MapFile {
+    pub path: String,
+    pub language: Option<String>,
+    pub lines: i64,
+    pub symbols: Vec<Symbol>,
 }
 
 /// A team's own GitHub App.
@@ -365,9 +419,38 @@ pub async fn accept_invite(
 }
 
 pub async fn projects(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Vec<Project>> {
-    sqlx::query_as("SELECT id, name, repo FROM projects WHERE team_id = ? ORDER BY name")
+    let mut projects: Vec<Project> =
+        sqlx::query_as("SELECT id, name, repo FROM projects WHERE team_id = ? ORDER BY name")
+            .bind(team_id)
+            .fetch_all(pool)
+            .await?;
+    let branches: Vec<Branch> = sqlx::query_as(
+        "SELECT b.project_id, b.name, b.head_sha, b.commit_sha, b.error
+         FROM branches b JOIN projects p ON p.id = b.project_id
+         WHERE p.team_id = ? ORDER BY b.name",
+    )
+    .bind(team_id)
+    .fetch_all(pool)
+    .await?;
+    for branch in branches {
+        let project = projects
+            .iter_mut()
+            .find(|project| project.id == branch.project_id);
+        project.unwrap().branches.push(branch);
+    }
+    Ok(projects)
+}
+
+/// The project's repository; `None` when the team has no such project.
+pub async fn project_repo(
+    pool: &SqlitePool,
+    team_id: i64,
+    project_id: i64,
+) -> sqlx::Result<Option<Option<String>>> {
+    sqlx::query_scalar("SELECT repo FROM projects WHERE team_id = ? AND id = ?")
         .bind(team_id)
-        .fetch_all(pool)
+        .bind(project_id)
+        .fetch_optional(pool)
         .await
 }
 
@@ -377,10 +460,9 @@ pub async fn create_project(
     name: &str,
     repo: Option<&str>,
     now: i64,
-) -> sqlx::Result<Project> {
-    sqlx::query_as(
-        "INSERT INTO projects (team_id, name, repo, created_at) VALUES (?, ?, ?, ?)
-         RETURNING id, name, repo",
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "INSERT INTO projects (team_id, name, repo, created_at) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(team_id)
     .bind(name)
@@ -390,23 +472,21 @@ pub async fn create_project(
     .await
 }
 
-/// Returns whether the team has that project.
 pub async fn update_project(
     pool: &SqlitePool,
     team_id: i64,
     project_id: i64,
     name: &str,
     repo: Option<&str>,
-) -> sqlx::Result<bool> {
-    let updated =
-        sqlx::query("UPDATE projects SET name = ?, repo = ? WHERE team_id = ? AND id = ?")
-            .bind(name)
-            .bind(repo)
-            .bind(team_id)
-            .bind(project_id)
-            .execute(pool)
-            .await?;
-    Ok(updated.rows_affected() > 0)
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE projects SET name = ?, repo = ? WHERE team_id = ? AND id = ?")
+        .bind(name)
+        .bind(repo)
+        .bind(team_id)
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 pub async fn delete_project(pool: &SqlitePool, team_id: i64, project_id: i64) -> sqlx::Result<()> {
@@ -416,6 +496,291 @@ pub async fn delete_project(pool: &SqlitePool, team_id: i64, project_id: i64) ->
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/// Makes `names` the project's tracked branches. `reset` forgets every map first.
+pub async fn track_branches(
+    pool: &SqlitePool,
+    project_id: i64,
+    names: &[String],
+    reset: bool,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    for name in branch_names(&mut *tx, project_id).await? {
+        if reset || !names.contains(&name) {
+            sqlx::query("DELETE FROM branches WHERE project_id = ? AND name = ?")
+                .bind(project_id)
+                .bind(&name)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("DELETE FROM branch_files WHERE project_id = ? AND branch = ?")
+                .bind(project_id)
+                .bind(&name)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    for name in names {
+        sqlx::query("INSERT OR IGNORE INTO branches (project_id, name) VALUES (?, ?)")
+            .bind(project_id)
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+    }
+    forget_unlisted_blobs(&mut tx, project_id).await?;
+    tx.commit().await
+}
+
+/// Deletes what was read from contents that no branch of the project lists any more.
+async fn forget_unlisted_blobs(
+    tx: &mut sqlx::SqliteConnection,
+    project_id: i64,
+) -> sqlx::Result<()> {
+    for sql in [
+        "DELETE FROM blob_symbols WHERE project_id = ?1 AND blob NOT IN (SELECT blob FROM branch_files WHERE project_id = ?1)",
+        "DELETE FROM blob_mentions WHERE project_id = ?1 AND blob NOT IN (SELECT blob FROM branch_files WHERE project_id = ?1)",
+        "DELETE FROM blobs WHERE project_id = ?1 AND blob NOT IN (SELECT blob FROM branch_files WHERE project_id = ?1)",
+    ] {
+        sqlx::query(sql).bind(project_id).execute(&mut *tx).await?;
+    }
+    Ok(())
+}
+
+pub async fn branch_names(
+    db: impl sqlx::SqliteExecutor<'_>,
+    project_id: i64,
+) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar("SELECT name FROM branches WHERE project_id = ?")
+        .bind(project_id)
+        .fetch_all(db)
+        .await
+}
+
+pub async fn tracked_projects(pool: &SqlitePool) -> sqlx::Result<Vec<Tracked>> {
+    sqlx::query_as(
+        "SELECT id, team_id, repo FROM projects
+         WHERE repo IS NOT NULL AND id IN (SELECT project_id FROM branches)",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Records the branch's latest commit on GitHub, or why it couldn't be learned or mapped.
+pub async fn set_branch_head(
+    pool: &SqlitePool,
+    project_id: i64,
+    name: &str,
+    head_sha: Option<&str>,
+    error: Option<&str>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE branches SET head_sha = COALESCE(?, head_sha), error = ?
+         WHERE project_id = ? AND name = ?",
+    )
+    .bind(head_sha)
+    .bind(error)
+    .bind(project_id)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn waiting_branches(pool: &SqlitePool) -> sqlx::Result<Vec<Waiting>> {
+    sqlx::query_as(
+        "SELECT b.project_id, p.team_id, p.repo, b.name, b.head_sha
+         FROM branches b JOIN projects p ON p.id = b.project_id
+         WHERE b.head_sha IS NOT NULL AND b.head_sha IS NOT b.commit_sha AND b.error IS NULL",
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Forgets every map made by another version of the reader, so that all are read again.
+pub async fn forget_maps_of_other_readers(pool: &SqlitePool, reader: i64) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    let current: i64 = sqlx::query_scalar("SELECT map_reader FROM config")
+        .fetch_one(&mut *tx)
+        .await?;
+    if current != reader {
+        for sql in [
+            "DELETE FROM branch_files",
+            "DELETE FROM blob_symbols",
+            "DELETE FROM blob_mentions",
+            "DELETE FROM blobs",
+            "UPDATE branches SET commit_sha = NULL",
+        ] {
+            sqlx::query(sql).execute(&mut *tx).await?;
+        }
+        sqlx::query("UPDATE config SET map_reader = ?")
+            .bind(reader)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
+pub async fn known_blobs(pool: &SqlitePool, project_id: i64) -> sqlx::Result<HashSet<String>> {
+    let blobs = sqlx::query_scalar("SELECT blob FROM blobs WHERE project_id = ?")
+        .bind(project_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(blobs.into_iter().collect())
+}
+
+/// Saves what was newly read, and makes `files` the branch's map at its latest commit.
+pub async fn save_map(
+    pool: &SqlitePool,
+    branch: &Waiting,
+    files: &[(String, String)],
+    readings: &[(String, Reading)],
+) -> sqlx::Result<()> {
+    let project = branch.project_id;
+    let mut tx = pool.begin().await?;
+    for (blob, reading) in readings {
+        sqlx::query(
+            "INSERT OR IGNORE INTO blobs (project_id, blob, language, lines) VALUES (?, ?, ?, ?)",
+        )
+        .bind(project)
+        .bind(blob)
+        .bind(reading.language)
+        .bind(reading.lines)
+        .execute(&mut *tx)
+        .await?;
+        for symbol in &reading.symbols {
+            sqlx::query(
+                "INSERT INTO blob_symbols (project_id, blob, name, kind, line, end_line)
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(project)
+            .bind(blob)
+            .bind(&symbol.name)
+            .bind(&symbol.kind)
+            .bind(symbol.line)
+            .bind(symbol.end_line)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for name in &reading.mentions {
+            sqlx::query(
+                "INSERT OR IGNORE INTO blob_mentions (project_id, blob, name) VALUES (?, ?, ?)",
+            )
+            .bind(project)
+            .bind(blob)
+            .bind(name)
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
+    sqlx::query("DELETE FROM branch_files WHERE project_id = ? AND branch = ?")
+        .bind(project)
+        .bind(&branch.name)
+        .execute(&mut *tx)
+        .await?;
+    for (path, blob) in files {
+        sqlx::query(
+            "INSERT INTO branch_files (project_id, branch, path, blob) VALUES (?, ?, ?, ?)",
+        )
+        .bind(project)
+        .bind(&branch.name)
+        .bind(path)
+        .bind(blob)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("UPDATE branches SET commit_sha = ? WHERE project_id = ? AND name = ?")
+        .bind(&branch.head_sha)
+        .bind(project)
+        .bind(&branch.name)
+        .execute(&mut *tx)
+        .await?;
+    forget_unlisted_blobs(&mut tx, project).await?;
+    tx.commit().await
+}
+
+/// `None` when the team has no such project or the project doesn't track the branch.
+pub async fn map(
+    pool: &SqlitePool,
+    team_id: i64,
+    project_id: i64,
+    branch: &str,
+) -> sqlx::Result<Option<Map>> {
+    let commit: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT b.commit_sha FROM branches b JOIN projects p ON p.id = b.project_id
+         WHERE p.team_id = ? AND b.project_id = ? AND b.name = ?",
+    )
+    .bind(team_id)
+    .bind(project_id)
+    .bind(branch)
+    .fetch_optional(pool)
+    .await?;
+    let Some(commit) = commit else {
+        return Ok(None);
+    };
+
+    let files: Vec<(String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT f.path, b.language, b.lines
+         FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
+         WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
+    )
+    .bind(project_id)
+    .bind(branch)
+    .fetch_all(pool)
+    .await?;
+    let symbols: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT f.path, s.name, s.kind, s.line, s.end_line
+         FROM branch_files f JOIN blob_symbols s ON s.project_id = f.project_id AND s.blob = f.blob
+         WHERE f.project_id = ? AND f.branch = ? ORDER BY s.line",
+    )
+    .bind(project_id)
+    .bind(branch)
+    .fetch_all(pool)
+    .await?;
+    let mut by_path: HashMap<String, Vec<Symbol>> = HashMap::new();
+    for (path, name, kind, line, end_line) in symbols {
+        let symbol = Symbol {
+            name,
+            kind,
+            line,
+            end_line,
+        };
+        by_path.entry(path).or_default().push(symbol);
+    }
+    let files = files
+        .into_iter()
+        .map(|(path, language, lines)| MapFile {
+            symbols: by_path.remove(&path).unwrap_or_default(),
+            path,
+            language,
+            lines,
+        })
+        .collect();
+
+    // A file uses another when it mentions a name that only that other file defines.
+    let uses = sqlx::query_as(
+        "WITH defined AS (
+             SELECT s.name, MIN(f.path) AS path
+             FROM branch_files f
+             JOIN blob_symbols s ON s.project_id = f.project_id AND s.blob = f.blob
+             WHERE f.project_id = ?1 AND f.branch = ?2
+             GROUP BY s.name HAVING COUNT(DISTINCT f.path) = 1
+         )
+         SELECT DISTINCT f.path, defined.path
+         FROM branch_files f
+         JOIN blob_mentions m ON m.project_id = f.project_id AND m.blob = f.blob
+         JOIN defined ON defined.name = m.name
+         WHERE f.project_id = ?1 AND f.branch = ?2 AND f.path != defined.path
+         ORDER BY 1, 2",
+    )
+    .bind(project_id)
+    .bind(branch)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(Map {
+        commit,
+        files,
+        uses,
+    }))
 }
 
 pub async fn github_app(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<GithubApp>> {

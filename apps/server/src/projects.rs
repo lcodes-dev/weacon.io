@@ -2,6 +2,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
+use serde_json::{Value, json};
 
 use crate::db::{self, Project, User};
 use crate::teams::{membership, owned, refused};
@@ -12,6 +13,9 @@ pub struct Fields {
     name: String,
     /// `owner/name`; missing or empty for a project with no repository.
     repo: Option<String>,
+    /// The branches to map.
+    #[serde(default)]
+    branches: Vec<String>,
 }
 
 impl Fields {
@@ -34,6 +38,15 @@ impl Fields {
         }
         Ok((name, repo))
     }
+
+    /// Makes the project track the chosen branches, and has them mapped now.
+    async fn track(&self, state: &AppState, project_id: i64, reset: bool) -> sqlx::Result<()> {
+        let has_repo = self.repo.as_deref().is_some_and(|repo| !repo.is_empty());
+        let branches: &[String] = if has_repo { &self.branches } else { &[] };
+        db::track_branches(&state.pool, project_id, branches, reset).await?;
+        state.map_wake.notify_one();
+        Ok(())
+    }
 }
 
 pub async fn list(
@@ -50,11 +63,12 @@ pub async fn create(
     user: User,
     Path(team_id): Path<i64>,
     Json(fields): Json<Fields>,
-) -> Result<Json<Project>, ApiError> {
+) -> Result<Json<Value>, ApiError> {
     membership(&user, team_id)?;
     let (name, repo) = fields.checked(&state, team_id).await?;
-    let project = db::create_project(&state.pool, team_id, name, repo, now()).await?;
-    Ok(Json(project))
+    let id = db::create_project(&state.pool, team_id, name, repo, now()).await?;
+    fields.track(&state, id, false).await?;
+    Ok(Json(json!({"id": id})))
 }
 
 pub async fn update(
@@ -65,9 +79,13 @@ pub async fn update(
 ) -> Result<StatusCode, ApiError> {
     membership(&user, team_id)?;
     let (name, repo) = fields.checked(&state, team_id).await?;
-    if !db::update_project(&state.pool, team_id, project_id, name, repo).await? {
-        return Err(ApiError(StatusCode::NOT_FOUND, "not found".into()));
-    }
+    let old_repo = db::project_repo(&state.pool, team_id, project_id).await?;
+    let old_repo = old_repo.ok_or_else(crate::not_found)?;
+    db::update_project(&state.pool, team_id, project_id, name, repo).await?;
+    // Another repository's maps say nothing about this one.
+    fields
+        .track(&state, project_id, old_repo.as_deref() != repo)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -22,6 +22,12 @@
   --pri: #1f1d1a;
   --pri-text: #ffffff;
   --pri-hover: #38342f;
+  /* The code map's languages, in a fixed order. */
+  --lang-1: #2a78d6;
+  --lang-2: #eb6834;
+  --lang-3: #1baf7a;
+  --lang-4: #eda100;
+  --lang-5: #e87ba4;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -43,6 +49,11 @@
     --pri: #ece7df;
     --pri-text: #1a1917;
     --pri-hover: #ffffff;
+    --lang-1: #3987e5;
+    --lang-2: #d95926;
+    --lang-3: #199e70;
+    --lang-4: #c98500;
+    --lang-5: #d55181;
   }
 }
 
@@ -80,6 +91,10 @@ body {
 
   .page {
     @apply mx-auto flex max-w-[560px] flex-col gap-3 p-8;
+  }
+
+  .page-wide {
+    @apply max-w-[1180px];
   }
 
   .page h1 {

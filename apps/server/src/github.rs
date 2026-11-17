@@ -1,14 +1,15 @@
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::LazyLock;
 
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::{Client, Method, RequestBuilder};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::db::{self, GithubApp, User};
 use crate::teams::{membership, owned};
@@ -78,29 +79,57 @@ fn app_token(app: &GithubApp) -> Result<String, ApiError> {
         .map_err(failed)
 }
 
-pub async fn team_status(state: &AppState, team_id: i64) -> Result<Status, ApiError> {
-    let Some(app) = db::github_app(&state.pool, team_id).await? else {
-        return Ok(Status::default());
-    };
-    let app_token = app_token(&app)?;
-    let mut status = Status {
-        app: Some(app.slug),
-        ..Status::default()
-    };
+/// The account the app is installed on and a token to act there, once it is installed.
+async fn installation(
+    state: &AppState,
+    app: &GithubApp,
+) -> Result<Option<(String, String)>, ApiError> {
+    let app_token = app_token(app)?;
     let installations = request(state, Method::GET, "/app/installations").bearer_auth(&app_token);
     let installations: Vec<Installation> = answer(installations).await?;
     // A private app installs only on the account that owns it, so there is at most one.
     let Some(installation) = installations.into_iter().next() else {
-        return Ok(status);
+        return Ok(None);
     };
-    status.account = Some(installation.account.login);
-
     let path = format!("/app/installations/{}/access_tokens", installation.id);
     let token: Token = answer(request(state, Method::POST, &path).bearer_auth(&app_token)).await?;
+    Ok(Some((installation.account.login, token.token)))
+}
+
+/// A token to read the team's repositories with.
+pub async fn token(state: &AppState, team_id: i64) -> Result<String, ApiError> {
+    let installed = match db::github_app(&state.pool, team_id).await? {
+        Some(app) => installation(state, &app).await?,
+        None => None,
+    };
+    let (_, token) = installed.ok_or_else(|| failed("the team has no installed GitHub App"))?;
+    Ok(token)
+}
+
+async fn get<T: DeserializeOwned>(
+    state: &AppState,
+    token: &str,
+    path: &str,
+) -> Result<T, ApiError> {
+    answer(request(state, Method::GET, path).bearer_auth(token)).await
+}
+
+pub async fn team_status(state: &AppState, team_id: i64) -> Result<Status, ApiError> {
+    let Some(app) = db::github_app(&state.pool, team_id).await? else {
+        return Ok(Status::default());
+    };
+    let installed = installation(state, &app).await?;
+    let mut status = Status {
+        app: Some(app.slug),
+        ..Status::default()
+    };
+    let Some((account, token)) = installed else {
+        return Ok(status);
+    };
+    status.account = Some(account);
     for page in 1.. {
         let path = format!("/installation/repositories?per_page=100&page={page}");
-        let page: Page =
-            answer(request(state, Method::GET, &path).bearer_auth(&token.token)).await?;
+        let page: Page = get(state, &token, &path).await?;
         if page.repositories.is_empty() {
             break;
         }
@@ -108,6 +137,119 @@ pub async fn team_status(state: &AppState, team_id: i64) -> Result<Status, ApiEr
         status.repos.extend(names);
     }
     Ok(status)
+}
+
+#[derive(Deserialize)]
+struct Branch {
+    name: String,
+    commit: Commit,
+}
+
+#[derive(Deserialize)]
+struct Commit {
+    sha: String,
+}
+
+/// Every branch of the repository with its latest commit.
+pub async fn branches(
+    state: &AppState,
+    team_id: i64,
+    repo: &str,
+) -> Result<HashMap<String, String>, ApiError> {
+    let token = token(state, team_id).await?;
+    let mut heads = HashMap::new();
+    for page in 1.. {
+        let path = format!("/repos/{repo}/branches?per_page=100&page={page}");
+        let page: Vec<Branch> = get(state, &token, &path).await?;
+        if page.is_empty() {
+            break;
+        }
+        heads.extend(
+            page.into_iter()
+                .map(|branch| (branch.name, branch.commit.sha)),
+        );
+    }
+    Ok(heads)
+}
+
+#[derive(Deserialize)]
+struct Tree {
+    tree: Vec<Entry>,
+}
+
+#[derive(Deserialize)]
+struct Entry {
+    path: String,
+    /// `blob` for a file.
+    r#type: String,
+    sha: String,
+}
+
+/// Every file of the commit, as its path and git's id of its content.
+pub async fn files(
+    state: &AppState,
+    token: &str,
+    repo: &str,
+    commit: &str,
+) -> Result<Vec<(String, String)>, ApiError> {
+    let path = format!("/repos/{repo}/git/trees/{commit}?recursive=1");
+    let tree: Tree = get(state, token, &path).await?;
+    let files = tree.tree.into_iter().filter(|entry| entry.r#type == "blob");
+    Ok(files.map(|entry| (entry.path, entry.sha)).collect())
+}
+
+/// The commit's files as a gzipped tar archive.
+pub async fn archive(
+    state: &AppState,
+    token: &str,
+    repo: &str,
+    commit: &str,
+) -> Result<Vec<u8>, ApiError> {
+    let path = format!("/repos/{repo}/tarball/{commit}");
+    let request = request(state, Method::GET, &path).bearer_auth(token);
+    let archive = async { request.send().await?.error_for_status()?.bytes().await };
+    Ok(archive
+        .await
+        .map_err(|error: reqwest::Error| failed(error))?
+        .to_vec())
+}
+
+#[derive(Deserialize)]
+pub struct OfRepo {
+    repo: String,
+}
+
+#[derive(Deserialize)]
+struct Repo {
+    default_branch: String,
+}
+
+/// The repository's branches, for choosing which to track.
+pub async fn repo_branches(
+    State(state): State<AppState>,
+    user: User,
+    Path(team_id): Path<i64>,
+    Query(of): Query<OfRepo>,
+) -> Result<Json<Value>, ApiError> {
+    membership(&user, team_id)?;
+    // The name goes into GitHub's address, so it must be nothing but `owner/name`.
+    let plain = |part: &str| {
+        part.chars()
+            .all(|c| c.is_alphanumeric() || "-_.".contains(c))
+    };
+    if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
+        return Err(crate::not_found());
+    }
+    let token = token(&state, team_id).await?;
+    let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
+    let mut names: Vec<String> = branches(&state, team_id, &of.repo)
+        .await?
+        .into_keys()
+        .collect();
+    names.sort();
+    Ok(Json(
+        json!({"default": repo.default_branch, "branches": names}),
+    ))
 }
 
 pub async fn status(

@@ -3,6 +3,7 @@ mod config;
 pub mod db;
 mod github;
 pub mod mail;
+pub mod map;
 mod projects;
 mod teams;
 mod web;
@@ -17,6 +18,7 @@ use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
+use tokio::sync::Notify;
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
@@ -30,6 +32,8 @@ pub struct AppState {
     pub url: String,
     /// `https://api.github.com`, or a fake one in tests.
     pub github_api: String,
+    /// Wakes the map's worker before its minute is up.
+    pub map_wake: Arc<Notify>,
 }
 
 /// Seconds since 1970.
@@ -70,6 +74,8 @@ pub fn router(state: AppState) -> Router {
             "/teams/{id}/projects/{project_id}",
             put(projects::update).delete(projects::delete),
         )
+        .route("/teams/{id}/projects/{project_id}/map", get(map::show))
+        .route("/teams/{id}/github/branches", get(github::repo_branches))
         .route(
             "/teams/{id}/github",
             get(github::status)
@@ -78,7 +84,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/invites/{token}", get(teams::invitation))
         .route("/invites/{token}/accept", post(teams::accept))
-        .fallback(async || ApiError(StatusCode::NOT_FOUND, "not found".into()))
+        .fallback(async || not_found())
         .layer(log)
         // Added after the layer, so health checks aren't logged.
         .route("/health", get(health))
@@ -93,6 +99,10 @@ async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> 
 
 #[derive(Debug)]
 pub struct ApiError(StatusCode, String);
+
+fn not_found() -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, "not found".into())
+}
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {

@@ -10,7 +10,22 @@ export type User = {
 
 export type Team = { id: number; name: string; role: "owner" | "member" }
 
-export type Project = { id: number; name: string; repo: string | null }
+export type Project = { id: number; name: string; repo: string | null; branches: Branch[] }
+
+/** A tracked branch. Its map is behind while `commit_sha` differs from `head_sha`. */
+export type Branch = { name: string; head_sha: string | null; commit_sha: string | null; error: string | null }
+
+export type RepoBranches = { default: string; branches: string[] }
+
+export type MapFile = {
+  path: string
+  language: string | null
+  lines: number
+  symbols: { name: string; kind: string; line: number; end_line: number }[]
+}
+
+/** `uses` pairs a file with a file it uses. */
+export type CodeMap = { commit: string | null; files: MapFile[]; uses: [string, string][] }
 
 /** The team's GitHub App: its name, the account it is installed on, and the repositories it reaches. */
 export type Github = { app: string | null; account: string | null; repos: string[] }
