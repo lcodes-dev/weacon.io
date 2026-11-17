@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::auth::Owner;
 use crate::db;
-use crate::mail::Smtp;
+use crate::mail::{Mail, Smtp};
 use crate::{ApiError, AppState};
 
 fn bad_settings(error: impl std::fmt::Display) -> ApiError {
@@ -43,10 +43,14 @@ pub async fn test_mail(
     State(state): State<AppState>,
     Owner(user): Owner,
 ) -> Result<StatusCode, ApiError> {
-    let text = "This is a test mail from Weacon. Your mail settings work.";
+    let mail = Mail {
+        subject: "Weacon test mail",
+        text: "This is a test mail from Weacon.\n\nYour mail settings work.",
+        code: None,
+    };
     state
         .mailer
-        .send(&user.email, "Weacon test mail", text)
+        .send(&user.email, &mail)
         .await
         .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(StatusCode::NO_CONTENT)

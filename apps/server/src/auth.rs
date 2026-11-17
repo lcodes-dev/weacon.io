@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db::{self, User};
+use crate::mail::Mail;
 use crate::{ApiError, AppState, now};
 
 const COOKIE_NAME: &str = "weacon_session";
@@ -94,15 +95,15 @@ pub async fn request_code(
     }
     let code = format!("{:06}", rand::random_range(0..1_000_000));
     db::save_code(&state.pool, &email, &code, name, now() + CODE_SECONDS).await?;
-    let text = format!("Your Weacon sign-in code is {code}\n\nIt works for 10 minutes.");
-    state
-        .mailer
-        .send(&email, "Your Weacon sign-in code", &text)
-        .await
-        .map_err(|error| {
-            tracing::error!("mail to {email} failed: {error}");
-            ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
-        })?;
+    let mail = Mail {
+        subject: "Your Weacon sign-in code",
+        text: "Enter this code to sign in. It works for 10 minutes.",
+        code: Some(&code),
+    };
+    state.mailer.send(&email, &mail).await.map_err(|error| {
+        tracing::error!("mail to {email} failed: {error}");
+        ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 

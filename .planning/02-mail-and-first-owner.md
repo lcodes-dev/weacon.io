@@ -1,6 +1,6 @@
 # Plan 02: mail, accounts and the first owner
 
-**Status: in progress**
+**Status: done** (2026-11-17)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -128,7 +128,7 @@ Both use UI SDK (field, input, one-time-code input, button, dialog), the first r
 - [x] Web app: the mail settings dialog
 - [x] Docs: `docs/architecture.md`, README
 - [x] Checked in the browser: set up the owner on a fresh database with the code from the log, see the mail notice, sign out, sign in again, register a second account
-- [ ] Checked by hand: a test mail over a real SMTP server
+- [x] Checked by hand: a test mail over a real SMTP server
 
 ## Outcome
 
@@ -138,7 +138,6 @@ Built as planned, with these differences:
 - The mail settings dialog stays open after saving, so "Send a test mail" is one click away.
 - `serde_json` moved from a test dependency to a real one, so the small JSON answers are written inline instead of as one struct each.
 - The tests moved out of `main.rs` into `apps/server/tests/api.rs`, all as integration tests over HTTP. For that the server became a library, `lib.rs`, with `main.rs` only starting it.
-- The last step is open: no mail has gone through a real SMTP server yet. A test mail to an unreachable server shows the connection error as intended.
 
 ## Left out on purpose
 

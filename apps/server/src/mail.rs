@@ -1,6 +1,7 @@
 use std::sync::RwLock;
 
-use lettre::message::Mailbox;
+use lettre::message::header::ContentType;
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,82 @@ pub enum Security {
     None,
 }
 
+/// `logo.svg` as a PNG, because mail clients don't show SVG.
+const LOGO: &[u8] = include_bytes!("../assets/logo.png");
+const FOOTER: &str = "Sent by Weacon. If you didn't ask for this mail, ignore it.";
+
+pub struct Mail<'a> {
+    pub subject: &'a str,
+    /// Paragraphs, separated by blank lines.
+    pub text: &'a str,
+    /// Shown large, after the text.
+    pub code: Option<&'a str>,
+}
+
+impl Mail<'_> {
+    fn text(&self) -> String {
+        let code = self.code.map(|code| format!("\n\n{code}"));
+        format!("{}{}\n\n{FOOTER}", self.text, code.unwrap_or_default())
+    }
+
+    fn html(&self) -> String {
+        let mut body = String::new();
+        for paragraph in self.text.split("\n\n") {
+            body += &format!(r#"<p style="margin:0 0 12px">{}</p>"#, escape(paragraph));
+        }
+        if let Some(code) = self.code {
+            body += &format!(
+                r#"<p style="margin:20px 0 8px;font:600 30px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:6px;text-align:center">{}</p>"#,
+                escape(code)
+            );
+        }
+        TEMPLATE
+            .replace("{subject}", &escape(self.subject))
+            .replace("{body}", &body)
+            .replace("{footer}", FOOTER)
+    }
+}
+
+const TEMPLATE: &str = r##"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{subject}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#fbfaf7">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#fbfaf7">
+      <tr>
+        <td align="center" style="padding:32px 16px">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;font:15px/1.5 -apple-system,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f1d1a">
+            <tr>
+              <td align="center" style="padding-bottom:24px">
+                <img src="cid:logo" width="56" height="56" alt="Weacon" style="display:block;border:0">
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px;background:#ffffff;border:1px solid #e7e3dc;border-radius:12px">
+                <h1 style="margin:0 0 16px;font-size:19px;line-height:1.3;font-weight:600">{subject}</h1>
+                {body}
+              </td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:20px 28px 0;font-size:13px;color:#6b665e">{footer}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"##;
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 /// Prints mail to the log while it holds no SMTP connection.
 #[derive(Default)]
 pub struct Mailer(RwLock<Option<(Transport, Mailbox)>>);
@@ -41,7 +118,8 @@ impl Mailer {
         Ok(())
     }
 
-    pub async fn send(&self, to: &str, subject: &str, text: &str) -> Result<(), Error> {
+    pub async fn send(&self, to: &str, mail: &Mail<'_>) -> Result<(), Error> {
+        let (subject, text) = (mail.subject, mail.text());
         let connection = self.0.read().unwrap().clone();
         let Some((transport, from)) = connection else {
             tracing::info!(
@@ -49,11 +127,21 @@ impl Mailer {
             );
             return Ok(());
         };
+        let logo = Attachment::new_inline("logo".into())
+            .body(LOGO.to_vec(), ContentType::parse("image/png")?);
         let message = Message::builder()
             .from(from)
             .to(to.parse()?)
             .subject(subject)
-            .body(text.to_owned())?;
+            .multipart(
+                MultiPart::alternative()
+                    .singlepart(SinglePart::plain(text))
+                    .multipart(
+                        MultiPart::related()
+                            .singlepart(SinglePart::html(mail.html()))
+                            .singlepart(logo),
+                    ),
+            )?;
         transport.send(message).await?;
         Ok(())
     }

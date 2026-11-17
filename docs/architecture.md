@@ -8,6 +8,7 @@ Weacon is one Rust server that holds the data in SQLite and serves a React web a
 apps/
   server/        the Rust server: axum, tokio, sqlx
     src/         lib.rs holds the router; main.rs only starts it
+    assets/      files built into the binary: the logo for mail
     migrations/  numbered .sql files
     tests/       the server's tests
   web/           React, TypeScript, Vite, Tailwind, UI SDK
@@ -101,10 +102,14 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 
 ## Mail
 
-`mail.rs` has one way to send: `Mailer::send(to, subject, text)`, plain text.
+`mail.rs` has one way to send: `Mailer::send(to, mail)`, where a `Mail` is a subject, some text and an optional code to show large.
+
+- Every mail goes out as HTML with a plain-text fallback, both made from the same `Mail`.
+- The HTML is one layout, the `TEMPLATE` string in `mail.rs`: the logo, a card with the subject, text and code, and a footer. It is filled by replacing `{subject}`, `{body}` and `{footer}`.
+- The logo is attached to each mail and shown inline, so it needs no public address. Mail clients don't show SVG, so `apps/server/assets/logo.png` is made from `logo.svg` beside it: `sed 's/viewBox="0 0 640 640"/viewBox="96 96 448 448"/' logo.svg | rsvg-convert -w 128 -h 128 -o logo.png`.
 
 - The owner's SMTP settings are the one row of the `config` table. The server reads it at startup and keeps a ready connection in memory; saving new settings replaces it, with no restart.
-- With no SMTP settings, every mail is printed to the server's log, codes included.
+- With no SMTP settings, the plain-text part of every mail is printed to the server's log, codes included.
 - The owner edits the settings in the web app's "Mail settings" dialog, which can also send a test mail.
 
 ## API
