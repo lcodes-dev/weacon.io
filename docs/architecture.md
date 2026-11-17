@@ -29,7 +29,7 @@ The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and 
 - **SQLite only**, through `sqlx` with the bundled SQLite.
 - One database file; its path comes from a flag or an environment variable.
 - WAL mode and foreign keys on.
-- Migrations are plain `.sql` files in `apps/server/migrations/`, embedded in the binary and run at startup.
+- Migrations are plain `.sql` files in `apps/server/migrations/`, embedded in the binary and run at startup. A schema change is a new numbered file; a file that has been committed is never edited.
 - Queries are checked at runtime, not with sqlx's compile-time macros, so a build never needs a live database.
 - All SQL lives in one `db` module.
 
@@ -75,6 +75,36 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 - Most changes (tasks, docs, lists) reach the browser as small "this changed" events on the WebSocket, carrying no data. The web app refetches through the API, so HTTP stays the one source of data.
 - Streaming content, such as an agent's transcript, travels on the socket itself.
 
+## Accounts, teams and projects
+
+- **Accounts.** Anyone can register. People sign in with a 6-digit code sent to their email; there are no passwords. A code lasts 10 minutes and dies after 5 wrong tries.
+- **The owner** is the first person to register on a server. They own the server, not a team, and they set its mail settings. Their first sign-in code is in the server's log, because no SMTP is set yet.
+- **Teams.** Registering gives a person a team of their own, named after them. The word is always "team", never "workspace". Inviting people and switching teams aren't built yet.
+- **Projects.** A team will hold several projects. Not built yet.
+- **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`.
+
+## Mail
+
+`mail.rs` has one way to send: `Mailer::send(to, subject, text)`, plain text.
+
+- The owner's SMTP settings are the one row of the `config` table. The server reads it at startup and keeps a ready connection in memory; saving new settings replaces it, with no restart.
+- With no SMTP settings, every mail is printed to the server's log, codes included.
+- The owner edits the settings in the web app's "Mail settings" dialog, which can also send a test mail.
+
+## API
+
+Errors are `{"error": "..."}` with a status code.
+
+| Route | Who | What it does |
+| --- | --- | --- |
+| `GET /api/health` | anyone | Says the server and its database answer |
+| `GET /api/session` | anyone | `{"setup_needed", "user"}`: whether the server has no accounts yet, and who is signed in |
+| `POST /api/sign-in/code` | anyone | Mails a code. With a `name` it is a registration; without, only a known account gets one |
+| `POST /api/sign-in/verify` | anyone | Checks the code, creates the account and its team if it was a registration, and signs in |
+| `POST /api/sign-out` | signed in | Ends the session |
+| `GET`, `PUT`, `DELETE /api/config/mail` | owner | Reads, saves or clears the SMTP settings. The password is never read back, and saving without one keeps it |
+| `POST /api/config/mail/test` | owner | Sends the owner a test mail and answers with the SMTP error if it fails |
+
 ## Decided against, for now
 
 - **Postgres.** Every migration twice and a restricted SQL dialect, for a need we don't have.
@@ -85,6 +115,6 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 
 ## What exists today
 
-The server starts, creates the database file, answers `GET /api/health`, and serves a web app that shows the empty shell from the reference (sidebar and main pane) with a dot that is green while the API answers.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, and the owner can set up SMTP. The shell is still the empty layout from the reference.
 
-Not built yet, each waiting for the first feature that needs it: migrations, React Router, the WebSocket, sign-in.
+Not built yet, each waiting for the first feature that needs it: React Router, the WebSocket, invitations, projects.

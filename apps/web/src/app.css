@@ -7,6 +7,11 @@
   color-scheme: light dark;
   --bg: #fbfaf7;
   --side: #f4f2ed;
+  --sur: #ffffff;
+  --fld: #d9d4cb;
+  --amb: oklch(0.42 0.11 60);
+  --amb-soft: oklch(0.96 0.04 85);
+  --amb-line: oklch(0.8 0.09 80);
   --hov: #ebe8e2;
   --line: #e7e3dc;
   --ink: #1f1d1a;
@@ -23,6 +28,11 @@
   :root {
     --bg: #1a1917;
     --side: #141312;
+    --sur: #211f1d;
+    --fld: #3c3834;
+    --amb: #e4b45e;
+    --amb-soft: rgba(228, 180, 94, 0.11);
+    --amb-line: rgba(228, 180, 94, 0.45);
     --hov: #2c2a27;
     --line: #2e2b28;
     --ink: #ece7df;
@@ -39,6 +49,11 @@
 @theme inline {
   --color-bg: var(--bg);
   --color-side: var(--side);
+  --color-sur: var(--sur);
+  --color-fld: var(--fld);
+  --color-amb: var(--amb);
+  --color-amb-soft: var(--amb-soft);
+  --color-amb-line: var(--amb-line);
   --color-hov: var(--hov);
   --color-line: var(--line);
   --color-ink: var(--ink);
@@ -55,4 +70,48 @@ body {
   background: var(--bg);
   color: var(--ink);
   font: 13px/1.4 -apple-system, system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+/* UI SDK's parts are unstyled; these give each its look by its data-slot. */
+@layer components {
+  .btn {
+    @apply rounded-md border border-fld px-3 py-1.5 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply border-pri bg-pri text-pri-text hover:border-pri-hover hover:bg-pri-hover;
+  }
+
+  [data-slot="field"] {
+    @apply flex flex-col gap-1;
+  }
+
+  [data-slot="field-label"] {
+    @apply text-ink2;
+  }
+
+  [data-slot="input"],
+  [data-slot="field-control"] {
+    @apply rounded-md border border-fld bg-bg px-2.5 py-1.5 outline-none focus:border-ink2;
+  }
+
+  [data-slot="otp-input-group"] {
+    @apply flex gap-2;
+  }
+
+  [data-slot="otp-input-slot"] {
+    @apply relative flex h-11 w-9 items-center justify-center rounded-md border border-fld bg-bg text-lg data-active:border-ink;
+  }
+
+  [data-slot="dialog-backdrop"] {
+    @apply fixed inset-0 bg-black/50;
+  }
+
+  [data-slot="dialog-content"] {
+    @apply fixed inset-0 m-auto flex h-fit w-[420px] flex-col gap-3 rounded-xl border border-line bg-sur p-5 text-ink;
+  }
+
+  [data-slot="dialog-title"] {
+    @apply text-[15px] font-semibold;
+  }
 }

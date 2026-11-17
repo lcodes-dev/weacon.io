@@ -8,6 +8,11 @@ Things noticed while working that could be better and that nobody has asked for.
 - **Missing asset files get `index.html`.** A request for a file that doesn't exist, such as `/assets/old-hash.js`, answers 200 with the HTML page. A path whose last part has a file extension could answer 404 instead.
 - **No clean shutdown.** Ctrl-C kills the server without letting open requests finish.
 - **A failed health check has no body.** It answers 503 with nothing in it, while other API errors are JSON.
+- **Nothing limits how often a sign-in code can be requested.** Someone could make the server send mail to one address repeatedly. *(noted in plan 02)*
+- **The session cookie isn't marked `Secure`.** It should be whenever the server is reached over HTTPS. *(noted in plan 02)*
+- **The SMTP password is stored as plain text.** Anyone who can read the database file can read it. It could be encrypted with a key kept outside the database. *(noted in plan 02)*
+- **Until SMTP is set, registration and sign-in need the server's log.** Codes are only printed there. A setup form that creates the first owner without a code, or SMTP settings from environment variables, would remove the need. *(noted in plan 02)*
+- **Sessions never expire.** They last until sign-out. *(noted in plan 02)*
 
 ## Web app
 

@@ -12,6 +12,8 @@ scripts/dev.sh
 
 The first run installs the tools and the web app's packages. Then open http://localhost:5173. The server listens on port 8080 and keeps its database in `.dev/`.
 
+The first person to register owns the server. Until the owner saves SMTP settings in the web app, every mail is printed to the server's log, so the 6-digit sign-in codes are in the terminal where `scripts/dev.sh` runs.
+
 ## Build a release
 
 ```bash

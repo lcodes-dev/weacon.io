@@ -3,6 +3,7 @@
 Weacon is a web harness for coding agents with tasks, docs and team chats built in. One Rust server holds the data in SQLite and serves a React web app from the same binary. `docs/architecture.md` says how it fits together.
 
 - **Keep it simple.** Write the shortest code that reads in one pass. Build nothing ahead of the feature that needs it: no abstractions, options or dependencies for later.
+- **One word per thing.** A group of people is a "team", never a "workspace"; the first account on a server is its "owner".
 - **`.legacy/` is the previous codebase.** Read it for reference; never edit it or build on it.
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
 - **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md` and improvements nobody asked for in `.planning/improvements.md`, never in a plan.
