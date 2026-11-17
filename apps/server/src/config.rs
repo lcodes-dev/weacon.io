@@ -47,6 +47,7 @@ pub async fn test_mail(
         subject: "Weacon test mail",
         text: "This is a test mail from Weacon.\n\nYour mail settings work.",
         code: None,
+        button: None,
     };
     state
         .mailer

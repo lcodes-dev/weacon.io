@@ -99,6 +99,7 @@ pub async fn request_code(
         subject: "Your Weacon sign-in code",
         text: "Enter this code to sign in. It works for 10 minutes.",
         code: Some(&code),
+        button: None,
     };
     state.mailer.send(&email, &mail).await.map_err(|error| {
         tracing::error!("mail to {email} failed: {error}");
@@ -138,6 +139,6 @@ pub async fn sign_out(
     Ok((session_cookie("", 0), StatusCode::NO_CONTENT))
 }
 
-fn normalized(email: &str) -> String {
+pub fn normalized(email: &str) -> String {
     email.trim().to_lowercase()
 }

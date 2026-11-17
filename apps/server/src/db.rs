@@ -41,8 +41,41 @@ pub struct User {
     pub email: String,
     pub name: String,
     pub is_owner: bool,
-    pub team_id: i64,
+    #[sqlx(skip)]
+    pub teams: Vec<Team>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Team {
+    pub id: i64,
+    pub name: String,
+    /// `owner` or `member`.
+    pub role: String,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Member {
+    pub id: i64,
+    pub name: String,
+    pub email: String,
+    pub role: String,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Invite {
+    pub id: i64,
+    pub email: String,
+    pub expires_at: i64,
+}
+
+/// What the person opening an invite link sees.
+#[derive(Serialize, FromRow)]
+pub struct Invitation {
     pub team_name: String,
+    pub invited_by: String,
+    pub email: String,
+    /// Tells the web app to offer signing in, not registering.
+    pub has_account: bool,
 }
 
 pub async fn has_users(pool: &SqlitePool) -> sqlx::Result<bool> {
@@ -59,19 +92,27 @@ pub async fn user_exists(pool: &SqlitePool, email: &str) -> sqlx::Result<bool> {
 }
 
 pub async fn user_by_session(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<User>> {
-    sqlx::query_as(
-        "SELECT u.id, u.email, u.name, u.is_owner, t.id AS team_id, t.name AS team_name
-         FROM sessions s
-         JOIN users u ON u.id = s.user_id
-         JOIN team_members m ON m.user_id = u.id
-         JOIN teams t ON t.id = m.team_id
-         WHERE s.token = ?
-         ORDER BY t.id
-         LIMIT 1",
+    let user: Option<User> = sqlx::query_as(
+        "SELECT u.id, u.email, u.name, u.is_owner
+         FROM sessions s JOIN users u ON u.id = s.user_id
+         WHERE s.token = ?",
     )
     .bind(token)
     .fetch_optional(pool)
-    .await
+    .await?;
+    let Some(mut user) = user else {
+        return Ok(None);
+    };
+    user.teams = sqlx::query_as(
+        "SELECT t.id, t.name, m.role
+         FROM team_members m JOIN teams t ON t.id = m.team_id
+         WHERE m.user_id = ?
+         ORDER BY t.id",
+    )
+    .bind(user.id)
+    .fetch_all(pool)
+    .await?;
+    Ok(Some(user))
 }
 
 pub async fn save_code(
@@ -175,6 +216,135 @@ pub async fn sign_out(pool: &SqlitePool, token: &str) -> sqlx::Result<()> {
         .execute(pool)
         .await?;
     Ok(())
+}
+
+pub async fn rename_team(pool: &SqlitePool, team_id: i64, name: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE teams SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(team_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn members(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Vec<Member>> {
+    sqlx::query_as(
+        "SELECT u.id, u.name, u.email, m.role
+         FROM team_members m JOIN users u ON u.id = m.user_id
+         WHERE m.team_id = ?
+         ORDER BY m.role = 'member', u.name",
+    )
+    .bind(team_id)
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn is_member(pool: &SqlitePool, team_id: i64, email: &str) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM team_members m JOIN users u ON u.id = m.user_id
+                        WHERE m.team_id = ? AND u.email = ?)",
+    )
+    .bind(team_id)
+    .bind(email)
+    .fetch_one(pool)
+    .await
+}
+
+/// Returns whether a member was removed. The team's owner never is.
+pub async fn remove_member(pool: &SqlitePool, team_id: i64, user_id: i64) -> sqlx::Result<bool> {
+    let removed = sqlx::query(
+        "DELETE FROM team_members WHERE team_id = ? AND user_id = ? AND role = 'member'",
+    )
+    .bind(team_id)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(removed.rows_affected() > 0)
+}
+
+pub async fn invites(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Vec<Invite>> {
+    sqlx::query_as("SELECT id, email, expires_at FROM invites WHERE team_id = ? ORDER BY email")
+        .bind(team_id)
+        .fetch_all(pool)
+        .await
+}
+
+/// Inviting an address again replaces its token and expiry.
+pub async fn save_invite(
+    pool: &SqlitePool,
+    team_id: i64,
+    email: &str,
+    token: &str,
+    invited_by: i64,
+    expires_at: i64,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO invites (team_id, email, token, invited_by, expires_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (team_id, email) DO UPDATE
+         SET token = excluded.token, invited_by = excluded.invited_by,
+             expires_at = excluded.expires_at",
+    )
+    .bind(team_id)
+    .bind(email)
+    .bind(token)
+    .bind(invited_by)
+    .bind(expires_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn delete_invite(pool: &SqlitePool, team_id: i64, invite_id: i64) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM invites WHERE team_id = ? AND id = ?")
+        .bind(team_id)
+        .bind(invite_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn invitation(
+    pool: &SqlitePool,
+    token: &str,
+    now: i64,
+) -> sqlx::Result<Option<Invitation>> {
+    sqlx::query_as(
+        "SELECT t.name AS team_name, u.name AS invited_by, i.email,
+                EXISTS (SELECT 1 FROM users WHERE email = i.email) AS has_account
+         FROM invites i
+         JOIN teams t ON t.id = i.team_id
+         JOIN users u ON u.id = i.invited_by
+         WHERE i.token = ? AND i.expires_at > ?",
+    )
+    .bind(token)
+    .bind(now)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Uses the invite up. Returns the team joined, or `None` when the token is gone.
+pub async fn accept_invite(
+    pool: &SqlitePool,
+    token: &str,
+    user_id: i64,
+) -> sqlx::Result<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    let team_id: Option<i64> =
+        sqlx::query_scalar("DELETE FROM invites WHERE token = ? RETURNING team_id")
+            .bind(token)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(team_id) = team_id {
+        sqlx::query(
+            "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'member')",
+        )
+        .bind(team_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(team_id)
 }
 
 pub async fn smtp(pool: &SqlitePool) -> sqlx::Result<Option<Smtp>> {

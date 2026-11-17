@@ -9,6 +9,6 @@ mise exec -- npm --prefix apps/web install
 mkdir -p .dev apps/web/dist
 
 trap 'kill 0' EXIT
-WEACON_DB="$PWD/.dev/weacon.db" mise exec -- cargo run -p weacon-server &
+WEACON_DB="$PWD/.dev/weacon.db" WEACON_URL=http://localhost:5173 mise exec -- cargo run -p weacon-server &
 mise exec -- npm --prefix apps/web run dev &
 wait

@@ -56,7 +56,7 @@ There are no unit tests inside `src/`. One is added only for something no reques
 - **UI SDK** (`@ui-sdk/react` and `@ui-sdk/core`, from ui-sdk.dev) for components. Its components are unstyled: they bring keyboard, focus, popup and screen reader behavior, and we style them. Where it has no component for what we need, we build one from its behaviors.
 - **Tailwind** for all styling, following the reference. UI SDK's parts are targeted through their `data-slot` and state attributes.
 - UI SDK is a beta a few weeks old, so its version is pinned exactly and upgraded on purpose.
-- **React Router** for client-side routes.
+- **React Router** for client-side routes. Settings are pages under `/settings/`, shown beside the sidebar.
 - **TanStack Query** for fetching and caching API data.
 - API types are **written by hand** in TypeScript, next to the fetch functions that use them. No OpenAPI, no generation.
 
@@ -96,21 +96,24 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 
 - **Accounts.** Anyone can register. People sign in with a 6-digit code sent to their email; there are no passwords. A code lasts 10 minutes and dies after 5 wrong tries.
 - **The owner** is the first person to register on a server. They own the server, not a team, and they set its mail settings. Their first sign-in code is in the server's log, because no SMTP is set yet.
-- **Teams.** Registering gives a person a team of their own, named after them. The word is always "team", never "workspace". Inviting people and switching teams aren't built yet.
+- **Teams.** Registering gives a person a team of their own, named after them. The word is always "team", never "workspace". A team has one owner, the person who created it, who renames it, invites people and removes them. A member can leave; the owner can't, so everyone always has a team.
+- **Invites.** The team's owner invites an email address. The mail holds a link, the server's address plus `/invite/` and a random token saved with the invite. The link works once, for 7 days, and only for an account with the invited address. The owner can invite several addresses at once, revoke an invite, or resend it; resending is inviting the same address again, which replaces the token and starts the 7 days over.
+- **Several teams.** The server doesn't pick a person's team: the session lists their teams, and every team route names its team in the path. The web app remembers which team is open in the browser's local storage. A team the person isn't in answers 404.
 - **Projects.** A team will hold several projects. Not built yet.
 - **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`.
 
 ## Mail
 
-`mail.rs` has one way to send: `Mailer::send(to, mail)`, where a `Mail` is a subject, some text and an optional code to show large.
+`mail.rs` has one way to send: `Mailer::send(to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
 
 - Every mail goes out as HTML with a plain-text fallback, both made from the same `Mail`.
-- The HTML is one layout, the `TEMPLATE` string in `mail.rs`: the logo, a card with the subject, text and code, and a footer. It is filled by replacing `{subject}`, `{body}` and `{footer}`.
+- The HTML is one layout, the `TEMPLATE` string in `mail.rs`: the logo, a card with the subject, text, code and button, and a footer. It is filled by replacing `{subject}`, `{body}` and `{footer}`.
 - The logo is attached to each mail and shown inline, so it needs no public address. Mail clients don't show SVG, so `apps/server/assets/logo.png` is made from `logo.svg` beside it: `sed 's/viewBox="0 0 640 640"/viewBox="96 96 448 448"/' logo.svg | rsvg-convert -w 128 -h 128 -o logo.png`.
 
 - The owner's SMTP settings are the one row of the `config` table. The server reads it at startup and keeps a ready connection in memory; saving new settings replaces it, with no restart.
+- A link in a mail starts with the `WEACON_URL` setting, the address people open in their browser.
 - With no SMTP settings, the plain-text part of every mail is printed to the server's log, codes included.
-- The owner edits the settings in the web app's "Mail settings" dialog, which can also send a test mail.
+- The owner edits the settings on the web app's "Mail settings" page, which can also send a test mail.
 
 ## API
 
@@ -125,6 +128,13 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/sign-out` | signed in | Ends the session |
 | `GET`, `PUT`, `DELETE /api/config/mail` | owner | Reads, saves or clears the SMTP settings. The password is never read back, and saving without one keeps it |
 | `POST /api/config/mail/test` | owner | Sends the owner a test mail and answers with the SMTP error if it fails |
+| `GET /api/teams/{id}` | a member | The team's name, members and open invites |
+| `PUT /api/teams/{id}` | the team's owner | Renames the team |
+| `POST /api/teams/{id}/invites` | the team's owner | Invites the `emails` and mails each its link. No mail goes out if one address is wrong or already a member |
+| `DELETE /api/teams/{id}/invites/{invite_id}` | the team's owner | Revokes an invite |
+| `DELETE /api/teams/{id}/members/{user_id}` | the team's owner, or that member | Removes a member, or leaves. Refused for the owner |
+| `GET /api/invites/{token}` | anyone | The invite's team, inviter and address, and `has_account`, whether that address has an account; 404 once used, revoked or expired |
+| `POST /api/invites/{token}/accept` | signed in with the invited address | Joins the team and uses the invite up |
 
 ## Decided against, for now
 
@@ -136,6 +146,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, and the owner can set up SMTP. The shell is still the empty layout from the reference.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it and invite people by email. The shell is still the empty layout from the reference.
 
-Not built yet, each waiting for the first feature that needs it: React Router, the WebSocket, invitations, projects.
+Not built yet, each waiting for the first feature that needs it: the WebSocket, projects.

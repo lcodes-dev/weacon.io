@@ -7,7 +7,7 @@ Weacon is a web harness for coding agents with tasks, docs and team chats built 
 - **One word per thing.** A group of people is a "team", never a "workspace"; the first account on a server is its "owner".
 - **`.legacy/` is the previous codebase.** Read it for reference; never edit it or build on it.
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
-- **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md` and improvements nobody asked for in `.planning/improvements.md`, never in a plan.
+- **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md`, and are deleted from it once answered. Improvements nobody asked for go in `.planning/improvements.md`. Neither goes in a plan.
 - **Tests are integration tests.** The server's tests live in `apps/server/tests/` and drive the API over HTTP, as a browser would. Write a unit test inside `src/` only for something no request can reach.
 - **Docs** live in `docs/` as Markdown and are updated in the same change as the code they describe.
 

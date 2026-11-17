@@ -3,13 +3,13 @@ import { Field, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { OTPInput, OTPInputGroup, OTPInputSlot } from "@ui-sdk/react/otp-input"
 import { useState } from "react"
-import { api } from "./api"
+import { api, type Invitation } from "./api"
 
-export function SignIn({ setup }: { setup: boolean }) {
+export function SignIn({ setup, invitation }: { setup: boolean; invitation?: Invitation }) {
   const queryClient = useQueryClient()
-  const [registering, setRegistering] = useState(setup)
+  const [registering, setRegistering] = useState(setup || invitation?.has_account === false)
   const [name, setName] = useState("")
-  const [email, setEmail] = useState("")
+  const [email, setEmail] = useState(invitation?.email ?? "")
 
   const sendCode = useMutation({
     mutationFn: () => api("POST", "/sign-in/code", { email, name: registering ? name : undefined }),
@@ -57,6 +57,12 @@ export function SignIn({ setup }: { setup: boolean }) {
           >
             {setup && (
               <p className="text-ink2">Create the first account. It owns this server.</p>
+            )}
+            {invitation && (
+              <p className="text-ink2">
+                {invitation.invited_by} invited you to {invitation.team_name}. Sign in or create an account with this
+                email to join.
+              </p>
             )}
             {registering && (
               <Field>

@@ -41,12 +41,20 @@ pub struct Mail<'a> {
     pub text: &'a str,
     /// Shown large, after the text.
     pub code: Option<&'a str>,
+    /// A label and the address it opens.
+    pub button: Option<(&'a str, &'a str)>,
 }
 
 impl Mail<'_> {
     fn text(&self) -> String {
-        let code = self.code.map(|code| format!("\n\n{code}"));
-        format!("{}{}\n\n{FOOTER}", self.text, code.unwrap_or_default())
+        let mut text = self.text.to_owned();
+        if let Some(code) = self.code {
+            text += &format!("\n\n{code}");
+        }
+        if let Some((label, address)) = self.button {
+            text += &format!("\n\n{label}: {address}");
+        }
+        text + "\n\n" + FOOTER
     }
 
     fn html(&self) -> String {
@@ -58,6 +66,13 @@ impl Mail<'_> {
             body += &format!(
                 r#"<p style="margin:20px 0 8px;font:600 30px/1 ui-monospace,Menlo,Consolas,monospace;letter-spacing:6px;text-align:center">{}</p>"#,
                 escape(code)
+            );
+        }
+        if let Some((label, address)) = self.button {
+            body += &format!(
+                r#"<p style="margin:20px 0 8px"><a href="{}" style="display:inline-block;padding:9px 16px;border-radius:8px;background:#1f1d1a;color:#ffffff;font-weight:600;text-decoration:none">{}</a></p>"#,
+                escape(address),
+                escape(label)
             );
         }
         TEMPLATE

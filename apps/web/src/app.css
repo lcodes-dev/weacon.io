@@ -78,6 +78,18 @@ body {
     @apply rounded-md border border-fld px-3 py-1.5 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50;
   }
 
+  .page {
+    @apply mx-auto flex max-w-[560px] flex-col gap-3 p-8;
+  }
+
+  .page h1 {
+    @apply text-[17px] font-semibold;
+  }
+
+  .page h2 {
+    @apply pt-3 font-semibold;
+  }
+
   .btn-primary {
     @apply border-pri bg-pri text-pri-text hover:border-pri-hover hover:bg-pri-hover;
   }
@@ -101,17 +113,5 @@ body {
 
   [data-slot="otp-input-slot"] {
     @apply relative flex h-11 w-9 items-center justify-center rounded-md border border-fld bg-bg text-lg data-active:border-ink;
-  }
-
-  [data-slot="dialog-backdrop"] {
-    @apply fixed inset-0 bg-black/50;
-  }
-
-  [data-slot="dialog-content"] {
-    @apply fixed inset-0 m-auto flex h-fit w-[420px] flex-col gap-3 rounded-xl border border-line bg-sur p-5 text-ink;
-  }
-
-  [data-slot="dialog-title"] {
-    @apply text-[15px] font-semibold;
   }
 }

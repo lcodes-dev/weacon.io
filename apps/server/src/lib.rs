@@ -2,6 +2,7 @@ mod auth;
 mod config;
 pub mod db;
 pub mod mail;
+mod teams;
 mod web;
 
 use std::sync::Arc;
@@ -10,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
@@ -23,6 +24,8 @@ use mail::Mailer;
 pub struct AppState {
     pub pool: SqlitePool,
     pub mailer: Arc<Mailer>,
+    /// The address people open in their browser, for links in mail.
+    pub url: String,
 }
 
 /// Seconds since 1970.
@@ -48,6 +51,15 @@ pub fn router(state: AppState) -> Router {
                 .delete(config::clear_mail),
         )
         .route("/config/mail/test", post(config::test_mail))
+        .route("/teams/{id}", get(teams::team).put(teams::rename))
+        .route("/teams/{id}/invites", post(teams::invite))
+        .route("/teams/{id}/invites/{invite_id}", delete(teams::revoke))
+        .route(
+            "/teams/{id}/members/{user_id}",
+            delete(teams::remove_member),
+        )
+        .route("/invites/{token}", get(teams::invitation))
+        .route("/invites/{token}/accept", post(teams::accept))
         .fallback(async || ApiError(StatusCode::NOT_FOUND, "not found".into()))
         .layer(log)
         // Added after the layer, so health checks aren't logged.

@@ -11,6 +11,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt().with_env_filter(levels).init();
 
     let addr = env_or("WEACON_ADDR", "127.0.0.1:8080");
+    let url = env_or("WEACON_URL", "http://localhost:8080");
+    let url = url.trim_end_matches('/').to_owned();
     let pool = db::open(&env_or("WEACON_DB", "weacon.db")).await?;
     let smtp = db::smtp(&pool).await?;
     match &smtp {
@@ -21,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     mailer.set(smtp.as_ref())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("listening on http://{addr}");
-    axum::serve(listener, router(AppState { pool, mailer })).await?;
+    axum::serve(listener, router(AppState { pool, mailer, url })).await?;
     Ok(())
 }
 

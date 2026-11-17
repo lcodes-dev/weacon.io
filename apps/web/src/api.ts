@@ -5,9 +5,18 @@ export type User = {
   email: string
   name: string
   is_owner: boolean
-  team_id: number
-  team_name: string
+  teams: Team[]
 }
+
+export type Team = { id: number; name: string; role: "owner" | "member" }
+
+export type TeamDetails = {
+  name: string
+  members: { id: number; name: string; email: string; role: "owner" | "member" }[]
+  invites: { id: number; email: string; expires_at: number }[]
+}
+
+export type Invitation = { team_name: string; invited_by: string; email: string; has_account: boolean }
 
 export type Session = { setup_needed: boolean; user: User | null }
 

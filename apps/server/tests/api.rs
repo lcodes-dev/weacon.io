@@ -17,6 +17,7 @@ async fn server() -> AppState {
     AppState {
         pool: db::memory().await,
         mailer: Arc::default(),
+        url: "http://weacon.test".into(),
     }
 }
 
@@ -75,6 +76,23 @@ impl Client {
             .unwrap()
     }
 
+    async fn token(&self, email: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT token FROM invites WHERE email = ?")
+            .bind(email.trim().to_lowercase())
+            .fetch_optional(&self.state.pool)
+            .await
+            .unwrap()
+    }
+
+    /// Invites the address to this client's first team and returns the link's token.
+    async fn invite(&mut self, email: &str) -> String {
+        let (status, _) = self
+            .post("/api/teams/1/invites", json!({"emails": [email]}))
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        self.token(email).await.unwrap()
+    }
+
     /// With a name, registers.
     async fn sign_in(&mut self, email: &str, name: Option<&str>) -> (StatusCode, Value) {
         let (status, _) = self
@@ -125,7 +143,8 @@ async fn the_first_to_register_owns_the_server_and_later_ones_do_not() {
     let (status, user) = ada.sign_in("ada@example.com", Some("Ada")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(user["is_owner"], true);
-    assert_eq!(user["team_name"], "Ada's team");
+    assert_eq!(user["teams"][0]["name"], "Ada's team");
+    assert_eq!(user["teams"][0]["role"], "owner");
 
     let (_, session) = ada.get("/api/session").await;
     assert_eq!(session["setup_needed"], false);
@@ -135,7 +154,7 @@ async fn the_first_to_register_owns_the_server_and_later_ones_do_not() {
     let (_, user) = marco.sign_in(" Marco@Example.com ", Some("Marco")).await;
     assert_eq!(user["email"], "marco@example.com");
     assert_eq!(user["is_owner"], false);
-    assert_eq!(user["team_name"], "Marco's team");
+    assert_eq!(user["teams"][0]["name"], "Marco's team");
 }
 
 #[tokio::test]
@@ -273,4 +292,221 @@ async fn the_owner_saves_and_clears_smtp() {
         owner.post("/api/config/mail/test", Value::Null).await.0,
         StatusCode::NO_CONTENT
     );
+}
+
+/// Ada, who owns team 1, and Marco, who has joined it.
+async fn ada_and_marco(state: &AppState) -> (Client, Client) {
+    let mut ada = Client::new(state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let token = ada.invite("marco@example.com").await;
+    let mut marco = Client::new(state);
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    let (status, joined) = marco
+        .post(&format!("/api/invites/{token}/accept"), Value::Null)
+        .await;
+    assert_eq!((status, joined), (StatusCode::OK, json!({"team_id": 1})));
+    (ada, marco)
+}
+
+#[tokio::test]
+async fn an_invited_person_registers_and_joins() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let token = ada.invite(" Marco@Example.com ").await;
+
+    let (_, team) = ada.get("/api/teams/1").await;
+    assert_eq!(team["invites"][0]["email"], "marco@example.com");
+
+    let path = format!("/api/invites/{token}");
+    let (status, invitation) = Client::new(&state).get(&path).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        invitation,
+        json!({
+            "team_name": "Ada's team", "invited_by": "Ada",
+            "email": "marco@example.com", "has_account": false,
+        })
+    );
+    let accept = format!("{path}/accept");
+    assert_eq!(
+        Client::new(&state).post(&accept, Value::Null).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut marco = Client::new(&state);
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    assert_eq!(marco.post(&accept, Value::Null).await.0, StatusCode::OK);
+
+    let (_, session) = marco.get("/api/session").await;
+    assert_eq!(
+        session["user"]["teams"],
+        json!([
+            {"id": 1, "name": "Ada's team", "role": "member"},
+            {"id": 2, "name": "Marco's team", "role": "owner"},
+        ])
+    );
+    let (_, team) = marco.get("/api/teams/1").await;
+    assert_eq!(team["members"][0]["role"], "owner");
+    assert_eq!(team["members"][1]["email"], "marco@example.com");
+    assert_eq!(team["invites"], json!([]));
+
+    // The link worked once.
+    assert_eq!(marco.get(&path).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        marco.post(&accept, Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn an_invite_only_works_for_its_address() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let token = ada.invite("marco@example.com").await;
+
+    let mut lena = Client::new(&state);
+    lena.sign_in("lena@example.com", Some("Lena")).await;
+    let accept = format!("/api/invites/{token}/accept");
+    assert_eq!(
+        lena.post(&accept, Value::Null).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(lena.get("/api/teams/1").await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn inviting_again_replaces_the_link_and_revoking_kills_it() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let first = ada.invite("marco@example.com").await;
+    let second = ada.invite("marco@example.com").await;
+    assert_ne!(first, second);
+    assert_eq!(
+        ada.get(&format!("/api/invites/{first}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let (_, team) = ada.get("/api/teams/1").await;
+    assert_eq!(team["invites"].as_array().unwrap().len(), 1);
+    let invite = format!("/api/teams/1/invites/{}", team["invites"][0]["id"]);
+    assert_eq!(ada.delete(&invite).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        ada.get(&format!("/api/invites/{second}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn only_the_owner_renames_invites_and_removes() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    let name = json!({"name": " Northwind "});
+
+    assert_eq!(
+        marco.put("/api/teams/1", name.clone()).await,
+        StatusCode::FORBIDDEN
+    );
+    let invite = json!({"emails": ["lena@example.com"]});
+    assert_eq!(
+        marco.post("/api/teams/1/invites", invite).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        marco.delete("/api/teams/1/members/1").await,
+        StatusCode::FORBIDDEN
+    );
+
+    assert_eq!(ada.put("/api/teams/1", name).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.get("/api/teams/1").await.1["name"], "Northwind");
+    assert_eq!(
+        ada.put("/api/teams/1", json!({"name": " "})).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Marco is already in.
+    let invite = json!({"emails": ["marco@example.com"]});
+    assert_eq!(
+        ada.post("/api/teams/1/invites", invite).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Marco's own team isn't Ada's to see.
+    assert_eq!(ada.get("/api/teams/2").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        ada.put("/api/teams/2", json!({"name": "Mine"})).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn a_member_is_removed_or_leaves_and_the_owner_stays() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+
+    assert_eq!(
+        ada.delete("/api/teams/1/members/1").await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        ada.delete("/api/teams/1/members/2").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(marco.get("/api/teams/1").await.0, StatusCode::NOT_FOUND);
+
+    let token = ada.invite("marco@example.com").await;
+    marco
+        .post(&format!("/api/invites/{token}/accept"), Value::Null)
+        .await;
+    assert_eq!(
+        marco.delete("/api/teams/1/members/2").await,
+        StatusCode::NO_CONTENT
+    );
+    let (_, team) = ada.get("/api/teams/1").await;
+    assert_eq!(team["members"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn several_addresses_are_invited_at_once_or_none_is() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+
+    let invites = json!({"emails": ["marco@example.com", "not an address"]});
+    assert_eq!(
+        ada.post("/api/teams/1/invites", invites).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(ada.token("marco@example.com").await, None);
+
+    let invites = json!({"emails": ["marco@example.com", "lena@example.com"]});
+    assert_eq!(
+        ada.post("/api/teams/1/invites", invites).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, team) = ada.get("/api/teams/1").await;
+    assert_eq!(team["invites"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn an_expired_invite_is_refused_until_it_is_sent_again() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let token = ada.invite("marco@example.com").await;
+    sqlx::query("UPDATE invites SET expires_at = 0")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    let mut marco = Client::new(&state);
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    let accept = format!("/api/invites/{token}/accept");
+    assert_eq!(
+        marco.post(&accept, Value::Null).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let token = ada.invite("marco@example.com").await;
+    let accept = format!("/api/invites/{token}/accept");
+    assert_eq!(marco.post(&accept, Value::Null).await.0, StatusCode::OK);
 }
