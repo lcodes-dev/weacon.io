@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use axum::body::{Body, to_bytes};
 use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
-use axum::http::{Method, Request, StatusCode};
+use axum::http::{HeaderMap, Method, Request, StatusCode};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use weacon_server::{AppState, db, router};
@@ -18,6 +20,7 @@ async fn server() -> AppState {
         pool: db::memory().await,
         mailer: Arc::default(),
         url: "http://weacon.test".into(),
+        github_api: "http://127.0.0.1:1".into(),
     }
 }
 
@@ -509,4 +512,190 @@ async fn an_expired_invite_is_refused_until_it_is_sent_again() {
     let token = ada.invite("marco@example.com").await;
     let accept = format!("/api/invites/{token}/accept");
     assert_eq!(marco.post(&accept, Value::Null).await.0, StatusCode::OK);
+}
+
+/// Starts a GitHub that knows one app, installed on `northwind` with two repositories.
+async fn fake_github() -> String {
+    // The app's calls must carry a token signed with the key GitHub handed out.
+    fn signed(headers: &HeaderMap) -> bool {
+        let token = headers["authorization"].to_str().unwrap();
+        token.strip_prefix("Bearer ").unwrap().split('.').count() == 3
+    }
+    let github = Router::new()
+        .route(
+            "/app-manifests/good-code/conversions",
+            post(async || {
+                let pem = include_str!("github_app.pem");
+                Json(json!({"id": 7, "slug": "weacon-northwind", "pem": pem}))
+            }),
+        )
+        .route(
+            "/app/installations",
+            get(async |headers: HeaderMap| {
+                assert!(signed(&headers));
+                Json(json!([{"id": 3, "account": {"login": "northwind"}}]))
+            }),
+        )
+        .route(
+            "/app/installations/3/access_tokens",
+            post(async |headers: HeaderMap| {
+                assert!(signed(&headers));
+                Json(json!({"token": "installation-token"}))
+            }),
+        )
+        .route(
+            "/installation/repositories",
+            get(async |headers: HeaderMap, request: Request<Body>| {
+                assert_eq!(headers["authorization"], "Bearer installation-token");
+                let first = request.uri().query().unwrap().ends_with("page=1");
+                let names: &[&str] = if first {
+                    &["northwind/storefront", "northwind/docs"]
+                } else {
+                    &[]
+                };
+                let repositories: Vec<Value> = names
+                    .iter()
+                    .map(|name| json!({"full_name": name}))
+                    .collect();
+                Json(json!({"repositories": repositories}))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async { axum::serve(listener, github).await.unwrap() });
+    address
+}
+
+#[tokio::test]
+async fn members_make_projects_and_only_the_owner_deletes_them() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+
+    let (status, project) = marco
+        .post("/api/teams/1/projects", json!({"name": " Storefront "}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        project,
+        json!({"id": 1, "name": "Storefront", "repo": null})
+    );
+    assert_eq!(
+        marco
+            .post("/api/teams/1/projects", json!({"name": " "}))
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let renamed = json!({"name": "Shop"});
+    assert_eq!(
+        marco.put("/api/teams/1/projects/1", renamed.clone()).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        marco.put("/api/teams/1/projects/9", renamed).await,
+        StatusCode::NOT_FOUND
+    );
+    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    assert_eq!(projects, json!([{"id": 1, "name": "Shop", "repo": null}]));
+
+    assert_eq!(
+        marco.delete("/api/teams/1/projects/1").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ada.delete("/api/teams/1/projects/1").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(ada.get("/api/teams/1/projects").await.1, json!([]));
+
+    // Marco's own team isn't Ada's to see.
+    assert_eq!(
+        ada.get("/api/teams/2/projects").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositories() {
+    let mut state = server().await;
+    state.github_api = fake_github().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+
+    let nothing = json!({"app": null, "account": null, "repos": []});
+    assert_eq!(marco.get("/api/teams/1/github").await.1, nothing);
+    let with_repo = json!({"name": "Storefront", "repo": "northwind/storefront"});
+    assert_eq!(
+        marco
+            .post("/api/teams/1/projects", with_repo.clone())
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let code = json!({"code": "good-code"});
+    assert_eq!(
+        marco.post("/api/teams/1/github", code.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ada.post("/api/teams/1/github", json!({"code": "bad-code"}))
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(
+        ada.post("/api/teams/1/github", code).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        marco.get("/api/teams/1/github").await.1,
+        json!({
+            "app": "weacon-northwind", "account": "northwind",
+            "repos": ["northwind/storefront", "northwind/docs"],
+        })
+    );
+
+    let (status, project) = marco.post("/api/teams/1/projects", with_repo).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(project["repo"], "northwind/storefront");
+    let elsewhere = json!({"name": "Storefront", "repo": "someone/else"});
+    assert_eq!(
+        marco.put("/api/teams/1/projects/1", elsewhere).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let without = json!({"name": "Storefront"});
+    assert_eq!(
+        marco.put("/api/teams/1/projects/1", without).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        Value::Null
+    );
+}
+
+#[tokio::test]
+async fn forgetting_the_github_app_keeps_the_projects() {
+    let mut state = server().await;
+    state.github_api = fake_github().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    ada.post("/api/teams/1/github", json!({"code": "good-code"}))
+        .await;
+    let with_repo = json!({"name": "Storefront", "repo": "northwind/docs"});
+    ada.post("/api/teams/1/projects", with_repo).await;
+
+    assert_eq!(
+        marco.delete("/api/teams/1/github").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ada.delete("/api/teams/1/github").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(ada.get("/api/teams/1/github").await.1["app"], Value::Null);
+    assert_eq!(
+        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        "northwind/docs"
+    );
 }

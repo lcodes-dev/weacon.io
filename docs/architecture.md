@@ -99,8 +99,18 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 - **Teams.** Registering gives a person a team of their own, named after them. The word is always "team", never "workspace". A team has one owner, the person who created it, who renames it, invites people and removes them. A member can leave; the owner can't, so everyone always has a team.
 - **Invites.** The team's owner invites an email address. The mail holds a link, the server's address plus `/invite/` and a random token saved with the invite. The link works once, for 7 days, and only for an account with the invited address. The owner can invite several addresses at once, revoke an invite, or resend it; resending is inviting the same address again, which replaces the token and starts the 7 days over.
 - **Several teams.** The server doesn't pick a person's team: the session lists their teams, and every team route names its team in the path. The web app remembers which team is open in the browser's local storage. A team the person isn't in answers 404.
-- **Projects.** A team will hold several projects. Not built yet.
+- **Projects.** A team holds several projects. A project is a name and, optionally, a GitHub repository stored as `owner/name`. Any member creates and edits projects; only the team's owner deletes one. Nothing else belongs to a project yet.
 - **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`.
+
+## GitHub
+
+Each team has its own private GitHub App, registered and installed by the team's owner from "Team settings". `github.rs` holds every call to GitHub.
+
+- **Registering.** The web app posts an app manifest to GitHub from a form. GitHub sends the owner back to `/settings/team` with a one-time code, and the server trades it at `POST /app-manifests/{code}/conversions` for the app's id, name and private key, saved on the team's row. The web app keeps a random `state` in the browser tab and ignores a code that comes back without it.
+- **Installing.** "Choose repositories" opens the app's install page on GitHub. GitHub lets a private app be installed only on the account that owns it, so an app has at most one installation and it belongs to the team that registered it. The server stores nothing about it.
+- **Calling GitHub.** The server signs a short-lived token with the private key, asks for the app's installation, trades for an installation token, and lists the repositories. A project's repository must be in that list. Nothing is kept between requests.
+- **Access.** The app may read the code of the chosen repositories and nothing else. It has no webhook, so GitHub never calls the server.
+- GitHub's API address is part of the router's state, so the tests point it at a fake GitHub they start themselves.
 
 ## Mail
 
@@ -133,6 +143,12 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/teams/{id}/invites` | the team's owner | Invites the `emails` and mails each its link. No mail goes out if one address is wrong or already a member |
 | `DELETE /api/teams/{id}/invites/{invite_id}` | the team's owner | Revokes an invite |
 | `DELETE /api/teams/{id}/members/{user_id}` | the team's owner, or that member | Removes a member, or leaves. Refused for the owner |
+| `GET`, `POST /api/teams/{id}/projects` | a member | Lists the team's projects, or creates one from `name` and an optional `repo` |
+| `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name and repository; leaving `repo` out removes it |
+| `DELETE /api/teams/{id}/projects/{project_id}` | the team's owner | Deletes the project |
+| `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |
+| `POST /api/teams/{id}/github` | the team's owner | Trades GitHub's `code` for the new app and saves it |
+| `DELETE /api/teams/{id}/github` | the team's owner | Forgets the app; it stays on GitHub |
 | `GET /api/invites/{token}` | anyone | The invite's team, inviter and address, and `has_account`, whether that address has an account; 404 once used, revoked or expired |
 | `POST /api/invites/{token}/accept` | signed in with the invited address | Joins the team and uses the invite up |
 
@@ -146,6 +162,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it and invite people by email. The shell is still the empty layout from the reference.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. The shell is still the empty layout from the reference.
 
-Not built yet, each waiting for the first feature that needs it: the WebSocket, projects.
+Not built yet, each waiting for the first feature that needs it: the WebSocket, reading a repository's code.

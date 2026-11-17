@@ -23,7 +23,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     mailer.set(smtp.as_ref())?;
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("listening on http://{addr}");
-    axum::serve(listener, router(AppState { pool, mailer, url })).await?;
+    let state = AppState {
+        pool,
+        mailer,
+        url,
+        github_api: "https://api.github.com".into(),
+    };
+    axum::serve(listener, router(state)).await?;
     Ok(())
 }
 

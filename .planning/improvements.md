@@ -11,6 +11,9 @@ Things noticed while working that could be better and that nobody has asked for.
 - **The session cookie isn't marked `Secure`.** It should be whenever the server is reached over HTTPS. *(noted in plan 02)*
 - **The SMTP password is stored as plain text.** Anyone who can read the database file can read it. It could be encrypted with a key kept outside the database. *(noted in plan 02)*
 - **Until SMTP is set, registration and sign-in need the server's log.** Codes are only printed there. A setup form that creates the first owner without a code, or SMTP settings from environment variables, would remove the need. *(noted in plan 02)*
+- **A team's GitHub private key is stored as plain text.** Anyone who can read the database file can act as the team's app. It could be encrypted with a key kept outside the database. *(noted in plan 05)*
+- **Every GitHub list makes four calls.** The installation token lasts an hour and could be kept for it. *(noted in plan 05)*
+- **A project doesn't follow a repository renamed on GitHub.** It stores `owner/name`, not GitHub's id. *(noted in plan 05)*
 - **Sessions never expire.** They last until sign-out. *(noted in plan 02)*
 
 ## Web app

@@ -10,6 +10,11 @@ export type User = {
 
 export type Team = { id: number; name: string; role: "owner" | "member" }
 
+export type Project = { id: number; name: string; repo: string | null }
+
+/** The team's GitHub App: its name, the account it is installed on, and the repositories it reaches. */
+export type Github = { app: string | null; account: string | null; repos: string[] }
+
 export type TeamDetails = {
   name: string
   members: { id: number; name: string; email: string; role: "owner" | "member" }[]

@@ -3,6 +3,7 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { api, type Team, type TeamDetails, type User } from "./api"
+import { GithubSection } from "./GithubSection"
 
 export function TeamSettings({ team, user }: { team: Team; user: User }) {
   const queryClient = useQueryClient()
@@ -121,6 +122,7 @@ export function TeamSettings({ team, user }: { team: Team; user: User }) {
       )}
       {invite.isSuccess && <p className="text-ok">Sent. An invite works for 7 days.</p>}
       {error && <p className="text-acc">{error.message}</p>}
+      {owner && <GithubSection team={team} />}
     </div>
   )
 }

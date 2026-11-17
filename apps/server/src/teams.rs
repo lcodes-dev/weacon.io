@@ -11,17 +11,17 @@ use crate::{ApiError, AppState, now};
 
 const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
 
-fn refused(message: impl Into<String>) -> ApiError {
+pub fn refused(message: impl Into<String>) -> ApiError {
     ApiError(StatusCode::UNPROCESSABLE_ENTITY, message.into())
 }
 
 /// A team the user isn't in looks like one that doesn't exist.
-fn membership(user: &User, team_id: i64) -> Result<&Team, ApiError> {
+pub fn membership(user: &User, team_id: i64) -> Result<&Team, ApiError> {
     let team = user.teams.iter().find(|team| team.id == team_id);
     team.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "not found".into()))
 }
 
-fn owned(user: &User, team_id: i64) -> Result<&Team, ApiError> {
+pub fn owned(user: &User, team_id: i64) -> Result<&Team, ApiError> {
     let team = membership(user, team_id)?;
     if team.role == "owner" {
         return Ok(team);

@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { api, type Health, type MailConfig, type Team, type User } from "./api"
+import { api, type Health, type MailConfig, type Project, type Team, type User } from "./api"
 import { MailSettings } from "./MailSettings"
+import { ProjectPage } from "./Project"
 import { TeamSettings } from "./TeamSettings"
 
 const sections = ["Your chats", "Direct", "Groups", "Machines"]
@@ -30,6 +31,7 @@ export function Shell({ user }: { user: User }) {
           <a className="rounded-md px-2 py-1.5 hover:bg-hov">Tasks</a>
           <a className="rounded-md px-2 py-1.5 hover:bg-hov">Docs</a>
         </nav>
+        <Projects team={team} />
         {sections.map((section) => (
           <h2 key={section} className="px-2 pt-2 font-mono text-[10px] tracking-wider text-ink3 uppercase">
             {section}
@@ -42,12 +44,33 @@ export function Shell({ user }: { user: User }) {
       </aside>
       <main className="flex-1 overflow-auto">
         <Routes>
+          <Route path="/projects/:id" element={<ProjectPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
           {user.is_owner && <Route path="/settings/mail" element={<MailSettings />} />}
           <Route path="*" element={<p className="flex h-full items-center justify-center text-ink2">No chat open</p>} />
         </Routes>
       </main>
     </div>
+  )
+}
+
+function Projects({ team }: { team: Team }) {
+  const projects = useQuery({
+    queryKey: ["projects", team.id],
+    queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
+  })
+  return (
+    <nav className="flex flex-col">
+      <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">Projects</h2>
+      {projects.data?.map((project) => (
+        <Link key={project.id} to={`/projects/${project.id}`} className="truncate rounded-md px-2 py-1.5 hover:bg-hov">
+          {project.name}
+        </Link>
+      ))}
+      <Link to="/projects/new" className="rounded-md px-2 py-1.5 text-ink2 hover:bg-hov">
+        New project
+      </Link>
+    </nav>
   )
 }
 

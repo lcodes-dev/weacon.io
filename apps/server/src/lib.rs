@@ -1,7 +1,9 @@
 mod auth;
 mod config;
 pub mod db;
+mod github;
 pub mod mail;
+mod projects;
 mod teams;
 mod web;
 
@@ -11,7 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
@@ -26,6 +28,8 @@ pub struct AppState {
     pub mailer: Arc<Mailer>,
     /// The address people open in their browser, for links in mail.
     pub url: String,
+    /// `https://api.github.com`, or a fake one in tests.
+    pub github_api: String,
 }
 
 /// Seconds since 1970.
@@ -57,6 +61,20 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/teams/{id}/members/{user_id}",
             delete(teams::remove_member),
+        )
+        .route(
+            "/teams/{id}/projects",
+            get(projects::list).post(projects::create),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}",
+            put(projects::update).delete(projects::delete),
+        )
+        .route(
+            "/teams/{id}/github",
+            get(github::status)
+                .post(github::register)
+                .delete(github::forget),
         )
         .route("/invites/{token}", get(teams::invitation))
         .route("/invites/{token}/accept", post(teams::accept))

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{FromRow, SqlitePool};
 
@@ -66,6 +66,23 @@ pub struct Invite {
     pub id: i64,
     pub email: String,
     pub expires_at: i64,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Project {
+    pub id: i64,
+    pub name: String,
+    /// `owner/name` on GitHub.
+    pub repo: Option<String>,
+}
+
+/// A team's own GitHub App.
+#[derive(Deserialize, FromRow)]
+pub struct GithubApp {
+    pub id: i64,
+    pub slug: String,
+    /// The private key that signs the app's tokens.
+    pub pem: String,
 }
 
 /// What the person opening an invite link sees.
@@ -345,6 +362,89 @@ pub async fn accept_invite(
     }
     tx.commit().await?;
     Ok(team_id)
+}
+
+pub async fn projects(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Vec<Project>> {
+    sqlx::query_as("SELECT id, name, repo FROM projects WHERE team_id = ? ORDER BY name")
+        .bind(team_id)
+        .fetch_all(pool)
+        .await
+}
+
+pub async fn create_project(
+    pool: &SqlitePool,
+    team_id: i64,
+    name: &str,
+    repo: Option<&str>,
+    now: i64,
+) -> sqlx::Result<Project> {
+    sqlx::query_as(
+        "INSERT INTO projects (team_id, name, repo, created_at) VALUES (?, ?, ?, ?)
+         RETURNING id, name, repo",
+    )
+    .bind(team_id)
+    .bind(name)
+    .bind(repo)
+    .bind(now)
+    .fetch_one(pool)
+    .await
+}
+
+/// Returns whether the team has that project.
+pub async fn update_project(
+    pool: &SqlitePool,
+    team_id: i64,
+    project_id: i64,
+    name: &str,
+    repo: Option<&str>,
+) -> sqlx::Result<bool> {
+    let updated =
+        sqlx::query("UPDATE projects SET name = ?, repo = ? WHERE team_id = ? AND id = ?")
+            .bind(name)
+            .bind(repo)
+            .bind(team_id)
+            .bind(project_id)
+            .execute(pool)
+            .await?;
+    Ok(updated.rows_affected() > 0)
+}
+
+pub async fn delete_project(pool: &SqlitePool, team_id: i64, project_id: i64) -> sqlx::Result<()> {
+    sqlx::query("DELETE FROM projects WHERE team_id = ? AND id = ?")
+        .bind(team_id)
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn github_app(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<GithubApp>> {
+    sqlx::query_as(
+        "SELECT github_app_id AS id, github_app_slug AS slug, github_private_key AS pem
+         FROM teams WHERE id = ? AND github_app_id IS NOT NULL",
+    )
+    .bind(team_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// `None` forgets the team's app.
+pub async fn save_github_app(
+    pool: &SqlitePool,
+    team_id: i64,
+    app: Option<&GithubApp>,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE teams SET github_app_id = ?, github_app_slug = ?, github_private_key = ?
+         WHERE id = ?",
+    )
+    .bind(app.map(|app| app.id))
+    .bind(app.map(|app| &app.slug))
+    .bind(app.map(|app| &app.pem))
+    .bind(team_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 pub async fn smtp(pool: &SqlitePool) -> sqlx::Result<Option<Smtp>> {
