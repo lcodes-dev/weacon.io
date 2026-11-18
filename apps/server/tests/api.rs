@@ -926,11 +926,14 @@ async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
     (state, ada, repo)
 }
 
+fn file<'a>(map: &'a Value, path: &str) -> &'a Value {
+    let mut files = map["files"].as_array().unwrap().iter();
+    files.find(|file| file["path"] == path).unwrap()
+}
+
 /// The names of the symbols the map has for a file.
 fn symbols(map: &Value, path: &str) -> Vec<String> {
-    let files = map["files"].as_array().unwrap();
-    let file = files.iter().find(|file| file["path"] == path).unwrap();
-    let symbols = file["symbols"].as_array().unwrap().iter();
+    let symbols = file(map, path)["symbols"].as_array().unwrap().iter();
     symbols
         .map(|symbol| symbol["name"].as_str().unwrap().to_owned())
         .collect()
@@ -1028,6 +1031,134 @@ async fn a_file_s_language_follows_its_name() {
     map::round(&state).await;
     let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
     assert_eq!(map["files"][0]["language"], "Rust");
+}
+
+#[tokio::test]
+async fn each_language_is_read_by_its_own_grammar() {
+    // A path, its language, its source and a name the source defines.
+    let files = [
+        (
+            "a.go",
+            "Go",
+            "package shop\n\nfunc Total() int { return 1 }\n",
+            "Total",
+        ),
+        (
+            "a.java",
+            "Java",
+            "class Cart { int total() { return 1; } }\n",
+            "Cart",
+        ),
+        ("a.c", "C", "int total(void) { return 1; }\n", "total"),
+        ("a.h", "C", "struct cart { int total; };\n", "cart"),
+        (
+            "a.cpp",
+            "C++",
+            "class Cart { public: int total(); };\n",
+            "Cart",
+        ),
+        (
+            "a.cs",
+            "C#",
+            "class Cart { int Total() { return 1; } }\n",
+            "Cart",
+        ),
+        (
+            "a.rb",
+            "Ruby",
+            "class Cart\n  def total\n    1\n  end\nend\n",
+            "Cart",
+        ),
+        (
+            "a.swift",
+            "Swift",
+            "class Cart {\n    func total() -> Int { return 1 }\n}\n",
+            "Cart",
+        ),
+        (
+            "a.dart",
+            "Dart",
+            "class Cart {\n  int total() => 1;\n}\n",
+            "Cart",
+        ),
+        (
+            "a.ex",
+            "Elixir",
+            "defmodule Cart do\n  def total, do: 1\nend\n",
+            "Cart",
+        ),
+        (
+            "a.lua",
+            "Lua",
+            "function total()\n  return 1\nend\n",
+            "total",
+        ),
+        (
+            "a.kt",
+            "Kotlin",
+            "class Cart {\n    fun total(): Int = 1\n}\n",
+            "total",
+        ),
+        (
+            "a.scala",
+            "Scala",
+            "object Cart {\n  def total: Int = 1\n}\n",
+            "Cart",
+        ),
+        ("a.sh", "Bash", "total() {\n  echo 1\n}\n", "total"),
+        (
+            "a.zig",
+            "Zig",
+            "const Cart = struct {};\n\npub fn total() u32 {\n    return 1;\n}\n",
+            "Cart",
+        ),
+    ];
+    let sources = files.map(|(path, _, source, _)| (path, source));
+    let (_, mut ada, _) = mapped_project(&sources).await;
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    for (path, language, _, name) in files {
+        assert_eq!(file(&map, path)["language"], language, "{path}");
+        assert!(symbols(&map, path).contains(&name.to_owned()), "{path}");
+    }
+}
+
+#[tokio::test]
+async fn a_component_is_used_where_its_tag_is_written() {
+    let files = [
+        (
+            "Card.tsx",
+            "export function Card() {\n  return <div />\n}\n",
+        ),
+        ("App.tsx", "export function App() {\n  return <Card />\n}\n"),
+        (
+            "Price.vue",
+            "<template>\n  <b>{{ shown }}</b>\n</template>\n\n<script setup lang=\"ts\">\nfunction shown() {}\n</script>\n",
+        ),
+        ("Cart.vue", "<template>\n  <Price />\n</template>\n"),
+        (
+            "Chip.svelte",
+            "<script>\n  export let label\n</script>\n\n<i>{label}</i>\n",
+        ),
+        ("List.svelte", "<ul><li><Chip label=\"a\" /></li></ul>\n"),
+    ];
+    let (_, mut ada, _) = mapped_project(&files).await;
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(
+        map["uses"],
+        json!([
+            ["App.tsx", "Card.tsx"],
+            ["Cart.vue", "Price.vue"],
+            ["List.svelte", "Chip.svelte"]
+        ])
+    );
+    // A script's line is its line in the whole file.
+    assert_eq!(
+        file(&map, "Price.vue")["symbols"],
+        json!([
+            {"name": "Price", "kind": "component", "line": 1, "end_line": 7},
+            {"name": "shown", "kind": "function", "line": 6, "end_line": 6},
+        ])
+    );
 }
 
 #[tokio::test]

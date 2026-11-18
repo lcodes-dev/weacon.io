@@ -17,7 +17,7 @@ use crate::teams::membership;
 use crate::{ApiError, AppState, github};
 
 /// Raise this when what `read` finds changes, such as with a new language: every map is then read again.
-const READER: i64 = 3;
+const READER: i64 = 4;
 
 /// Larger files are listed in the map and not read.
 const MAX_BYTES: usize = 500_000;
@@ -31,53 +31,104 @@ pub struct Language {
     tags: TagsConfiguration,
 }
 
+impl Language {
+    fn new(
+        name: &'static str,
+        extensions: &'static [&'static str],
+        grammar: impl Into<tree_sitter::Language>,
+        tags: &str,
+    ) -> Self {
+        let tags = TagsConfiguration::new(grammar.into(), tags, "")
+            .unwrap_or_else(|error| panic!("{name}'s tags query doesn't fit: {error}"));
+        Self {
+            name,
+            extensions,
+            tags,
+        }
+    }
+}
+
 /// Adding a language is one grammar in Cargo.toml and one line here.
+/// A grammar that ships no tags query has ours, in `assets/tags/`.
 static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
-    use tree_sitter_javascript as javascript;
-    use tree_sitter_typescript as typescript;
-    // TypeScript's tags query only adds to JavaScript's.
-    let typescript_tags = format!("{}\n{}", javascript::TAGS_QUERY, typescript::TAGS_QUERY);
-    let language = |name, extensions, grammar: tree_sitter::Language, tags: &str| Language {
-        name,
-        extensions,
-        tags: TagsConfiguration::new(grammar, tags, "").expect("a grammar's own tags query"),
+    use {
+        tree_sitter_bash as bash, tree_sitter_c as c, tree_sitter_c_sharp as c_sharp,
+        tree_sitter_cpp as cpp, tree_sitter_dart as dart, tree_sitter_elixir as elixir,
+        tree_sitter_go as go, tree_sitter_java as java, tree_sitter_javascript as javascript,
+        tree_sitter_kotlin_ng as kotlin, tree_sitter_lua as lua, tree_sitter_php as php,
+        tree_sitter_python as python, tree_sitter_ruby as ruby, tree_sitter_rust as rust,
+        tree_sitter_scala as scala, tree_sitter_swift as swift,
+        tree_sitter_typescript as typescript, tree_sitter_zig as zig,
     };
+    let jsx = include_str!("../assets/tags/jsx.scm");
+    let javascript_tags = format!("{}\n{jsx}", javascript::TAGS_QUERY);
+    // TypeScript's tags query only adds to JavaScript's, and C++'s to C's.
+    let typescript_tags = format!("{}\n{}", javascript::TAGS_QUERY, typescript::TAGS_QUERY);
+    let tsx_tags = format!("{typescript_tags}\n{jsx}");
+    let cpp_tags = format!("{}\n{}", c::TAGS_QUERY, cpp::TAGS_QUERY);
+    // C#'s query names one capture in a way the reader refuses.
+    let c_sharp_tags = c_sharp::TAGS_QUERY.replace(") @module", ") @definition.module");
+    let ts = typescript::LANGUAGE_TYPESCRIPT;
+    let language = Language::new;
     vec![
         language(
             "JavaScript",
             &["js", "jsx", "mjs", "cjs"],
-            javascript::LANGUAGE.into(),
-            javascript::TAGS_QUERY,
+            javascript::LANGUAGE,
+            &javascript_tags,
+        ),
+        language("TypeScript", &["ts", "mts", "cts"], ts, &typescript_tags),
+        language("TypeScript", &["tsx"], typescript::LANGUAGE_TSX, &tsx_tags),
+        // Only the scripts of these two are read, as TypeScript: see `scripts`.
+        language("Vue", &["vue"], ts, &typescript_tags),
+        language("Svelte", &["svelte"], ts, &typescript_tags),
+        language("Rust", &["rs"], rust::LANGUAGE, rust::TAGS_QUERY),
+        language("Python", &["py"], python::LANGUAGE, python::TAGS_QUERY),
+        language("PHP", &["php"], php::LANGUAGE_PHP, php::TAGS_QUERY),
+        language("Go", &["go"], go::LANGUAGE, go::TAGS_QUERY),
+        language("Java", &["java"], java::LANGUAGE, java::TAGS_QUERY),
+        // A header named `.h` may be C++, and is read as C all the same.
+        language("C", &["c", "h"], c::LANGUAGE, c::TAGS_QUERY),
+        language(
+            "C++",
+            &["cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            cpp::LANGUAGE,
+            &cpp_tags,
+        ),
+        language("C#", &["cs"], c_sharp::LANGUAGE, &c_sharp_tags),
+        language("Ruby", &["rb"], ruby::LANGUAGE, ruby::TAGS_QUERY),
+        language("Swift", &["swift"], swift::LANGUAGE, swift::TAGS_QUERY),
+        language("Dart", &["dart"], dart::LANGUAGE, dart::TAGS_QUERY),
+        language(
+            "Elixir",
+            &["ex", "exs"],
+            elixir::LANGUAGE,
+            elixir::TAGS_QUERY,
+        ),
+        language("Lua", &["lua"], lua::LANGUAGE, lua::TAGS_QUERY),
+        language(
+            "Kotlin",
+            &["kt", "kts"],
+            kotlin::LANGUAGE,
+            include_str!("../assets/tags/kotlin.scm"),
         ),
         language(
-            "TypeScript",
-            &["ts", "mts", "cts"],
-            typescript::LANGUAGE_TYPESCRIPT.into(),
-            &typescript_tags,
+            "Scala",
+            &["scala", "sc"],
+            scala::LANGUAGE,
+            include_str!("../assets/tags/scala.scm"),
         ),
         language(
-            "TypeScript",
-            &["tsx"],
-            typescript::LANGUAGE_TSX.into(),
-            &typescript_tags,
+            "Bash",
+            &["sh", "bash"],
+            bash::LANGUAGE,
+            include_str!("../assets/tags/bash.scm"),
         ),
         language(
-            "Rust",
-            &["rs"],
-            tree_sitter_rust::LANGUAGE.into(),
-            tree_sitter_rust::TAGS_QUERY,
-        ),
-        language(
-            "Python",
-            &["py"],
-            tree_sitter_python::LANGUAGE.into(),
-            tree_sitter_python::TAGS_QUERY,
-        ),
-        language(
-            "PHP",
-            &["php"],
-            tree_sitter_php::LANGUAGE_PHP.into(),
-            tree_sitter_php::TAGS_QUERY,
+            "Zig",
+            &["zig"],
+            zig::LANGUAGE,
+            include_str!("../assets/tags/zig.scm"),
         ),
     ]
 });
@@ -110,6 +161,26 @@ pub fn language(path: &str) -> Option<&'static Language> {
         .find(|language| language.extensions.contains(&extension))
 }
 
+/// A Vue or Svelte file with all but its scripts blanked, so that every line and position stays where it is.
+fn scripts(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        let opened = rest.find("<script");
+        let script = opened.and_then(|at| Some(at + rest[at..].find('>')? + 1));
+        let (markup, after) = rest.split_at(script.unwrap_or(rest.len()));
+        kept.extend(
+            markup
+                .bytes()
+                .map(|byte| if byte == b'\n' { '\n' } else { ' ' }),
+        );
+        let end = after.find("</script").unwrap_or(after.len());
+        kept.push_str(&after[..end]);
+        rest = &after[end..];
+    }
+    kept
+}
+
 fn read(path: &str, bytes: &[u8]) -> Reading {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Reading::default();
@@ -122,8 +193,11 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
     let Some(language) = language(path) else {
         return reading;
     };
+    let component = ["Vue", "Svelte"].contains(&language.name);
+    let scripts = component.then(|| scripts(text));
+    let source = scripts.as_deref().map_or(bytes, str::as_bytes);
     let mut context = TagsContext::new();
-    let Ok((tags, _)) = context.generate_tags(&language.tags, bytes, None) else {
+    let Ok((tags, _)) = context.generate_tags(&language.tags, source, None) else {
         return reading;
     };
     let line_ends: Vec<usize> = (0..bytes.len()).filter(|at| bytes[*at] == b'\n').collect();
@@ -140,6 +214,24 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
         } else {
             reading.mentions.insert(name);
         }
+    }
+    if component {
+        // The file is the component, named as other files write its tag.
+        let file = path.rsplit('/').next().unwrap_or(path);
+        reading.symbols.push(Symbol {
+            name: file.split('.').next().unwrap_or(file).to_owned(),
+            kind: "component".into(),
+            line: 1,
+            end_line: reading.lines,
+        });
+        let tags = text.split('<').skip(1);
+        let names = tags.map(|tag| {
+            tag.split(|c: char| !c.is_alphanumeric())
+                .next()
+                .unwrap_or("")
+        });
+        let components = names.filter(|name| name.starts_with(char::is_uppercase));
+        reading.mentions.extend(components.map(str::to_owned));
     }
     // Two patterns of a tags query can match one definition.
     let mut seen = HashSet::new();
