@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT repo FROM projects WHERE team_id = ? AND id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "repo",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "repo"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "e606648ae9734bb8e557a3c386c0d0bbc9918d6b26fe9d0e0883f996ad15ea01"
+}

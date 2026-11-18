@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\" FROM (\n                   SELECT 'teams' AS of, id FROM teams\n                   UNION ALL SELECT 'projects', id FROM projects\n                   UNION ALL SELECT 'members', id FROM users\n               ) WHERE of = ? ORDER BY id LIMIT 1 OFFSET ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e26e4f57467773f527d927c9c57517e3cae3de116893369d3db6ff0a267fe3fb"
+}

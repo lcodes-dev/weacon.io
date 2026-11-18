@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, b.lines\n         FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob\n         WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "lines",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "lines"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "abbcc2aa9023cc2b6e9902bccba728d49daa94e2e484577ded082d330afb2139"
+}

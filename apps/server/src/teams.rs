@@ -16,12 +16,12 @@ pub fn refused(message: impl Into<String>) -> ApiError {
 }
 
 /// A team the user isn't in looks like one that doesn't exist.
-pub fn membership(user: &User, team_id: i64) -> Result<&Team, ApiError> {
+pub fn membership<'a>(user: &'a User, team_id: &str) -> Result<&'a Team, ApiError> {
     let team = user.teams.iter().find(|team| team.id == team_id);
     team.ok_or_else(crate::not_found)
 }
 
-pub fn owned(user: &User, team_id: i64) -> Result<&Team, ApiError> {
+pub fn owned<'a>(user: &'a User, team_id: &str) -> Result<&'a Team, ApiError> {
     let team = membership(user, team_id)?;
     if team.role == "owner" {
         return Ok(team);
@@ -33,12 +33,12 @@ pub fn owned(user: &User, team_id: i64) -> Result<&Team, ApiError> {
 pub async fn team(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let team = membership(&user, team_id)?;
-    let members = db::members(&state.pool, team_id).await?;
-    let invites = db::invites(&state.pool, team_id).await?;
-    let writer = db::writer(&state.pool, team_id).await?;
+    let team = membership(&user, &team_id)?;
+    let members = db::members(&state.pool, &team_id).await?;
+    let invites = db::invites(&state.pool, &team_id).await?;
+    let writer = db::writer(&state.pool, &team_id).await?;
     let writer = writer.map(|writer| writer.public());
     Ok(Json(json!({
         "name": team.name, "members": members, "invites": invites, "writer": writer,
@@ -53,15 +53,15 @@ pub struct Rename {
 pub async fn rename(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Json(rename): Json<Rename>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
+    owned(&user, &team_id)?;
     let name = rename.name.trim();
     if name.is_empty() {
         return Err(refused("A team needs a name"));
     }
-    db::rename_team(&state.pool, team_id, name).await?;
+    db::rename_team(&state.pool, &team_id, name).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -73,10 +73,10 @@ pub struct NewInvites {
 pub async fn invite(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Json(invites): Json<NewInvites>,
 ) -> Result<StatusCode, ApiError> {
-    let team = owned(&user, team_id)?;
+    let team = owned(&user, &team_id)?;
     let mut emails: Vec<String> = invites
         .emails
         .iter()
@@ -89,7 +89,7 @@ pub async fn invite(
         if !mail::is_address(email) {
             return Err(refused(format!("{email} isn't an email address")));
         }
-        if db::is_member(&state.pool, team_id, email).await? {
+        if db::is_member(&state.pool, &team_id, email).await? {
             return Err(refused(format!("{email} is already in the team")));
         }
     }
@@ -107,7 +107,7 @@ async fn send_invite(
 ) -> Result<(), ApiError> {
     let token = format!("{:032x}", rand::random::<u128>());
     let expires_at = now() + INVITE_SECONDS;
-    db::save_invite(&state.pool, team.id, email, &token, user.id, expires_at).await?;
+    db::save_invite(&state.pool, &team.id, email, &token, &user.id, expires_at).await?;
 
     let subject = format!("Join {} on Weacon", team.name);
     let text = format!(
@@ -133,10 +133,10 @@ async fn send_invite(
 pub async fn revoke(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, invite_id)): Path<(i64, i64)>,
+    Path((team_id, invite_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
-    db::delete_invite(&state.pool, team_id, invite_id).await?;
+    owned(&user, &team_id)?;
+    db::delete_invite(&state.pool, &team_id, &invite_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -144,14 +144,14 @@ pub async fn revoke(
 pub async fn remove_member(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, user_id)): Path<(i64, i64)>,
+    Path((team_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     if user_id == user.id {
-        membership(&user, team_id)?;
+        membership(&user, &team_id)?;
     } else {
-        owned(&user, team_id)?;
+        owned(&user, &team_id)?;
     }
-    if !db::remove_member(&state.pool, team_id, user_id).await? {
+    if !db::remove_member(&state.pool, &team_id, &user_id).await? {
         return Err(refused("The team's owner can't leave"));
     }
     Ok(StatusCode::NO_CONTENT)
@@ -184,7 +184,7 @@ pub async fn accept(
         return Err(ApiError(StatusCode::FORBIDDEN, message));
     }
     // Revoked or used since the check above.
-    let team_id = db::accept_invite(&state.pool, &token, user.id).await?;
+    let team_id = db::accept_invite(&state.pool, &token, &user.id).await?;
     let team_id = team_id.ok_or_else(gone)?;
     Ok(Json(json!({"team_id": team_id})))
 }

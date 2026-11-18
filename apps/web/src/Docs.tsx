@@ -20,12 +20,12 @@ export function DocsPage({ team }: { team: Team }) {
   const { id } = useParams()
   const queryClient = useQueryClient()
   const [chosen, setChosen] = useState("")
-  const [open, setOpen] = useState(0)
+  const [open, setOpen] = useState("")
   const projects = useQuery({
     queryKey: ["projects", team.id],
     queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
   })
-  const project = projects.data?.find((project) => String(project.id) === id)
+  const project = projects.data?.find((project) => project.id === id)
   const path = `/teams/${team.id}/projects/${id}`
   const docs = useQuery({
     queryKey: ["docs", id],

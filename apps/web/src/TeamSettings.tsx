@@ -26,11 +26,11 @@ export function TeamSettings({ team, user }: { team: Team; user: User }) {
     onSuccess: refresh,
   })
   const revoke = useMutation({
-    mutationFn: (id: number) => api("DELETE", `${path}/invites/${id}`),
+    mutationFn: (id: string) => api("DELETE", `${path}/invites/${id}`),
     onSuccess: refresh,
   })
   const remove = useMutation({
-    mutationFn: (id: number) => api("DELETE", `${path}/members/${id}`),
+    mutationFn: (id: string) => api("DELETE", `${path}/members/${id}`),
     onSuccess: refresh,
   })
   const error = rename.error ?? invite.error ?? revoke.error ?? remove.error

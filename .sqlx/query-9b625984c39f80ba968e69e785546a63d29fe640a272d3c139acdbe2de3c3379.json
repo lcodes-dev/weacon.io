@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE branches SET head_sha = COALESCE(?1, head_sha), error = ?2\n         WHERE project_id = ?3 AND name = ?4\n           AND (head_sha IS NOT COALESCE(?1, head_sha) OR error IS NOT ?2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "9b625984c39f80ba968e69e785546a63d29fe640a272d3c139acdbe2de3c3379"
+}

@@ -10,7 +10,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
 use tree_sitter_tags::{TagsConfiguration, TagsContext};
 
 use crate::db::{self, User, Waiting};
@@ -18,7 +17,7 @@ use crate::teams::membership;
 use crate::{ApiError, AppState, github};
 
 /// Raise this when what `read` finds changes, such as with a new language: every map is then read again.
-const READER: i64 = 2;
+const READER: i64 = 3;
 
 /// Larger files are listed in the map and not read.
 const MAX_BYTES: usize = 500_000;
@@ -83,7 +82,7 @@ static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
     ]
 });
 
-#[derive(Serialize, FromRow)]
+#[derive(Serialize)]
 pub struct Symbol {
     pub name: String,
     /// Such as `function`, `method` or `class`.
@@ -143,9 +142,10 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
         }
     }
     // Two patterns of a tags query can match one definition.
+    let mut seen = HashSet::new();
     reading
         .symbols
-        .dedup_by(|a, b| a.name == b.name && a.kind == b.kind && a.line == b.line);
+        .retain(|symbol| seen.insert((symbol.name.clone(), symbol.kind.clone(), symbol.line)));
     let defined: HashSet<&str> = reading.symbols.iter().map(|s| s.name.as_str()).collect();
     reading
         .mentions
@@ -208,7 +208,8 @@ pub async fn round(state: &AppState) {
         if let Err(ApiError(_, message)) = map(state, &branch).await {
             tracing::error!("mapping {} {} failed: {message}", branch.repo, branch.name);
             let (project, name) = (branch.project_id, &branch.name);
-            let saved = db::set_branch_head(&state.pool, project, name, None, Some(&message)).await;
+            let saved =
+                db::set_branch_head(&state.pool, &project, name, None, Some(&message)).await;
             saved.ok();
         }
     }
@@ -216,11 +217,11 @@ pub async fn round(state: &AppState) {
 
 async fn notice(state: &AppState) -> sqlx::Result<()> {
     for project in db::tracked_projects(&state.pool).await? {
-        let heads = match github::token(state, project.team_id).await {
+        let heads = match github::token(state, &project.team_id).await {
             Ok(token) => github::branches(state, &token, &project.repo).await,
             Err(error) => Err(error),
         };
-        for name in db::branch_names(&state.pool, project.id).await? {
+        for name in db::branch_names(&state.pool, &project.id).await? {
             let (head, error) = match &heads {
                 Ok(heads) => match heads.get(&name) {
                     Some(head) => (Some(head.as_str()), None),
@@ -228,16 +229,16 @@ async fn notice(state: &AppState) -> sqlx::Result<()> {
                 },
                 Err(ApiError(_, message)) => (None, Some(message.as_str())),
             };
-            db::set_branch_head(&state.pool, project.id, &name, head, error).await?;
+            db::set_branch_head(&state.pool, &project.id, &name, head, error).await?;
         }
     }
     Ok(())
 }
 
 async fn map(state: &AppState, branch: &Waiting) -> Result<(), ApiError> {
-    let token = github::token(state, branch.team_id).await?;
+    let token = github::token(state, &branch.team_id).await?;
     let files = github::files(state, &token, &branch.repo, &branch.head_sha).await?;
-    let mut seen = db::known_blobs(&state.pool, branch.project_id).await?;
+    let mut seen = db::known_blobs(&state.pool, &branch.project_id).await?;
     // One path for each content not read before, even when several files share it.
     let new: HashMap<String, String> = files
         .iter()
@@ -269,10 +270,10 @@ pub struct Which {
 pub async fn show(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, project_id)): Path<(i64, i64)>,
+    Path((team_id, project_id)): Path<(String, String)>,
     Query(which): Query<Which>,
 ) -> Result<Json<db::Map>, ApiError> {
-    membership(&user, team_id)?;
-    let map = db::map(&state.pool, team_id, project_id, &which.branch).await?;
+    membership(&user, &team_id)?;
+    let map = db::map(&state.pool, &team_id, &project_id, &which.branch).await?;
     Ok(Json(map.ok_or_else(crate::not_found)?))
 }

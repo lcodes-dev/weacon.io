@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE branches SET commit_sha = ?1\n         WHERE project_id = ?2 AND name = ?3 AND head_sha = ?1\n           AND EXISTS (SELECT 1 FROM projects WHERE id = ?2 AND repo = ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "815101021069af251b29b280dbdca8340792cb2dc40bf9b9c901f742ab5a80e2"
+}

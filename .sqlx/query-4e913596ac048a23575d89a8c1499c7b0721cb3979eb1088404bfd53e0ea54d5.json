@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO branch_files (project_id, branch, path, blob) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "4e913596ac048a23575d89a8c1499c7b0721cb3979eb1088404bfd53e0ea54d5"
+}

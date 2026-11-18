@@ -38,10 +38,37 @@ impl Client {
         }
     }
 
+    /// The id of the `nth` team, project or member made, since tests can't know a UUID beforehand.
+    async fn id(&self, of: &str, nth: i64) -> Option<String> {
+        let skip = nth - 1;
+        sqlx::query_scalar!(
+            r#"SELECT id AS "id!" FROM (
+                   SELECT 'teams' AS of, id FROM teams
+                   UNION ALL SELECT 'projects', id FROM projects
+                   UNION ALL SELECT 'members', id FROM users
+               ) WHERE of = ? ORDER BY id LIMIT 1 OFFSET ?"#,
+            of,
+            skip
+        )
+        .fetch_optional(&self.state.pool)
+        .await
+        .unwrap()
+    }
+
+    /// A path names a team, project or member by the order it was made in: `teams/2` is the second team.
     async fn send(&mut self, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
+        let (path, query) = path.split_once('?').unwrap_or((path, ""));
+        let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
+        for at in 1..parts.len() {
+            let of = parts[at - 1].clone();
+            let named = ["teams", "projects", "members"].contains(&of.as_str());
+            if let (true, Ok(nth)) = (named, parts[at].parse()) {
+                parts[at] = self.id(&of, nth).await.unwrap_or_else(|| "none".into());
+            }
+        }
         let mut request = Request::builder()
             .method(method)
-            .uri(path)
+            .uri(format!("{}?{query}", parts.join("/")))
             .header(CONTENT_TYPE, "application/json");
         if let Some(cookie) = &self.cookie {
             request = request.header(COOKIE, cookie);
@@ -78,16 +105,16 @@ impl Client {
     }
 
     async fn code(&self, email: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT code FROM sign_in_codes WHERE email = ?")
-            .bind(email.trim().to_lowercase())
+        let email = email.trim().to_lowercase();
+        sqlx::query_scalar!("SELECT code FROM sign_in_codes WHERE email = ?", email)
             .fetch_optional(&self.state.pool)
             .await
             .unwrap()
     }
 
     async fn token(&self, email: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT token FROM invites WHERE email = ?")
-            .bind(email.trim().to_lowercase())
+        let email = email.trim().to_lowercase();
+        sqlx::query_scalar!("SELECT token FROM invites WHERE email = ?", email)
             .fetch_optional(&self.state.pool)
             .await
             .unwrap()
@@ -234,7 +261,7 @@ async fn asking_for_a_new_code_buys_no_guesses() {
     assert_eq!(client.code("ada@example.com").await.unwrap(), code);
 
     // A minute later a new code is made, and the five wrong tries still count against it.
-    sqlx::query("UPDATE sign_in_codes SET expires_at = expires_at - 61")
+    sqlx::query!("UPDATE sign_in_codes SET expires_at = expires_at - 61")
         .execute(&client.state.pool)
         .await
         .unwrap();
@@ -249,7 +276,7 @@ async fn asking_for_a_new_code_buys_no_guesses() {
 async fn a_session_ends_after_a_year() {
     let mut client = Client::new(&server().await);
     client.sign_in("ada@example.com", Some("Ada")).await;
-    sqlx::query("UPDATE sessions SET created_at = created_at - 366 * 24 * 60 * 60")
+    sqlx::query!("UPDATE sessions SET created_at = created_at - 366 * 24 * 60 * 60")
         .execute(&client.state.pool)
         .await
         .unwrap();
@@ -263,7 +290,7 @@ async fn an_expired_code_is_refused() {
     let request = json!({"email": "ada@example.com", "name": "Ada"});
     client.post("/api/sign-in/code", request).await;
     let code = client.code("ada@example.com").await.unwrap();
-    sqlx::query("UPDATE sign_in_codes SET expires_at = 0")
+    sqlx::query!("UPDATE sign_in_codes SET expires_at = 0")
         .execute(&client.state.pool)
         .await
         .unwrap();
@@ -363,7 +390,8 @@ async fn ada_and_marco(state: &AppState) -> (Client, Client) {
     let (status, joined) = marco
         .post(&format!("/api/invites/{token}/accept"), Value::Null)
         .await;
-    assert_eq!((status, joined), (StatusCode::OK, json!({"team_id": 1})));
+    let team = marco.id("teams", 1).await;
+    assert_eq!((status, joined), (StatusCode::OK, json!({"team_id": team})));
     (ada, marco)
 }
 
@@ -401,8 +429,8 @@ async fn an_invited_person_registers_and_joins() {
     assert_eq!(
         session["user"]["teams"],
         json!([
-            {"id": 1, "name": "Ada's team", "role": "member"},
-            {"id": 2, "name": "Marco's team", "role": "owner"},
+            {"id": marco.id("teams", 1).await, "name": "Ada's team", "role": "member"},
+            {"id": marco.id("teams", 2).await, "name": "Marco's team", "role": "owner"},
         ])
     );
     let (_, team) = marco.get("/api/teams/1").await;
@@ -450,7 +478,8 @@ async fn inviting_again_replaces_the_link_and_revoking_kills_it() {
 
     let (_, team) = ada.get("/api/teams/1").await;
     assert_eq!(team["invites"].as_array().unwrap().len(), 1);
-    let invite = format!("/api/teams/1/invites/{}", team["invites"][0]["id"]);
+    let invite = team["invites"][0]["id"].as_str().unwrap();
+    let invite = format!("/api/teams/1/invites/{invite}");
     assert_eq!(ada.delete(&invite).await, StatusCode::NO_CONTENT);
     assert_eq!(
         ada.get(&format!("/api/invites/{second}")).await.0,
@@ -554,7 +583,7 @@ async fn an_expired_invite_is_refused_until_it_is_sent_again() {
     let mut ada = Client::new(&state);
     ada.sign_in("ada@example.com", Some("Ada")).await;
     let token = ada.invite("marco@example.com").await;
-    sqlx::query("UPDATE invites SET expires_at = 0")
+    sqlx::query!("UPDATE invites SET expires_at = 0")
         .execute(&state.pool)
         .await
         .unwrap();
@@ -727,7 +756,7 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
         .post("/api/teams/1/projects", json!({"name": " Storefront "}))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(project, json!({"id": 1}));
+    assert_eq!(project, json!({"id": marco.id("projects", 1).await}));
     assert_eq!(
         marco
             .post("/api/teams/1/projects", json!({"name": " "}))
@@ -748,7 +777,7 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
     let (_, projects) = ada.get("/api/teams/1/projects").await;
     assert_eq!(
         projects,
-        json!([{"id": 1, "name": "Shop", "repo": null, "branches": []}])
+        json!([{"id": ada.id("projects", 1).await, "name": "Shop", "repo": null, "branches": []}])
     );
 
     assert_eq!(
@@ -982,7 +1011,7 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
     assert_eq!(map["files"].as_array().unwrap().len(), 1);
     assert_eq!(symbols(&map, "app.ts"), ["start"]);
     // The contents no commit lists any more are forgotten.
-    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+    let kept = sqlx::query_scalar!("SELECT COUNT(*) FROM blobs")
         .fetch_one(&state.pool)
         .await
         .unwrap();
@@ -1068,7 +1097,7 @@ async fn each_tracked_branch_has_its_own_map() {
         ada.get("/api/teams/1/projects/1/map?branch=dev").await.0,
         StatusCode::NOT_FOUND
     );
-    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+    let kept = sqlx::query_scalar!("SELECT COUNT(*) FROM blobs")
         .fetch_one(&state.pool)
         .await
         .unwrap();
@@ -1215,14 +1244,11 @@ async fn changing_the_repository_removes_the_docs_and_a_run_under_way_writes_not
 }
 
 #[tokio::test]
-async fn a_run_writes_nothing_into_a_project_made_after_its_own_was_deleted() {
+async fn a_run_whose_project_was_deleted_writes_nothing() {
     let (mut ada, prompts) = docs_with_a_run_held_up().await;
     ada.delete("/api/teams/1/projects/1").await;
-    // SQLite gives the new project the deleted one's number.
-    let (_, project) = ada
-        .post("/api/teams/1/projects", json!({"name": "Another"}))
+    ada.post("/api/teams/1/projects", json!({"name": "Another"}))
         .await;
-    assert_eq!(project["id"], 1);
     let (_, docs) = ada.get("/api/teams/1/projects/1/docs").await;
 
     let_the_run_finish(&prompts).await;

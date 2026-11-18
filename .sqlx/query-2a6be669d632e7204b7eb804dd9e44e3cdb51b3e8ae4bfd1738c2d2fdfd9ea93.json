@@ -1,0 +1,57 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.name AS team_name, u.name AS invited_by, i.email,\n                  EXISTS (SELECT 1 FROM users WHERE email = i.email) AS \"has_account: bool\"\n           FROM invites i\n           JOIN teams t ON t.id = i.team_id\n           JOIN users u ON u.id = i.invited_by\n           WHERE i.token = ? AND i.expires_at > ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "team_name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "invited_by",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "email",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "invites",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "name": "has_account: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2a6be669d632e7204b7eb804dd9e44e3cdb51b3e8ae4bfd1738c2d2fdfd9ea93"
+}

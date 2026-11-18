@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (SELECT 1 FROM users WHERE email = ?) AS \"found: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "found: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "835c617375a610a7f65c1620946616bbcf34961345a14a7310b521f49f36b6f7"
+}

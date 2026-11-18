@@ -8,6 +8,7 @@ Weacon is a web harness for coding agents with tasks, docs and team chats built 
 - **`.legacy/` is the previous codebase.** Read it for reference; never edit it or build on it.
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
 - **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md`, and are deleted from it once answered. Improvements nobody asked for go in `.planning/improvements.md`. Neither goes in a plan.
+- **Queries are checked at build time.** Write each one with sqlx's `query!`, `query_as!` or `query_scalar!`, in `apps/server/src/db.rs`, never as a string built at run time. After changing a query or a migration, run `scripts/prepare-queries.sh` and commit `.sqlx/` with the change.
 - **Tests are integration tests.** The server's tests live in `apps/server/tests/` and drive the API over HTTP, as a browser would. Write a unit test inside `src/` only for something no request can reach.
 - **Docs** live in `docs/` as Markdown and are updated in the same change as the code they describe.
 
@@ -18,6 +19,7 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | Command | What it does |
 | --- | --- |
 | `scripts/dev.sh` | Installs the pinned tools and the web app's packages, then runs the server on `http://localhost:8080` and the web app, with hot reload, on `http://localhost:5173` |
+| `scripts/prepare-queries.sh` | Writes `.sqlx/`, which the build checks every query against; run it after changing a query or a migration |
 | `npm --prefix apps/web run build` | Type-checks and builds the web app into `apps/web/dist/` |
 | `cargo test -p weacon-server` | Runs the server's tests in `apps/server/tests/`; build the web app first |
 

@@ -47,8 +47,13 @@ There are no unit tests inside `src/`. One is added only for something no reques
 - One database file; its path comes from a flag or an environment variable.
 - WAL mode and foreign keys on.
 - At startup the server makes the file, and SQLite's two side files, readable by its own account only: it holds sessions, keys and source code.
+- **Keys.** A row with an id of its own (a user, team, project, invite or docs page) has a UUIDv7 made by the server, stored as text. It starts with the time it was made, so ids sort by age and are never given out twice; in the API and in addresses an id is that text. A table whose rows are already named by something unique is keyed by that: a session by its token, a branch by its project and name, a file's content by its project and git's id.
+- **Links do the clean-up.** A branch's files go with the branch, what was read from a content goes with the content, and everything of a project goes with the project.
+- **Indexes.** Each query finds its rows through a key or an index; `EXPLAIN QUERY PLAN` in `sqlite3` shows how a new one runs. Small tables keyed by text are `WITHOUT ROWID`, so the key is the table and not a second tree beside it.
 - Migrations are plain `.sql` files in `apps/server/migrations/`, embedded in the binary and run at startup. A schema change is a new numbered file; a file that has been committed is never edited.
-- Queries are checked at runtime, not with sqlx's compile-time macros, so a build never needs a live database.
+- Every query is written with sqlx's `query!`, `query_as!` or `query_scalar!`, which check it against the schema when the server is built: a misspelt column or a wrong type stops the build. The build needs no database, because the checks are saved in `.sqlx/`, one file per query, kept in git.
+- After changing a query or a migration, run `scripts/prepare-queries.sh`. It runs the migrations on an empty database in `target/`, writes `.sqlx/` again, and says what is wrong with a query that doesn't fit. Until then the build stops at that query.
+- SQLite reports a true-or-false value as a number, so such a column is written `is_owner AS "is_owner: bool"`. A value SQLite can't tell is always there is written `repo AS "repo!"`.
 - All SQL lives in one `db` module.
 
 ## Web app

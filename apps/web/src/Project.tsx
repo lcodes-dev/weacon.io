@@ -16,7 +16,7 @@ export function ProjectPage({ team }: { team: Team }) {
     refetchInterval: (query) => (query.state.data?.some((project) => project.branches.some(waiting)) ? 3000 : 60_000),
   })
   if (!projects.data) return null
-  const project = projects.data.find((project) => String(project.id) === id)
+  const project = projects.data.find((project) => project.id === id)
   if (id !== "new" && !project) return <p className="page text-ink2">This project isn't in {team.name}.</p>
   return (
     <div className="page page-wide">

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM branch_files WHERE project_id = ? AND branch = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "26e51a921ef4eb435200ba8fd64cacb146e6dcc26f5fb0cca97fa9d0bb10f44b"
+}

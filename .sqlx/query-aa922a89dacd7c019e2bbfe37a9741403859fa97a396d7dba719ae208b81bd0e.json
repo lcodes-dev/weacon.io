@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docs (id, project_id, section, position, title, markdown)\n             VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "aa922a89dacd7c019e2bbfe37a9741403859fa97a396d7dba719ae208b81bd0e"
+}

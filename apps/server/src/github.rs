@@ -108,7 +108,7 @@ async fn installation(
 }
 
 /// A token to read the team's repositories with.
-pub async fn token(state: &AppState, team_id: i64) -> Result<String, ApiError> {
+pub async fn token(state: &AppState, team_id: &str) -> Result<String, ApiError> {
     let installed = match db::github_app(&state.pool, team_id).await? {
         Some(app) => installation(state, &app).await?,
         None => None,
@@ -125,7 +125,7 @@ async fn get<T: DeserializeOwned>(
     answer(request(state, Method::GET, path).bearer_auth(token)).await
 }
 
-pub async fn team_status(state: &AppState, team_id: i64) -> Result<Status, ApiError> {
+pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status, ApiError> {
     let Some(app) = db::github_app(&state.pool, team_id).await? else {
         return Ok(Status::default());
     };
@@ -253,10 +253,10 @@ struct Repo {
 pub async fn repo_branches(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Query(of): Query<OfRepo>,
 ) -> Result<Json<Value>, ApiError> {
-    membership(&user, team_id)?;
+    membership(&user, &team_id)?;
     // The name goes into GitHub's address, so it must be nothing but `owner/name`.
     let plain = |part: &str| {
         part.chars()
@@ -265,7 +265,7 @@ pub async fn repo_branches(
     if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
         return Err(crate::not_found());
     }
-    let token = token(&state, team_id).await?;
+    let token = token(&state, &team_id).await?;
     let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
     let mut names: Vec<String> = branches(&state, &token, &of.repo)
         .await?
@@ -280,10 +280,10 @@ pub async fn repo_branches(
 pub async fn status(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
 ) -> Result<Json<Status>, ApiError> {
-    membership(&user, team_id)?;
-    Ok(Json(team_status(&state, team_id).await?))
+    membership(&user, &team_id)?;
+    Ok(Json(team_status(&state, &team_id).await?))
 }
 
 #[derive(Deserialize)]
@@ -295,22 +295,22 @@ pub struct Registration {
 pub async fn register(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Json(registration): Json<Registration>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
+    owned(&user, &team_id)?;
     let path = format!("/app-manifests/{}/conversions", registration.code);
     let app: GithubApp = answer(request(&state, Method::POST, &path)).await?;
-    db::save_github_app(&state.pool, team_id, Some(&app)).await?;
+    db::save_github_app(&state.pool, &team_id, Some(&app)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn forget(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
-    db::save_github_app(&state.pool, team_id, None).await?;
+    owned(&user, &team_id)?;
+    db::save_github_app(&state.pool, &team_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }

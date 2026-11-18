@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE teams SET writer = ?, writer_key = ?, writer_model = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "8aae81c424d037178619f48df3699976322b6c08f77aadf4fed5b869a7421dd1"
+}

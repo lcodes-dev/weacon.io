@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT map_reader FROM config",
+  "describe": {
+    "columns": [
+      {
+        "name": "map_reader",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "map_reader"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f78957222204e25c72facabee50da715274aef79c04d264c224bc2dbc4192721"
+}

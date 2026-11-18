@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO invites (id, team_id, email, token, invited_by, expires_at)\n         VALUES (?, ?, ?, ?, ?, ?)\n         ON CONFLICT (team_id, email) DO UPDATE\n         SET token = excluded.token, invited_by = excluded.invited_by,\n             expires_at = excluded.expires_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "a7f33b905c52cfef893af19adc4f55b294a680a3496ba79b8a507218d65fe5eb"
+}

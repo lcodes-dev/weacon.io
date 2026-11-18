@@ -15,9 +15,9 @@ export function Invite({ user }: { user: User | null }) {
   })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["session"] })
   const join = useMutation({
-    mutationFn: () => api<{ team_id: number }>("POST", `/invites/${token}/accept`),
+    mutationFn: () => api<{ team_id: string }>("POST", `/invites/${token}/accept`),
     onSuccess: async ({ team_id }) => {
-      localStorage.setItem("team", String(team_id))
+      localStorage.setItem("team", team_id)
       await refresh()
       navigate("/")
     },

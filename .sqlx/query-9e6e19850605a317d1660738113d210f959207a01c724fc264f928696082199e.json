@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT docs_state AS state, docs_message AS message, docs_branch AS branch,\n                  docs_commit AS \"commit\", docs_left_out AS left_out\n           FROM projects WHERE team_id = ? AND id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "docs_state"
+          }
+        }
+      },
+      {
+        "name": "message",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "docs_message"
+          }
+        }
+      },
+      {
+        "name": "branch",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "docs_branch"
+          }
+        }
+      },
+      {
+        "name": "commit",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "docs_commit"
+          }
+        }
+      },
+      {
+        "name": "left_out",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "docs_left_out"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "9e6e19850605a317d1660738113d210f959207a01c724fc264f928696082199e"
+}

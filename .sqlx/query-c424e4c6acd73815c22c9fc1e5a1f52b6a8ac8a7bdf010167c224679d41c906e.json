@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT smtp_host AS \"host!\", smtp_port AS \"port!: _\", smtp_security AS \"security!: _\",\n                  smtp_username AS username, smtp_password AS password, mail_from AS \"from!\"\n           FROM config WHERE smtp_host IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "host!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_host"
+          }
+        }
+      },
+      {
+        "name": "port!: _",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_port"
+          }
+        }
+      },
+      {
+        "name": "security!: _",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_security"
+          }
+        }
+      },
+      {
+        "name": "username",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_username"
+          }
+        }
+      },
+      {
+        "name": "password",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_password"
+          }
+        }
+      },
+      {
+        "name": "from!",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "mail_from"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c424e4c6acd73815c22c9fc1e5a1f52b6a8ac8a7bdf010167c224679d41c906e"
+}

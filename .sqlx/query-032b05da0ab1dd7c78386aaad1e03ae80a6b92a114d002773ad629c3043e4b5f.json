@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET created_at = created_at - 366 * 24 * 60 * 60",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "032b05da0ab1dd7c78386aaad1e03ae80a6b92a114d002773ad629c3043e4b5f"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT writer AS \"kind!: _\", writer_key AS key, writer_model AS model\n           FROM teams WHERE id = ? AND writer IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind!: _",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "writer"
+          }
+        }
+      },
+      {
+        "name": "key",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "writer_key"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "writer_model"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7620a8b0d5b1f80e40d2be019e2dd0331a92cb581ef19468a2a5b9e3b5d49f85"
+}

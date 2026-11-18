@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT b.commit_sha FROM branches b JOIN projects p ON p.id = b.project_id\n         WHERE p.team_id = ? AND b.project_id = ? AND b.name = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "commit_sha",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "commit_sha"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "d540c4bfb0f0b578e1e1a42df862ea5f004720c0ce20d62348a066dbf8e64d2b"
+}

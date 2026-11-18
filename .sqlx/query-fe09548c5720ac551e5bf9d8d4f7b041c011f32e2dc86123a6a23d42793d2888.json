@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO blob_symbols (project_id, blob, name, kind, line, end_line)\n                 VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "fe09548c5720ac551e5bf9d8d4f7b041c011f32e2dc86123a6a23d42793d2888"
+}

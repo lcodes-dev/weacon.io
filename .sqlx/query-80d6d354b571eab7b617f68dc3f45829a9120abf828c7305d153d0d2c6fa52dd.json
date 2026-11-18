@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, b.text AS \"text!\"\n           FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob\n           WHERE f.project_id = ? AND f.branch = ? AND b.text IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "text!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "text"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "80d6d354b571eab7b617f68dc3f45829a9120abf828c7305d153d0d2c6fa52dd"
+}

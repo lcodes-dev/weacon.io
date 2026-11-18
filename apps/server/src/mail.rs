@@ -3,14 +3,14 @@ use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
+use sqlx::SqlitePool;
 
 use crate::db;
 
 type Transport = AsyncSmtpTransport<Tokio1Executor>;
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Clone, Deserialize, Serialize, FromRow)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct Smtp {
     pub host: String,
     pub port: u16,

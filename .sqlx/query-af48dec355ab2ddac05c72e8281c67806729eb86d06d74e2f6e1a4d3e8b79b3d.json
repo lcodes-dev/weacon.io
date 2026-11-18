@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT b.project_id, p.team_id, p.repo AS \"repo!\", b.name, b.head_sha AS \"head_sha!\"\n           FROM branches b JOIN projects p ON p.id = b.project_id\n           WHERE b.head_sha IS NOT NULL AND b.head_sha IS NOT b.commit_sha AND b.error IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "project_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "team_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "team_id"
+          }
+        }
+      },
+      {
+        "name": "repo!",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "repo"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "head_sha!",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "head_sha"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "af48dec355ab2ddac05c72e8281c67806729eb86d06d74e2f6e1a4d3e8b79b3d"
+}

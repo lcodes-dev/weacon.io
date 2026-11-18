@@ -10,10 +10,10 @@ import { TeamSettings } from "./TeamSettings"
 const sections = ["Your chats", "Direct", "Groups", "Machines"]
 
 export function Shell({ user }: { user: User }) {
-  const [teamId, setTeamId] = useState(() => Number(localStorage.getItem("team")))
+  const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
   const team = user.teams.find((team) => team.id === teamId) ?? user.teams[0]
-  const openTeam = (id: number) => {
-    localStorage.setItem("team", String(id))
+  const openTeam = (id: string) => {
+    localStorage.setItem("team", id)
     setTeamId(id)
   }
   return (
@@ -92,7 +92,7 @@ function ServerStatus() {
   )
 }
 
-function Account({ user, team, openTeam }: { user: User; team: Team; openTeam: (id: number) => void }) {
+function Account({ user, team, openTeam }: { user: User; team: Team; openTeam: (id: string) => void }) {
   const queryClient = useQueryClient()
   const signOut = useMutation({
     mutationFn: () => api("POST", "/sign-out"),
@@ -104,7 +104,7 @@ function Account({ user, team, openTeam }: { user: User; team: Team; openTeam: (
         aria-label="Team"
         className="rounded-md border border-fld bg-bg px-2 py-1.5 font-medium"
         value={team.id}
-        onChange={(event) => openTeam(Number(event.target.value))}
+        onChange={(event) => openTeam(event.target.value)}
       >
         {user.teams.map((team) => (
           <option key={team.id} value={team.id}>

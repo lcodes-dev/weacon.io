@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM blobs WHERE project_id = ?1\n         AND blob NOT IN (SELECT blob FROM branch_files WHERE project_id = ?1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "36820633cac8b88bdf5960bfa9ef03110cf1f9ebf337a41715fdd4ccb679daea"
+}

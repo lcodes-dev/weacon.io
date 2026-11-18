@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE config SET smtp_host = ?, smtp_port = ?, smtp_security = ?,\n                           smtp_username = ?, smtp_password = ?, mail_from = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "17dcc9880730e7ad77e97b20f25efebeb300f264727ccca4cb23fc760540419b"
+}

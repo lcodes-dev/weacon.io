@@ -1,16 +1,16 @@
 export type Health = { status: "ok" }
 
 export type User = {
-  id: number
+  id: string
   email: string
   name: string
   is_owner: boolean
   teams: Team[]
 }
 
-export type Team = { id: number; name: string; role: "owner" | "member" }
+export type Team = { id: string; name: string; role: "owner" | "member" }
 
-export type Project = { id: number; name: string; repo: string | null; branches: Branch[] }
+export type Project = { id: string; name: string; repo: string | null; branches: Branch[] }
 
 /** A tracked branch. Its map is behind while `commit_sha` differs from `head_sha`. */
 export type Branch = { name: string; head_sha: string | null; commit_sha: string | null; error: string | null }
@@ -40,14 +40,14 @@ export type Docs = {
   branch: string | null
   commit: string | null
   left_out: string[]
-  pages: { id: number; section: "overview" | "works" | "built"; title: string; markdown: string }[]
+  pages: { id: string; section: "overview" | "works" | "built"; title: string; markdown: string }[]
 }
 
 export type TeamDetails = {
   name: string
   writer: Writer | null
-  members: { id: number; name: string; email: string; role: "owner" | "member" }[]
-  invites: { id: number; email: string; expires_at: number }[]
+  members: { id: string; name: string; email: string; role: "owner" | "member" }[]
+  invites: { id: string; email: string; expires_at: number }[]
 }
 
 export type Invitation = { team_name: string; invited_by: string; email: string; has_account: boolean }

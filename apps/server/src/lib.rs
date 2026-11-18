@@ -110,7 +110,9 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn health(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    sqlx::query("SELECT 1").execute(&state.pool).await?;
+    sqlx::query_scalar!("SELECT 1")
+        .fetch_one(&state.pool)
+        .await?;
     Ok(Json(json!({"status": "ok"})))
 }
 

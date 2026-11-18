@@ -23,7 +23,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **Nothing limits docs runs across projects.** Each project runs one at a time, but ten projects can run ten programs at once. *(noted in plan 08)*
 - **A link in docs is checked against the branch's map of today,** not of the commit the docs were written from, so after the branch moves a link can point past the end of a file. *(noted in plan 08)*
 - **A file's symbols belong to its content, as first read.** The same content under a name in another language, such as a file renamed from `.txt` to `.rs` unchanged, shows the new language but keeps the old reading. *(noted in plan 08)*
-- **The map's clean-up is three statements.** Foreign keys from symbols and mentions to their content would make it one, at the cost of rebuilding the tables. *(noted in plan 08)*
 
 ## Web app
 

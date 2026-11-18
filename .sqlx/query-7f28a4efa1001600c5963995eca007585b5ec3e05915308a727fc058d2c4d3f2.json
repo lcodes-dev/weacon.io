@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, s.name, s.kind, s.line, s.end_line\n         FROM branch_files f JOIN blob_symbols s ON s.project_id = f.project_id AND s.blob = f.blob\n         WHERE f.project_id = ? AND f.branch = ? ORDER BY s.line",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blob_symbols",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blob_symbols",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "line",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blob_symbols",
+            "name": "line"
+          }
+        }
+      },
+      {
+        "name": "end_line",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blob_symbols",
+            "name": "end_line"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7f28a4efa1001600c5963995eca007585b5ec3e05915308a727fc058d2c4d3f2"
+}

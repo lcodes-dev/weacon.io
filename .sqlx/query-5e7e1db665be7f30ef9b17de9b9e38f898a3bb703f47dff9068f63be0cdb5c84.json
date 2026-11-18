@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sign_in_codes (email, code, name, expires_at) VALUES (?1, ?2, ?3, ?4 + ?5)\n         ON CONFLICT (email) DO UPDATE\n         SET code = excluded.code, name = excluded.name, expires_at = excluded.expires_at,\n             attempts = CASE WHEN sign_in_codes.expires_at > ?4 THEN sign_in_codes.attempts ELSE 0 END\n         WHERE sign_in_codes.expires_at - ?5 + ?6 <= ?4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "5e7e1db665be7f30ef9b17de9b9e38f898a3bb703f47dff9068f63be0cdb5c84"
+}

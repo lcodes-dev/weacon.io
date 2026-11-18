@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE projects SET docs_state = 'failed', docs_message = 'The server restarted'\n         WHERE docs_state = 'running'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "197669af9b7a2f4b02439911ae4c64deaad4d5e0b200177c68e21c13c6c0f1b4"
+}

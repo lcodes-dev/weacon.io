@@ -6,7 +6,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::FromRow;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
@@ -33,7 +32,7 @@ pub enum Kind {
 }
 
 /// Who writes a team's docs.
-#[derive(Deserialize, FromRow)]
+#[derive(Deserialize)]
 pub struct Writer {
     pub kind: Kind,
     /// For the API. Missing in a request to keep the saved one.
@@ -201,13 +200,13 @@ async fn run(program: &str, args: &[&str], input: &str) -> Result<String, String
 pub async fn save(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Json(mut writer): Json<Writer>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
+    owned(&user, &team_id)?;
     if writer.kind == Kind::ClaudeApi {
         if writer.key.is_none() {
-            writer.key = db::writer(&state.pool, team_id)
+            writer.key = db::writer(&state.pool, &team_id)
                 .await?
                 .and_then(|saved| saved.key);
         }
@@ -222,16 +221,16 @@ pub async fn save(
         }
         writer.key = None;
     }
-    db::save_writer(&state.pool, team_id, Some(&writer)).await?;
+    db::save_writer(&state.pool, &team_id, Some(&writer)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn forget(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
-    db::save_writer(&state.pool, team_id, None).await?;
+    owned(&user, &team_id)?;
+    db::save_writer(&state.pool, &team_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }

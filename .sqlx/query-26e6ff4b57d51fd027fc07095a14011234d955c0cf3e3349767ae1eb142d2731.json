@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM branch_files",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "26e6ff4b57d51fd027fc07095a14011234d955c0cf3e3349767ae1eb142d2731"
+}

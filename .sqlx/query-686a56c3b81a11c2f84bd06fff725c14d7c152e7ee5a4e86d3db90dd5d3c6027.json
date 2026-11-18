@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT b.project_id, b.name, b.head_sha, b.commit_sha, b.error\n         FROM branches b JOIN projects p ON p.id = b.project_id\n         WHERE p.team_id = ? ORDER BY b.name",
+  "describe": {
+    "columns": [
+      {
+        "name": "project_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "head_sha",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "head_sha"
+          }
+        }
+      },
+      {
+        "name": "commit_sha",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "commit_sha"
+          }
+        }
+      },
+      {
+        "name": "error",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branches",
+            "name": "error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "686a56c3b81a11c2f84bd06fff725c14d7c152e7ee5a4e86d3db90dd5d3c6027"
+}

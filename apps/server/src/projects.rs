@@ -23,7 +23,7 @@ impl Fields {
     async fn checked(
         &self,
         state: &AppState,
-        team_id: i64,
+        team_id: &str,
     ) -> Result<(&str, Option<&str>), ApiError> {
         let name = self.name.trim();
         if name.is_empty() {
@@ -48,22 +48,22 @@ impl Fields {
 pub async fn list(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
 ) -> Result<Json<Vec<Project>>, ApiError> {
-    membership(&user, team_id)?;
-    Ok(Json(db::projects(&state.pool, team_id).await?))
+    membership(&user, &team_id)?;
+    Ok(Json(db::projects(&state.pool, &team_id).await?))
 }
 
 pub async fn create(
     State(state): State<AppState>,
     user: User,
-    Path(team_id): Path<i64>,
+    Path(team_id): Path<String>,
     Json(fields): Json<Fields>,
 ) -> Result<Json<Value>, ApiError> {
-    membership(&user, team_id)?;
-    let (name, repo) = fields.checked(&state, team_id).await?;
+    membership(&user, &team_id)?;
+    let (name, repo) = fields.checked(&state, &team_id).await?;
     let branches = fields.branches(repo);
-    let id = db::create_project(&state.pool, team_id, name, repo, branches, now()).await?;
+    let id = db::create_project(&state.pool, &team_id, name, repo, branches, now()).await?;
     state.map_wake.notify_one();
     Ok(Json(json!({"id": id})))
 }
@@ -71,14 +71,14 @@ pub async fn create(
 pub async fn update(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, project_id)): Path<(i64, i64)>,
+    Path((team_id, project_id)): Path<(String, String)>,
     Json(fields): Json<Fields>,
 ) -> Result<StatusCode, ApiError> {
-    membership(&user, team_id)?;
-    let (name, repo) = fields.checked(&state, team_id).await?;
+    membership(&user, &team_id)?;
+    let (name, repo) = fields.checked(&state, &team_id).await?;
     let branches = fields.branches(repo);
     let changed =
-        db::update_project(&state.pool, team_id, project_id, name, repo, branches).await?;
+        db::update_project(&state.pool, &team_id, &project_id, name, repo, branches).await?;
     if changed.ok_or_else(crate::not_found)? {
         state.map_wake.notify_one();
     }
@@ -88,9 +88,9 @@ pub async fn update(
 pub async fn delete(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, project_id)): Path<(i64, i64)>,
+    Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    owned(&user, team_id)?;
-    db::delete_project(&state.pool, team_id, project_id).await?;
+    owned(&user, &team_id)?;
+    db::delete_project(&state.pool, &team_id, &project_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

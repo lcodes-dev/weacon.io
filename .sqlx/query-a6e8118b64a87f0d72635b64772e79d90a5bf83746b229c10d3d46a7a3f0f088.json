@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE branches SET commit_sha = NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "a6e8118b64a87f0d72635b64772e79d90a5bf83746b229c10d3d46a7a3f0f088"
+}

@@ -172,8 +172,8 @@ fn numbered(paths: &[String], texts: &HashMap<String, String>) -> (String, Vec<S
 async fn generate(
     state: &AppState,
     writer: &Writer,
-    team_id: i64,
-    project_id: i64,
+    team_id: &str,
+    project_id: &str,
     run: i64,
     branch: &str,
 ) -> Result<(), String> {
@@ -297,25 +297,25 @@ pub struct Start {
 pub async fn start(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, project_id)): Path<(i64, i64)>,
+    Path((team_id, project_id)): Path<(String, String)>,
     Json(start): Json<Start>,
 ) -> Result<StatusCode, ApiError> {
-    membership(&user, team_id)?;
-    let map = db::map(&state.pool, team_id, project_id, &start.branch).await?;
+    membership(&user, &team_id)?;
+    let map = db::map(&state.pool, &team_id, &project_id, &start.branch).await?;
     if map.ok_or_else(crate::not_found)?.commit.is_none() {
         return Err(refused("This branch isn't mapped yet"));
     }
-    let Some(writer) = db::writer(&state.pool, team_id).await? else {
+    let Some(writer) = db::writer(&state.pool, &team_id).await? else {
         return Err(refused("Choose a docs writer in Team settings first"));
     };
     let run = rand::random::<u32>().into();
-    if !db::claim_docs_run(&state.pool, project_id, run).await? {
+    if !db::claim_docs_run(&state.pool, &project_id, run).await? {
         return Err(refused("The docs are already being written"));
     }
     tokio::spawn(async move {
-        let pool = state.pool.clone();
+        let (pool, project) = (state.pool.clone(), project_id.clone());
         let writing = tokio::spawn(async move {
-            generate(&state, &writer, team_id, project_id, run, &start.branch).await
+            generate(&state, &writer, &team_id, &project, run, &start.branch).await
         });
         // A run that crashes must not stay marked as running.
         let message = match writing.await {
@@ -323,7 +323,7 @@ pub async fn start(
             Ok(Err(message)) => message,
             Err(_) => "Something went wrong".into(),
         };
-        let failed = db::set_docs_state(&pool, project_id, run, "failed", Some(&message));
+        let failed = db::set_docs_state(&pool, &project_id, run, "failed", Some(&message));
         failed.await.ok();
     });
     Ok(StatusCode::ACCEPTED)
@@ -332,12 +332,12 @@ pub async fn start(
 pub async fn show(
     State(state): State<AppState>,
     user: User,
-    Path((team_id, project_id)): Path<(i64, i64)>,
+    Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    membership(&user, team_id)?;
-    let status = db::docs_status(&state.pool, team_id, project_id).await?;
+    membership(&user, &team_id)?;
+    let status = db::docs_status(&state.pool, &team_id, &project_id).await?;
     let status = status.ok_or_else(crate::not_found)?;
-    let pages = db::docs(&state.pool, project_id).await?;
+    let pages = db::docs(&state.pool, &project_id).await?;
     let left_out: Value =
         serde_json::from_str(status.left_out.as_deref().unwrap_or("[]")).unwrap_or_default();
     Ok(Json(json!({

@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH defined AS (\n               SELECT s.name, MIN(f.path) AS path\n               FROM branch_files f\n               JOIN blob_symbols s ON s.project_id = f.project_id AND s.blob = f.blob\n               WHERE f.project_id = ?1 AND f.branch = ?2\n               GROUP BY s.name HAVING COUNT(DISTINCT f.path) = 1\n           )\n           SELECT DISTINCT f.path AS user, defined.path AS \"used!\"\n           FROM branch_files f\n           JOIN blob_mentions m ON m.project_id = f.project_id AND m.blob = f.blob\n           JOIN defined ON defined.name = m.name\n           WHERE f.project_id = ?1 AND f.branch = ?2 AND f.path != defined.path\n           ORDER BY 1, 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "user",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "used!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "471e6c57ae1d94708f25eed5dec9115f89cdea75326070da1f6c45c342911504"
+}
