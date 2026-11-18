@@ -19,10 +19,9 @@ Things noticed while working that could be better and that nobody has asked for.
 - **The team's API key for docs is stored as plain text**, like the SMTP password. *(noted in plan 07)*
 - **The map keeps the text of lock files and bundles too.** Only files over 500 KB are skipped, so the database carries text no docs page will read. *(noted in plan 07)*
 - **A docs run writes its pages one after the other.** Several at once would cut the wait. *(noted in plan 07)*
-- **A docs run loads more than it uses.** It reads the whole map, links included, twice, and the text of every file, though it needs the outline and the text of the files its pages name. *(noted in plan 08)*
+- **A docs run loads the text of every file,** though it needs only the text of the files its pages name. *(noted in plan 08)*
 - **Nothing limits docs runs across projects.** Each project runs one at a time, but ten projects can run ten programs at once. *(noted in plan 08)*
 - **A link in docs is checked against the branch's map of today,** not of the commit the docs were written from, so after the branch moves a link can point past the end of a file. *(noted in plan 08)*
-- **A file's symbols belong to its content, as first read.** The same content under a name in another language, such as a file renamed from `.txt` to `.rs` unchanged, shows the new language but keeps the old reading. *(noted in plan 08)*
 
 ## Web app
 

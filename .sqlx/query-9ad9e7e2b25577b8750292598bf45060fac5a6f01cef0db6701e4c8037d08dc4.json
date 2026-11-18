@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sign_in_codes SET expires_at = expires_at - ? WHERE email = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "9ad9e7e2b25577b8750292598bf45060fac5a6f01cef0db6701e4c8037d08dc4"
+}

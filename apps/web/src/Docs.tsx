@@ -54,7 +54,8 @@ export function DocsPage({ team }: { team: Team }) {
   // `path:line` or `path:line-line` in backticks links to GitHub, when the map has those lines.
   const code = ({ children }: { children?: React.ReactNode }) => {
     const cited = /^(.+):(\d+)(?:-(\d+))?$/.exec(String(children))
-    if (cited && Number(cited[3] ?? cited[2]) <= (lines.get(cited[1]) ?? 0)) {
+    const [first, last] = cited ? [Number(cited[2]), Number(cited[3] ?? cited[2])] : [0, 0]
+    if (cited && 1 <= first && first <= last && last <= (lines.get(cited[1]) ?? 0)) {
       const to = cited[3] ? `-L${cited[3]}` : ""
       const href = `https://github.com/${project.repo}/blob/${commit}/${cited[1]}#L${cited[2]}${to}`
       return (

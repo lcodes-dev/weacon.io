@@ -47,7 +47,7 @@
 (class_parameter
   name: (identifier) @name) @definition.property
 
-; References 
+; References
 
 (call_expression
   (identifier) @name) @reference.call
@@ -65,4 +65,3 @@
 (extends_clause
   (generic_type
     (type_identifier) @name)) @reference.class
-

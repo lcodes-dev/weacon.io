@@ -144,8 +144,8 @@ function Form({ team, project }: { team: Team; project?: Project }) {
         </fieldset>
       )}
       <div className="flex gap-2">
-        {/* Saved before its branches are listed, a repository would track none. */}
-        <button className="btn btn-primary" disabled={save.isPending || (!!repo && repoBranches.isPending)}>
+        {/* Saved without its branches listed, a repository would track none. */}
+        <button className="btn btn-primary" disabled={save.isPending || (!!repo && !chosen && !repoBranches.data)}>
           {project ? "Save" : "Create"}
         </button>
         {project && team.role === "owner" && (

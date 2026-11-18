@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n               SELECT 1 FROM branch_files f\n               WHERE f.project_id = ?1 AND f.branch = ?2 AND NOT EXISTS (\n                   SELECT 1 FROM blobs b WHERE b.project_id = f.project_id AND b.blob = f.blob)\n           ) AS \"found: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "found: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a2619030280ccabcfc24b67061ac95c9e0a845e0a970a6ae099eaef9ce02adab"
+}

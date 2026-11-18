@@ -17,13 +17,19 @@ use crate::teams::membership;
 use crate::{ApiError, AppState, github};
 
 /// Raise this when what `read` finds changes, such as with a new language: every map is then read again.
-const READER: i64 = 4;
+const READER: i64 = 5;
+
+/// The languages whose files are components: see `scripts`.
+const COMPONENTS: [&str; 2] = ["Vue", "Svelte"];
 
 /// Larger files are listed in the map and not read.
 const MAX_BYTES: usize = 500_000;
 
 /// How much new text one mapping may keep in memory before the commit is refused.
 const MAX_NEW_BYTES: usize = 200_000_000;
+
+/// How much an archive may unpack to, counting the files that are skipped.
+const MAX_UNPACKED: u64 = 2_000_000_000;
 
 pub struct Language {
     pub name: &'static str,
@@ -161,7 +167,38 @@ pub fn language(path: &str) -> Option<&'static Language> {
         .find(|language| language.extensions.contains(&extension))
 }
 
-/// A Vue or Svelte file with all but its scripts blanked, so that every line and position stays where it is.
+/// Blanks that keep every line and position of what follows where it was.
+fn blank(text: &str) -> impl Iterator<Item = char> {
+    text.bytes()
+        .map(|byte| if byte == b'\n' { '\n' } else { ' ' })
+}
+
+/// A Vue or Svelte file with its comments blanked.
+fn uncommented(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("<!--") {
+        let end = rest[at..]
+            .find("-->")
+            .map_or(rest.len(), |end| at + end + 3);
+        kept.push_str(&rest[..at]);
+        kept.extend(blank(&rest[at..end]));
+        rest = &rest[end..];
+    }
+    kept + rest
+}
+
+/// What a content is kept under: git's id of it, with what of the file's name changes how it is read.
+fn key(path: &str, blob: &str) -> String {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    match language(path) {
+        Some(language) if COMPONENTS.contains(&language.name) => format!("{blob} {name}"),
+        Some(_) => format!("{blob} {}", name.rsplit('.').next().unwrap_or_default()),
+        None => blob.to_owned(),
+    }
+}
+
+/// A Vue or Svelte file with all but its scripts blanked.
 fn scripts(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
@@ -169,11 +206,7 @@ fn scripts(text: &str) -> String {
         let opened = rest.find("<script");
         let script = opened.and_then(|at| Some(at + rest[at..].find('>')? + 1));
         let (markup, after) = rest.split_at(script.unwrap_or(rest.len()));
-        kept.extend(
-            markup
-                .bytes()
-                .map(|byte| if byte == b'\n' { '\n' } else { ' ' }),
-        );
+        kept.extend(blank(markup));
         let end = after.find("</script").unwrap_or(after.len());
         kept.push_str(&after[..end]);
         rest = &after[end..];
@@ -193,8 +226,9 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
     let Some(language) = language(path) else {
         return reading;
     };
-    let component = ["Vue", "Svelte"].contains(&language.name);
-    let scripts = component.then(|| scripts(text));
+    let component = COMPONENTS.contains(&language.name);
+    let markup = component.then(|| uncommented(text));
+    let scripts = markup.as_deref().map(scripts);
     let source = scripts.as_deref().map_or(bytes, str::as_bytes);
     let mut context = TagsContext::new();
     let Ok((tags, _)) = context.generate_tags(&language.tags, source, None) else {
@@ -224,7 +258,7 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
             line: 1,
             end_line: reading.lines,
         });
-        let tags = text.split('<').skip(1);
+        let tags = markup.as_deref().unwrap_or(text).split('<').skip(1);
         let names = tags.map(|tag| {
             tag.split(|c: char| !c.is_alphanumeric())
                 .next()
@@ -252,7 +286,7 @@ fn read_archive(
 ) -> io::Result<Vec<(String, Reading)>> {
     let mut readings = Vec::new();
     let mut kept = 0;
-    let mut archive = tar::Archive::new(GzDecoder::new(archive));
+    let mut archive = tar::Archive::new(GzDecoder::new(archive).take(MAX_UNPACKED));
     for entry in archive.entries()? {
         let mut entry = entry?;
         // Everything in GitHub's archive sits in one folder named after the commit.
@@ -330,6 +364,13 @@ async fn notice(state: &AppState) -> sqlx::Result<()> {
 async fn map(state: &AppState, branch: &Waiting) -> Result<(), ApiError> {
     let token = github::token(state, &branch.team_id).await?;
     let files = github::files(state, &token, &branch.repo, &branch.head_sha).await?;
+    let files: Vec<(String, String)> = files
+        .into_iter()
+        .map(|(path, blob)| {
+            let key = key(&path, &blob);
+            (path, key)
+        })
+        .collect();
     let mut seen = db::known_blobs(&state.pool, &branch.project_id).await?;
     // One path for each content not read before, even when several files share it.
     let new: HashMap<String, String> = files

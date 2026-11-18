@@ -258,6 +258,18 @@ pub async fn save_code(
     Ok(saved.rows_affected() > 0)
 }
 
+/// Lets a code be asked for again at once, for when its mail couldn't be sent.
+pub async fn forget_code_wait(pool: &SqlitePool, email: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "UPDATE sign_in_codes SET expires_at = expires_at - ? WHERE email = ?",
+        CODE_WAIT,
+        email
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Returns whether the code was right. A registration's code also creates the account and team.
 pub async fn sign_in(
     pool: &SqlitePool,
@@ -546,7 +558,8 @@ pub async fn update_project(
     repo: Option<&str>,
     branches: &[String],
 ) -> sqlx::Result<Option<bool>> {
-    let mut tx = pool.begin().await?;
+    // It reads before it writes, and SQLite refuses the write if another landed in between.
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let old_repo = sqlx::query_scalar!(
         "SELECT repo FROM projects WHERE team_id = ? AND id = ?",
         team_id,
@@ -807,11 +820,46 @@ pub async fn save_map(
         .execute(&mut *tx)
         .await?;
     }
+    // A content known from another branch is gone if that branch was untracked meanwhile.
+    // Nothing is saved then, so the branch still waits and is mapped again.
+    let incomplete = sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM branch_files f
+               WHERE f.project_id = ?1 AND f.branch = ?2 AND NOT EXISTS (
+                   SELECT 1 FROM blobs b WHERE b.project_id = f.project_id AND b.blob = f.blob)
+           ) AS "found: bool""#,
+        project,
+        branch.name
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if incomplete {
+        return Ok(());
+    }
     forget_unlisted_blobs(&mut tx, project).await?;
     tx.commit().await
 }
 
+/// The commit a branch's map describes, itself `None` until the branch is first mapped.
 /// `None` when the team has no such project or the project doesn't track the branch.
+pub async fn branch_commit(
+    db: impl sqlx::SqliteExecutor<'_>,
+    team_id: &str,
+    project_id: &str,
+    branch: &str,
+) -> sqlx::Result<Option<Option<String>>> {
+    sqlx::query_scalar!(
+        "SELECT b.commit_sha FROM branches b JOIN projects p ON p.id = b.project_id
+         WHERE p.team_id = ? AND b.project_id = ? AND b.name = ?",
+        team_id,
+        project_id,
+        branch
+    )
+    .fetch_optional(db)
+    .await
+}
+
+/// `None` as for `branch_commit`.
 pub async fn map(
     pool: &SqlitePool,
     team_id: &str,
@@ -820,16 +868,40 @@ pub async fn map(
 ) -> sqlx::Result<Option<Map>> {
     // One transaction, so that a map saved meanwhile can't mix into this one.
     let mut tx = pool.begin().await?;
-    let commit = sqlx::query_scalar!(
-        "SELECT b.commit_sha FROM branches b JOIN projects p ON p.id = b.project_id
-         WHERE p.team_id = ? AND b.project_id = ? AND b.name = ?",
-        team_id,
+    read_map(&mut tx, team_id, project_id, branch).await
+}
+
+/// A branch's map with the text of its text files by path, both as they were at one moment.
+pub async fn sources(
+    pool: &SqlitePool,
+    team_id: &str,
+    project_id: &str,
+    branch: &str,
+) -> sqlx::Result<Option<(Map, HashMap<String, String>)>> {
+    let mut tx = pool.begin().await?;
+    let Some(map) = read_map(&mut tx, team_id, project_id, branch).await? else {
+        return Ok(None);
+    };
+    let texts = sqlx::query!(
+        r#"SELECT f.path, b.text AS "text!"
+           FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
+           WHERE f.project_id = ? AND f.branch = ? AND b.text IS NOT NULL"#,
         project_id,
         branch
     )
-    .fetch_optional(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
-    let Some(commit) = commit else {
+    let texts = texts.into_iter().map(|row| (row.path, row.text)).collect();
+    Ok(Some((map, texts)))
+}
+
+async fn read_map(
+    tx: &mut sqlx::SqliteConnection,
+    team_id: &str,
+    project_id: &str,
+    branch: &str,
+) -> sqlx::Result<Option<Map>> {
+    let Some(commit) = branch_commit(&mut *tx, team_id, project_id, branch).await? else {
         return Ok(None);
     };
 
@@ -896,24 +968,6 @@ pub async fn map(
         files,
         uses: uses.into_iter().map(|row| (row.user, row.used)).collect(),
     }))
-}
-
-/// The text of every text file of a branch, by path.
-pub async fn texts(
-    pool: &SqlitePool,
-    project_id: &str,
-    branch: &str,
-) -> sqlx::Result<HashMap<String, String>> {
-    let texts = sqlx::query!(
-        r#"SELECT f.path, b.text AS "text!"
-           FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
-           WHERE f.project_id = ? AND f.branch = ? AND b.text IS NOT NULL"#,
-        project_id,
-        branch
-    )
-    .fetch_all(pool)
-    .await?;
-    Ok(texts.into_iter().map(|row| (row.path, row.text)).collect())
 }
 
 pub async fn writer(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Option<Writer>> {
@@ -1005,15 +1059,15 @@ pub async fn claim_docs_run(pool: &SqlitePool, project_id: &str, run: i64) -> sq
     Ok(claimed.rows_affected() > 0)
 }
 
-/// Does nothing unless `run` still holds the project.
+/// False, and nothing changes, when `run` no longer holds the project.
 pub async fn set_docs_state(
     pool: &SqlitePool,
     project_id: &str,
     run: i64,
     state: &str,
     message: Option<&str>,
-) -> sqlx::Result<()> {
-    sqlx::query!(
+) -> sqlx::Result<bool> {
+    let set = sqlx::query!(
         "UPDATE projects SET docs_state = ?, docs_message = ? WHERE id = ? AND docs_run = ?",
         state,
         message,
@@ -1022,7 +1076,7 @@ pub async fn set_docs_state(
     )
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(set.rows_affected() > 0)
 }
 
 /// A run can't outlive the server, so one still marked as running was cut short.

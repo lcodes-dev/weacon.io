@@ -224,7 +224,8 @@ pub async fn archive(
 ) -> Result<Vec<u8>, ApiError> {
     let path = format!("/repos/{repo}/tarball/{commit}");
     let request = request(state, Method::GET, &path).bearer_auth(token);
-    let response = request.send().await;
+    // The client's own limit starts again with every byte that arrives.
+    let response = request.timeout(Duration::from_secs(600)).send().await;
     let mut response = response
         .and_then(reqwest::Response::error_for_status)
         .map_err(failed)?;

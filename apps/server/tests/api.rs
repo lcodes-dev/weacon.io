@@ -16,6 +16,10 @@ use weacon_server::{AppState, db, map, router};
 struct Client {
     state: AppState,
     cookie: Option<String>,
+    /// Set by signing in: the account and its own team.
+    user_id: String,
+    team_id: String,
+    project_id: String,
 }
 
 async fn server() -> AppState {
@@ -35,40 +39,26 @@ impl Client {
         Self {
             state: state.clone(),
             cookie: None,
+            user_id: String::new(),
+            team_id: String::new(),
+            project_id: String::new(),
         }
     }
 
-    /// The id of the `nth` team, project or member made, since tests can't know a UUID beforehand.
-    async fn id(&self, of: &str, nth: i64) -> Option<String> {
-        let skip = nth - 1;
-        sqlx::query_scalar!(
-            r#"SELECT id AS "id!" FROM (
-                   SELECT 'teams' AS of, id FROM teams
-                   UNION ALL SELECT 'projects', id FROM projects
-                   UNION ALL SELECT 'members', id FROM users
-               ) WHERE of = ? ORDER BY id LIMIT 1 OFFSET ?"#,
-            of,
-            skip
-        )
-        .fetch_optional(&self.state.pool)
-        .await
-        .unwrap()
+    /// A path under this client's own team.
+    fn team(&self, rest: &str) -> String {
+        format!("/api/teams/{}{rest}", self.team_id)
     }
 
-    /// A path names a team, project or member by the order it was made in: `teams/2` is the second team.
+    /// A path under the project a helper made for this client.
+    fn project(&self, rest: &str) -> String {
+        self.team(&format!("/projects/{}{rest}", self.project_id))
+    }
+
     async fn send(&mut self, method: Method, path: &str, body: Value) -> (StatusCode, Value) {
-        let (path, query) = path.split_once('?').unwrap_or((path, ""));
-        let mut parts: Vec<String> = path.split('/').map(str::to_owned).collect();
-        for at in 1..parts.len() {
-            let of = parts[at - 1].clone();
-            let named = ["teams", "projects", "members"].contains(&of.as_str());
-            if let (true, Ok(nth)) = (named, parts[at].parse()) {
-                parts[at] = self.id(&of, nth).await.unwrap_or_else(|| "none".into());
-            }
-        }
         let mut request = Request::builder()
             .method(method)
-            .uri(format!("{}?{query}", parts.join("/")))
+            .uri(path)
             .header(CONTENT_TYPE, "application/json");
         if let Some(cookie) = &self.cookie {
             request = request.header(COOKIE, cookie);
@@ -123,7 +113,7 @@ impl Client {
     /// Invites the address to this client's first team and returns the link's token.
     async fn invite(&mut self, email: &str) -> String {
         let (status, _) = self
-            .post("/api/teams/1/invites", json!({"emails": [email]}))
+            .post(&self.team("/invites"), json!({"emails": [email]}))
             .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         self.token(email).await.unwrap()
@@ -136,8 +126,13 @@ impl Client {
             .await;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let code = self.code(email).await.unwrap();
-        self.post("/api/sign-in/verify", json!({"email": email, "code": code}))
-            .await
+        let attempt = json!({"email": email, "code": code});
+        let (status, user) = self.post("/api/sign-in/verify", attempt).await;
+        if let Some(id) = user["id"].as_str() {
+            self.user_id = id.to_owned();
+            self.team_id = user["teams"][0]["id"].as_str().unwrap().to_owned();
+        }
+        (status, user)
     }
 }
 
@@ -347,6 +342,12 @@ async fn the_owner_saves_and_clears_smtp() {
         owner.post("/api/config/mail/test", Value::Null).await.0,
         StatusCode::BAD_GATEWAY
     );
+    // A code whose mail failed doesn't count as asked for, so the next request tries again.
+    for _ in 0..2 {
+        let request = json!({"email": "ada@example.com"});
+        let (status, _) = owner.post("/api/sign-in/code", request).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+    }
 
     // Saving again without a password keeps the saved one.
     let mut without = smtp.clone();
@@ -390,8 +391,8 @@ async fn ada_and_marco(state: &AppState) -> (Client, Client) {
     let (status, joined) = marco
         .post(&format!("/api/invites/{token}/accept"), Value::Null)
         .await;
-    let team = marco.id("teams", 1).await;
-    assert_eq!((status, joined), (StatusCode::OK, json!({"team_id": team})));
+    let joins = json!({"team_id": ada.team_id});
+    assert_eq!((status, joined), (StatusCode::OK, joins));
     (ada, marco)
 }
 
@@ -402,7 +403,7 @@ async fn an_invited_person_registers_and_joins() {
     ada.sign_in("ada@example.com", Some("Ada")).await;
     let token = ada.invite(" Marco@Example.com ").await;
 
-    let (_, team) = ada.get("/api/teams/1").await;
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(team["invites"][0]["email"], "marco@example.com");
 
     let path = format!("/api/invites/{token}");
@@ -429,11 +430,11 @@ async fn an_invited_person_registers_and_joins() {
     assert_eq!(
         session["user"]["teams"],
         json!([
-            {"id": marco.id("teams", 1).await, "name": "Ada's team", "role": "member"},
-            {"id": marco.id("teams", 2).await, "name": "Marco's team", "role": "owner"},
+            {"id": ada.team_id, "name": "Ada's team", "role": "member"},
+            {"id": marco.team_id, "name": "Marco's team", "role": "owner"},
         ])
     );
-    let (_, team) = marco.get("/api/teams/1").await;
+    let (_, team) = marco.get(&ada.team("")).await;
     assert_eq!(team["members"][0]["role"], "owner");
     assert_eq!(team["members"][1]["email"], "marco@example.com");
     assert_eq!(team["invites"], json!([]));
@@ -460,7 +461,7 @@ async fn an_invite_only_works_for_its_address() {
         lena.post(&accept, Value::Null).await.0,
         StatusCode::FORBIDDEN
     );
-    assert_eq!(lena.get("/api/teams/1").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(lena.get(&ada.team("")).await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -476,10 +477,10 @@ async fn inviting_again_replaces_the_link_and_revoking_kills_it() {
         StatusCode::NOT_FOUND
     );
 
-    let (_, team) = ada.get("/api/teams/1").await;
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(team["invites"].as_array().unwrap().len(), 1);
     let invite = team["invites"][0]["id"].as_str().unwrap();
-    let invite = format!("/api/teams/1/invites/{invite}");
+    let invite = ada.team(&format!("/invites/{invite}"));
     assert_eq!(ada.delete(&invite).await, StatusCode::NO_CONTENT);
     assert_eq!(
         ada.get(&format!("/api/invites/{second}")).await.0,
@@ -494,35 +495,37 @@ async fn only_the_owner_renames_invites_and_removes() {
     let name = json!({"name": " Northwind "});
 
     assert_eq!(
-        marco.put("/api/teams/1", name.clone()).await,
+        marco.put(&ada.team(""), name.clone()).await,
         StatusCode::FORBIDDEN
     );
     let invite = json!({"emails": ["lena@example.com"]});
     assert_eq!(
-        marco.post("/api/teams/1/invites", invite).await.0,
+        marco.post(&ada.team("/invites"), invite).await.0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        marco.delete("/api/teams/1/members/1").await,
+        marco
+            .delete(&ada.team(&format!("/members/{}", ada.user_id)))
+            .await,
         StatusCode::FORBIDDEN
     );
 
-    assert_eq!(ada.put("/api/teams/1", name).await, StatusCode::NO_CONTENT);
-    assert_eq!(ada.get("/api/teams/1").await.1["name"], "Northwind");
+    assert_eq!(ada.put(&ada.team(""), name).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.get(&ada.team("")).await.1["name"], "Northwind");
     assert_eq!(
-        ada.put("/api/teams/1", json!({"name": " "})).await,
+        ada.put(&ada.team(""), json!({"name": " "})).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Marco is already in.
     let invite = json!({"emails": ["marco@example.com"]});
     assert_eq!(
-        ada.post("/api/teams/1/invites", invite).await.0,
+        ada.post(&ada.team("/invites"), invite).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     // Marco's own team isn't Ada's to see.
-    assert_eq!(ada.get("/api/teams/2").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(ada.get(&marco.team("")).await.0, StatusCode::NOT_FOUND);
     assert_eq!(
-        ada.put("/api/teams/2", json!({"name": "Mine"})).await,
+        ada.put(&marco.team(""), json!({"name": "Mine"})).await,
         StatusCode::NOT_FOUND
     );
 }
@@ -533,24 +536,28 @@ async fn a_member_is_removed_or_leaves_and_the_owner_stays() {
     let (mut ada, mut marco) = ada_and_marco(&state).await;
 
     assert_eq!(
-        ada.delete("/api/teams/1/members/1").await,
+        ada.delete(&ada.team(&format!("/members/{}", ada.user_id)))
+            .await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
-        ada.delete("/api/teams/1/members/2").await,
+        ada.delete(&ada.team(&format!("/members/{}", marco.user_id)))
+            .await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(marco.get("/api/teams/1").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(marco.get(&ada.team("")).await.0, StatusCode::NOT_FOUND);
 
     let token = ada.invite("marco@example.com").await;
     marco
         .post(&format!("/api/invites/{token}/accept"), Value::Null)
         .await;
     assert_eq!(
-        marco.delete("/api/teams/1/members/2").await,
+        marco
+            .delete(&ada.team(&format!("/members/{}", marco.user_id)))
+            .await,
         StatusCode::NO_CONTENT
     );
-    let (_, team) = ada.get("/api/teams/1").await;
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(team["members"].as_array().unwrap().len(), 1);
 }
 
@@ -562,7 +569,7 @@ async fn several_addresses_are_invited_at_once_or_none_is() {
 
     let invites = json!({"emails": ["marco@example.com", "lena@"]});
     assert_eq!(
-        ada.post("/api/teams/1/invites", invites).await.0,
+        ada.post(&ada.team("/invites"), invites).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(ada.token("marco@example.com").await, None);
@@ -570,10 +577,10 @@ async fn several_addresses_are_invited_at_once_or_none_is() {
     // An address given twice is invited once.
     let invites = json!({"emails": ["marco@example.com", "lena@example.com", " Lena@Example.com"]});
     assert_eq!(
-        ada.post("/api/teams/1/invites", invites).await.0,
+        ada.post(&ada.team("/invites"), invites).await.0,
         StatusCode::NO_CONTENT
     );
-    let (_, team) = ada.get("/api/teams/1").await;
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(team["invites"].as_array().unwrap().len(), 2);
 }
 
@@ -753,13 +760,13 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
     let (mut ada, mut marco) = ada_and_marco(&state).await;
 
     let (status, project) = marco
-        .post("/api/teams/1/projects", json!({"name": " Storefront "}))
+        .post(&ada.team("/projects"), json!({"name": " Storefront "}))
         .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(project, json!({"id": marco.id("projects", 1).await}));
+    ada.project_id = project["id"].as_str().unwrap().to_owned();
     assert_eq!(
         marco
-            .post("/api/teams/1/projects", json!({"name": " "}))
+            .post(&ada.team("/projects"), json!({"name": " "}))
             .await
             .0,
         StatusCode::UNPROCESSABLE_ENTITY
@@ -767,34 +774,62 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
 
     let renamed = json!({"name": "Shop"});
     assert_eq!(
-        marco.put("/api/teams/1/projects/1", renamed.clone()).await,
+        marco.put(&ada.project(""), renamed.clone()).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        marco.put("/api/teams/1/projects/9", renamed).await,
+        marco.put(&ada.team("/projects/none"), renamed).await,
         StatusCode::NOT_FOUND
     );
-    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    let (_, projects) = ada.get(&ada.team("/projects")).await;
     assert_eq!(
         projects,
-        json!([{"id": ada.id("projects", 1).await, "name": "Shop", "repo": null, "branches": []}])
+        json!([{"id": ada.project_id, "name": "Shop", "repo": null, "branches": []}])
     );
 
-    assert_eq!(
-        marco.delete("/api/teams/1/projects/1").await,
-        StatusCode::FORBIDDEN
-    );
-    assert_eq!(
-        ada.delete("/api/teams/1/projects/1").await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(ada.get("/api/teams/1/projects").await.1, json!([]));
+    assert_eq!(marco.delete(&ada.project("")).await, StatusCode::FORBIDDEN);
+    assert_eq!(ada.delete(&ada.project("")).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.get(&ada.team("/projects")).await.1, json!([]));
 
     // Marco's own team isn't Ada's to see.
     assert_eq!(
-        ada.get("/api/teams/2/projects").await.0,
+        ada.get(&marco.team("/projects")).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+// On a database file, where requests really run side by side.
+#[tokio::test(flavor = "multi_thread")]
+async fn projects_edited_at_the_same_time_are_all_saved() {
+    let file = std::env::temp_dir().join(format!("weacon-test-{}.db", std::process::id()));
+    let file = file.to_str().unwrap().to_owned();
+    let pool = db::open(&file).await.unwrap();
+    let state = AppState {
+        pool,
+        ..server().await
+    };
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let mut renames = Vec::new();
+    for name in ["One", "Two", "Three", "Four"] {
+        let (_, project) = ada
+            .post(&ada.team("/projects"), json!({"name": name}))
+            .await;
+        let path = ada.team(&format!("/projects/{}", project["id"].as_str().unwrap()));
+        let mut client = Client::new(&state);
+        client.cookie = ada.cookie.clone();
+        let renamed = json!({"name": format!("{name} again"), "branches": []});
+        renames.push(tokio::spawn(
+            async move { client.put(&path, renamed).await },
+        ));
+    }
+    for rename in renames {
+        assert_eq!(rename.await.unwrap(), StatusCode::NO_CONTENT);
+    }
+    state.pool.close().await;
+    for side in ["", "-wal", "-shm"] {
+        std::fs::remove_file(format!("{file}{side}")).ok();
+    }
 }
 
 #[tokio::test]
@@ -804,11 +839,11 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
     let (mut ada, mut marco) = ada_and_marco(&state).await;
 
     let nothing = json!({"app": null, "account": null, "repos": []});
-    assert_eq!(marco.get("/api/teams/1/github").await.1, nothing);
+    assert_eq!(marco.get(&ada.team("/github")).await.1, nothing);
     let with_repo = json!({"name": "Storefront", "repo": "northwind/storefront"});
     assert_eq!(
         marco
-            .post("/api/teams/1/projects", with_repo.clone())
+            .post(&ada.team("/projects"), with_repo.clone())
             .await
             .0,
         StatusCode::UNPROCESSABLE_ENTITY
@@ -816,45 +851,46 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
 
     let code = json!({"code": "good-code"});
     assert_eq!(
-        marco.post("/api/teams/1/github", code.clone()).await.0,
+        marco.post(&ada.team("/github"), code.clone()).await.0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        ada.post("/api/teams/1/github", json!({"code": "bad-code"}))
+        ada.post(&ada.team("/github"), json!({"code": "bad-code"}))
             .await
             .0,
         StatusCode::BAD_GATEWAY
     );
     assert_eq!(
-        ada.post("/api/teams/1/github", code).await.0,
+        ada.post(&ada.team("/github"), code).await.0,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        marco.get("/api/teams/1/github").await.1,
+        marco.get(&ada.team("/github")).await.1,
         json!({
             "app": "weacon-northwind", "account": "northwind",
             "repos": ["northwind/storefront", "northwind/docs"],
         })
     );
 
-    let (status, _) = marco.post("/api/teams/1/projects", with_repo).await;
+    let (status, project) = marco.post(&ada.team("/projects"), with_repo).await;
     assert_eq!(status, StatusCode::OK);
+    ada.project_id = project["id"].as_str().unwrap().to_owned();
     assert_eq!(
-        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        ada.get(&ada.team("/projects")).await.1[0]["repo"],
         "northwind/storefront"
     );
     let elsewhere = json!({"name": "Storefront", "repo": "someone/else"});
     assert_eq!(
-        marco.put("/api/teams/1/projects/1", elsewhere).await,
+        marco.put(&ada.project(""), elsewhere).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     let without = json!({"name": "Storefront"});
     assert_eq!(
-        marco.put("/api/teams/1/projects/1", without).await,
+        marco.put(&ada.project(""), without).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        ada.get(&ada.team("/projects")).await.1[0]["repo"],
         Value::Null
     );
 }
@@ -864,22 +900,22 @@ async fn forgetting_the_github_app_keeps_the_projects() {
     let mut state = server().await;
     state.github_api = fake_github().await.0;
     let (mut ada, mut marco) = ada_and_marco(&state).await;
-    ada.post("/api/teams/1/github", json!({"code": "good-code"}))
+    ada.post(&ada.team("/github"), json!({"code": "good-code"}))
         .await;
     let with_repo = json!({"name": "Storefront", "repo": "northwind/docs"});
-    ada.post("/api/teams/1/projects", with_repo).await;
+    ada.post(&ada.team("/projects"), with_repo).await;
 
     assert_eq!(
-        marco.delete("/api/teams/1/github").await,
+        marco.delete(&ada.team("/github")).await,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        ada.delete("/api/teams/1/github").await,
+        ada.delete(&ada.team("/github")).await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(ada.get("/api/teams/1/github").await.1["app"], Value::Null);
+    assert_eq!(ada.get(&ada.team("/github")).await.1["app"], Value::Null);
     assert_eq!(
-        ada.get("/api/teams/1/projects").await.1[0]["repo"],
+        ada.get(&ada.team("/projects")).await.1[0]["repo"],
         "northwind/docs"
     );
 }
@@ -915,13 +951,14 @@ async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
     state.github_api = address;
     let mut ada = Client::new(&state);
     ada.sign_in("ada@example.com", Some("Ada")).await;
-    ada.post("/api/teams/1/github", json!({"code": "good-code"}))
+    ada.post(&ada.team("/github"), json!({"code": "good-code"}))
         .await;
     repo.push("main", "c1", files);
     let project =
         json!({"name": "Storefront", "repo": "northwind/storefront", "branches": ["main"]});
-    let (status, _) = ada.post("/api/teams/1/projects", project).await;
+    let (status, project) = ada.post(&ada.team("/projects"), project).await;
     assert_eq!(status, StatusCode::OK);
+    ada.project_id = project["id"].as_str().unwrap().to_owned();
     map::round(&state).await;
     (state, ada, repo)
 }
@@ -951,16 +988,16 @@ async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
     let (_, mut ada, _) = mapped_project(&files).await;
 
     let (_, branches) = ada
-        .get("/api/teams/1/github/branches?repo=northwind/storefront")
+        .get(&ada.team("/github/branches?repo=northwind/storefront"))
         .await;
     assert_eq!(branches, json!({"default": "main", "branches": ["main"]}));
-    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    let (_, projects) = ada.get(&ada.team("/projects")).await;
     assert_eq!(
         projects[0]["branches"],
         json!([{"name": "main", "head_sha": "c1", "commit_sha": "c1", "error": null}])
     );
 
-    let (status, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (status, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(map["commit"], "c1");
     assert_eq!(map["files"].as_array().unwrap().len(), 5);
@@ -980,7 +1017,7 @@ async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
     assert_eq!(map["uses"], json!([["src/app.ts", "src/price.ts"]]));
 
     assert_eq!(
-        ada.get("/api/teams/1/projects/1/map?branch=other").await.0,
+        ada.get(&ada.project("/map?branch=other")).await.0,
         StatusCode::NOT_FOUND
     );
 }
@@ -1003,14 +1040,14 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
     );
     map::round(&state).await;
     assert_eq!(repo.archives(), 1);
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["commit"], "c2");
     assert_eq!(symbols(&map, "app.ts"), ["Cart", "total"]);
 
     repo.push("main", "c3", &[("app.ts", "export function start() {}\n")]);
     map::round(&state).await;
     assert_eq!(repo.archives(), 2);
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"].as_array().unwrap().len(), 1);
     assert_eq!(symbols(&map, "app.ts"), ["start"]);
     // The contents no commit lists any more are forgotten.
@@ -1024,13 +1061,15 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
 #[tokio::test]
 async fn a_file_s_language_follows_its_name() {
     let (state, mut ada, repo) = mapped_project(&[("notes.txt", "fn start() {}\n")]).await;
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"][0]["language"], Value::Null);
 
     repo.push("main", "c2", &[("notes.rs", "fn start() {}\n")]);
     map::round(&state).await;
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"][0]["language"], "Rust");
+    // The content is the same, and is read again as what it now is.
+    assert_eq!(symbols(&map, "notes.rs"), ["start"]);
 }
 
 #[tokio::test]
@@ -1115,7 +1154,7 @@ async fn each_language_is_read_by_its_own_grammar() {
     ];
     let sources = files.map(|(path, _, source, _)| (path, source));
     let (_, mut ada, _) = mapped_project(&sources).await;
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     for (path, language, _, name) in files {
         assert_eq!(file(&map, path)["language"], language, "{path}");
         assert!(symbols(&map, path).contains(&name.to_owned()), "{path}");
@@ -1134,7 +1173,13 @@ async fn a_component_is_used_where_its_tag_is_written() {
             "Price.vue",
             "<template>\n  <b>{{ shown }}</b>\n</template>\n\n<script setup lang=\"ts\">\nfunction shown() {}\n</script>\n",
         ),
-        ("Cart.vue", "<template>\n  <Price />\n</template>\n"),
+        // What is commented out isn't there.
+        (
+            "Cart.vue",
+            "<template>\n  <Price />\n  <!-- <Chip /> -->\n</template>\n<!-- <script>function old() {}</script> -->\n",
+        ),
+        // The same content under another name is another component.
+        ("Row.svelte", "<ul><li><Chip label=\"a\" /></li></ul>\n"),
         (
             "Chip.svelte",
             "<script>\n  export let label\n</script>\n\n<i>{label}</i>\n",
@@ -1142,15 +1187,18 @@ async fn a_component_is_used_where_its_tag_is_written() {
         ("List.svelte", "<ul><li><Chip label=\"a\" /></li></ul>\n"),
     ];
     let (_, mut ada, _) = mapped_project(&files).await;
-    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(
         map["uses"],
         json!([
             ["App.tsx", "Card.tsx"],
             ["Cart.vue", "Price.vue"],
-            ["List.svelte", "Chip.svelte"]
+            ["List.svelte", "Chip.svelte"],
+            ["Row.svelte", "Chip.svelte"]
         ])
     );
+    assert_eq!(symbols(&map, "Cart.vue"), ["Cart"]);
+    assert_eq!(symbols(&map, "Row.svelte"), ["Row"]);
     // A script's line is its line in the whole file.
     assert_eq!(
         file(&map, "Price.vue")["symbols"],
@@ -1171,8 +1219,8 @@ async fn a_commit_that_can_t_be_read_whole_keeps_the_old_map() {
             (repo.truncated, repo.broken) = (truncated, broken);
         }
         map::round(&state).await;
-        let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
-        let (_, projects) = ada.get("/api/teams/1/projects").await;
+        let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
+        let (_, projects) = ada.get(&ada.team("/projects")).await;
         let error = projects[0]["branches"][0]["error"].as_str();
         (map["commit"].clone(), error.map(str::to_owned))
     };
@@ -1205,17 +1253,17 @@ async fn each_tracked_branch_has_its_own_map() {
     let mut project = json!({
         "name": "Storefront", "repo": "northwind/storefront", "branches": ["main", "dev", "gone"],
     });
-    ada.put("/api/teams/1/projects/1", project.clone()).await;
+    ada.put(&ada.project(""), project.clone()).await;
     map::round(&state).await;
 
-    let (_, main) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
-    let (_, dev) = ada.get("/api/teams/1/projects/1/map?branch=dev").await;
+    let (_, main) = ada.get(&ada.project("/map?branch=main")).await;
+    let (_, dev) = ada.get(&ada.project("/map?branch=dev")).await;
     assert_eq!(main["files"].as_array().unwrap().len(), 2);
     assert_eq!(dev["files"].as_array().unwrap().len(), 2);
     // The same content at two paths is read once.
     assert_eq!(symbols(&main, "old/price.ts"), ["formatPrice", "init"]);
     assert_eq!(dev["commit"], "d1");
-    let (_, projects) = ada.get("/api/teams/1/projects").await;
+    let (_, projects) = ada.get(&ada.team("/projects")).await;
     assert_eq!(projects[0]["branches"][1]["name"], "gone");
     assert_eq!(
         projects[0]["branches"][1]["error"],
@@ -1223,9 +1271,9 @@ async fn each_tracked_branch_has_its_own_map() {
     );
 
     project["branches"] = json!(["main"]);
-    ada.put("/api/teams/1/projects/1", project.clone()).await;
+    ada.put(&ada.project(""), project.clone()).await;
     assert_eq!(
-        ada.get("/api/teams/1/projects/1/map?branch=dev").await.0,
+        ada.get(&ada.project("/map?branch=dev")).await.0,
         StatusCode::NOT_FOUND
     );
     let kept = sqlx::query_scalar!("SELECT COUNT(*) FROM blobs")
@@ -1236,9 +1284,9 @@ async fn each_tracked_branch_has_its_own_map() {
 
     // Without a repository there is nothing to map.
     project["repo"] = Value::Null;
-    ada.put("/api/teams/1/projects/1", project).await;
+    ada.put(&ada.project(""), project).await;
     assert_eq!(
-        ada.get("/api/teams/1/projects").await.1[0]["branches"],
+        ada.get(&ada.team("/projects")).await.1[0]["branches"],
         json!([])
     );
 }
@@ -1298,12 +1346,12 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
 /// Starts writing project 1's docs from `main` and returns them once the run has ended.
 async fn written_docs(client: &mut Client) -> Value {
     let (status, _) = client
-        .post("/api/teams/1/projects/1/docs", json!({"branch": "main"}))
+        .post(&client.project("/docs"), json!({"branch": "main"}))
         .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let ended = async {
         loop {
-            let (_, docs) = client.get("/api/teams/1/projects/1/docs").await;
+            let (_, docs) = client.get(&client.project("/docs")).await;
             if docs["state"] != "running" {
                 return docs;
             }
@@ -1321,7 +1369,7 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
     let (address, prompts) = fake_anthropic().await;
     ada.state.anthropic_api = address;
     let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put("/api/teams/1/writer", writer).await;
+    ada.put(&ada.team("/writer"), writer).await;
     assert_eq!(
         written_docs(&mut ada).await["pages"]
             .as_array()
@@ -1332,60 +1380,50 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
     prompts.lock().unwrap().clear();
 
     let writer = json!({"kind": "claude_api", "key": "slow-key"});
-    ada.put("/api/teams/1/writer", writer).await;
+    ada.put(&ada.team("/writer"), writer).await;
     let start = json!({"branch": "main"});
     assert_eq!(
-        ada.post("/api/teams/1/projects/1/docs", start).await.0,
+        ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::ACCEPTED
     );
     (ada, prompts)
 }
 
-/// Lets the held-up run go on, and waits until it has asked for its last page.
-async fn let_the_run_finish(prompts: &Mutex<Vec<String>>) {
+/// Lets the held-up call return. The run has lost its project, so it asks the writer for nothing more.
+async fn let_the_run_go_on(prompts: &Mutex<Vec<String>>) {
     prompts.lock().unwrap().push("continue".into());
-    let asked_all = async {
-        // The word above, the outline, two pages and the overview.
-        while prompts.lock().unwrap().len() < 5 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    };
-    let patience = std::time::Duration::from_secs(10);
-    tokio::time::timeout(patience, asked_all).await.unwrap();
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // The outline it was asked for, and the word above.
+    assert_eq!(prompts.lock().unwrap().len(), 2);
 }
 
 #[tokio::test]
-async fn changing_the_repository_removes_the_docs_and_a_run_under_way_writes_nothing() {
+async fn changing_the_repository_removes_the_docs_and_stops_a_run_under_way() {
     let (mut ada, prompts) = docs_with_a_run_held_up().await;
     let project = json!({"name": "Storefront", "repo": "northwind/docs"});
     assert_eq!(
-        ada.put("/api/teams/1/projects/1", project).await,
+        ada.put(&ada.project(""), project).await,
         StatusCode::NO_CONTENT
     );
-    let (_, docs) = ada.get("/api/teams/1/projects/1/docs").await;
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(
         (&docs["state"], &docs["pages"]),
         (&json!("idle"), &json!([]))
     );
 
-    let_the_run_finish(&prompts).await;
-    let (_, after) = ada.get("/api/teams/1/projects/1/docs").await;
+    let_the_run_go_on(&prompts).await;
+    let (_, after) = ada.get(&ada.project("/docs")).await;
     assert_eq!(after, docs);
 }
 
 #[tokio::test]
-async fn a_run_whose_project_was_deleted_writes_nothing() {
+async fn deleting_a_project_stops_its_run() {
     let (mut ada, prompts) = docs_with_a_run_held_up().await;
-    ada.delete("/api/teams/1/projects/1").await;
-    ada.post("/api/teams/1/projects", json!({"name": "Another"}))
-        .await;
-    let (_, docs) = ada.get("/api/teams/1/projects/1/docs").await;
+    ada.delete(&ada.project("")).await;
 
-    let_the_run_finish(&prompts).await;
-    let (_, after) = ada.get("/api/teams/1/projects/1/docs").await;
-    assert_eq!(after, docs);
-    assert_eq!(after["pages"], json!([]));
+    let_the_run_go_on(&prompts).await;
+    let pages = sqlx::query_scalar!("SELECT COUNT(*) FROM docs");
+    assert_eq!(pages.fetch_one(&ada.state.pool).await.unwrap(), 0);
 }
 
 #[tokio::test]
@@ -1393,7 +1431,7 @@ async fn a_plan_that_can_t_be_read_fails_the_run() {
     let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
     let writer = json!({"kind": "claude_api", "key": "odd-key"});
-    ada.put("/api/teams/1/writer", writer).await;
+    ada.put(&ada.team("/writer"), writer).await;
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["state"], "failed");
     let message = docs["message"].as_str().unwrap();
@@ -1407,47 +1445,47 @@ async fn the_team_owner_chooses_the_docs_writer() {
     let with_key = json!({"kind": "claude_api", "key": "good-key"});
 
     assert_eq!(
-        marco.put("/api/teams/1/writer", with_key.clone()).await,
+        marco.put(&ada.team("/writer"), with_key.clone()).await,
         StatusCode::FORBIDDEN
     );
     // Marco owns team 2, but a program runs on the account of whoever runs the server.
     assert_eq!(
         marco
-            .put("/api/teams/2/writer", json!({"kind": "codex"}))
+            .put(&marco.team("/writer"), json!({"kind": "codex"}))
             .await,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        ada.put("/api/teams/1/writer", json!({"kind": "claude_api"}))
+        ada.put(&ada.team("/writer"), json!({"kind": "claude_api"}))
             .await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
-        ada.put("/api/teams/1/writer", with_key).await,
+        ada.put(&ada.team("/writer"), with_key).await,
         StatusCode::NO_CONTENT
     );
     // Saving again without a key keeps the saved one, and the key is never read back.
     let model = json!({"kind": "claude_api", "model": "claude-sonnet-5-5"});
     assert_eq!(
-        ada.put("/api/teams/1/writer", model).await,
+        ada.put(&ada.team("/writer"), model).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        ada.get("/api/teams/1").await.1["writer"],
+        ada.get(&ada.team("")).await.1["writer"],
         json!({"kind": "claude_api", "model": "claude-sonnet-5-5", "has_key": true})
     );
 
     assert_eq!(
-        ada.put("/api/teams/1/writer", json!({"kind": "codex"}))
+        ada.put(&ada.team("/writer"), json!({"kind": "codex"}))
             .await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(ada.get("/api/teams/1").await.1["writer"]["has_key"], false);
+    assert_eq!(ada.get(&ada.team("")).await.1["writer"]["has_key"], false);
     assert_eq!(
-        ada.delete("/api/teams/1/writer").await,
+        ada.delete(&ada.team("/writer")).await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(ada.get("/api/teams/1").await.1["writer"], Value::Null);
+    assert_eq!(ada.get(&ada.team("")).await.1["writer"], Value::Null);
 }
 
 #[tokio::test]
@@ -1465,17 +1503,17 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
 
     // Nothing to write with, and nothing to write from.
     assert_eq!(
-        ada.post("/api/teams/1/projects/1/docs", start).await.0,
+        ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     ada.put(
-        "/api/teams/1/writer",
+        &ada.team("/writer"),
         json!({"kind": "claude_api", "key": "good-key"}),
     )
     .await;
     let other = json!({"branch": "other"});
     assert_eq!(
-        ada.post("/api/teams/1/projects/1/docs", other).await.0,
+        ada.post(&ada.project("/docs"), other).await.0,
         StatusCode::NOT_FOUND
     );
 
@@ -1522,7 +1560,7 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
     ada.put(
-        "/api/teams/1/writer",
+        &ada.team("/writer"),
         json!({"kind": "claude_api", "key": "bad-key"}),
     )
     .await;
@@ -1543,7 +1581,7 @@ async fn a_program_on_the_server_can_write_the_docs() {
     ada.state.codex_program = program.into();
 
     for kind in ["claude_code", "codex"] {
-        ada.put("/api/teams/1/writer", json!({"kind": kind})).await;
+        ada.put(&ada.team("/writer"), json!({"kind": kind})).await;
         let docs = written_docs(&mut ada).await;
         assert_eq!(docs["state"], "idle", "{}", docs["message"]);
         assert_eq!(docs["pages"][1]["title"], "Prices");

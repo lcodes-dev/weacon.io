@@ -183,14 +183,13 @@ async fn generate(
     };
     let progress = async |message: String| {
         let saved = db::set_docs_state(&state.pool, project_id, run, "running", Some(&message));
-        saved.await.map_err(broken)
+        // A run that lost its project stops here, before it asks the writer for more.
+        let held = saved.await.map_err(broken)?;
+        held.then_some(()).ok_or("The project changed".to_owned())
     };
-    let map = db::map(&state.pool, team_id, project_id, branch).await;
-    let map = map.map_err(broken)?.ok_or("This branch isn't mapped")?;
+    let sources = db::sources(&state.pool, team_id, project_id, branch).await;
+    let (map, texts) = sources.map_err(broken)?.ok_or("This branch isn't mapped")?;
     let commit = map.commit.ok_or("This branch isn't mapped yet")?;
-    let texts = db::texts(&state.pool, project_id, branch)
-        .await
-        .map_err(broken)?;
     let readme = map
         .files
         .iter()
@@ -301,8 +300,8 @@ pub async fn start(
     Json(start): Json<Start>,
 ) -> Result<StatusCode, ApiError> {
     membership(&user, &team_id)?;
-    let map = db::map(&state.pool, &team_id, &project_id, &start.branch).await?;
-    if map.ok_or_else(crate::not_found)?.commit.is_none() {
+    let commit = db::branch_commit(&state.pool, &team_id, &project_id, &start.branch).await?;
+    if commit.ok_or_else(crate::not_found)?.is_none() {
         return Err(refused("This branch isn't mapped yet"));
     }
     let Some(writer) = db::writer(&state.pool, &team_id).await? else {

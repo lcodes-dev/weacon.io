@@ -114,12 +114,12 @@ pub async fn request_code(
         code: Some(&code),
         button: None,
     };
-    mail::send(&state.pool, &email, &mail)
-        .await
-        .map_err(|error| {
-            tracing::error!("mail to {email} failed: {error}");
-            ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
-        })?;
+    if let Err(error) = mail::send(&state.pool, &email, &mail).await {
+        tracing::error!("mail to {email} failed: {error}");
+        db::forget_code_wait(&state.pool, &email).await?;
+        let message = "The mail could not be sent";
+        return Err(ApiError(StatusCode::BAD_GATEWAY, message.into()));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
