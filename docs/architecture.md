@@ -137,6 +137,7 @@ A project's docs are written by an AI model from the code map: an overview, "How
 - **The run.** `POST .../docs` claims the project, spawns a task and answers at once; the project's `docs_state` and `docs_message` say where the run is. Pages are saved together at the end, so earlier docs stay until a run succeeds. A run can't outlive the server: at startup every project still marked `running` is marked `failed`.
 - **Text.** The map keeps each text file's content beside its symbols (`blobs.text`), so a run downloads nothing and matches the map's commit.
 - **Citations.** The web app turns a `path:line` in backticks into a link to GitHub at the docs' commit, but only when the map has that file and it is that long.
+- The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text and restricts link and image URLs to relative addresses and the allowed protocols in `Docs.tsx`.
 - The Anthropic API's address and the two programs' names are part of the router's state, so the tests use a fake API and a script standing in for the programs.
 
 ## Mail

@@ -1,10 +1,19 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { useState } from "react"
-import Markdown from "react-markdown"
+import Markdown from "markdown-to-jsx"
+import { Fragment, useState } from "react"
 import { Link, useParams } from "react-router"
 import { api, type CodeMap, type Docs, type Project, type Team } from "./api"
 
 const sections = { overview: "", works: "How it works", built: "How it's built" }
+
+function safeUrl(value: string) {
+  try {
+    const { protocol } = new URL(value, "https://weacon.invalid")
+    return /^(https?|ircs?|mailto|xmpp):$/.test(protocol) ? value : null
+  } catch {
+    return null
+  }
+}
 
 /** A project's generated docs, at `/projects/{id}/docs`. */
 export function DocsPage({ team }: { team: Team }) {
@@ -114,7 +123,17 @@ export function DocsPage({ team }: { team: Team }) {
           </nav>
           <article className="prose min-w-0 flex-1">
             <h1>{page.title}</h1>
-            <Markdown components={{ code }}>{page.markdown}</Markdown>
+            <Markdown
+              options={{
+                disableParsingRawHTML: true,
+                forceBlock: true,
+                wrapper: Fragment,
+                sanitizer: safeUrl,
+                overrides: { code },
+              }}
+            >
+              {page.markdown}
+            </Markdown>
           </article>
         </div>
       )}

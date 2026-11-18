@@ -26,7 +26,6 @@ Things noticed while working that could be better and that nobody has asked for.
 
 ## Web app
 
-- **The web app is one file of over 500 KB.** The Markdown renderer pushed it past the size where splitting it would help the first load. *(noted in plan 07)*
 - **The status dot starts red.** Until the first health call answers, the dot shows "unreachable" for a moment.
 - **The shell is plainer than the reference.** It has no search field, no icons beside Tasks and Docs, and no workspace and account rows at the bottom of the sidebar.
 

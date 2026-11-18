@@ -137,7 +137,7 @@ A cheap model is the weak point for "Handle with care" and "Possible problems", 
   Left out: spark-paddle, public/js
 ```
 
-Markdown is rendered with one new web dependency, `react-markdown`.
+The docs page renders Markdown with `markdown-to-jsx`.
 
 ## Steps
 
