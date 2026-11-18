@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, Route, Routes } from "react-router"
 import { api, type Health, type MailConfig, type Project, type Team, type User } from "./api"
+import { DocsPage } from "./Docs"
 import { MailSettings } from "./MailSettings"
 import { ProjectPage } from "./Project"
 import { TeamSettings } from "./TeamSettings"
@@ -44,6 +45,7 @@ export function Shell({ user }: { user: User }) {
       </aside>
       <main className="flex-1 overflow-auto">
         <Routes>
+          <Route path="/projects/:id/docs" element={<DocsPage team={team} />} />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
           {user.is_owner && <Route path="/settings/mail" element={<MailSettings />} />}

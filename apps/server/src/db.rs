@@ -6,6 +6,7 @@ use sqlx::{FromRow, SqlitePool};
 
 use crate::mail::Smtp;
 use crate::map::{Reading, Symbol};
+use crate::writer::Writer;
 
 const CODE_TRIES: i64 = 5;
 
@@ -639,12 +640,13 @@ pub async fn save_map(
     let mut tx = pool.begin().await?;
     for (blob, reading) in readings {
         sqlx::query(
-            "INSERT OR IGNORE INTO blobs (project_id, blob, language, lines) VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO blobs (project_id, blob, language, lines, text) VALUES (?, ?, ?, ?, ?)",
         )
         .bind(project)
         .bind(blob)
         .bind(reading.language)
         .bind(reading.lines)
+        .bind(&reading.text)
         .execute(&mut *tx)
         .await?;
         for symbol in &reading.symbols {
@@ -781,6 +783,175 @@ pub async fn map(
         files,
         uses,
     }))
+}
+
+/// The text of every text file of a branch, by path.
+pub async fn texts(
+    pool: &SqlitePool,
+    project_id: i64,
+    branch: &str,
+) -> sqlx::Result<HashMap<String, String>> {
+    let texts: Vec<(String, String)> = sqlx::query_as(
+        "SELECT f.path, b.text
+         FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
+         WHERE f.project_id = ? AND f.branch = ? AND b.text IS NOT NULL",
+    )
+    .bind(project_id)
+    .bind(branch)
+    .fetch_all(pool)
+    .await?;
+    Ok(texts.into_iter().collect())
+}
+
+pub async fn writer(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<Writer>> {
+    sqlx::query_as(
+        "SELECT writer AS kind, writer_key AS key, writer_model AS model
+         FROM teams WHERE id = ? AND writer IS NOT NULL",
+    )
+    .bind(team_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// `None` forgets the team's writer.
+pub async fn save_writer(
+    pool: &SqlitePool,
+    team_id: i64,
+    writer: Option<&Writer>,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE teams SET writer = ?, writer_key = ?, writer_model = ? WHERE id = ?")
+        .bind(writer.map(|writer| writer.kind))
+        .bind(writer.and_then(|writer| writer.key.as_ref()))
+        .bind(writer.and_then(|writer| writer.model.as_ref()))
+        .bind(team_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Where a project's docs stand, and what they were written from.
+#[derive(FromRow)]
+pub struct DocsStatus {
+    /// `idle`, `running` or `failed`.
+    pub state: String,
+    pub message: Option<String>,
+    pub branch: Option<String>,
+    pub commit: Option<String>,
+    /// A JSON list of folders.
+    pub left_out: Option<String>,
+}
+
+#[derive(Serialize, FromRow)]
+pub struct Doc {
+    pub id: i64,
+    pub section: String,
+    pub title: String,
+    pub markdown: String,
+}
+
+/// `None` when the team has no such project.
+pub async fn docs_status(
+    pool: &SqlitePool,
+    team_id: i64,
+    project_id: i64,
+) -> sqlx::Result<Option<DocsStatus>> {
+    sqlx::query_as(
+        "SELECT docs_state AS state, docs_message AS message, docs_branch AS branch,
+                docs_commit AS \"commit\", docs_left_out AS left_out
+         FROM projects WHERE team_id = ? AND id = ?",
+    )
+    .bind(team_id)
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn docs(pool: &SqlitePool, project_id: i64) -> sqlx::Result<Vec<Doc>> {
+    sqlx::query_as(
+        "SELECT id, section, title, markdown FROM docs WHERE project_id = ? ORDER BY position",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// Marks the project's docs as being written. False when a run already holds it.
+pub async fn claim_docs_run(pool: &SqlitePool, project_id: i64) -> sqlx::Result<bool> {
+    let claimed = sqlx::query(
+        "UPDATE projects SET docs_state = 'running', docs_message = NULL
+         WHERE id = ? AND docs_state != 'running'",
+    )
+    .bind(project_id)
+    .execute(pool)
+    .await?;
+    Ok(claimed.rows_affected() > 0)
+}
+
+pub async fn set_docs_state(
+    pool: &SqlitePool,
+    project_id: i64,
+    state: &str,
+    message: Option<&str>,
+) -> sqlx::Result<()> {
+    sqlx::query("UPDATE projects SET docs_state = ?, docs_message = ? WHERE id = ?")
+        .bind(state)
+        .bind(message)
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// A run can't outlive the server, so one still marked as running was cut short.
+pub async fn fail_interrupted_docs(pool: &SqlitePool) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE projects SET docs_state = 'failed', docs_message = 'The server restarted'
+         WHERE docs_state = 'running'",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Replaces the project's docs with `pages`, each a section, a title and its Markdown.
+pub async fn save_docs(
+    pool: &SqlitePool,
+    project_id: i64,
+    branch: &str,
+    commit: &str,
+    left_out: &str,
+    pages: &[(&str, String, String)],
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM docs WHERE project_id = ?")
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    for (position, (section, title, markdown)) in pages.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO docs (project_id, section, position, title, markdown)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(project_id)
+        .bind(section)
+        .bind(position as i64)
+        .bind(title)
+        .bind(markdown)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE projects SET docs_state = 'idle', docs_message = NULL, docs_branch = ?,
+                             docs_commit = ?, docs_left_out = ?
+         WHERE id = ?",
+    )
+    .bind(branch)
+    .bind(commit)
+    .bind(left_out)
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
 }
 
 pub async fn github_app(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Option<GithubApp>> {

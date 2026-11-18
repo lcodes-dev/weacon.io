@@ -38,9 +38,11 @@ pub async fn team(
     let team = membership(&user, team_id)?;
     let members = db::members(&state.pool, team_id).await?;
     let invites = db::invites(&state.pool, team_id).await?;
-    Ok(Json(
-        json!({"name": team.name, "members": members, "invites": invites}),
-    ))
+    let writer = db::writer(&state.pool, team_id).await?;
+    let writer = writer.map(|writer| writer.public());
+    Ok(Json(json!({
+        "name": team.name, "members": members, "invites": invites, "writer": writer,
+    })))
 }
 
 #[derive(Deserialize)]

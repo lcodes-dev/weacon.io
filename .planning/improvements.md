@@ -18,10 +18,15 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A minified file fills the map with symbols.** A two-line bundle in a real repository gave 1,072 of them. *(noted in plan 06)*
 - **The map answers with every file and symbol at once.** A very large repository makes that answer large. *(noted in plan 06)*
 - **Vue files aren't read.** Its grammar ships no tags query, so their script blocks have no symbols. *(noted in plan 06)*
+- **The team's API key for docs is stored as plain text**, like the SMTP password. *(noted in plan 07)*
+- **The map keeps the text of lock files and bundles too.** Only files over 500 KB are skipped, so the database carries text no docs page will read. *(noted in plan 07)*
+- **A docs run writes its pages one after the other.** Several at once would cut the wait. *(noted in plan 07)*
+- **A program started by the server inherits the server's environment.** A server started from inside a Claude Code session passes that session's settings on to `claude`. *(noted in plan 07)*
 - **Sessions never expire.** They last until sign-out. *(noted in plan 02)*
 
 ## Web app
 
+- **The web app is one file of over 500 KB.** The Markdown renderer pushed it past the size where splitting it would help the first load. *(noted in plan 07)*
 - **The status dot starts red.** Until the first health call answers, the dot shows "unreachable" for a moment.
 - **The shell is plainer than the reference.** It has no search field, no icons beside Tasks and Docs, and no workspace and account rows at the bottom of the sidebar.
 

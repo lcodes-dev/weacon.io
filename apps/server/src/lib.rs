@@ -1,12 +1,14 @@
 mod auth;
 mod config;
 pub mod db;
+mod docs;
 mod github;
 pub mod mail;
 pub mod map;
 mod projects;
 mod teams;
 mod web;
+mod writer;
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +36,11 @@ pub struct AppState {
     pub github_api: String,
     /// Wakes the map's worker before its minute is up.
     pub map_wake: Arc<Notify>,
+    /// `https://api.anthropic.com`, or a fake one in tests.
+    pub anthropic_api: String,
+    /// The programs that write docs on the account signed in on this computer.
+    pub claude_program: String,
+    pub codex_program: String,
 }
 
 /// Seconds since 1970.
@@ -75,6 +82,14 @@ pub fn router(state: AppState) -> Router {
             put(projects::update).delete(projects::delete),
         )
         .route("/teams/{id}/projects/{project_id}/map", get(map::show))
+        .route(
+            "/teams/{id}/projects/{project_id}/docs",
+            get(docs::show).post(docs::start),
+        )
+        .route(
+            "/teams/{id}/writer",
+            put(writer::save).delete(writer::forget),
+        )
         .route("/teams/{id}/github/branches", get(github::repo_branches))
         .route(
             "/teams/{id}/github",

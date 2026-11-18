@@ -105,6 +105,43 @@ body {
     @apply pt-3 font-semibold;
   }
 
+  /* Generated docs: Markdown rendered to plain elements. */
+  .prose {
+    @apply flex max-w-[720px] flex-col gap-3 text-[14px] leading-relaxed;
+  }
+
+  .prose h1 {
+    @apply text-[20px] font-semibold;
+  }
+
+  .prose h2 {
+    @apply pt-3 text-[16px] font-semibold;
+  }
+
+  .prose h3 {
+    @apply pt-1 font-semibold;
+  }
+
+  .prose ul {
+    @apply flex list-disc flex-col gap-1 pl-5;
+  }
+
+  .prose ol {
+    @apply flex list-decimal flex-col gap-1 pl-5;
+  }
+
+  .prose code {
+    @apply rounded bg-hov px-1 py-0.5 font-mono text-[12px];
+  }
+
+  .prose pre {
+    @apply overflow-x-auto rounded-md bg-hov p-3;
+  }
+
+  .prose a {
+    @apply underline;
+  }
+
   .btn-primary {
     @apply border-pri bg-pri text-pri-text hover:border-pri-hover hover:bg-pri-hover;
   }

@@ -15,7 +15,7 @@ use crate::teams::membership;
 use crate::{ApiError, AppState, github};
 
 /// Raise this when what `read` finds changes, such as with a new language: every map is then read again.
-const READER: i64 = 1;
+const READER: i64 = 2;
 
 /// Larger files are listed in the map and not read.
 const MAX_BYTES: usize = 500_000;
@@ -94,6 +94,8 @@ pub struct Reading {
     pub symbols: Vec<Symbol>,
     /// The names it mentions without defining them.
     pub mentions: BTreeSet<String>,
+    /// The content itself, when it is text.
+    pub text: Option<String>,
 }
 
 fn newlines(bytes: &[u8]) -> i64 {
@@ -106,6 +108,7 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
     };
     let mut reading = Reading {
         lines: text.lines().count() as i64,
+        text: Some(text.to_owned()).filter(|text| !text.is_empty()),
         ..Reading::default()
     };
     let extension = path.rsplit('.').next().unwrap_or_default();

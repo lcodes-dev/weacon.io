@@ -126,6 +126,19 @@ A project tracks chosen branches of its repository, and the server keeps a map o
 - **The picture.** The web app draws a branch as a graph: a dot is a file, inside the circle of its folder, and a line joins a file to one it uses, bent toward the folder both share so that lines gather into bundles. `d3-hierarchy` packs the circles once, so nothing moves afterwards but the view: the wheel zooms, dragging moves, and clicking a folder fits it. Clicking a file shows its symbols and lights up its lines, solid to what it uses and dashed from what uses it. The layout is worked out in the browser and saved nowhere.
 - The server asks GitHub; GitHub never calls it. A webhook would only have to write `head_sha`.
 
+## Generated docs
+
+A project's docs are written by an AI model from the code map: an overview, "How it works" pages that walk through what a user does and gets, and "How it's built" pages on the project's own code. `docs.rs` holds the run and its prompts; `writer.rs` holds the writers.
+
+- **Writers.** The team's owner picks one in "Team settings". To the run they are the same thing, a prompt in and text out: the Anthropic API with the team's key, or the `claude` or `codex` program run on the server's computer, on the account signed in there. Only the server's owner can pick a program. The default models are cheap ones, `claude-haiku-5-5` and `gpt-5.6-luna`, and the team's owner can type another.
+- **Programs.** A program runs in an empty temporary folder with the prompt on its input. `claude` gets no tools and `codex` its read-only sandbox, so a repository's text can make the docs wrong but can't make the server do anything.
+- **Three stages.** First the writer gets the README and an outline of the repository, every file with its first 40 symbols, and answers as JSON with the folders that aren't the project's own code and up to 8 pages of each kind, each with the files it needs. Then each page is written from only its files, sent with line numbers, under the rules of its kind. Last comes the overview, written from the finished pages.
+- **Rules of each kind.** "How it works" is numbered steps in the product's own words, with no file or framework named; the server appends the files it was written from. "How it's built" explains how the code flows, then what to handle with care and what looks like a problem, each claim with its `path:line`. The framework is mentioned only where the flow needs it.
+- **The run.** `POST .../docs` claims the project, spawns a task and answers at once; the project's `docs_state` and `docs_message` say where the run is. Pages are saved together at the end, so earlier docs stay until a run succeeds. A run can't outlive the server: at startup every project still marked `running` is marked `failed`.
+- **Text.** The map keeps each text file's content beside its symbols (`blobs.text`), so a run downloads nothing and matches the map's commit.
+- **Citations.** The web app turns a `path:line` in backticks into a link to GitHub at the docs' commit, but only when the map has that file and it is that long.
+- The Anthropic API's address and the two programs' names are part of the router's state, so the tests use a fake API and a script standing in for the programs.
+
 ## Mail
 
 `mail.rs` has one way to send: `Mailer::send(to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
@@ -161,6 +174,8 @@ Errors are `{"error": "..."}` with a status code.
 | `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name, repository and tracked branches; leaving `repo` out removes it |
 | `DELETE /api/teams/{id}/projects/{project_id}` | the team's owner | Deletes the project |
 | `GET /api/teams/{id}/projects/{project_id}/map?branch=` | a member | A branch's map: its commit, every file with its symbols, and which file uses which |
+| `GET`, `POST /api/teams/{id}/projects/{project_id}/docs` | a member | The project's docs and where a run stands, or starts writing them from the `branch` given |
+| `PUT`, `DELETE /api/teams/{id}/writer` | the team's owner | Saves or forgets who writes the team's docs; a key is never read back, and only the server's owner can pick a program |
 | `GET /api/teams/{id}/github/branches?repo=` | a member | A repository's branches and which is the default |
 | `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |
 | `POST /api/teams/{id}/github` | the team's owner | Trades GitHub's `code` for the new app and saves it |
@@ -178,6 +193,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks. The shell is still the empty layout from the reference.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks, and docs generated from it. The shell is still the empty layout from the reference.
 
 Not built yet, each waiting for the first feature that needs it: the WebSocket.

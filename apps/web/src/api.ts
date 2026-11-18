@@ -30,8 +30,22 @@ export type CodeMap = { commit: string | null; files: MapFile[]; uses: [string, 
 /** The team's GitHub App: its name, the account it is installed on, and the repositories it reaches. */
 export type Github = { app: string | null; account: string | null; repos: string[] }
 
+export type Writer = { kind: "claude_api" | "claude_code" | "codex"; model: string | null; has_key: boolean }
+
+/** A project's generated docs, and the run that writes them. */
+export type Docs = {
+  state: "idle" | "running" | "failed"
+  /** Where a run is, or why it failed. */
+  message: string | null
+  branch: string | null
+  commit: string | null
+  left_out: string[]
+  pages: { id: number; section: "overview" | "works" | "built"; title: string; markdown: string }[]
+}
+
 export type TeamDetails = {
   name: string
+  writer: Writer | null
   members: { id: number; name: string; email: string; role: "owner" | "member" }[]
   invites: { id: number; email: string; expires_at: number }[]
 }

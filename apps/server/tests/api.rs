@@ -25,6 +25,9 @@ async fn server() -> AppState {
         url: "http://weacon.test".into(),
         github_api: "http://127.0.0.1:1".into(),
         map_wake: Arc::default(),
+        anthropic_api: "http://127.0.0.1:1".into(),
+        claude_program: "false".into(),
+        codex_program: "false".into(),
     }
 }
 
@@ -977,4 +980,221 @@ async fn each_tracked_branch_has_its_own_map() {
         ada.get("/api/teams/1/projects").await.1[0]["branches"],
         json!([])
     );
+}
+
+/// Starts an Anthropic API that plans one "works" and one "built" page, and keeps the prompts it got.
+async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
+    let prompts = Arc::new(Mutex::new(Vec::new()));
+    let api = Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                async |State(prompts): State<Arc<Mutex<Vec<String>>>>,
+                       headers: HeaderMap,
+                       Json(body): Json<Value>| {
+                    if headers["x-api-key"] != "good-key" {
+                        let error = json!({"error": {"message": "invalid x-api-key"}});
+                        return (StatusCode::UNAUTHORIZED, Json(error));
+                    }
+                    assert_eq!(body["model"], "claude-haiku-5-5");
+                    let system = body["system"].as_str().unwrap();
+                    let prompt = body["messages"][0]["content"].as_str().unwrap();
+                    prompts.lock().unwrap().push(prompt.to_owned());
+                    let text = if system.contains("Answer with JSON") {
+                        json!({
+                            "left_out": ["vendor"],
+                            "works": [{"title": "Buy", "summary": "Buying.", "files": ["src/app.ts"]}],
+                            "built": [{
+                                "title": "Prices", "summary": "Formatting prices.",
+                                "files": ["src/price.ts", "vendor/lib.ts", "no/such.ts"],
+                            }],
+                        })
+                        .to_string()
+                    } else if system.contains("overview page") {
+                        "The overview.".to_owned()
+                    } else {
+                        "A page, citing `src/price.ts:1`.".to_owned()
+                    };
+                    let answer = json!({"content": [{"type": "text", "text": text}], "stop_reason": "end_turn"});
+                    (StatusCode::OK, Json(answer))
+                },
+            ),
+        )
+        .with_state(prompts.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async { axum::serve(listener, api).await.unwrap() });
+    (address, prompts)
+}
+
+/// Starts writing project 1's docs from `main` and returns them once the run has ended.
+async fn written_docs(client: &mut Client) -> Value {
+    let (status, _) = client
+        .post("/api/teams/1/projects/1/docs", json!({"branch": "main"}))
+        .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    loop {
+        let (_, docs) = client.get("/api/teams/1/projects/1/docs").await;
+        if docs["state"] != "running" {
+            return docs;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test]
+async fn the_team_owner_chooses_the_docs_writer() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    let with_key = json!({"kind": "claude_api", "key": "good-key"});
+
+    assert_eq!(
+        marco.put("/api/teams/1/writer", with_key.clone()).await,
+        StatusCode::FORBIDDEN
+    );
+    // Marco owns team 2, but a program runs on the account of whoever runs the server.
+    assert_eq!(
+        marco
+            .put("/api/teams/2/writer", json!({"kind": "codex"}))
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        ada.put("/api/teams/1/writer", json!({"kind": "claude_api"}))
+            .await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        ada.put("/api/teams/1/writer", with_key).await,
+        StatusCode::NO_CONTENT
+    );
+    // Saving again without a key keeps the saved one, and the key is never read back.
+    let model = json!({"kind": "claude_api", "model": "claude-sonnet-5-5"});
+    assert_eq!(
+        ada.put("/api/teams/1/writer", model).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        ada.get("/api/teams/1").await.1["writer"],
+        json!({"kind": "claude_api", "model": "claude-sonnet-5-5", "has_key": true})
+    );
+
+    assert_eq!(
+        ada.put("/api/teams/1/writer", json!({"kind": "codex"}))
+            .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(ada.get("/api/teams/1").await.1["writer"]["has_key"], false);
+    assert_eq!(
+        ada.delete("/api/teams/1/writer").await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(ada.get("/api/teams/1").await.1["writer"], Value::Null);
+}
+
+#[tokio::test]
+async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
+    let files = [
+        ("README.md", "# Storefront"),
+        ("src/app.ts", APP_TS),
+        ("src/price.ts", PRICE_TS),
+        ("vendor/lib.ts", "export function vendored() {}\n"),
+    ];
+    let (_, mut ada, _) = mapped_project(&files).await;
+    let (address, prompts) = fake_anthropic().await;
+    ada.state.anthropic_api = address;
+    let start = json!({"branch": "main"});
+
+    // Nothing to write with, and nothing to write from.
+    assert_eq!(
+        ada.post("/api/teams/1/projects/1/docs", start).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    ada.put(
+        "/api/teams/1/writer",
+        json!({"kind": "claude_api", "key": "good-key"}),
+    )
+    .await;
+    let other = json!({"branch": "other"});
+    assert_eq!(
+        ada.post("/api/teams/1/projects/1/docs", other).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "idle");
+    assert_eq!(docs["branch"], "main");
+    assert_eq!(docs["commit"], "c1");
+    assert_eq!(docs["left_out"], json!(["vendor"]));
+    let pages: Vec<(&str, &str)> = docs["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| {
+            (
+                page["section"].as_str().unwrap(),
+                page["title"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        pages,
+        [
+            ("overview", "Overview"),
+            ("works", "Buy"),
+            ("built", "Prices")
+        ]
+    );
+    assert_eq!(docs["pages"][0]["markdown"], "The overview.");
+    assert_eq!(
+        docs["pages"][1]["markdown"],
+        "A page, citing `src/price.ts:1`.\n\nWritten from: src/app.ts"
+    );
+
+    // The outline, one prompt per page with only that page's own files, then the overview.
+    let asked = prompts.lock().unwrap().clone();
+    assert_eq!(asked.len(), 4);
+    assert!(asked[0].contains("src/price.ts (TypeScript, 4 lines)\n  function formatPrice :1"));
+    assert!(asked[2].contains("=== src/price.ts ===\n1| export function formatPrice"));
+    assert!(!asked[2].contains("=== src/app.ts ==="));
+    assert!(!asked[2].contains("=== vendor/lib.ts ==="));
+    assert!(asked[3].contains("=== Prices ==="));
+
+    // Writing again replaces the pages; a failed run keeps them.
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
+    ada.put(
+        "/api/teams/1/writer",
+        json!({"kind": "claude_api", "key": "bad-key"}),
+    )
+    .await;
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "failed");
+    assert_eq!(
+        docs["message"],
+        "Anthropic refused (401 Unauthorized): invalid x-api-key"
+    );
+    assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_program_on_the_server_can_write_the_docs() {
+    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_writer.sh");
+    ada.state.claude_program = program.into();
+    ada.state.codex_program = program.into();
+
+    for kind in ["claude_code", "codex"] {
+        ada.put("/api/teams/1/writer", json!({"kind": kind})).await;
+        let docs = written_docs(&mut ada).await;
+        assert_eq!(docs["state"], "idle", "{}", docs["message"]);
+        assert_eq!(docs["pages"][1]["title"], "Prices");
+        assert_eq!(docs["pages"][1]["markdown"], "Written by the program.");
+    }
+
+    // A program that fails says why.
+    ada.state.codex_program = "false".into();
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "failed");
+    assert_eq!(docs["message"], "false failed: ");
 }
