@@ -4,9 +4,9 @@ import { createRoot } from "react-dom/client"
 import { BrowserRouter, Route, Routes } from "react-router"
 import { api, type Session } from "./api"
 import "./app.css"
-import { Invite } from "./Invite"
-import { Shell } from "./Shell"
-import { SignIn } from "./SignIn"
+import { Shell } from "./components/Shell"
+import { Invite } from "./routes/Invite"
+import { SignIn } from "./routes/SignIn"
 
 function App() {
   const session = useQuery({ queryKey: ["session"], queryFn: () => api<Session>("GET", "/session") })

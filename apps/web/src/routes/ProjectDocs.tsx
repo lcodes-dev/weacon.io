@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import Markdown from "markdown-to-jsx"
 import { Fragment, useState } from "react"
 import { Link, useParams } from "react-router"
-import { api, type CodeMap, type Docs, type Project, type Team } from "./api"
+import { api, type CodeMap, type Docs, type Project, type Team } from "../api"
 
 const sections = { overview: "", works: "How it works", built: "How it's built" }
 

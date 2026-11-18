@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
-import { api, type MailConfig, type Smtp } from "./api"
+import { api, type MailConfig, type Smtp } from "../api"
 
 const empty: Smtp = { host: "", port: 587, security: "starttls", username: null, from: "" }
 

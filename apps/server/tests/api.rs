@@ -268,13 +268,25 @@ async fn asking_for_a_new_code_buys_no_guesses() {
 }
 
 #[tokio::test]
-async fn a_session_ends_after_a_year() {
+async fn a_session_ends_a_year_after_its_last_use() {
     let mut client = Client::new(&server().await);
     client.sign_in("ada@example.com", Some("Ada")).await;
-    sqlx::query!("UPDATE sessions SET created_at = created_at - 366 * 24 * 60 * 60")
-        .execute(&client.state.pool)
+    let pool = client.state.pool.clone();
+    let days_pass = async |days: i64| {
+        sqlx::query!(
+            "UPDATE sessions SET renewed_at = renewed_at - ? * 24 * 60 * 60",
+            days
+        )
+        .execute(&pool)
         .await
         .unwrap();
+    };
+    for _ in 0..2 {
+        days_pass(300).await;
+        let (_, session) = client.get("/api/session").await;
+        assert_eq!(session["user"]["name"], "Ada");
+    }
+    days_pass(366).await;
     let (_, session) = client.get("/api/session").await;
     assert_eq!(session["user"], Value::Null);
 }

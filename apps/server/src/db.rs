@@ -193,7 +193,7 @@ pub async fn user_exists(pool: &SqlitePool, email: &str) -> sqlx::Result<bool> {
     .await
 }
 
-/// The user of a session started after `since`.
+/// The user of a session renewed after `since`.
 pub async fn user_by_session(
     pool: &SqlitePool,
     token: &str,
@@ -202,7 +202,7 @@ pub async fn user_by_session(
     let user = sqlx::query!(
         r#"SELECT u.id, u.email, u.name, u.is_owner AS "is_owner: bool"
            FROM sessions s JOIN users u ON u.id = s.user_id
-           WHERE s.token = ? AND s.created_at > ?"#,
+           WHERE s.token = ? AND s.renewed_at > ?"#,
         token,
         since
     )
@@ -306,7 +306,7 @@ pub async fn sign_in(
         (None, None) => return Ok(false),
     };
     sqlx::query!(
-        "INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)",
+        "INSERT INTO sessions (token, user_id, renewed_at) VALUES (?, ?, ?)",
         token,
         user_id,
         now
@@ -350,6 +350,24 @@ async fn create_user(
     .execute(&mut *tx)
     .await?;
     Ok(user_id)
+}
+
+/// Starts the session's year again, unless that was done after `before`. Returns whether it was.
+pub async fn renew_session(
+    pool: &SqlitePool,
+    token: &str,
+    now: i64,
+    before: i64,
+) -> sqlx::Result<bool> {
+    let renewed = sqlx::query!(
+        "UPDATE sessions SET renewed_at = ? WHERE token = ? AND renewed_at < ?",
+        now,
+        token,
+        before
+    )
+    .execute(pool)
+    .await?;
+    Ok(renewed.rows_affected() > 0)
 }
 
 pub async fn sign_out(pool: &SqlitePool, token: &str) -> sqlx::Result<()> {

@@ -2,9 +2,9 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
-import { api, type Team, type TeamDetails, type User } from "./api"
-import { GithubSection } from "./GithubSection"
-import { WriterSection } from "./WriterSection"
+import { api, type Team, type TeamDetails, type User } from "../api"
+import { GithubSection } from "../components/GithubSection"
+import { WriterSection } from "../components/WriterSection"
 
 export function TeamSettings({ team, user }: { team: Team; user: User }) {
   const queryClient = useQueryClient()

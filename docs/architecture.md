@@ -12,6 +12,9 @@ apps/
     migrations/  numbered .sql files
     tests/       the server's tests
   web/           React, TypeScript, Vite, Tailwind, UI SDK
+    src/         main.tsx holds the session and the top routes; api.ts the API's types
+      routes/      one file per address, such as Project.tsx for /projects/:id
+      components/  what routes are built from, such as Shell.tsx, the sidebar around a signed-in route
 crates/          Rust code shared between apps; none yet
 docs/            these docs
 .planning/       reference_ui.html, the clickable prototype the UI follows
@@ -108,7 +111,7 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 - **Invites.** The team's owner invites an email address. The mail holds a link, the server's address plus `/invite/` and a random token saved with the invite. The link works once, for 7 days, and only for an account with the invited address. The owner can invite several addresses at once, revoke an invite, or resend it; resending is inviting the same address again, which replaces the token and starts the 7 days over.
 - **Several teams.** The server doesn't pick a person's team: the session lists their teams, and every team route names its team in the path. The web app remembers which team is open in the browser's local storage. A team the person isn't in answers 404.
 - **Projects.** A team holds several projects. A project is a name and, optionally, a GitHub repository stored as `owner/name`. Any member creates and edits projects; only the team's owner deletes one. Nothing else belongs to a project yet.
-- **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`. A session lasts a year. The cookie is marked `Secure` when `WEACON_URL` is an `https` address.
+- **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`. A session lasts a year from its last use: `GET /api/session`, which the web app asks on every load, starts the year again and sets the cookie anew, at most once a day. The cookie is marked `Secure` when `WEACON_URL` is an `https` address.
 - **Addresses.** `mail::is_address` decides what an email address is, for sign-in and for invites.
 
 ## GitHub
@@ -149,7 +152,7 @@ A project's docs are written by an AI model from the code map: an overview, "How
 - **The run.** `POST .../docs` claims the project, spawns a task and answers at once; the project's `docs_state` and `docs_message` say where the run is. Pages are saved together at the end, so earlier docs stay until a run succeeds. Each run has a number kept in `docs_run`, and its progress, failure and pages are saved only while the project still holds it, so a run can't write into a project that was deleted or given another repository meanwhile. Such a run stops at its next progress update, before it asks the writer for anything more. A run reads the map and the files' text in one transaction, so both are of the same commit. Changing a project's repository deletes its docs. A run that crashes is marked `failed`, and so is every project still marked `running` at startup, since a run can't outlive the server.
 - **Text.** The map keeps each text file's content beside its symbols (`blobs.text`), so a run downloads nothing and matches the map's commit.
 - **Citations.** The web app turns a `path:line` or `path:line-line` in backticks into a link to GitHub at the docs' commit, but only when the map has that file and it is that long.
-- The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text, restricts link URLs to relative addresses and the allowed protocols in `Docs.tsx`, and shows an image as a link, so that opening a page fetches nothing from another host.
+- The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text, restricts link URLs to relative addresses and the allowed protocols in `ProjectDocs.tsx`, and shows an image as a link, so that opening a page fetches nothing from another host.
 - The Anthropic API's address and the two programs' names are part of the router's state, so the tests use a fake API and a script standing in for the programs.
 
 ## Mail
@@ -174,7 +177,7 @@ Errors are `{"error": "..."}` with a status code.
 | Route | Who | What it does |
 | --- | --- | --- |
 | `GET /api/health` | anyone | Says the server and its database answer |
-| `GET /api/session` | anyone | `{"setup_needed", "user"}`: whether the server has no accounts yet, and who is signed in |
+| `GET /api/session` | anyone | `{"setup_needed", "user"}`: whether the server has no accounts yet, and who is signed in. Renews the session |
 | `POST /api/sign-in/code` | anyone | Mails a code. With a `name` it is a registration; without, only a known account gets one |
 | `POST /api/sign-in/verify` | anyone | Checks the code, creates the account and its team if it was a registration, and signs in |
 | `POST /api/sign-out` | signed in | Ends the session |

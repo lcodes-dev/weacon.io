@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { api, type Health, type MailConfig, type Project, type Team, type User } from "./api"
-import { DocsPage } from "./Docs"
-import { MailSettings } from "./MailSettings"
-import { ProjectPage } from "./Project"
-import { TeamSettings } from "./TeamSettings"
+import { api, type Health, type MailConfig, type Project, type Team, type User } from "../api"
+import { MailSettings } from "../routes/MailSettings"
+import { ProjectPage } from "../routes/Project"
+import { DocsPage } from "../routes/ProjectDocs"
+import { TeamSettings } from "../routes/TeamSettings"
 
 const sections = ["Your chats", "Direct", "Groups", "Machines"]
 

@@ -3,7 +3,7 @@ import { Field, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useState } from "react"
 import { useSearchParams } from "react-router"
-import { api, type Github, type Team } from "./api"
+import { api, type Github, type Team } from "../api"
 
 /** The team's own GitHub App, in team settings. GitHub sends the owner back to this page. */
 export function GithubSection({ team }: { team: Team }) {

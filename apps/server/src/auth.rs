@@ -5,7 +5,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::IntoResponse;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::db::{self, User};
 use crate::mail::{self, Mail};
@@ -13,7 +13,9 @@ use crate::{ApiError, AppState, now};
 
 const COOKIE_NAME: &str = "weacon_session";
 const CODE_SECONDS: i64 = 10 * 60;
+/// Counted from the session's last renewal.
 const SESSION_SECONDS: i64 = 365 * 24 * 60 * 60;
+const RENEW_SECONDS: i64 = 24 * 60 * 60;
 
 impl FromRequestParts<AppState> for User {
     type Rejection = ApiError;
@@ -75,10 +77,18 @@ fn session_cookie(state: &AppState, token: &str, max_age: i64) -> [(HeaderName, 
 pub async fn session(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<impl IntoResponse, ApiError> {
     let setup_needed = !db::has_users(&state.pool).await?;
     let user = signed_in(&state, &headers).await?;
-    Ok(Json(json!({"setup_needed": setup_needed, "user": user})))
+    // The web app asks this on every load, so a session in use is renewed here, once a day.
+    let mut cookie = None;
+    if let (Some(_), Some(token)) = (&user, session_token(&headers))
+        && db::renew_session(&state.pool, token, now(), now() - RENEW_SECONDS).await?
+    {
+        cookie = Some(session_cookie(&state, token, SESSION_SECONDS));
+    }
+    let session = json!({"setup_needed": setup_needed, "user": user});
+    Ok((cookie, Json(session)))
 }
 
 #[derive(Deserialize)]

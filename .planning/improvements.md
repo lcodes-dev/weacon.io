@@ -22,6 +22,7 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A docs run loads the text of every file,** though it needs only the text of the files its pages name. *(noted in plan 08)*
 - **Nothing limits docs runs across projects.** Each project runs one at a time, but ten projects can run ten programs at once. *(noted in plan 08)*
 - **A link in docs is checked against the branch's map of today,** not of the commit the docs were written from, so after the branch moves a link can point past the end of a file. *(noted in plan 08)*
+- **Nothing lists a person's sessions or signs them out elsewhere.** A session in use never ends, so a lost or shared computer stays signed in until someone signs out on it. *(noted in plan 13)*
 
 ## Web app
 

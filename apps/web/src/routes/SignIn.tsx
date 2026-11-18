@@ -3,7 +3,7 @@ import { Field, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { OTPInput, OTPInputGroup, OTPInputSlot } from "@ui-sdk/react/otp-input"
 import { useState } from "react"
-import { api, type Invitation } from "./api"
+import { api, type Invitation } from "../api"
 
 export function SignIn({ setup, invitation }: { setup: boolean; invitation?: Invitation }) {
   const queryClient = useQueryClient()

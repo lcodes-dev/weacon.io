@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET renewed_at = renewed_at - ? * 24 * 60 * 60",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "80877b8813ae67e504433785c5b0d574a527c6aa8f3fa893244b9b1238de17c9"
+}

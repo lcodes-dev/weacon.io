@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET renewed_at = ? WHERE token = ? AND renewed_at < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "135f8d10d157f3c89d294fde0bd843552214df9a38b7e178dfeec465fc5caf8a"
+}

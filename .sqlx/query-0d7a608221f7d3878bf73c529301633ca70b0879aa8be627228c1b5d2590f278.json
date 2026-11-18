@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT u.id, u.email, u.name, u.is_owner AS \"is_owner: bool\"\n           FROM sessions s JOIN users u ON u.id = s.user_id\n           WHERE s.token = ? AND s.created_at > ?",
+  "query": "SELECT u.id, u.email, u.name, u.is_owner AS \"is_owner: bool\"\n           FROM sessions s JOIN users u ON u.id = s.user_id\n           WHERE s.token = ? AND s.renewed_at > ?",
   "describe": {
     "columns": [
       {
@@ -58,5 +58,5 @@
       false
     ]
   },
-  "hash": "2220539926e65b24b0dfcece7531d155d5a65e428594732b799c0f11a0630c45"
+  "hash": "0d7a608221f7d3878bf73c529301633ca70b0879aa8be627228c1b5d2590f278"
 }

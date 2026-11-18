@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
-import { api, type CodeMap as Map, type Project, type Team } from "./api"
+import { api, type CodeMap as Map, type Project, type Team } from "../api"
 import { CodeGraph } from "./CodeGraph"
 
 const colors: Record<string, string> = {

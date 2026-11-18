@@ -3,8 +3,8 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { api, type Github, type Project, type RepoBranches, type Team } from "./api"
-import { CodeMap } from "./CodeMap"
+import { api, type Github, type Project, type RepoBranches, type Team } from "../api"
+import { CodeMap } from "../components/CodeMap"
 
 /** The page at `/projects/{id}`, where the id `new` makes a project. */
 export function ProjectPage({ team }: { team: Team }) {

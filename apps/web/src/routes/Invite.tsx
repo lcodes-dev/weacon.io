@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useNavigate, useParams } from "react-router"
-import { api, type Invitation, type User } from "./api"
+import { api, type Invitation, type User } from "../api"
 import { SignIn } from "./SignIn"
 
 /** The screen an invite link opens. */

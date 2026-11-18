@@ -1,6 +1,6 @@
 import { hierarchy, pack, type HierarchyCircularNode } from "d3-hierarchy"
 import { useEffect, useMemo, useRef, useState } from "react"
-import type { MapFile } from "./api"
+import type { MapFile } from "../api"
 
 /** A folder holds folders and files; a file is a leaf. */
 type Node = { name: string; path: string; file?: MapFile; children: Node[] }
