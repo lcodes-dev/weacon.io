@@ -51,22 +51,26 @@ export function DocsPage({ team }: { team: Team }) {
   const page = pages.find((page) => page.id === open) ?? pages[0]
   const stale = commit && docs.data.branch === branch?.name && commit !== branch.commit_sha
   const lines = new Map(map.data?.files.map((file) => [file.path, file.lines]))
-  // `path:line` in backticks links to that line on GitHub, when the map has it.
+  // `path:line` or `path:line-line` in backticks links to GitHub, when the map has those lines.
   const code = ({ children }: { children?: React.ReactNode }) => {
-    const cited = /^(.+):(\d+)$/.exec(String(children))
-    if (cited && Number(cited[2]) <= (lines.get(cited[1]) ?? 0)) {
-      const href = `https://github.com/${project.repo}/blob/${commit}/${cited[1]}#L${cited[2]}`
+    const cited = /^(.+):(\d+)(?:-(\d+))?$/.exec(String(children))
+    if (cited && Number(cited[3] ?? cited[2]) <= (lines.get(cited[1]) ?? 0)) {
+      const to = cited[3] ? `-L${cited[3]}` : ""
+      const href = `https://github.com/${project.repo}/blob/${commit}/${cited[1]}#L${cited[2]}${to}`
       return (
         <a href={href} target="_blank" rel="noreferrer" title={cited[1]}>
           {/* The file's name is enough to read; the whole path is in the tooltip and the link. */}
           <code>
             {cited[1].split("/").pop()}:{cited[2]}
+            {cited[3] && `-${cited[3]}`}
           </code>
         </a>
       )
     }
     return <code>{children}</code>
   }
+  // An image would be fetched from its host on sight, telling it who reads what; a link waits for a click.
+  const img = ({ src, alt }: { src?: string; alt?: string }) => <a href={src}>{alt || src}</a>
 
   return (
     <div className="page page-wide">
@@ -129,7 +133,7 @@ export function DocsPage({ team }: { team: Team }) {
                 forceBlock: true,
                 wrapper: Fragment,
                 sanitizer: safeUrl,
-                overrides: { code },
+                overrides: { code, img },
               }}
             >
               {page.markdown}

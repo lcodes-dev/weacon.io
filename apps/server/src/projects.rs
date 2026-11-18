@@ -39,13 +39,9 @@ impl Fields {
         Ok((name, repo))
     }
 
-    /// Makes the project track the chosen branches, and has them mapped now.
-    async fn track(&self, state: &AppState, project_id: i64, reset: bool) -> sqlx::Result<()> {
-        let has_repo = self.repo.as_deref().is_some_and(|repo| !repo.is_empty());
-        let branches: &[String] = if has_repo { &self.branches } else { &[] };
-        db::track_branches(&state.pool, project_id, branches, reset).await?;
-        state.map_wake.notify_one();
-        Ok(())
+    /// The branches to map: none without a repository.
+    fn branches(&self, repo: Option<&str>) -> &[String] {
+        if repo.is_some() { &self.branches } else { &[] }
     }
 }
 
@@ -66,8 +62,9 @@ pub async fn create(
 ) -> Result<Json<Value>, ApiError> {
     membership(&user, team_id)?;
     let (name, repo) = fields.checked(&state, team_id).await?;
-    let id = db::create_project(&state.pool, team_id, name, repo, now()).await?;
-    fields.track(&state, id, false).await?;
+    let branches = fields.branches(repo);
+    let id = db::create_project(&state.pool, team_id, name, repo, branches, now()).await?;
+    state.map_wake.notify_one();
     Ok(Json(json!({"id": id})))
 }
 
@@ -79,13 +76,12 @@ pub async fn update(
 ) -> Result<StatusCode, ApiError> {
     membership(&user, team_id)?;
     let (name, repo) = fields.checked(&state, team_id).await?;
-    let old_repo = db::project_repo(&state.pool, team_id, project_id).await?;
-    let old_repo = old_repo.ok_or_else(crate::not_found)?;
-    db::update_project(&state.pool, team_id, project_id, name, repo).await?;
-    // Another repository's maps say nothing about this one.
-    fields
-        .track(&state, project_id, old_repo.as_deref() != repo)
-        .await?;
+    let branches = fields.branches(repo);
+    let changed =
+        db::update_project(&state.pool, team_id, project_id, name, repo, branches).await?;
+    if changed.ok_or_else(crate::not_found)? {
+        state.map_wake.notify_one();
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

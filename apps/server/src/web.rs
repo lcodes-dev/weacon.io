@@ -11,6 +11,10 @@ pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let (path, file) = match Dist::get(path) {
         Some(file) => (path, file),
+        // Only an address of the web app's own pages falls back to it.
+        None if path.starts_with("assets/") || path == "ws" || path.starts_with("ws/") => {
+            return crate::not_found().into_response();
+        }
         None => match Dist::get("index.html") {
             Some(index) => ("index.html", index),
             None => return (StatusCode::NOT_FOUND, "the web app is not built").into_response(),

@@ -10,6 +10,15 @@ import { SignIn } from "./SignIn"
 
 function App() {
   const session = useQuery({ queryKey: ["session"], queryFn: () => api<Session>("GET", "/session") })
+  if (session.error)
+    return (
+      <div className="page flex flex-col items-start gap-2">
+        <p>Weacon can't be reached.</p>
+        <button className="btn" onClick={() => session.refetch()}>
+          Try again
+        </button>
+      </div>
+    )
   if (!session.data) return null
   const { user, setup_needed } = session.data
   return (

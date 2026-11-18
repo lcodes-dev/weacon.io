@@ -8,11 +8,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db::{self, User};
-use crate::mail::Mail;
+use crate::mail::{self, Mail};
 use crate::{ApiError, AppState, now};
 
 const COOKIE_NAME: &str = "weacon_session";
 const CODE_SECONDS: i64 = 10 * 60;
+const SESSION_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 impl FromRequestParts<AppState> for User {
     type Rejection = ApiError;
@@ -41,9 +42,13 @@ impl FromRequestParts<AppState> for Owner {
 
 async fn signed_in(state: &AppState, headers: &HeaderMap) -> Result<Option<User>, ApiError> {
     match session_token(headers) {
-        Some(token) => Ok(db::user_by_session(&state.pool, token).await?),
+        Some(token) => Ok(session_user(state, token).await?),
         None => Ok(None),
     }
+}
+
+async fn session_user(state: &AppState, token: &str) -> sqlx::Result<Option<User>> {
+    db::user_by_session(&state.pool, token, now() - SESSION_SECONDS).await
 }
 
 fn session_token(headers: &HeaderMap) -> Option<&str> {
@@ -56,9 +61,14 @@ fn session_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// A `max_age` of 0 removes the cookie.
-fn session_cookie(token: &str, max_age: u32) -> [(HeaderName, String); 1] {
+fn session_cookie(state: &AppState, token: &str, max_age: i64) -> [(HeaderName, String); 1] {
+    let secure = if state.url.starts_with("https://") {
+        "; Secure"
+    } else {
+        ""
+    };
     let cookie =
-        format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
+        format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}");
     [(SET_COOKIE, cookie)]
 }
 
@@ -83,7 +93,7 @@ pub async fn request_code(
     Json(request): Json<CodeRequest>,
 ) -> Result<StatusCode, ApiError> {
     let email = normalized(&request.email);
-    if !email.contains('@') {
+    if !mail::is_address(&email) {
         let message = "That isn't an email address";
         return Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, message.into()));
     }
@@ -94,17 +104,22 @@ pub async fn request_code(
         return Ok(StatusCode::NO_CONTENT);
     }
     let code = format!("{:06}", rand::random_range(0..1_000_000));
-    db::save_code(&state.pool, &email, &code, name, now() + CODE_SECONDS).await?;
+    // Asked again within a minute, the first code stands and no second mail goes out.
+    if !db::save_code(&state.pool, &email, &code, name, now(), CODE_SECONDS).await? {
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let mail = Mail {
         subject: "Your Weacon sign-in code",
         text: "Enter this code to sign in. It works for 10 minutes.",
         code: Some(&code),
         button: None,
     };
-    state.mailer.send(&email, &mail).await.map_err(|error| {
-        tracing::error!("mail to {email} failed: {error}");
-        ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
-    })?;
+    mail::send(&state.pool, &email, &mail)
+        .await
+        .map_err(|error| {
+            tracing::error!("mail to {email} failed: {error}");
+            ApiError(StatusCode::BAD_GATEWAY, "The mail could not be sent".into())
+        })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -122,11 +137,11 @@ pub async fn verify(
     let code = verify.code.trim();
     let token = format!("{:032x}", rand::random::<u128>());
     if !db::sign_in(&state.pool, &email, code, &token, now()).await? {
-        let message = "That code is wrong or has expired";
+        let message = "That code is wrong, has expired or was tried too often";
         return Err(ApiError(StatusCode::UNAUTHORIZED, message.into()));
     }
-    let user = db::user_by_session(&state.pool, &token).await?;
-    Ok((session_cookie(&token, 365 * 24 * 60 * 60), Json(user)))
+    let user = session_user(&state, &token).await?;
+    Ok((session_cookie(&state, &token, SESSION_SECONDS), Json(user)))
 }
 
 pub async fn sign_out(
@@ -136,7 +151,7 @@ pub async fn sign_out(
     if let Some(token) = session_token(&headers) {
         db::sign_out(&state.pool, token).await?;
     }
-    Ok((session_cookie("", 0), StatusCode::NO_CONTENT))
+    Ok((session_cookie(&state, "", 0), StatusCode::NO_CONTENT))
 }
 
 pub fn normalized(email: &str) -> String {

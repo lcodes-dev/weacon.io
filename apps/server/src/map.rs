@@ -1,10 +1,13 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt::Display;
+use std::io;
 use std::io::Read as _;
 use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -20,8 +23,11 @@ const READER: i64 = 2;
 /// Larger files are listed in the map and not read.
 const MAX_BYTES: usize = 500_000;
 
-struct Language {
-    name: &'static str,
+/// How much new text one mapping may keep in memory before the commit is refused.
+const MAX_NEW_BYTES: usize = 200_000_000;
+
+pub struct Language {
+    pub name: &'static str,
     extensions: &'static [&'static str],
     tags: TagsConfiguration,
 }
@@ -89,7 +95,6 @@ pub struct Symbol {
 /// What the map keeps about one content.
 #[derive(Default)]
 pub struct Reading {
-    pub language: Option<&'static str>,
     pub lines: i64,
     pub symbols: Vec<Symbol>,
     /// The names it mentions without defining them.
@@ -98,8 +103,12 @@ pub struct Reading {
     pub text: Option<String>,
 }
 
-fn newlines(bytes: &[u8]) -> i64 {
-    bytes.iter().filter(|byte| **byte == b'\n').count() as i64
+/// The language a file is read as, by its name.
+pub fn language(path: &str) -> Option<&'static Language> {
+    let extension = path.rsplit('.').next().unwrap_or_default();
+    LANGUAGES
+        .iter()
+        .find(|language| language.extensions.contains(&extension))
 }
 
 fn read(path: &str, bytes: &[u8]) -> Reading {
@@ -111,27 +120,23 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
         text: Some(text.to_owned()).filter(|text| !text.is_empty()),
         ..Reading::default()
     };
-    let extension = path.rsplit('.').next().unwrap_or_default();
-    let language = LANGUAGES
-        .iter()
-        .find(|language| language.extensions.contains(&extension));
-    let Some(language) = language else {
+    let Some(language) = language(path) else {
         return reading;
     };
-    reading.language = Some(language.name);
-
     let mut context = TagsContext::new();
     let Ok((tags, _)) = context.generate_tags(&language.tags, bytes, None) else {
         return reading;
     };
+    let line_ends: Vec<usize> = (0..bytes.len()).filter(|at| bytes[*at] == b'\n').collect();
     for tag in tags.flatten() {
         let name = text[tag.name_range].to_owned();
         if tag.is_definition {
+            let ends_before = line_ends.partition_point(|at| *at < tag.range.end);
             reading.symbols.push(Symbol {
                 name,
                 kind: language.tags.syntax_type_name(tag.syntax_type_id).into(),
                 line: tag.span.start.row as i64 + 1,
-                end_line: newlines(&bytes[..tag.range.end]) + 1,
+                end_line: ends_before as i64 + 1,
             });
         } else {
             reading.mentions.insert(name);
@@ -141,34 +146,42 @@ fn read(path: &str, bytes: &[u8]) -> Reading {
     reading
         .symbols
         .dedup_by(|a, b| a.name == b.name && a.kind == b.kind && a.line == b.line);
-    let symbols = &reading.symbols;
+    let defined: HashSet<&str> = reading.symbols.iter().map(|s| s.name.as_str()).collect();
     reading
         .mentions
-        .retain(|name| symbols.iter().all(|symbol| &symbol.name != name));
+        .retain(|name| !defined.contains(name.as_str()));
     reading
 }
 
 /// Reads from a commit's archive the files whose content is new, by git's id of it.
-fn read_archive(archive: &[u8], mut new: HashMap<String, String>) -> Vec<(String, Reading)> {
+fn read_archive(
+    archive: &[u8],
+    mut new: HashMap<String, String>,
+) -> io::Result<Vec<(String, Reading)>> {
     let mut readings = Vec::new();
+    let mut kept = 0;
     let mut archive = tar::Archive::new(GzDecoder::new(archive));
-    for mut entry in archive.entries().into_iter().flatten().flatten() {
-        let Ok(path) = entry.path() else { continue };
+    for entry in archive.entries()? {
+        let mut entry = entry?;
         // Everything in GitHub's archive sits in one folder named after the commit.
-        let path: std::path::PathBuf = path.components().skip(1).collect();
+        let path: std::path::PathBuf = entry.path()?.components().skip(1).collect();
         let path = path.to_string_lossy().into_owned();
         let Some(blob) = new.remove(&path) else {
             continue;
         };
         let mut bytes = Vec::new();
         if entry.size() as usize <= MAX_BYTES {
-            entry.read_to_end(&mut bytes).ok();
+            entry.read_to_end(&mut bytes)?;
+        }
+        kept += bytes.len();
+        if kept > MAX_NEW_BYTES {
+            return Err(io::Error::other("it holds too much text to map yet"));
         }
         readings.push((blob, read(&path, &bytes)));
     }
     // Whatever the archive lacks, such as a link, is recorded so it isn't asked for again.
     readings.extend(new.into_values().map(|blob| (blob, Reading::default())));
-    readings
+    Ok(readings)
 }
 
 /// Runs for as long as the server does.
@@ -203,7 +216,10 @@ pub async fn round(state: &AppState) {
 
 async fn notice(state: &AppState) -> sqlx::Result<()> {
     for project in db::tracked_projects(&state.pool).await? {
-        let heads = github::branches(state, project.team_id, &project.repo).await;
+        let heads = match github::token(state, project.team_id).await {
+            Ok(token) => github::branches(state, &token, &project.repo).await,
+            Err(error) => Err(error),
+        };
         for name in db::branch_names(&state.pool, project.id).await? {
             let (head, error) = match &heads {
                 Ok(heads) => match heads.get(&name) {
@@ -233,10 +249,16 @@ async fn map(state: &AppState, branch: &Waiting) -> Result<(), ApiError> {
         let archive = github::archive(state, &token, &branch.repo, &branch.head_sha).await?;
         // Parsing is slow work that must not hold up the server's other requests.
         let reading = tokio::task::spawn_blocking(move || read_archive(&archive, new));
-        readings = reading.await.unwrap_or_default();
+        // A partial reading would be saved as the whole map, so any failure stops here.
+        readings = reading.await.map_err(unread)?.map_err(unread)?;
     }
     db::save_map(&state.pool, branch, &files, &readings).await?;
     Ok(())
+}
+
+fn unread(error: impl Display) -> ApiError {
+    let message = format!("The commit's archive couldn't be read: {error}");
+    ApiError(StatusCode::BAD_GATEWAY, message)
 }
 
 #[derive(Deserialize)]

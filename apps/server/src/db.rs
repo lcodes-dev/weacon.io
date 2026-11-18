@@ -9,6 +9,8 @@ use crate::map::{Reading, Symbol};
 use crate::writer::Writer;
 
 const CODE_TRIES: i64 = 5;
+/// Seconds before another sign-in code can be asked for.
+const CODE_WAIT: i64 = 60;
 
 pub async fn open(path: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
@@ -16,7 +18,32 @@ pub async fn open(path: &str) -> sqlx::Result<SqlitePool> {
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .foreign_keys(true);
+    #[cfg(unix)]
+    if let Err(error) = keep_private(path) {
+        tracing::warn!("{path} could not be made private: {error}");
+    }
     migrated(SqlitePool::connect_with(options).await?).await
+}
+
+/// Only the server's account may read the database: it holds keys, sessions and source code.
+#[cfg(unix)]
+fn keep_private(path: &str) -> std::io::Result<()> {
+    use std::fs::{OpenOptions, Permissions, set_permissions};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mut create = OpenOptions::new();
+    create.create(true).append(true).mode(0o600).open(path)?;
+    // SQLite gives its two side files the database's own permissions.
+    for file in [
+        path.to_owned(),
+        format!("{path}-wal"),
+        format!("{path}-shm"),
+    ] {
+        if std::fs::exists(&file)? {
+            set_permissions(&file, Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
 }
 
 /// For tests. One connection, because each in-memory connection is its own database.
@@ -126,7 +153,7 @@ pub struct Map {
 #[derive(Serialize)]
 pub struct MapFile {
     pub path: String,
-    pub language: Option<String>,
+    pub language: Option<&'static str>,
     pub lines: i64,
     pub symbols: Vec<Symbol>,
 }
@@ -163,13 +190,19 @@ pub async fn user_exists(pool: &SqlitePool, email: &str) -> sqlx::Result<bool> {
         .await
 }
 
-pub async fn user_by_session(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<User>> {
+/// The user of a session started after `since`.
+pub async fn user_by_session(
+    pool: &SqlitePool,
+    token: &str,
+    since: i64,
+) -> sqlx::Result<Option<User>> {
     let user: Option<User> = sqlx::query_as(
         "SELECT u.id, u.email, u.name, u.is_owner
          FROM sessions s JOIN users u ON u.id = s.user_id
-         WHERE s.token = ?",
+         WHERE s.token = ? AND s.created_at > ?",
     )
     .bind(token)
+    .bind(since)
     .fetch_optional(pool)
     .await?;
     let Some(mut user) = user else {
@@ -187,23 +220,32 @@ pub async fn user_by_session(pool: &SqlitePool, token: &str) -> sqlx::Result<Opt
     Ok(Some(user))
 }
 
+/// False when the address asked for a code less than a minute ago; that code stands.
+/// Wrong tries stay counted while the previous code is live, so asking again buys no guesses.
 pub async fn save_code(
     pool: &SqlitePool,
     email: &str,
     code: &str,
     name: Option<&str>,
-    expires_at: i64,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT OR REPLACE INTO sign_in_codes (email, code, name, expires_at) VALUES (?, ?, ?, ?)",
+    now: i64,
+    lifetime: i64,
+) -> sqlx::Result<bool> {
+    let saved = sqlx::query(
+        "INSERT INTO sign_in_codes (email, code, name, expires_at) VALUES (?1, ?2, ?3, ?4 + ?5)
+         ON CONFLICT (email) DO UPDATE
+         SET code = excluded.code, name = excluded.name, expires_at = excluded.expires_at,
+             attempts = CASE WHEN sign_in_codes.expires_at > ?4 THEN sign_in_codes.attempts ELSE 0 END
+         WHERE sign_in_codes.expires_at - ?5 + ?6 <= ?4",
     )
     .bind(email)
     .bind(code)
     .bind(name)
-    .bind(expires_at)
+    .bind(now)
+    .bind(lifetime)
+    .bind(CODE_WAIT)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(saved.rows_affected() > 0)
 }
 
 /// Returns whether the code was right. A registration's code also creates the account and team.
@@ -437,22 +479,12 @@ pub async fn projects(pool: &SqlitePool, team_id: i64) -> sqlx::Result<Vec<Proje
         let project = projects
             .iter_mut()
             .find(|project| project.id == branch.project_id);
-        project.unwrap().branches.push(branch);
+        // Missing only when the project was made between the two queries.
+        if let Some(project) = project {
+            project.branches.push(branch);
+        }
     }
     Ok(projects)
-}
-
-/// The project's repository; `None` when the team has no such project.
-pub async fn project_repo(
-    pool: &SqlitePool,
-    team_id: i64,
-    project_id: i64,
-) -> sqlx::Result<Option<Option<String>>> {
-    sqlx::query_scalar("SELECT repo FROM projects WHERE team_id = ? AND id = ?")
-        .bind(team_id)
-        .bind(project_id)
-        .fetch_optional(pool)
-        .await
 }
 
 pub async fn create_project(
@@ -460,34 +492,68 @@ pub async fn create_project(
     team_id: i64,
     name: &str,
     repo: Option<&str>,
+    branches: &[String],
     now: i64,
 ) -> sqlx::Result<i64> {
-    sqlx::query_scalar(
+    let mut tx = pool.begin().await?;
+    let id = sqlx::query_scalar(
         "INSERT INTO projects (team_id, name, repo, created_at) VALUES (?, ?, ?, ?) RETURNING id",
     )
     .bind(team_id)
     .bind(name)
     .bind(repo)
     .bind(now)
-    .fetch_one(pool)
-    .await
+    .fetch_one(&mut *tx)
+    .await?;
+    track_branches(&mut tx, id, branches, false).await?;
+    tx.commit().await?;
+    Ok(id)
 }
 
+/// Whether the tracked branches changed; `None` when the team has no such project.
 pub async fn update_project(
     pool: &SqlitePool,
     team_id: i64,
     project_id: i64,
     name: &str,
     repo: Option<&str>,
-) -> sqlx::Result<()> {
-    sqlx::query("UPDATE projects SET name = ?, repo = ? WHERE team_id = ? AND id = ?")
+    branches: &[String],
+) -> sqlx::Result<Option<bool>> {
+    let mut tx = pool.begin().await?;
+    let old_repo: Option<Option<String>> =
+        sqlx::query_scalar("SELECT repo FROM projects WHERE team_id = ? AND id = ?")
+            .bind(team_id)
+            .bind(project_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some(old_repo) = old_repo else {
+        return Ok(None);
+    };
+    sqlx::query("UPDATE projects SET name = ?, repo = ? WHERE id = ?")
         .bind(name)
         .bind(repo)
-        .bind(team_id)
         .bind(project_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
-    Ok(())
+    // Another repository's maps and docs say nothing about this one.
+    let moved = old_repo.as_deref() != repo;
+    if moved {
+        sqlx::query("DELETE FROM docs WHERE project_id = ?")
+            .bind(project_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE projects SET docs_state = 'idle', docs_message = NULL, docs_run = NULL,
+                    docs_branch = NULL, docs_commit = NULL, docs_left_out = NULL
+             WHERE id = ?",
+        )
+        .bind(project_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    let changed = track_branches(&mut tx, project_id, branches, moved).await?;
+    tx.commit().await?;
+    Ok(Some(changed))
 }
 
 pub async fn delete_project(pool: &SqlitePool, team_id: i64, project_id: i64) -> sqlx::Result<()> {
@@ -499,14 +565,15 @@ pub async fn delete_project(pool: &SqlitePool, team_id: i64, project_id: i64) ->
     Ok(())
 }
 
-/// Makes `names` the project's tracked branches. `reset` forgets every map first.
-pub async fn track_branches(
-    pool: &SqlitePool,
+/// Makes `names` the project's tracked branches, and returns whether that changed anything.
+/// `reset` forgets every map first.
+async fn track_branches(
+    tx: &mut sqlx::SqliteConnection,
     project_id: i64,
     names: &[String],
     reset: bool,
-) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
+) -> sqlx::Result<bool> {
+    let mut changed = false;
     for name in branch_names(&mut *tx, project_id).await? {
         if reset || !names.contains(&name) {
             sqlx::query("DELETE FROM branches WHERE project_id = ? AND name = ?")
@@ -519,17 +586,19 @@ pub async fn track_branches(
                 .bind(&name)
                 .execute(&mut *tx)
                 .await?;
+            changed = true;
         }
     }
     for name in names {
-        sqlx::query("INSERT OR IGNORE INTO branches (project_id, name) VALUES (?, ?)")
+        let added = sqlx::query("INSERT OR IGNORE INTO branches (project_id, name) VALUES (?, ?)")
             .bind(project_id)
             .bind(name)
             .execute(&mut *tx)
             .await?;
+        changed |= added.rows_affected() > 0;
     }
-    forget_unlisted_blobs(&mut tx, project_id).await?;
-    tx.commit().await
+    forget_unlisted_blobs(tx, project_id).await?;
+    Ok(changed)
 }
 
 /// Deletes what was read from contents that no branch of the project lists any more.
@@ -630,6 +699,7 @@ pub async fn known_blobs(pool: &SqlitePool, project_id: i64) -> sqlx::Result<Has
 }
 
 /// Saves what was newly read, and makes `files` the branch's map at its latest commit.
+/// Does nothing when the branch or its project changed while the commit was being read.
 pub async fn save_map(
     pool: &SqlitePool,
     branch: &Waiting,
@@ -638,13 +708,26 @@ pub async fn save_map(
 ) -> sqlx::Result<()> {
     let project = branch.project_id;
     let mut tx = pool.begin().await?;
+    let current = sqlx::query(
+        "UPDATE branches SET commit_sha = ?1
+         WHERE project_id = ?2 AND name = ?3 AND head_sha = ?1
+           AND EXISTS (SELECT 1 FROM projects WHERE id = ?2 AND repo = ?4)",
+    )
+    .bind(&branch.head_sha)
+    .bind(project)
+    .bind(&branch.name)
+    .bind(&branch.repo)
+    .execute(&mut *tx)
+    .await?;
+    if current.rows_affected() == 0 {
+        return Ok(());
+    }
     for (blob, reading) in readings {
         sqlx::query(
-            "INSERT OR IGNORE INTO blobs (project_id, blob, language, lines, text) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO blobs (project_id, blob, lines, text) VALUES (?, ?, ?, ?)",
         )
         .bind(project)
         .bind(blob)
-        .bind(reading.language)
         .bind(reading.lines)
         .bind(&reading.text)
         .execute(&mut *tx)
@@ -690,12 +773,6 @@ pub async fn save_map(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query("UPDATE branches SET commit_sha = ? WHERE project_id = ? AND name = ?")
-        .bind(&branch.head_sha)
-        .bind(project)
-        .bind(&branch.name)
-        .execute(&mut *tx)
-        .await?;
     forget_unlisted_blobs(&mut tx, project).await?;
     tx.commit().await
 }
@@ -707,6 +784,8 @@ pub async fn map(
     project_id: i64,
     branch: &str,
 ) -> sqlx::Result<Option<Map>> {
+    // One transaction, so that a map saved meanwhile can't mix into this one.
+    let mut tx = pool.begin().await?;
     let commit: Option<Option<String>> = sqlx::query_scalar(
         "SELECT b.commit_sha FROM branches b JOIN projects p ON p.id = b.project_id
          WHERE p.team_id = ? AND b.project_id = ? AND b.name = ?",
@@ -714,20 +793,20 @@ pub async fn map(
     .bind(team_id)
     .bind(project_id)
     .bind(branch)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     let Some(commit) = commit else {
         return Ok(None);
     };
 
-    let files: Vec<(String, Option<String>, i64)> = sqlx::query_as(
-        "SELECT f.path, b.language, b.lines
+    let files: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT f.path, b.lines
          FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
          WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
     )
     .bind(project_id)
     .bind(branch)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let symbols: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
         "SELECT f.path, s.name, s.kind, s.line, s.end_line
@@ -736,7 +815,7 @@ pub async fn map(
     )
     .bind(project_id)
     .bind(branch)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     let mut by_path: HashMap<String, Vec<Symbol>> = HashMap::new();
     for (path, name, kind, line, end_line) in symbols {
@@ -750,10 +829,10 @@ pub async fn map(
     }
     let files = files
         .into_iter()
-        .map(|(path, language, lines)| MapFile {
+        .map(|(path, lines)| MapFile {
             symbols: by_path.remove(&path).unwrap_or_default(),
+            language: crate::map::language(&path).map(|language| language.name),
             path,
-            language,
             lines,
         })
         .collect();
@@ -776,7 +855,7 @@ pub async fn map(
     )
     .bind(project_id)
     .bind(branch)
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await?;
     Ok(Some(Map {
         commit,
@@ -875,30 +954,36 @@ pub async fn docs(pool: &SqlitePool, project_id: i64) -> sqlx::Result<Vec<Doc>> 
     .await
 }
 
-/// Marks the project's docs as being written. False when a run already holds it.
-pub async fn claim_docs_run(pool: &SqlitePool, project_id: i64) -> sqlx::Result<bool> {
+/// Marks the project's docs as being written by `run`. False when a run already holds it.
+pub async fn claim_docs_run(pool: &SqlitePool, project_id: i64, run: i64) -> sqlx::Result<bool> {
     let claimed = sqlx::query(
-        "UPDATE projects SET docs_state = 'running', docs_message = NULL
+        "UPDATE projects SET docs_state = 'running', docs_message = NULL, docs_run = ?
          WHERE id = ? AND docs_state != 'running'",
     )
+    .bind(run)
     .bind(project_id)
     .execute(pool)
     .await?;
     Ok(claimed.rows_affected() > 0)
 }
 
+/// Does nothing unless `run` still holds the project.
 pub async fn set_docs_state(
     pool: &SqlitePool,
     project_id: i64,
+    run: i64,
     state: &str,
     message: Option<&str>,
 ) -> sqlx::Result<()> {
-    sqlx::query("UPDATE projects SET docs_state = ?, docs_message = ? WHERE id = ?")
-        .bind(state)
-        .bind(message)
-        .bind(project_id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE projects SET docs_state = ?, docs_message = ? WHERE id = ? AND docs_run = ?",
+    )
+    .bind(state)
+    .bind(message)
+    .bind(project_id)
+    .bind(run)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -914,15 +999,32 @@ pub async fn fail_interrupted_docs(pool: &SqlitePool) -> sqlx::Result<()> {
 }
 
 /// Replaces the project's docs with `pages`, each a section, a title and its Markdown.
+/// Does nothing unless `run` still holds the project.
 pub async fn save_docs(
     pool: &SqlitePool,
     project_id: i64,
+    run: i64,
     branch: &str,
     commit: &str,
     left_out: &str,
     pages: &[(&str, String, String)],
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
+    let held = sqlx::query(
+        "UPDATE projects SET docs_state = 'idle', docs_message = NULL, docs_branch = ?,
+                             docs_commit = ?, docs_left_out = ?
+         WHERE id = ? AND docs_run = ?",
+    )
+    .bind(branch)
+    .bind(commit)
+    .bind(left_out)
+    .bind(project_id)
+    .bind(run)
+    .execute(&mut *tx)
+    .await?;
+    if held.rows_affected() == 0 {
+        return Ok(());
+    }
     sqlx::query("DELETE FROM docs WHERE project_id = ?")
         .bind(project_id)
         .execute(&mut *tx)
@@ -940,17 +1042,6 @@ pub async fn save_docs(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query(
-        "UPDATE projects SET docs_state = 'idle', docs_message = NULL, docs_branch = ?,
-                             docs_commit = ?, docs_left_out = ?
-         WHERE id = ?",
-    )
-    .bind(branch)
-    .bind(commit)
-    .bind(left_out)
-    .bind(project_id)
-    .execute(&mut *tx)
-    .await?;
     tx.commit().await
 }
 

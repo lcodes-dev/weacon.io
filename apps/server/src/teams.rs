@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::auth::normalized;
 use crate::db::{self, Invitation, Team, User};
-use crate::mail::Mail;
+use crate::mail::{self, Mail};
 use crate::{ApiError, AppState, now};
 
 const INVITE_SECONDS: i64 = 7 * 24 * 60 * 60;
@@ -77,14 +77,16 @@ pub async fn invite(
     Json(invites): Json<NewInvites>,
 ) -> Result<StatusCode, ApiError> {
     let team = owned(&user, team_id)?;
-    let emails: Vec<String> = invites
+    let mut emails: Vec<String> = invites
         .emails
         .iter()
         .map(|email| normalized(email))
         .collect();
+    emails.sort();
+    emails.dedup();
     // Every address is checked before any mail goes out.
     for email in &emails {
-        if !email.contains('@') {
+        if !mail::is_address(email) {
             return Err(refused(format!("{email} isn't an email address")));
         }
         if db::is_member(&state.pool, team_id, email).await? {
@@ -119,11 +121,13 @@ async fn send_invite(
         code: None,
         button: Some(("Join the team", &link)),
     };
-    state.mailer.send(email, &mail).await.map_err(|error| {
-        tracing::error!("mail to {email} failed: {error}");
-        let message = format!("The mail to {email} could not be sent");
-        ApiError(StatusCode::BAD_GATEWAY, message)
-    })
+    mail::send(&state.pool, email, &mail)
+        .await
+        .map_err(|error| {
+            tracing::error!("mail to {email} failed: {error}");
+            let message = format!("The mail to {email} could not be sent");
+            ApiError(StatusCode::BAD_GATEWAY, message)
+        })
 }
 
 pub async fn revoke(
@@ -153,9 +157,13 @@ pub async fn remove_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
+fn gone() -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, "This invite no longer works".into())
+}
+
 async fn invited(state: &AppState, token: &str) -> Result<Invitation, ApiError> {
     let invitation = db::invitation(&state.pool, token, now()).await?;
-    invitation.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "This invite no longer works".into()))
+    invitation.ok_or_else(gone)
 }
 
 pub async fn invitation(
@@ -175,6 +183,8 @@ pub async fn accept(
         let message = format!("This invite is for {}", invitation.email);
         return Err(ApiError(StatusCode::FORBIDDEN, message));
     }
+    // Revoked or used since the check above.
     let team_id = db::accept_invite(&state.pool, &token, user.id).await?;
+    let team_id = team_id.ok_or_else(gone)?;
     Ok(Json(json!({"team_id": team_id})))
 }

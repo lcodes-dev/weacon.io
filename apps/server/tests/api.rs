@@ -21,7 +21,6 @@ struct Client {
 async fn server() -> AppState {
     AppState {
         pool: db::memory().await,
-        mailer: Arc::default(),
         url: "http://weacon.test".into(),
         github_api: "http://127.0.0.1:1".into(),
         map_wake: Arc::default(),
@@ -141,6 +140,15 @@ async fn unknown_path_serves_the_web_app() {
 }
 
 #[tokio::test]
+async fn a_missing_asset_and_the_reserved_ws_path_are_404() {
+    for path in ["/assets/gone.js", "/ws"] {
+        let request = Request::get(path).body(Body::empty()).unwrap();
+        let response = router(server().await).oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+}
+
+#[tokio::test]
 async fn a_fresh_server_needs_setup() {
     let (_, session) = Client::new(&server().await).get("/api/session").await;
     assert_eq!(session, json!({"setup_needed": true, "user": null}));
@@ -206,6 +214,47 @@ async fn the_fifth_wrong_code_kills_the_right_one() {
         let (status, _) = client.post("/api/sign-in/verify", attempt).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+}
+
+#[tokio::test]
+async fn asking_for_a_new_code_buys_no_guesses() {
+    let mut client = Client::new(&server().await);
+    let request = json!({"email": "ada@example.com", "name": "Ada"});
+    client.post("/api/sign-in/code", request.clone()).await;
+    let code = client.code("ada@example.com").await.unwrap();
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    for _ in 0..5 {
+        let attempt = json!({"email": "ada@example.com", "code": wrong});
+        client.post("/api/sign-in/verify", attempt).await;
+    }
+
+    // Within a minute the first code stands.
+    let (status, _) = client.post("/api/sign-in/code", request.clone()).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(client.code("ada@example.com").await.unwrap(), code);
+
+    // A minute later a new code is made, and the five wrong tries still count against it.
+    sqlx::query("UPDATE sign_in_codes SET expires_at = expires_at - 61")
+        .execute(&client.state.pool)
+        .await
+        .unwrap();
+    client.post("/api/sign-in/code", request).await;
+    let code = client.code("ada@example.com").await.unwrap();
+    let attempt = json!({"email": "ada@example.com", "code": code});
+    let (status, _) = client.post("/api/sign-in/verify", attempt).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_session_ends_after_a_year() {
+    let mut client = Client::new(&server().await);
+    client.sign_in("ada@example.com", Some("Ada")).await;
+    sqlx::query("UPDATE sessions SET created_at = created_at - 366 * 24 * 60 * 60")
+        .execute(&client.state.pool)
+        .await
+        .unwrap();
+    let (_, session) = client.get("/api/session").await;
+    assert_eq!(session["user"], Value::Null);
 }
 
 #[tokio::test]
@@ -482,14 +531,15 @@ async fn several_addresses_are_invited_at_once_or_none_is() {
     let mut ada = Client::new(&state);
     ada.sign_in("ada@example.com", Some("Ada")).await;
 
-    let invites = json!({"emails": ["marco@example.com", "not an address"]});
+    let invites = json!({"emails": ["marco@example.com", "lena@"]});
     assert_eq!(
         ada.post("/api/teams/1/invites", invites).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(ada.token("marco@example.com").await, None);
 
-    let invites = json!({"emails": ["marco@example.com", "lena@example.com"]});
+    // An address given twice is invited once.
+    let invites = json!({"emails": ["marco@example.com", "lena@example.com", " Lena@Example.com"]});
     assert_eq!(
         ada.post("/api/teams/1/invites", invites).await.0,
         StatusCode::NO_CONTENT
@@ -533,6 +583,10 @@ struct RepoState {
     commits: HashMap<String, Vec<(String, String)>>,
     /// How many archives were downloaded.
     archives: usize,
+    /// GitHub says its list of files is cut short.
+    truncated: bool,
+    /// The archive arrives damaged.
+    broken: bool,
 }
 
 impl Repo {
@@ -629,7 +683,7 @@ async fn fake_github() -> (String, Repo) {
                             json!({"path": path, "type": "blob", "sha": blob})
                         })
                         .collect();
-                    Json(json!({"tree": entries}))
+                    Json(json!({"tree": entries, "truncated": repo.truncated}))
                 },
             ),
         )
@@ -639,6 +693,9 @@ async fn fake_github() -> (String, Repo) {
                 async |State(repo): State<Repo>, Path(commit): Path<String>| {
                     let mut repo = repo.0.lock().unwrap();
                     repo.archives += 1;
+                    if repo.broken {
+                        return b"not an archive".to_vec();
+                    }
                     let gzip = flate2::write::GzEncoder::new(Vec::new(), Default::default());
                     let mut archive = tar::Builder::new(gzip);
                     for (path, text) in &repo.commits[&commit] {
@@ -933,6 +990,50 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
 }
 
 #[tokio::test]
+async fn a_file_s_language_follows_its_name() {
+    let (state, mut ada, repo) = mapped_project(&[("notes.txt", "fn start() {}\n")]).await;
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(map["files"][0]["language"], Value::Null);
+
+    repo.push("main", "c2", &[("notes.rs", "fn start() {}\n")]);
+    map::round(&state).await;
+    let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+    assert_eq!(map["files"][0]["language"], "Rust");
+}
+
+#[tokio::test]
+async fn a_commit_that_can_t_be_read_whole_keeps_the_old_map() {
+    let (state, mut ada, repo) = mapped_project(&[("src/app.ts", APP_TS)]).await;
+    repo.push("main", "c2", &[("src/price.ts", PRICE_TS)]);
+    let mut mapped = async |truncated, broken| {
+        {
+            let mut repo = repo.0.lock().unwrap();
+            (repo.truncated, repo.broken) = (truncated, broken);
+        }
+        map::round(&state).await;
+        let (_, map) = ada.get("/api/teams/1/projects/1/map?branch=main").await;
+        let (_, projects) = ada.get("/api/teams/1/projects").await;
+        let error = projects[0]["branches"][0]["error"].as_str();
+        (map["commit"].clone(), error.map(str::to_owned))
+    };
+
+    let (commit, error) = mapped(true, false).await;
+    assert_eq!(commit, "c1");
+    assert_eq!(
+        error.unwrap(),
+        "This repository has too many files to map yet"
+    );
+    let (commit, error) = mapped(false, true).await;
+    assert_eq!(commit, "c1");
+    assert!(
+        error
+            .unwrap()
+            .starts_with("The commit's archive couldn't be read")
+    );
+    assert_eq!(mapped(false, false).await, (json!("c2"), None));
+}
+
+#[tokio::test]
 async fn each_tracked_branch_has_its_own_map() {
     let files = [("src/price.ts", PRICE_TS), ("old/price.ts", PRICE_TS)];
     let (state, mut ada, repo) = mapped_project(&files).await;
@@ -992,15 +1093,22 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                 async |State(prompts): State<Arc<Mutex<Vec<String>>>>,
                        headers: HeaderMap,
                        Json(body): Json<Value>| {
-                    if headers["x-api-key"] != "good-key" {
+                    let key = headers["x-api-key"].to_str().unwrap();
+                    if !["good-key", "slow-key", "odd-key"].contains(&key) {
                         let error = json!({"error": {"message": "invalid x-api-key"}});
                         return (StatusCode::UNAUTHORIZED, Json(error));
+                    }
+                    // The slow key answers only once a test has put "continue" among the prompts.
+                    while key == "slow-key" && !prompts.lock().unwrap().contains(&"continue".into()) {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                     assert_eq!(body["model"], "claude-haiku-5-5");
                     let system = body["system"].as_str().unwrap();
                     let prompt = body["messages"][0]["content"].as_str().unwrap();
                     prompts.lock().unwrap().push(prompt.to_owned());
-                    let text = if system.contains("Answer with JSON") {
+                    let text = if key == "odd-key" {
+                        "} {".to_owned()
+                    } else if system.contains("Answer with JSON") {
                         json!({
                             "left_out": ["vendor"],
                             "works": [{"title": "Buy", "summary": "Buying.", "files": ["src/app.ts"]}],
@@ -1033,13 +1141,106 @@ async fn written_docs(client: &mut Client) -> Value {
         .post("/api/teams/1/projects/1/docs", json!({"branch": "main"}))
         .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    loop {
-        let (_, docs) = client.get("/api/teams/1/projects/1/docs").await;
-        if docs["state"] != "running" {
-            return docs;
+    let ended = async {
+        loop {
+            let (_, docs) = client.get("/api/teams/1/projects/1/docs").await;
+            if docs["state"] != "running" {
+                return docs;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    };
+    let patience = std::time::Duration::from_secs(10);
+    tokio::time::timeout(patience, ended).await.unwrap()
+}
+
+/// Ada's mapped project with docs, and a new run held up at the slow writer's first answer.
+async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
+    let (_, mut ada, _) =
+        mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
+    let (address, prompts) = fake_anthropic().await;
+    ada.state.anthropic_api = address;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put("/api/teams/1/writer", writer).await;
+    assert_eq!(
+        written_docs(&mut ada).await["pages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    prompts.lock().unwrap().clear();
+
+    let writer = json!({"kind": "claude_api", "key": "slow-key"});
+    ada.put("/api/teams/1/writer", writer).await;
+    let start = json!({"branch": "main"});
+    assert_eq!(
+        ada.post("/api/teams/1/projects/1/docs", start).await.0,
+        StatusCode::ACCEPTED
+    );
+    (ada, prompts)
+}
+
+/// Lets the held-up run go on, and waits until it has asked for its last page.
+async fn let_the_run_finish(prompts: &Mutex<Vec<String>>) {
+    prompts.lock().unwrap().push("continue".into());
+    let asked_all = async {
+        // The word above, the outline, two pages and the overview.
+        while prompts.lock().unwrap().len() < 5 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    let patience = std::time::Duration::from_secs(10);
+    tokio::time::timeout(patience, asked_all).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+#[tokio::test]
+async fn changing_the_repository_removes_the_docs_and_a_run_under_way_writes_nothing() {
+    let (mut ada, prompts) = docs_with_a_run_held_up().await;
+    let project = json!({"name": "Storefront", "repo": "northwind/docs"});
+    assert_eq!(
+        ada.put("/api/teams/1/projects/1", project).await,
+        StatusCode::NO_CONTENT
+    );
+    let (_, docs) = ada.get("/api/teams/1/projects/1/docs").await;
+    assert_eq!(
+        (&docs["state"], &docs["pages"]),
+        (&json!("idle"), &json!([]))
+    );
+
+    let_the_run_finish(&prompts).await;
+    let (_, after) = ada.get("/api/teams/1/projects/1/docs").await;
+    assert_eq!(after, docs);
+}
+
+#[tokio::test]
+async fn a_run_writes_nothing_into_a_project_made_after_its_own_was_deleted() {
+    let (mut ada, prompts) = docs_with_a_run_held_up().await;
+    ada.delete("/api/teams/1/projects/1").await;
+    // SQLite gives the new project the deleted one's number.
+    let (_, project) = ada
+        .post("/api/teams/1/projects", json!({"name": "Another"}))
+        .await;
+    assert_eq!(project["id"], 1);
+    let (_, docs) = ada.get("/api/teams/1/projects/1/docs").await;
+
+    let_the_run_finish(&prompts).await;
+    let (_, after) = ada.get("/api/teams/1/projects/1/docs").await;
+    assert_eq!(after, docs);
+    assert_eq!(after["pages"], json!([]));
+}
+
+#[tokio::test]
+async fn a_plan_that_can_t_be_read_fails_the_run() {
+    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "odd-key"});
+    ada.put("/api/teams/1/writer", writer).await;
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "failed");
+    let message = docs["message"].as_str().unwrap();
+    assert!(message.starts_with("The writer's plan couldn't be read"));
 }
 
 #[tokio::test]

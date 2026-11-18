@@ -11,13 +11,13 @@ unsafe_code = "forbid"
 axum = "0.8.9"
 flate2 = "1.1.11"
 jsonwebtoken = { version = "12.0.0", features = ["aws_lc_rs"] }
-lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
 rand = "0.10.4"
 reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls"] }
 rust-embed = { version = "8.14.0", features = ["mime-guess"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sqlx = { version = "0.9.0", default-features = false, features = ["derive", "macros", "migrate", "runtime-tokio", "sqlite-bundled"] }
+sqlx = { version = "0.9.1", default-features = false, features = ["derive", "macros", "migrate", "runtime-tokio", "sqlite-bundled"] }
 tar = "0.4.46"
 tokio = { version = "1.54.1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "time"] }
 tower-http = { version = "0.7.1", features = ["trace"] }

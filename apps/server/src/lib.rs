@@ -13,7 +13,7 @@ mod writer;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::State;
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -21,15 +21,12 @@ use axum::{Json, Router};
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
 use tokio::sync::Notify;
-use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
-
-use mail::Mailer;
 
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
-    pub mailer: Arc<Mailer>,
     /// The address people open in their browser, for links in mail.
     pub url: String,
     /// `https://api.github.com`, or a fake one in tests.
@@ -52,7 +49,12 @@ fn now() -> i64 {
 
 pub fn router(state: AppState) -> Router {
     let log = TraceLayer::new_for_http()
-        .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+        .make_span_with(|request: &Request| {
+            // The route's pattern, because an address can hold an invite's token.
+            let route = request.extensions().get::<MatchedPath>();
+            let route = route.map_or("", MatchedPath::as_str);
+            tracing::info_span!("request", method = %request.method(), route)
+        })
         .on_response(DefaultOnResponse::new().level(Level::INFO));
     let api = Router::new()
         .route("/session", get(auth::session))

@@ -12,8 +12,8 @@ export function ProjectPage({ team }: { team: Team }) {
   const projects = useQuery({
     queryKey: ["projects", team.id],
     queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
-    // While a branch waits to be mapped, watch for the worker to finish.
-    refetchInterval: (query) => (query.state.data?.some((project) => project.branches.some(waiting)) ? 3000 : false),
+    // Watch for the worker to finish a waiting branch; otherwise look for new commits as often as it does.
+    refetchInterval: (query) => (query.state.data?.some((project) => project.branches.some(waiting)) ? 3000 : 60_000),
   })
   if (!projects.data) return null
   const project = projects.data.find((project) => String(project.id) === id)
@@ -144,7 +144,8 @@ function Form({ team, project }: { team: Team; project?: Project }) {
         </fieldset>
       )}
       <div className="flex gap-2">
-        <button className="btn btn-primary" disabled={save.isPending}>
+        {/* Saved before its branches are listed, a repository would track none. */}
+        <button className="btn btn-primary" disabled={save.isPending || (!!repo && repoBranches.isPending)}>
           {project ? "Save" : "Create"}
         </button>
         {project && team.role === "owner" && (

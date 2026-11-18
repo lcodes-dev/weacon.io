@@ -34,8 +34,9 @@ function layout(files: MapFile[], uses: [string, string][]) {
   const sized = hierarchy(tree(files)).sum((node) => (node.file ? size(node.file) : 0))
   const root = pack<Node>().size([width, height]).padding((node) => (node.depth === 0 ? 14 : 5))(sized)
   const at = new Map(root.descendants().map((circle) => [circle.data.path, circle]))
-  const links = uses.map(([from, to]) => {
-    const [a, b] = [at.get(from)!, at.get(to)!]
+  const links = uses.flatMap(([from, to]) => {
+    const [a, b] = [at.get(from), at.get(to)]
+    if (!a || !b) return []
     // The line bends toward the innermost folder that holds both ends, which gathers lines into bundles.
     const shared = a.path(b).reduce((top, circle) => (circle.depth < top.depth ? circle : top))
     return { from, to, d: `M${a.x},${a.y}Q${shared.x},${shared.y} ${b.x},${b.y}` }

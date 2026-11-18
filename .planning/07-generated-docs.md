@@ -20,7 +20,7 @@ This plan comes after plan 06 and builds on its map.
 
 **Using your own subscription** means the last two rows: a subscription can't be used through an API key, only through the vendor's own program, signed in. So it works when the server runs on a computer where you are signed in to Claude Code or Codex, which is the case for a server you run yourself. Because that account belongs to whoever runs the server, only the server's owner can pick those two writers, and only for a team they own. Running the program on each member's own computer comes with the plan for machines.
 
-**How a program is run.** In an empty temporary folder, with the prompt on its input and its answer read from its output. `claude` runs with `--print`, no tools and none of the folder's or the person's own settings; `codex exec` runs with its read-only sandbox. So neither can touch anything, and what a repository's text says can only make the docs wrong, never make the server do something.
+**How a program is run.** In an empty temporary folder, with the prompt on its input and its answer read from its output. `claude` runs with `--print`, no tools and none of the folder's or the person's own settings; `codex exec` runs with its read-only sandbox. So neither can touch anything, and what a repository's text says can only make the docs wrong, never make the server do something. *(Wrong for `codex` as first built: its sandbox stops writing, not reading. Plan 08 switched its shell tools off.)*
 
 **The two kinds of page.**
 

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use crate::auth::Owner;
 use crate::db;
-use crate::mail::{Mail, Smtp};
+use crate::mail::{self, Mail, Smtp};
 use crate::{ApiError, AppState};
 
 fn bad_settings(error: impl std::fmt::Display) -> ApiError {
@@ -28,14 +28,13 @@ pub async fn save_mail(
             .await?
             .and_then(|saved| saved.password);
     }
-    state.mailer.set(Some(&smtp)).map_err(bad_settings)?;
+    mail::check(&smtp).map_err(bad_settings)?;
     db::save_smtp(&state.pool, Some(&smtp)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn clear_mail(State(state): State<AppState>, _: Owner) -> Result<StatusCode, ApiError> {
     db::save_smtp(&state.pool, None).await?;
-    state.mailer.set(None).map_err(bad_settings)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -49,9 +48,7 @@ pub async fn test_mail(
         code: None,
         button: None,
     };
-    state
-        .mailer
-        .send(&user.email, &mail)
+    mail::send(&state.pool, &user.email, &mail)
         .await
         .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(StatusCode::NO_CONTENT)

@@ -10,18 +10,19 @@ export function GithubSection({ team }: { team: Team }) {
   const queryClient = useQueryClient()
   const [params, setParams] = useSearchParams()
   const [organization, setOrganization] = useState("")
-  const [state] = useState(() => crypto.randomUUID())
+  const [state] = useState(() => `${team.id}-${crypto.randomUUID()}`)
   const path = `/teams/${team.id}/github`
   const github = useQuery({ queryKey: ["github", team.id], queryFn: () => api<Github>("GET", path) })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["github", team.id] })
   const register = useMutation({ mutationFn: (code: string) => api("POST", path, { code }), onSuccess: refresh })
   const forget = useMutation({ mutationFn: () => api("DELETE", path), onSuccess: refresh })
 
-  // Back from GitHub with a code. The state proves this tab started the registration.
+  // Back from GitHub with a code. The state proves this tab started the registration, and for this team.
   useEffect(() => {
     const code = params.get("code")
     if (!code) return
-    if (params.get("state") === sessionStorage.getItem("github_state")) register.mutate(code)
+    const started = sessionStorage.getItem("github_state")
+    if (started?.startsWith(`${team.id}-`) && started === params.get("state")) register.mutate(code)
     sessionStorage.removeItem("github_state")
     setParams({}, { replace: true })
   }, [])

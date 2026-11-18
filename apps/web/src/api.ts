@@ -74,7 +74,8 @@ export async function api<T = void>(method: string, path: string, body?: unknown
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (response.status === 204) return undefined as T
-  const data = await response.json()
-  if (!response.ok) throw new Error(data.error)
+  // An error from something in front of the server, such as a proxy, may not be JSON.
+  const data = await response.json().catch(() => null)
+  if (!response.ok || data === null) throw new Error(data?.error ?? `The server answered ${response.status}`)
   return data
 }

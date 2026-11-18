@@ -137,7 +137,7 @@ struct Planned {
 fn outline(files: &[MapFile]) -> String {
     let mut outline = String::new();
     for file in files {
-        let language = file.language.as_deref().unwrap_or("not parsed");
+        let language = file.language.unwrap_or("not parsed");
         writeln!(outline, "{} ({language}, {} lines)", file.path, file.lines).ok();
         for symbol in file.symbols.iter().take(SYMBOLS_PER_FILE) {
             writeln!(
@@ -174,6 +174,7 @@ async fn generate(
     writer: &Writer,
     team_id: i64,
     project_id: i64,
+    run: i64,
     branch: &str,
 ) -> Result<(), String> {
     let broken = |error: sqlx::Error| {
@@ -181,8 +182,8 @@ async fn generate(
         "Something went wrong".to_owned()
     };
     let progress = async |message: String| {
-        let saved = db::set_docs_state(&state.pool, project_id, "running", Some(&message)).await;
-        saved.map_err(broken)
+        let saved = db::set_docs_state(&state.pool, project_id, run, "running", Some(&message));
+        saved.await.map_err(broken)
     };
     let map = db::map(&state.pool, team_id, project_id, branch).await;
     let map = map.map_err(broken)?.ok_or("This branch isn't mapped")?;
@@ -209,6 +210,7 @@ async fn generate(
     let json = answer
         .find('{')
         .zip(answer.rfind('}'))
+        .filter(|(from, to)| from < to)
         .map(|(from, to)| &answer[from..=to]);
     let plan: Outline = serde_json::from_str(json.unwrap_or_default())
         .map_err(|error| format!("The writer's plan couldn't be read: {error}"))?;
@@ -234,7 +236,7 @@ async fn generate(
     let mut pages = Vec::new();
     for (index, (section, rules, page)) in planned.iter().enumerate() {
         progress(format!("Writing page {} of {}", index + 1, planned.len())).await?;
-        let files: Vec<String> = page
+        let mut files: Vec<String> = page
             .files
             .iter()
             .filter(|path| own(path))
@@ -248,6 +250,7 @@ async fn generate(
         );
         let system = format!("{rules}\n\n{WRITING}");
         let mut markdown = writer.ask(state, &system, &prompt).await?;
+        files.retain(|path| !unread.contains(path));
         if *section == "works" && !files.is_empty() {
             write!(markdown, "\n\nWritten from: {}", files.join(", ")).ok();
         }
@@ -273,8 +276,16 @@ async fn generate(
     pages.insert(0, ("overview", "Overview".to_owned(), overview));
 
     let left_out = json!(plan.left_out).to_string();
-    let saved = db::save_docs(&state.pool, project_id, branch, &commit, &left_out, &pages).await;
-    saved.map_err(broken)
+    let saved = db::save_docs(
+        &state.pool,
+        project_id,
+        run,
+        branch,
+        &commit,
+        &left_out,
+        &pages,
+    );
+    saved.await.map_err(broken)
 }
 
 #[derive(Deserialize)]
@@ -297,15 +308,23 @@ pub async fn start(
     let Some(writer) = db::writer(&state.pool, team_id).await? else {
         return Err(refused("Choose a docs writer in Team settings first"));
     };
-    if !db::claim_docs_run(&state.pool, project_id).await? {
+    let run = rand::random::<u32>().into();
+    if !db::claim_docs_run(&state.pool, project_id, run).await? {
         return Err(refused("The docs are already being written"));
     }
     tokio::spawn(async move {
-        let run = generate(&state, &writer, team_id, project_id, &start.branch).await;
-        if let Err(message) = run {
-            let saved = db::set_docs_state(&state.pool, project_id, "failed", Some(&message)).await;
-            saved.ok();
-        }
+        let pool = state.pool.clone();
+        let writing = tokio::spawn(async move {
+            generate(&state, &writer, team_id, project_id, run, &start.branch).await
+        });
+        // A run that crashes must not stay marked as running.
+        let message = match writing.await {
+            Ok(Ok(())) => return,
+            Ok(Err(message)) => message,
+            Err(_) => "Something went wrong".into(),
+        };
+        let failed = db::set_docs_state(&pool, project_id, run, "failed", Some(&message));
+        failed.await.ok();
     });
     Ok(StatusCode::ACCEPTED)
 }

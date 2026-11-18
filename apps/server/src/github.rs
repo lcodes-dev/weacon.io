@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -52,8 +53,18 @@ struct Repository {
     full_name: String,
 }
 
-static CLIENT: LazyLock<Client> =
-    LazyLock::new(|| Client::builder().user_agent("weacon").build().unwrap());
+/// Larger archives are refused, since one is held in memory while it is read.
+const MAX_ARCHIVE: usize = 200_000_000;
+
+/// The time limits keep one stalled call from holding up the map's worker.
+static CLIENT: LazyLock<Client> = LazyLock::new(|| {
+    Client::builder()
+        .user_agent("weacon")
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(Duration::from_secs(60))
+        .build()
+        .unwrap()
+});
 
 fn request(state: &AppState, method: Method, path: &str) -> RequestBuilder {
     CLIENT.request(method, format!("{}{path}", state.github_api))
@@ -153,14 +164,13 @@ struct Commit {
 /// Every branch of the repository with its latest commit.
 pub async fn branches(
     state: &AppState,
-    team_id: i64,
+    token: &str,
     repo: &str,
 ) -> Result<HashMap<String, String>, ApiError> {
-    let token = token(state, team_id).await?;
     let mut heads = HashMap::new();
     for page in 1.. {
         let path = format!("/repos/{repo}/branches?per_page=100&page={page}");
-        let page: Vec<Branch> = get(state, &token, &path).await?;
+        let page: Vec<Branch> = get(state, token, &path).await?;
         if page.is_empty() {
             break;
         }
@@ -175,6 +185,9 @@ pub async fn branches(
 #[derive(Deserialize)]
 struct Tree {
     tree: Vec<Entry>,
+    /// GitHub cut the list short.
+    #[serde(default)]
+    truncated: bool,
 }
 
 #[derive(Deserialize)]
@@ -194,6 +207,10 @@ pub async fn files(
 ) -> Result<Vec<(String, String)>, ApiError> {
     let path = format!("/repos/{repo}/git/trees/{commit}?recursive=1");
     let tree: Tree = get(state, token, &path).await?;
+    if tree.truncated {
+        let message = "This repository has too many files to map yet";
+        return Err(ApiError(StatusCode::BAD_GATEWAY, message.into()));
+    }
     let files = tree.tree.into_iter().filter(|entry| entry.r#type == "blob");
     Ok(files.map(|entry| (entry.path, entry.sha)).collect())
 }
@@ -207,11 +224,19 @@ pub async fn archive(
 ) -> Result<Vec<u8>, ApiError> {
     let path = format!("/repos/{repo}/tarball/{commit}");
     let request = request(state, Method::GET, &path).bearer_auth(token);
-    let archive = async { request.send().await?.error_for_status()?.bytes().await };
-    Ok(archive
-        .await
-        .map_err(|error: reqwest::Error| failed(error))?
-        .to_vec())
+    let response = request.send().await;
+    let mut response = response
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(failed)?;
+    let mut archive = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(failed)? {
+        archive.extend_from_slice(&chunk);
+        if archive.len() > MAX_ARCHIVE {
+            let message = "This repository is too large to map yet";
+            return Err(ApiError(StatusCode::BAD_GATEWAY, message.into()));
+        }
+    }
+    Ok(archive)
 }
 
 #[derive(Deserialize)]
@@ -242,7 +267,7 @@ pub async fn repo_branches(
     }
     let token = token(&state, team_id).await?;
     let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
-    let mut names: Vec<String> = branches(&state, team_id, &of.repo)
+    let mut names: Vec<String> = branches(&state, &token, &of.repo)
         .await?
         .into_keys()
         .collect();

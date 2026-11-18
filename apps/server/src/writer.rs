@@ -17,6 +17,9 @@ use crate::{ApiError, AppState};
 /// A page can take minutes to write.
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
+/// The server's environment variables a program gets: enough to be found and signed in.
+const KEPT: [&str; 5] = ["PATH", "HOME", "USER", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
+
 #[derive(Clone, Copy, PartialEq, Deserialize, Serialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(rename_all = "snake_case")]
@@ -63,9 +66,10 @@ impl Writer {
         match self.kind {
             Kind::ClaudeApi => self.ask_api(state, system, prompt).await,
             Kind::ClaudeCode => {
-                // No tools, and no servers of tools from the person's own settings.
+                // No tools, and none of the hooks, instructions and tool servers of the person's own setup.
                 let args = [
                     "--print",
+                    "--safe-mode",
                     "--model",
                     self.model(),
                     "--tools",
@@ -79,12 +83,20 @@ impl Writer {
             }
             Kind::Codex => {
                 let model = self.model();
+                // The sandbox only stops writing, so the tools that run commands are off too:
+                // text in a repository must not be able to make Codex read the server's files.
                 let args = [
                     "exec",
                     "--model",
                     model,
                     "--sandbox",
                     "read-only",
+                    "--disable",
+                    "shell_tool",
+                    "--disable",
+                    "unified_exec",
+                    "--ignore-user-config",
+                    "--ignore-rules",
                     "--skip-git-repo-check",
                     "--ephemeral",
                     "--color",
@@ -147,6 +159,8 @@ async fn run(program: &str, args: &[&str], input: &str) -> Result<String, String
     let child = Command::new(program)
         .args(args)
         .current_dir(&folder)
+        .env_clear()
+        .envs(std::env::vars().filter(|(name, _)| KEPT.contains(&name.as_str())))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -178,14 +192,9 @@ async fn run(program: &str, args: &[&str], input: &str) -> Result<String, String
     } else {
         complaint.trim()
     };
-    let tail: String = complaint
-        .chars()
-        .rev()
-        .take(400)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    // The end of it says what went wrong.
+    let tail = complaint.char_indices().rev().nth(399);
+    let tail = &complaint[tail.map_or(0, |(at, _)| at)..];
     Err(format!("{program} failed: {tail}"))
 }
 

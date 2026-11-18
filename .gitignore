@@ -3,3 +3,6 @@ node_modules/
 apps/web/dist/
 .dev/
 .DS_Store
+
+# A database made by running the server from here with its default path.
+weacon.db*
