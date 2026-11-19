@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, m.name, m.member AS \"member: bool\"\n           FROM branch_files f JOIN blob_mentions m ON m.project_id = f.project_id AND m.blob = f.blob\n           WHERE f.project_id = ? AND f.branch = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blob_mentions",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "member: bool",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "blob_mentions",
+            "name": "member"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8e928dfddc7a2bb925331adabb6a0d393c05c2ee4e1188f87738334fe465c8cd"
+}

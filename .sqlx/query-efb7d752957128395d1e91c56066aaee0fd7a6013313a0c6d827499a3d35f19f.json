@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO docs (id, project_id, section, position, title, markdown, files)\n         VALUES (?1, ?2, ?3,\n                 (SELECT COALESCE(MAX(position), -1) + 1 FROM docs WHERE project_id = ?2),\n                 ?4, ?5, ?6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "efb7d752957128395d1e91c56066aaee0fd7a6013313a0c6d827499a3d35f19f"
+}

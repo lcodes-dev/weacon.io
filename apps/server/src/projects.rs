@@ -91,6 +91,8 @@ pub async fn delete(
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     owned(&user, &team_id)?;
-    db::delete_project(&state.pool, &team_id, &project_id).await?;
+    for file in db::delete_project(&state.pool, &team_id, &project_id).await? {
+        tokio::fs::remove_file(state.files.join(file)).await.ok();
+    }
     Ok(StatusCode::NO_CONTENT)
 }

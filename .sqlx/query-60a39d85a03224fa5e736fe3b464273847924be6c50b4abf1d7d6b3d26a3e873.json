@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docs SET position = ? WHERE id = ? AND project_id =\n                 (SELECT id FROM projects WHERE team_id = ? AND id = ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "60a39d85a03224fa5e736fe3b464273847924be6c50b4abf1d7d6b3d26a3e873"
+}

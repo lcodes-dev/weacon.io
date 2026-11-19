@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Path, State};
-use axum::http::header::{CONTENT_TYPE, COOKIE, SET_COOKIE};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -31,6 +31,7 @@ async fn server() -> AppState {
         anthropic_api: "http://127.0.0.1:1".into(),
         claude_program: "false".into(),
         codex_program: "false".into(),
+        files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
     }
 }
 
@@ -990,9 +991,12 @@ fn symbols(map: &Value, path: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
+    // A bundle on one long line defines the name the app calls, and is listed without being read.
+    let bundle = format!("function formatPrice() {{}}{}", ";".repeat(5_000));
     let files = [
         ("src/app.ts", APP_TS),
         ("src/price.ts", PRICE_TS),
+        ("public/app.js", bundle.as_str()),
         ("tools/util.py", UTIL_PY),
         ("server/lib.rs", LIB_RS),
         ("README.md", "# Storefront\n\nA shop.\n"),
@@ -1012,7 +1016,8 @@ async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
     let (status, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(map["commit"], "c1");
-    assert_eq!(map["files"].as_array().unwrap().len(), 5);
+    assert_eq!(map["files"].as_array().unwrap().len(), 6);
+    assert_eq!(symbols(&map, "public/app.js"), [""; 0]);
     assert_eq!(symbols(&map, "src/price.ts"), ["formatPrice", "init"]);
     assert_eq!(symbols(&map, "src/app.ts"), ["Cart", "total"]);
     assert_eq!(symbols(&map, "tools/util.py"), ["init", "Basket"]);
@@ -1022,10 +1027,10 @@ async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
         json!({"path": "README.md", "language": null, "lines": 3, "symbols": []})
     );
     assert_eq!(
-        map["files"][2]["symbols"][1],
+        map["files"][3]["symbols"][1],
         json!({"name": "total", "kind": "method", "line": 3, "end_line": 5})
     );
-    // `init` has two definitions, so mentioning it links nothing.
+    // The app imports the price file. `init` is defined in two languages and imported from neither.
     assert_eq!(map["uses"], json!([["src/app.ts", "src/price.ts"]]));
 
     assert_eq!(
@@ -1326,18 +1331,44 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                     let system = body["system"].as_str().unwrap();
                     let prompt = body["messages"][0]["content"].as_str().unwrap();
                     prompts.lock().unwrap().push(prompt.to_owned());
+                    let note = json!([{
+                        "quote": "By hand.", "says": "It is done by the code.",
+                        "place": "src/app.ts:1", "instead": "By the code.",
+                    }]);
                     let text = if key == "odd-key" {
                         "} {".to_owned()
+                    } else if system.contains("Someone asks for a change") {
+                        json!({
+                            "page": null, "section": "works", "title": "Refunds",
+                            "summary": "Getting money back.", "files": ["src/app.ts"],
+                        })
+                        .to_string()
+                    } else if system.contains("Say which files") {
+                        json!({"files": ["src/app.ts", "no/such.ts"]}).to_string()
+                    } else if system.contains("You check one page") {
+                        note.to_string()
                     } else if system.contains("Answer with JSON") {
+                        // Prices is planned only while its file is in the repository.
+                        let prices = json!({
+                            "title": "Prices", "summary": "Formatting prices.",
+                            "files": ["src/price.ts", "vendor/lib.ts", "no/such.ts"],
+                        });
+                        let built = prompt.contains("src/price.ts").then_some(prices);
                         json!({
                             "left_out": ["vendor"],
                             "works": [{"title": "Buy", "summary": "Buying.", "files": ["src/app.ts"]}],
-                            "built": [{
-                                "title": "Prices", "summary": "Formatting prices.",
-                                "files": ["src/price.ts", "vendor/lib.ts", "no/such.ts"],
-                            }],
+                            "built": built.into_iter().collect::<Vec<_>>(),
                         })
                         .to_string()
+                    } else if system.contains("---REASON---") {
+                        // A page that exists is written again; a person's words in it get a note.
+                        let page = if prompt.contains("The page as it is now") {
+                            "A page, written again."
+                        } else {
+                            "A new page."
+                        };
+                        let notes = if prompt.contains("By hand.") { note } else { json!([]) };
+                        format!("{page}\n---REASON---\nThe code changed.\n---NOTES---\n{notes}")
                     } else if system.contains("overview page") {
                         "The overview.".to_owned()
                     } else {
@@ -1361,10 +1392,16 @@ async fn written_docs(client: &mut Client) -> Value {
         .post(&client.project("/docs"), json!({"branch": "main"}))
         .await;
     assert_eq!(status, StatusCode::ACCEPTED);
+    settled_docs(client).await
+}
+
+/// Project 1's docs, once no run is writing them and no page is being checked.
+async fn settled_docs(client: &mut Client) -> Value {
     let ended = async {
         loop {
             let (_, docs) = client.get(&client.project("/docs")).await;
-            if docs["state"] != "running" {
+            let mut pages = docs["pages"].as_array().unwrap().iter();
+            if docs["state"] != "running" && pages.all(|page| page["checking"] == false) {
                 return docs;
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1398,6 +1435,10 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
         ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::ACCEPTED
     );
+    // The run is held up once it has asked for its plan.
+    while ada.get(&ada.project("/docs")).await.1["message"] != "Planning the pages" {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     (ada, prompts)
 }
 
@@ -1503,6 +1544,375 @@ async fn deleting_a_project_ends_its_shared_links() {
         Client::new(&state).get(&public).await.0,
         StatusCode::NOT_FOUND
     );
+}
+
+/// Ada's mapped project with the docs a run wrote: an overview, "Buy" and "Prices".
+async fn project_with_docs() -> (AppState, Client) {
+    let (state, mut ada, _) =
+        mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put(&ada.team("/writer"), writer).await;
+    written_docs(&mut ada).await;
+    (state, ada)
+}
+
+#[tokio::test]
+async fn a_member_edits_a_page_and_every_text_stays_in_its_history() {
+    let (state, mut ada) = project_with_docs().await;
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let buy = docs["pages"][1].clone();
+    assert_eq!(buy["title"], "Buy");
+    let page = ada.project(&format!("/docs/pages/{}", buy["id"].as_str().unwrap()));
+
+    let edit = json!({"title": " Buying ", "markdown": "By hand.", "version": buy["version"]});
+    assert_eq!(ada.put(&page, edit.clone()).await, StatusCode::NO_CONTENT);
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][1]["title"], "Buying");
+    assert_eq!(docs["pages"][1]["markdown"], "By hand.");
+
+    // An edit that started from the text before is refused, and changes nothing.
+    assert_eq!(ada.put(&page, edit).await, StatusCode::CONFLICT);
+    let untitled = json!({"title": " ", "markdown": "", "version": docs["pages"][1]["version"]});
+    assert_eq!(
+        ada.put(&page, untitled).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    let (_, versions) = ada.get(&format!("{page}/versions")).await;
+    let versions = versions.as_array().unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0]["id"], docs["pages"][1]["version"]);
+    assert_eq!(versions[0]["author"], "Ada");
+    assert_eq!(versions[0]["markdown"], "By hand.");
+    assert_eq!(versions[1]["author"], Value::Null);
+    assert_eq!(versions[1]["title"], "Buy");
+
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    let hers = json!({"title": "Hers", "markdown": "", "version": versions[0]["id"]});
+    assert_eq!(eve.put(&page, hers).await, StatusCode::NOT_FOUND);
+    assert_eq!(
+        eve.get(&format!("{page}/versions")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(eve.delete(&page).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_member_adds_orders_and_deletes_pages() {
+    let (_, mut ada) = project_with_docs().await;
+    let pages = ada.project("/docs/pages");
+    let odd = json!({"section": "overview", "title": "Another overview"});
+    assert_eq!(
+        ada.post(&pages, odd).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (status, added) = ada
+        .post(&pages, json!({"section": "works", "title": "Refunds"}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let titles = async |ada: &mut Client| {
+        let (_, docs) = ada.get(&ada.project("/docs")).await;
+        let pages = docs["pages"].as_array().unwrap().clone();
+        let titles = pages
+            .iter()
+            .map(|page| page["title"].as_str().unwrap().to_owned());
+        (pages.clone(), titles.collect::<Vec<_>>())
+    };
+    let (listed, names) = titles(&mut ada).await;
+    assert_eq!(names, ["Overview", "Buy", "Prices", "Refunds"]);
+    assert_eq!(listed[3]["id"], added["id"]);
+    assert_eq!(listed[3]["section"], "works");
+
+    let order = json!([
+        listed[0]["id"],
+        listed[3]["id"],
+        listed[1]["id"],
+        listed[2]["id"]
+    ]);
+    assert_eq!(ada.put(&pages, order).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        titles(&mut ada).await.1,
+        ["Overview", "Refunds", "Buy", "Prices"]
+    );
+
+    let refunds = format!("{pages}/{}", added["id"].as_str().unwrap());
+    assert_eq!(ada.delete(&refunds).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.delete(&refunds).await, StatusCode::NOT_FOUND);
+    assert_eq!(titles(&mut ada).await.1, ["Overview", "Buy", "Prices"]);
+}
+
+/// Sends `bytes` as a file of Ada's project, and returns the answer.
+async fn upload(client: &Client, path: &str, bytes: &[u8]) -> (StatusCode, Value) {
+    let request = Request::post(path)
+        .header(COOKIE, client.cookie.as_deref().unwrap())
+        .body(Body::from(bytes.to_vec()))
+        .unwrap();
+    let response = router(client.state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// The status, media type, disposition and bytes that `path` answers with, asked without a session.
+async fn fetched(state: &AppState, path: &str) -> (StatusCode, String, String, Vec<u8>) {
+    let request = Request::get(path).body(Body::empty()).unwrap();
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let header = |name| match response.headers().get(name) {
+        Some(value) => value.to_str().unwrap().to_owned(),
+        None => String::new(),
+    };
+    let (kind, disposition) = (header(CONTENT_TYPE), header(CONTENT_DISPOSITION));
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, kind, disposition, body.to_vec())
+}
+
+#[tokio::test]
+async fn a_file_is_kept_for_its_team_and_served_by_a_link_whose_page_names_it() {
+    let (state, mut ada) = project_with_docs().await;
+    std::fs::create_dir_all(&state.files).unwrap();
+    let files = ada.project("/files");
+    let png = b"\x89PNG\r\n\x1a\n and the rest";
+    let svg = b"<svg onload='alert(1)'/>";
+
+    let large = [png.as_slice(), &vec![0; 5_000_000]].concat();
+    assert_eq!(
+        upload(&ada, &files, &large).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        upload(&ada, &files, &vec![0; 20_000_001]).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(upload(&eve, &files, png).await.0, StatusCode::NOT_FOUND);
+
+    let (status, shown) = upload(&ada, &files, png).await;
+    assert_eq!((status, &shown["image"]), (StatusCode::OK, &json!(true)));
+    let shown = shown["id"].as_str().unwrap().to_owned();
+    let (_, unshown) = upload(&ada, &files, png).await;
+    let unshown = unshown["id"].as_str().unwrap();
+    // Anything that isn't an image is kept as an attachment, under a name made plain.
+    let named = format!("{files}?name=a%22b%2Fdrawing.svg");
+    let (_, attached) = upload(&ada, &named, svg).await;
+    assert_eq!(attached["image"], false);
+    let attached = attached["id"].as_str().unwrap();
+    assert_eq!(
+        eve.get(&format!("{files}/{shown}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        fetched(&state, &format!("{files}/{shown}")).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Only what a shared page names can be had through the link.
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let buy = &docs["pages"][1];
+    let page = ada.project(&format!("/docs/pages/{}", buy["id"].as_str().unwrap()));
+    let markdown = format!("![The cart](image:{shown}) and [a drawing](file:{attached})");
+    let edit = json!({"title": "Buy", "markdown": markdown, "version": buy["version"]});
+    ada.put(&page, edit).await;
+    let (_, share) = ada.post(&ada.project("/shares"), Value::Null).await;
+    let public = format!("/api/shares/{}/files", share["token"].as_str().unwrap());
+    let (status, kind, disposition, bytes) = fetched(&state, &format!("{public}/{shown}")).await;
+    assert_eq!((status, kind.as_str()), (StatusCode::OK, "image/png"));
+    assert_eq!(
+        (disposition.as_str(), bytes.as_slice()),
+        ("inline", &png[..])
+    );
+    // An attachment is downloaded and never shown, whatever it holds.
+    let (status, kind, disposition, bytes) = fetched(&state, &format!("{public}/{attached}")).await;
+    assert_eq!(
+        (status, kind.as_str()),
+        (StatusCode::OK, "application/octet-stream")
+    );
+    assert_eq!(disposition, "attachment; filename=\"abdrawing.svg\"");
+    assert_eq!(bytes, svg);
+    assert_eq!(
+        fetched(&state, &format!("{public}/{unshown}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    ada.delete(&ada.project("")).await;
+    assert_eq!(std::fs::read_dir(&state.files).unwrap().count(), 0);
+    std::fs::remove_dir(&state.files).unwrap();
+}
+
+#[tokio::test]
+async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
+    let (state, mut ada, repo) =
+        mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put(&ada.team("/writer"), writer).await;
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["proposals"], json!([]));
+    let buy = &docs["pages"][1];
+    let page = ada.project(&format!("/docs/pages/{}", buy["id"].as_str().unwrap()));
+    let edit = json!({"title": "Buy", "markdown": "By hand.", "version": buy["version"]});
+    ada.put(&page, edit).await;
+    let before = settled_docs(&mut ada).await;
+
+    // The pages stay as they are. The overview would come out the same, so it has no proposal.
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["pages"], before["pages"]);
+    let proposals = docs["proposals"].as_array().unwrap();
+    let titles: Vec<&Value> = proposals
+        .iter()
+        .map(|proposal| &proposal["title"])
+        .collect();
+    assert_eq!(titles, ["Buy", "Prices"]);
+    let bought = &proposals[0];
+    assert_eq!(bought["page"], buy["id"]);
+    assert_eq!(bought["base"], before["pages"][1]["version"]);
+    assert_eq!(
+        bought["markdown"],
+        "A page, written again.\n\nWritten from: src/app.ts"
+    );
+    assert_eq!(bought["reason"], "The code changed.");
+    // Only the page a person edited gets a note on their words.
+    assert_eq!(bought["notes"][0]["quote"], "By hand.");
+    assert_eq!(proposals[1]["notes"], json!([]));
+
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    let proposals_path = ada.project("/docs/proposals");
+    let proposal =
+        |proposal: &Value| format!("{proposals_path}/{}", proposal["id"].as_str().unwrap());
+    let (status, _) = eve.post(&proposal(bought), json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(eve.delete(&proposal(bought)).await, StatusCode::NOT_FOUND);
+
+    // Accepted whole, the text is the writer's; with some changes left out, the person's.
+    let (status, _) = ada.post(&proposal(&proposals[1]), json!({})).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let mixed = json!({"markdown": "By hand, written again."});
+    ada.post(&proposal(bought), mixed).await;
+    let (status, _) = ada.post(&proposal(bought), json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["proposals"], json!([]));
+    assert_eq!(docs["pages"][1]["markdown"], "By hand, written again.");
+    assert_eq!(docs["pages"][2]["markdown"], "A page, written again.");
+    let (_, versions) = ada.get(&format!("{page}/versions")).await;
+    assert_eq!(versions[0]["author"], "Ada");
+    let prices = docs["pages"][2]["id"].as_str().unwrap();
+    let (_, versions) = ada
+        .get(&ada.project(&format!("/docs/pages/{prices}/versions")))
+        .await;
+    assert_eq!(versions[0]["author"], Value::Null);
+
+    // A page whose files left the repository is proposed for removal, and a rejected proposal changes nothing.
+    repo.push("main", "c2", &[("src/app.ts", APP_TS)]);
+    map::round(&state).await;
+    let docs = written_docs(&mut ada).await;
+    let proposals = docs["proposals"].as_array().unwrap();
+    let removal = proposals
+        .iter()
+        .find(|proposal| proposal["title"] == "Prices");
+    let removal = removal.unwrap();
+    assert_eq!(removal["markdown"], Value::Null);
+    let other = proposals.iter().find(|proposal| proposal["title"] == "Buy");
+    assert_eq!(
+        ada.delete(&proposal(other.unwrap())).await,
+        StatusCode::NO_CONTENT
+    );
+    ada.post(&proposal(removal), json!({})).await;
+    let docs = settled_docs(&mut ada).await;
+    let titles: Vec<&Value> = docs["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|page| &page["title"])
+        .collect();
+    assert_eq!(titles, ["Overview", "Buy"]);
+    assert_eq!(docs["pages"][1]["markdown"], "By hand, written again.");
+}
+
+#[tokio::test]
+async fn a_request_is_answered_with_one_proposal() {
+    let (state, mut ada) = project_with_docs().await;
+    let requests = ada.project("/docs/requests");
+    let request = json!({"text": "Add a page on refunds", "branch": "main"});
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(
+        eve.post(&requests, request.clone()).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let empty = json!({"text": " ", "branch": "main"});
+    assert_eq!(
+        ada.post(&requests, empty).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    assert_eq!(ada.post(&requests, request).await.0, StatusCode::ACCEPTED);
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
+    let proposal = &docs["proposals"][0];
+    assert_eq!(proposal["request"], "Add a page on refunds");
+    assert_eq!(
+        (&proposal["page"], &proposal["section"], &proposal["title"]),
+        (&Value::Null, &json!("works"), &json!("Refunds"))
+    );
+
+    let accept = ada.project(&format!(
+        "/docs/proposals/{}",
+        proposal["id"].as_str().unwrap()
+    ));
+    ada.post(&accept, json!({})).await;
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][3]["title"], "Refunds");
+    assert_eq!(
+        docs["pages"][3]["markdown"],
+        "A new page.\n\nWritten from: src/app.ts"
+    );
+}
+
+#[tokio::test]
+async fn a_person_s_edit_is_checked_against_the_code() {
+    let (state, mut ada) = project_with_docs().await;
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][1]["notes"], Value::Null);
+    let buy = &docs["pages"][1];
+    let page = ada.project(&format!("/docs/pages/{}", buy["id"].as_str().unwrap()));
+    let edit = json!({"title": "Buy", "markdown": "By hand.", "version": buy["version"]});
+    ada.put(&page, edit).await;
+    let docs = settled_docs(&mut ada).await;
+    let note = json!({
+        "quote": "By hand.", "says": "It is done by the code.",
+        "place": "src/app.ts:1", "instead": "By the code.",
+    });
+    assert_eq!(docs["pages"][1]["notes"], json!([note]));
+
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(
+        eve.delete(&format!("{page}/notes/0")).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        ada.delete(&format!("{page}/notes/0")).await,
+        StatusCode::NO_CONTENT
+    );
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][1]["notes"], json!([]));
+
+    // A page a person made is checked too, against the files the writer says it is about.
+    let new = json!({"section": "works", "title": "Returns"});
+    let (_, added) = ada.post(&ada.project("/docs/pages"), new).await;
+    let page = ada.project(&format!("/docs/pages/{}", added["id"].as_str().unwrap()));
+    let docs = settled_docs(&mut ada).await;
+    let edit =
+        json!({"title": "Returns", "markdown": "By hand.", "version": docs["pages"][3]["version"]});
+    ada.put(&page, edit).await;
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["pages"][3]["notes"], json!([note]));
 }
 
 #[tokio::test]

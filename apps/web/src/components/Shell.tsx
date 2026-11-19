@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { OverlayHost } from "@ui-sdk/react/overlays"
 import { useState } from "react"
 import { Link, Route, Routes } from "react-router"
 import { api, type Health, type MailConfig, type Project, type Team, type User } from "../api"
@@ -52,6 +53,7 @@ export function Shell({ user }: { user: User }) {
           <Route path="*" element={<p className="flex h-full items-center justify-center text-ink2">No chat open</p>} />
         </Routes>
       </main>
+      <OverlayHost />
     </div>
   )
 }

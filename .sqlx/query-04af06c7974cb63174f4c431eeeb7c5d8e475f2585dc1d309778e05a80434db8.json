@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docs SET notes = json_remove(notes, '$[' || ?1 || ']')\n         WHERE id = ?2 AND project_id = (SELECT id FROM projects WHERE team_id = ?3 AND id = ?4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "04af06c7974cb63174f4c431eeeb7c5d8e475f2585dc1d309778e05a80434db8"
+}

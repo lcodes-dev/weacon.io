@@ -65,3 +65,7 @@
 (extends_clause
   (generic_type
     (type_identifier) @name)) @reference.class
+
+(package_clause name: (package_identifier) @scope)
+; The whole line, since the grammar gives an import's path in pieces.
+(import_declaration) @import.line

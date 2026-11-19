@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO doc_versions (id, doc_id, title, markdown, author, created_at)\n         VALUES (?, ?, ?, ?, ?, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "b695de3fe89d94ff23652a698999733686c77394afd2c7189ef5f59f4ea04919"
+}

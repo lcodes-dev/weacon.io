@@ -5,15 +5,17 @@ mod docs;
 mod github;
 pub mod mail;
 pub mod map;
+mod pages;
 mod projects;
 mod teams;
 mod web;
 mod writer;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -38,6 +40,8 @@ pub struct AppState {
     /// The programs that write docs on the account signed in on this computer.
     pub claude_program: String,
     pub codex_program: String,
+    /// The folder that holds the files uploaded for docs.
+    pub files: PathBuf,
 }
 
 /// Seconds since 1970.
@@ -88,6 +92,40 @@ pub fn router(state: AppState) -> Router {
             "/teams/{id}/projects/{project_id}/docs",
             get(docs::show).post(docs::start),
         )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/pages",
+            post(pages::add).put(pages::order),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/pages/{page_id}",
+            put(pages::save).delete(pages::remove),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/pages/{page_id}/versions",
+            get(pages::versions),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/pages/{page_id}/notes/{index}",
+            delete(pages::dismiss),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/requests",
+            post(docs::ask),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/docs/proposals/{proposal_id}",
+            post(pages::accept).delete(pages::reject),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/files",
+            // A little over the limit, so that a too large file gets our own message.
+            post(pages::upload).layer(DefaultBodyLimit::max(pages::FILE_BYTES + 1024)),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/files/{file_id}",
+            get(pages::file),
+        )
+        .route("/shares/{token}/files/{file_id}", get(pages::shared_file))
         .route(
             "/teams/{id}/projects/{project_id}/shares",
             get(docs::shares).post(docs::share),

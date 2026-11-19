@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.id FROM files f JOIN projects p ON p.id = f.project_id\n         WHERE p.id = ? AND p.team_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0b9635624b871a0181e688787c3f57843e9891c50d7bcab4ea10d1ab139859db"
+}

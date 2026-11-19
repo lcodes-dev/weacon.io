@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE projects SET docs_state = 'idle', docs_message = NULL,\n                docs_branch = COALESCE(?, docs_branch), docs_commit = COALESCE(?, docs_commit),\n                docs_left_out = COALESCE(?, docs_left_out)\n         WHERE id = ? AND docs_run = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "e40b78dd1421e27c8df6f5f120d9f9c88ec82b14ee9f3525c65b43cc35e5bd9e"
+}

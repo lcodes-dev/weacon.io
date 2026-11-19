@@ -1,0 +1,117 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.id, d.section, d.title, d.markdown, d.files, d.notes,\n                  d.checking AS \"checking: bool\",\n                  (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = d.id) AS \"version!\",\n                  (SELECT v.markdown FROM doc_versions v\n                   WHERE v.doc_id = d.id AND v.author IS NULL\n                   ORDER BY v.id DESC LIMIT 1) AS written\n           FROM docs d WHERE d.project_id = ? ORDER BY d.position",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "section",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "section"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "markdown",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "markdown"
+          }
+        }
+      },
+      {
+        "name": "files",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "files"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "checking: bool",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "checking"
+          }
+        }
+      },
+      {
+        "name": "version!",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "written",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "doc_versions",
+            "name": "markdown"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "243375946183430f53705fc5892114dfe678bb5c5eacb9624956206e707713ed"
+}

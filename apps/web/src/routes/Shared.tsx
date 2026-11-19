@@ -25,7 +25,7 @@ export function Shared() {
         <span className="text-ink2">Shared on {new Date(created_at * 1000).toLocaleDateString()}</span>
       </div>
       {/* A copy's pages never change, so a page's place names it. */}
-      <DocPages pages={pages.map((page, place) => ({ ...page, id: String(place) }))} open={open} onOpen={setOpen} />
+      <DocPages pages={pages.map((page, place) => ({ ...page, id: String(place) }))} open={open} onOpen={setOpen} file={(file) => `/api/shares/${token}/files/${file}`} />
     </div>
   )
 }

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.kind, f.name FROM files f JOIN shares s ON s.project_id = f.project_id\n         WHERE s.token = ?1 AND f.id = ?2 AND EXISTS (\n             SELECT 1 FROM share_pages sp\n             WHERE sp.token = s.token AND (instr(sp.markdown, 'image:' || f.id) > 0\n                 OR instr(sp.markdown, 'file:' || f.id) > 0))",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "files",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "096e52310a8a2c5bcc51927fc5da03f3db729a233360710bebf5165ce7f05ad4"
+}

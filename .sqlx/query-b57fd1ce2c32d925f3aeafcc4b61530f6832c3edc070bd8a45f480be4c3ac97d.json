@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO files (id, project_id, kind, name, created_by, created_at)\n         SELECT ?, id, ?, ?, ?, unixepoch() FROM projects WHERE team_id = ? AND id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b57fd1ce2c32d925f3aeafcc4b61530f6832c3edc070bd8a45f480be4c3ac97d"
+}

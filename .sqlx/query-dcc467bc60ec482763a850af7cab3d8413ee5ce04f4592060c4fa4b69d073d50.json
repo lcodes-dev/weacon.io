@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO proposals (id, project_id, doc_id, base, section, title, markdown,\n                                    files, notes, reason, request, created_at)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 11
+    },
+    "nullable": []
+  },
+  "hash": "dcc467bc60ec482763a850af7cab3d8413ee5ce04f4592060c4fa4b69d073d50"
+}

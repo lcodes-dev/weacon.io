@@ -10,7 +10,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = env_or("WEACON_ADDR", "127.0.0.1:8080");
     let url = env_or("WEACON_URL", "http://localhost:8080");
     let url = url.trim_end_matches('/').to_owned();
-    let pool = db::open(&env_or("WEACON_DB", "weacon.db")).await?;
+    let database = env_or("WEACON_DB", "weacon.db");
+    let pool = db::open(&database).await?;
+    let files = std::path::Path::new(&database).with_extension("files");
+    std::fs::create_dir_all(&files)?;
+    // Like the database, the files are for the server's account only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&files, std::fs::Permissions::from_mode(0o700))?;
+    }
     match db::smtp(&pool).await? {
         Some(smtp) => info!("mail goes through {}", smtp.host),
         None => info!("mail is printed to this log until the owner saves SMTP settings"),
@@ -25,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         anthropic_api: "https://api.anthropic.com".into(),
         claude_program: "claude".into(),
         codex_program: "codex".into(),
+        files,
     };
     db::fail_interrupted_docs(&state.pool).await?;
     tokio::spawn(map::worker(state.clone()));

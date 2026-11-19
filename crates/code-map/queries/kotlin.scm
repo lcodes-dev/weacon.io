@@ -11,3 +11,6 @@
 (call_expression . (navigation_expression (identifier) @name .)) @reference.call
 
 (user_type (identifier) @name) @reference.class
+
+(package_header (qualified_identifier) @scope)
+(import (qualified_identifier) @import)

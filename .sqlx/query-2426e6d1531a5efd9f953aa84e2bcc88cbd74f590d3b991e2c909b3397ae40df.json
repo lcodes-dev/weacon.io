@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (\n                   SELECT 1 FROM docs d JOIN projects p ON p.id = d.project_id\n                   WHERE d.id = ? AND p.id = ? AND p.team_id = ?) AS \"found: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "found: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2426e6d1531a5efd9f953aa84e2bcc88cbd74f590d3b991e2c909b3397ae40df"
+}

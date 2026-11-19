@@ -8,3 +8,6 @@
 (call_expression function: (identifier) @name) @reference.call
 
 (call_expression function: (field_expression member: (identifier) @name)) @reference.call
+
+((builtin_function (builtin_identifier) @_builtin (arguments (string (string_content) @import)))
+  (#eq? @_builtin "@import"))

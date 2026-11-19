@@ -7,10 +7,13 @@
     "build": "tsc && vite build"
   },
   "dependencies": {
+    "@milkdown/kit": "7.23.0",
     "@tanstack/react-query": "5.107.1",
     "@ui-sdk/core": "0.1.0-beta.6",
     "@ui-sdk/react": "0.1.0-beta.6",
     "d3-hierarchy": "3.1.3",
+    "diff": "9.0.0",
+    "lucide-react": "1.76.0",
     "markdown-to-jsx": "9.10.6",
     "react": "19.3.1",
     "react-dom": "19.3.1",

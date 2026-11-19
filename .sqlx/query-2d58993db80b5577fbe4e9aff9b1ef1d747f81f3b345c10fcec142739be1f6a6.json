@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM proposals\n         WHERE id = ? AND project_id = (SELECT id FROM projects WHERE team_id = ? AND id = ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2d58993db80b5577fbe4e9aff9b1ef1d747f81f3b345c10fcec142739be1f6a6"
+}

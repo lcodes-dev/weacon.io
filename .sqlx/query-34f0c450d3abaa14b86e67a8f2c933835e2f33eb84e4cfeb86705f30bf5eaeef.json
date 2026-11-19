@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docs SET checking = 0, files = COALESCE(?, files), notes = ?\n         WHERE id = ? AND (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = docs.id) = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "34f0c450d3abaa14b86e67a8f2c933835e2f33eb84e4cfeb86705f30bf5eaeef"
+}

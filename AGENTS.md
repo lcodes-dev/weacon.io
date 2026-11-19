@@ -9,7 +9,8 @@ Weacon is a web harness for coding agents with tasks, docs and team chats built 
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
 - **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md`, and are deleted from it once answered. Improvements nobody asked for go in `.planning/improvements.md`. Neither goes in a plan.
 - **Queries are checked at build time.** Write each one with sqlx's `query!`, `query_as!` or `query_scalar!`, in `apps/server/src/db.rs`, never as a string built at run time. After changing a query or a migration, run `scripts/prepare-queries.sh` and commit `.sqlx/` with the change.
-- **Tests are integration tests.** The server's tests live in `apps/server/tests/` and drive the API over HTTP, as a browser would. Write a unit test inside `src/` only for something no request can reach.
+- **Tests are integration tests.** The server's tests live in `apps/server/tests/` and drive the API over HTTP, as a browser would. Write a unit test inside `src/` only for something no request can reach. A crate's tests live in its own `tests/` and call it as the server does.
+- **A crate for what is complex.** A piece of work with its own rules goes in `crates/`, behind a few functions, so that the app calling it stays simple. Whether a second app needs it doesn't matter.
 - **Docs** live in `docs/` as Markdown and are updated in the same change as the code they describe.
 
 ## Commands
@@ -22,6 +23,8 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | `scripts/prepare-queries.sh` | Writes `.sqlx/`, which the build checks every query against; run it after changing a query or a migration |
 | `npm --prefix apps/web run build` | Type-checks and builds the web app into `apps/web/dist/` |
 | `cargo test -p weacon-server` | Runs the server's tests in `apps/server/tests/`; build the web app first |
+| `cargo test -p code-map` | Runs the code map's tests: a small made-up repository per language |
+| `cargo run -p code-map --example map -- <folder>` | Prints which file uses which in a folder on this computer; `--example tree -- <file>` prints how a file is parsed and read |
 
 ## UI SDK
 

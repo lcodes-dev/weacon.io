@@ -40,8 +40,47 @@ export type Docs = {
   branch: string | null
   commit: string | null
   left_out: string[]
-  pages: { id: string; section: "overview" | "works" | "built"; title: string; markdown: string }[]
+  pages: DocsPage[]
+  proposals: Proposal[]
 }
+
+type Section = "overview" | "works" | "built"
+
+/** Where the docs writer finds a person's sentence at odds with the code. `instead` is the sentence corrected, when it offers one. */
+export type Note = { quote: string; says: string; place: string; instead: string | null }
+
+export type DocsPage = {
+  id: string
+  section: Section
+  title: string
+  markdown: string
+  /** The id of the page's newest version, which an edit names as what it started from. */
+  version: string
+  /** The writer's notes on the page as it is, or null when it hasn't checked it. */
+  notes: Note[] | null
+  /** Whether the writer is checking the page after an edit. */
+  checking: boolean
+}
+
+/** A change the docs writer suggests, which changes nothing until it is accepted. */
+export type Proposal = {
+  id: string
+  /** The page to change or remove, or null for a new page. */
+  page: string | null
+  /** The page's version it was written against. */
+  base: string | null
+  section: Section
+  title: string
+  /** Null to remove the page. */
+  markdown: string | null
+  notes: Note[]
+  reason: string
+  /** What a person asked for, when the proposal answers a request. */
+  request: string | null
+}
+
+/** One of the texts a page has had. `author` is null for the docs writer. */
+export type DocVersion = { id: string; title: string; markdown: string; author: string | null; created_at: number }
 
 /** A public link to a copy of a project's user docs. */
 export type Share = { token: string; created_by: string; created_at: number }
@@ -72,14 +111,16 @@ export type Smtp = {
 
 export type MailConfig = { smtp: Smtp | null }
 
-/** A failure throws an `Error` with the server's message. */
+/** A failure throws an `Error` with the server's message. A `Blob` is sent as it is, anything else as JSON. */
 export async function api<T = void>(method: string, path: string, body?: unknown): Promise<T> {
+  const file = body instanceof Blob
   const response = await fetch(`/api${path}`, {
     method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined || file ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined || file ? body : JSON.stringify(body),
   })
-  if (response.status === 204) return undefined as T
+  // 202 says that work has started, and like 204 comes with nothing to read.
+  if (response.status === 202 || response.status === 204) return undefined as T
   // An error from something in front of the server, such as a proxy, may not be JSON.
   const data = await response.json().catch(() => null)
   if (!response.ok || data === null) throw new Error(data?.error ?? `The server answered ${response.status}`)

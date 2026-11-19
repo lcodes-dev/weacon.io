@@ -81,3 +81,4 @@ Built as planned, with these differences:
 - **The copy is made by the server from the pages it read,** not by one statement in the database, for that reason.
 - **40 tests pass,** two of them new: one for sharing, reading without a session, a stranger's refusals and ending a link, and one for a deleted project.
 - **Checked by hand** on the dev server, with four sample pages put into its database by hand, since no writer is set up there: both tabs, a page opened from its address, "Share", and the public page, which was also fetched without a session. "Copy link" and "Stop sharing" were not clicked; the test covers ending a link.
+- **Any member may share the user docs and end a link,** as the owner confirmed on 19 November.

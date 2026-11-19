@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT f.path, b.lines\n         FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob\n         WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
+  "query": "SELECT f.path, b.lines, b.scope\n         FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob\n         WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,17 @@
             "name": "lines"
           }
         }
+      },
+      {
+        "name": "scope",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "scope"
+          }
+        }
       }
     ],
     "parameters": {
@@ -31,8 +42,9 @@
     },
     "nullable": [
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "abbcc2aa9023cc2b6e9902bccba728d49daa94e2e484577ded082d330afb2139"
+  "hash": "88f9dc0dabb661c907c42b1161ca32f7ad7982486a344a731cc5c18693c0e6c9"
 }

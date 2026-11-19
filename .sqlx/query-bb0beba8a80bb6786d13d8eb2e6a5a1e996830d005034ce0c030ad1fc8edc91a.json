@@ -1,16 +1,16 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, section, title, markdown FROM docs WHERE project_id = ? ORDER BY position",
+  "query": "DELETE FROM proposals\n         WHERE id = ? AND project_id = (SELECT id FROM projects WHERE team_id = ? AND id = ?)\n         RETURNING doc_id, section, title, markdown, files",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "doc_id",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "docs",
-            "name": "id"
+            "table": "proposals",
+            "name": "doc_id"
           }
         }
       },
@@ -20,7 +20,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "docs",
+            "table": "proposals",
             "name": "section"
           }
         }
@@ -31,7 +31,7 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "docs",
+            "table": "proposals",
             "name": "title"
           }
         }
@@ -42,21 +42,33 @@
         "type_info": "Text",
         "origin": {
           "Table": {
-            "table": "docs",
+            "table": "proposals",
             "name": "markdown"
+          }
+        }
+      },
+      {
+        "name": "files",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "files"
           }
         }
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 3
     },
     "nullable": [
+      true,
       false,
       false,
-      false,
+      true,
       false
     ]
   },
-  "hash": "87e39c6c4ee688d427976f7826c0f8194520f18099693cfefbc069ddab45b4f1"
+  "hash": "bb0beba8a80bb6786d13d8eb2e6a5a1e996830d005034ce0c030ad1fc8edc91a"
 }

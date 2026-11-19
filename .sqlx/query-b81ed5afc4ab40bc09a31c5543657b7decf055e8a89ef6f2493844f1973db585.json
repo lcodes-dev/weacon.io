@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, doc_id AS page, base, section, title, markdown, notes AS \"notes?\",\n                  reason, request\n           FROM proposals WHERE project_id = ? ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "page",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "doc_id"
+          }
+        }
+      },
+      {
+        "name": "base",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "base"
+          }
+        }
+      },
+      {
+        "name": "section",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "section"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "markdown",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "markdown"
+          }
+        }
+      },
+      {
+        "name": "notes?",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "notes"
+          }
+        }
+      },
+      {
+        "name": "reason",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "name": "request",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "request"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "b81ed5afc4ab40bc09a31c5543657b7decf055e8a89ef6f2493844f1973db585"
+}

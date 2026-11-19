@@ -86,7 +86,25 @@ body {
 /* UI SDK's parts are unstyled; these style each by its data-slot. */
 @layer components {
   .btn {
-    @apply rounded-md border border-fld px-3 py-1.5 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50;
+    @apply inline-flex h-[30px] shrink-0 items-center rounded-lg border border-fld px-3 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50;
+  }
+
+  .btn-sm {
+    @apply h-6 rounded-md px-2 text-[12px];
+  }
+
+  /* A button that is only an icon. */
+  .icb {
+    @apply flex size-7 shrink-0 items-center justify-center rounded-md text-ink2 hover:bg-hov hover:text-ink;
+  }
+
+  .icb svg {
+    @apply size-4;
+  }
+
+  /* A small label in capitals. */
+  .lbl {
+    @apply font-mono text-[10px] tracking-wider text-ink3 uppercase;
   }
 
   .page {
@@ -142,6 +160,10 @@ body {
     @apply underline;
   }
 
+  .prose img {
+    @apply max-w-full rounded-md;
+  }
+
   .btn-primary {
     @apply border-pri bg-pri text-pri-text hover:border-pri-hover hover:bg-pri-hover;
   }
@@ -159,8 +181,105 @@ body {
     @apply rounded-md border border-fld bg-bg px-2.5 py-1.5 outline-none focus:border-ink2;
   }
 
+  .prose table {
+    @apply border-collapse;
+  }
+
+  .prose :is(td, th) {
+    @apply border border-line px-2 py-1 text-left;
+  }
+
+  .prose blockquote {
+    @apply border-l-2 border-fld pl-3 text-ink2;
+  }
+
+  /* The docs editor lays its blocks out as a page does. */
+  .editor .ProseMirror {
+    @apply flex min-h-[320px] flex-col gap-3 outline-none;
+  }
+
+  [data-slot="toolbar"] {
+    @apply flex flex-wrap items-center gap-0.5;
+  }
+
+  [data-slot="toolbar-button"] {
+    @apply flex size-7 items-center justify-center rounded-md text-ink2 outline-none hover:bg-hov hover:text-ink focus-visible:bg-hov focus-visible:text-ink;
+  }
+
+  [data-slot="toolbar-button"] svg {
+    @apply size-4;
+  }
+
+  [data-slot="toolbar-separator"] {
+    @apply mx-1 h-4 w-px bg-fld;
+  }
+
+  [data-slot="trigger-menu-content"] {
+    @apply z-10 flex w-56 flex-col gap-px rounded-[10px] border border-fld bg-sur p-1 shadow-lg;
+  }
+
+  [data-slot="trigger-menu-item"] {
+    @apply flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 data-highlighted:bg-hov;
+  }
+
+  [data-slot="trigger-menu-item"] svg {
+    @apply size-4 text-ink2;
+  }
+
+  [data-slot="trigger-menu-empty"] {
+    @apply px-2 py-1.5 text-ink2;
+  }
+
   [data-slot="tabs-list"] {
-    @apply flex gap-1 border-b border-line;
+    @apply flex gap-1;
+  }
+
+  [data-slot="menu-content"] {
+    @apply z-10 flex min-w-36 flex-col gap-px rounded-[10px] border border-fld bg-sur p-1 shadow-lg outline-none;
+  }
+
+  [data-slot="menu-item"] {
+    @apply cursor-pointer rounded-md px-2 py-1.5 outline-none data-highlighted:bg-hov;
+  }
+
+  [data-slot="popover-content"] {
+    @apply z-10 flex w-[360px] flex-col gap-3 rounded-[10px] border border-fld bg-sur p-4 shadow-lg outline-none;
+  }
+
+  [data-slot="popover-title"],
+  [data-slot="alert-dialog-title"] {
+    @apply font-semibold;
+  }
+
+  [data-slot="popover-description"],
+  [data-slot="alert-dialog-description"] {
+    @apply text-ink2;
+  }
+
+  [data-slot="alert-dialog-content"] {
+    @apply fixed top-1/2 left-1/2 z-20 flex w-[400px] max-w-[calc(100vw-2rem)] -translate-1/2 flex-col gap-2 rounded-xl border border-fld bg-sur p-5 shadow-xl outline-none backdrop:bg-black/40;
+  }
+
+  /* The row of answers that `confirm()` draws. */
+  [data-slot="alert-dialog-content"] > div {
+    @apply flex justify-end gap-2 pt-3;
+  }
+
+  [data-slot="alert-dialog-close"] {
+    @apply inline-flex h-[30px] items-center rounded-lg border border-fld px-3 font-medium hover:bg-hov;
+  }
+
+  [data-slot="alert-dialog-close"]:last-child {
+    @apply border-pri bg-pri text-pri-text hover:border-pri-hover hover:bg-pri-hover;
+  }
+
+  [data-slot="sortable-item"][data-grabbed] {
+    @apply relative z-10 rounded-md bg-hov;
+    transform: translate(var(--drag-x, 0), var(--drag-y, 0));
+  }
+
+  [data-slot="sortable-handle"] {
+    touch-action: none;
   }
 
   [data-slot="tabs-tab"] {

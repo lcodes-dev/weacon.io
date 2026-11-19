@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, i.import\n         FROM branch_files f JOIN blob_imports i ON i.project_id = f.project_id AND i.blob = f.blob\n         WHERE f.project_id = ? AND f.branch = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "import",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blob_imports",
+            "name": "import"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4cea92bf666f40957da84fb7d4fddc440515baef7636886c057d26c661a68553"
+}
