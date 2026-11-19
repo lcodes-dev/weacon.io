@@ -43,6 +43,12 @@ export type Docs = {
   pages: { id: string; section: "overview" | "works" | "built"; title: string; markdown: string }[]
 }
 
+/** A public link to a copy of a project's user docs. */
+export type Share = { token: string; created_by: string; created_at: number }
+
+/** What a public link shows. */
+export type Shared = { title: string; created_at: number; pages: { title: string; markdown: string }[] }
+
 export type TeamDetails = {
   name: string
   writer: Writer | null

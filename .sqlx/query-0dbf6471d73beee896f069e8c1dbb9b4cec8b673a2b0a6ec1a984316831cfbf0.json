@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.token, u.name AS created_by, s.created_at\n         FROM shares s JOIN projects p ON p.id = s.project_id JOIN users u ON u.id = s.created_by\n         WHERE p.team_id = ? AND s.project_id = ?\n         ORDER BY s.created_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "token",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "token"
+          }
+        }
+      },
+      {
+        "name": "created_by",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "shares",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0dbf6471d73beee896f069e8c1dbb9b4cec8b673a2b0a6ec1a984316831cfbf0"
+}

@@ -152,7 +152,9 @@ A project's docs are written by an AI model from the code map: an overview, "How
 - **The run.** `POST .../docs` claims the project, spawns a task and answers at once; the project's `docs_state` and `docs_message` say where the run is. Pages are saved together at the end, so earlier docs stay until a run succeeds. Each run has a number kept in `docs_run`, and its progress, failure and pages are saved only while the project still holds it, so a run can't write into a project that was deleted or given another repository meanwhile. Such a run stops at its next progress update, before it asks the writer for anything more. A run reads the map and the files' text in one transaction, so both are of the same commit. Changing a project's repository deletes its docs. A run that crashes is marked `failed`, and so is every project still marked `running` at startup, since a run can't outlive the server.
 - **Text.** The map keeps each text file's content beside its symbols (`blobs.text`), so a run downloads nothing and matches the map's commit.
 - **Citations.** The web app turns a `path:line` or `path:line-line` in backticks into a link to GitHub at the docs' commit, but only when the map has that file and it is that long.
-- The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text, restricts link URLs to relative addresses and the allowed protocols in `ProjectDocs.tsx`, and shows an image as a link, so that opening a page fetches nothing from another host.
+- **Two tabs.** The docs page shows the "How it works" pages as "User docs" and the overview with the "How it's built" pages as "Technical docs". The open tab and page are in the address, as `?tab=technical&page={id}`.
+- **Public links.** "Share" on the user docs copies those pages into `shares` and `share_pages`, behind a random token, and `/shared/{token}` shows the copy to anyone, without an account. A link shows the project's name, the day it was shared and the pages; the lines a run adds about a page's files are cut from the copy, so it names nothing of the repository. Writing the docs again or changing the project's repository leaves a copy as it was; "Stop sharing" or deleting the project ends the link. The page asks search engines not to list it.
+- The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text, restricts link URLs to relative addresses and the allowed protocols in `DocPages.tsx`, which the docs page and the public page share, and shows an image as a link, so that opening a page fetches nothing from another host.
 - The Anthropic API's address and the two programs' names are part of the router's state, so the tests use a fake API and a script standing in for the programs.
 
 ## Mail
@@ -193,6 +195,9 @@ Errors are `{"error": "..."}` with a status code.
 | `DELETE /api/teams/{id}/projects/{project_id}` | the team's owner | Deletes the project |
 | `GET /api/teams/{id}/projects/{project_id}/map?branch=` | a member | A branch's map: its commit, every file with its symbols, and which file uses which |
 | `GET`, `POST /api/teams/{id}/projects/{project_id}/docs` | a member | The project's docs and where a run stands, or starts writing them from the `branch` given |
+| `GET`, `POST /api/teams/{id}/projects/{project_id}/shares` | a member | The project's public links, or makes one from its user docs as they are now |
+| `DELETE /api/teams/{id}/projects/{project_id}/shares/{token}` | a member | Ends a public link |
+| `GET /api/shares/{token}` | anyone | What a public link shows: `{"title", "created_at", "pages"}` |
 | `PUT`, `DELETE /api/teams/{id}/writer` | the team's owner | Saves or forgets who writes the team's docs; a key is never read back, and only the server's owner can pick a program |
 | `GET /api/teams/{id}/github/branches?repo=` | a member | A repository's branches and which is the default |
 | `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |

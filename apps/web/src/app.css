@@ -159,6 +159,14 @@ body {
     @apply rounded-md border border-fld bg-bg px-2.5 py-1.5 outline-none focus:border-ink2;
   }
 
+  [data-slot="tabs-list"] {
+    @apply flex gap-1 border-b border-line;
+  }
+
+  [data-slot="tabs-tab"] {
+    @apply -mb-px border-b-2 border-transparent px-3 py-1.5 text-ink2 hover:text-ink data-selected:border-ink data-selected:font-medium data-selected:text-ink;
+  }
+
   [data-slot="otp-input-group"] {
     @apply flex gap-2;
   }

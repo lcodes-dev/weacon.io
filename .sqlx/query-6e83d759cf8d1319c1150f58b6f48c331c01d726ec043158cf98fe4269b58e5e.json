@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO shares (token, project_id, title, created_by, created_at)\n         SELECT ?, id, name, ?, ? FROM projects WHERE team_id = ? AND id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "6e83d759cf8d1319c1150f58b6f48c331c01d726ec043158cf98fe4269b58e5e"
+}

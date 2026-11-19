@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::db::{self, MapFile, User};
 use crate::teams::{membership, refused};
 use crate::writer::Writer;
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, now};
 
 /// At most this many pages in each of "How it works" and "How it's built".
 const PAGES: usize = 8;
@@ -20,6 +20,10 @@ const PAGE_CHARS: usize = 150_000;
 const OUTLINE_CHARS: usize = 400_000;
 /// More symbols than this in one file say little, as in a minified bundle.
 const SYMBOLS_PER_FILE: usize = 40;
+
+/// What a run adds under a page about its files.
+const WRITTEN_FROM: &str = "\n\nWritten from: ";
+const NOT_READ: &str = "\n\nNot read, for lack of room: ";
 
 const WRITING: &str = "\
 Write for a person. Use plain sentences and short paragraphs, explain a term the first time you \
@@ -251,15 +255,10 @@ async fn generate(
         let mut markdown = writer.ask(state, &system, &prompt).await?;
         files.retain(|path| !unread.contains(path));
         if *section == "works" && !files.is_empty() {
-            write!(markdown, "\n\nWritten from: {}", files.join(", ")).ok();
+            write!(markdown, "{WRITTEN_FROM}{}", files.join(", ")).ok();
         }
         if !unread.is_empty() {
-            write!(
-                markdown,
-                "\n\nNot read, for lack of room: {}",
-                unread.join(", ")
-            )
-            .ok();
+            write!(markdown, "{NOT_READ}{}", unread.join(", ")).ok();
         }
         pages.push((*section, page.title.clone(), markdown));
     }
@@ -344,4 +343,73 @@ pub async fn show(
         "branch": status.branch, "commit": status.commit,
         "left_out": left_out, "pages": pages,
     })))
+}
+
+/// A page without the lines a run added about its files, which a public link must not show.
+fn without_files(markdown: &str) -> &str {
+    let added = [WRITTEN_FROM, NOT_READ];
+    let ends = added.iter().filter_map(|line| markdown.rfind(line));
+    &markdown[..ends.min().unwrap_or(markdown.len())]
+}
+
+/// Makes a public link to a copy of the project's user docs.
+pub async fn share(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    membership(&user, &team_id)?;
+    let pages = db::docs(&state.pool, &project_id).await?;
+    let pages: Vec<(&str, &str)> = pages
+        .iter()
+        .filter(|page| page.section == "works")
+        .map(|page| (page.title.as_str(), without_files(&page.markdown)))
+        .collect();
+    if pages.is_empty() {
+        return Err(refused("This project has no user docs to share"));
+    }
+    let token = format!("{:032x}", rand::random::<u128>());
+    let shared = db::share_docs(
+        &state.pool,
+        &team_id,
+        &project_id,
+        &token,
+        &user.id,
+        now(),
+        &pages,
+    );
+    if !shared.await? {
+        return Err(crate::not_found());
+    }
+    Ok(Json(json!({"token": token})))
+}
+
+pub async fn shares(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id)): Path<(String, String)>,
+) -> Result<Json<Vec<db::Share>>, ApiError> {
+    membership(&user, &team_id)?;
+    Ok(Json(db::shares(&state.pool, &team_id, &project_id).await?))
+}
+
+pub async fn end_share(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id, token)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    membership(&user, &team_id)?;
+    if !db::end_share(&state.pool, &team_id, &project_id, &token).await? {
+        return Err(crate::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// What a public link shows, to anyone who has it.
+pub async fn shared(
+    State(state): State<AppState>,
+    Path(token): Path<String>,
+) -> Result<Json<db::Shared>, ApiError> {
+    let shared = db::shared(&state.pool, &token).await?;
+    Ok(Json(shared.ok_or_else(crate::not_found)?))
 }

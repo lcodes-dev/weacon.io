@@ -6,6 +6,7 @@ import { api, type Session } from "./api"
 import "./app.css"
 import { Shell } from "./components/Shell"
 import { Invite } from "./routes/Invite"
+import { Shared } from "./routes/Shared"
 import { SignIn } from "./routes/SignIn"
 
 function App() {
@@ -24,6 +25,7 @@ function App() {
   return (
     <Routes>
       <Route path="/invite/:token" element={<Invite user={user} />} />
+      <Route path="/shared/:token" element={<Shared />} />
       <Route path="*" element={user ? <Shell user={user} /> : <SignIn setup={setup_needed} />} />
     </Routes>
   )

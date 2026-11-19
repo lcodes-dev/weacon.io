@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT title, markdown FROM share_pages WHERE token = ? ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "title",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_pages",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "markdown",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_pages",
+            "name": "markdown"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "739385614889adaa9484e4bcba068a0ae528989ef74de0e01f62a34aba2a7006"
+}

@@ -1439,6 +1439,73 @@ async fn deleting_a_project_stops_its_run() {
 }
 
 #[tokio::test]
+async fn a_shared_link_shows_a_copy_of_the_user_docs_to_anyone() {
+    let (state, mut ada, _) =
+        mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
+    let shares = ada.project("/shares");
+    let (status, _) = ada.post(&shares, Value::Null).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put(&ada.team("/writer"), writer).await;
+    written_docs(&mut ada).await;
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    for (status, _) in [
+        eve.get(&shares).await,
+        eve.post(&shares, Value::Null).await,
+        eve.post(
+            &eve.team(&format!("/projects/{}/shares", ada.project_id)),
+            Value::Null,
+        )
+        .await,
+    ] {
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    let (status, share) = ada.post(&shares, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let token = share["token"].as_str().unwrap();
+    let (_, listed) = ada.get(&shares).await;
+    assert_eq!(listed[0]["token"], token);
+    assert_eq!(listed[0]["created_by"], "Ada");
+
+    // Without a session, and still the same after the docs are deleted with the repository.
+    let public = format!("/api/shares/{token}");
+    let mut anyone = Client::new(&state);
+    let (status, shared) = anyone.get(&public).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(shared["title"], "Storefront");
+    let page = json!([{"title": "Buy", "markdown": "A page, citing `src/price.ts:1`."}]);
+    assert_eq!(shared["pages"], page);
+    ada.put(&ada.project(""), json!({"name": "Shop", "branches": []}))
+        .await;
+    assert_eq!(anyone.get(&public).await.1, shared);
+
+    let link = format!("{shares}/{token}");
+    assert_eq!(eve.delete(&link).await, StatusCode::NOT_FOUND);
+    assert_eq!(ada.delete(&link).await, StatusCode::NO_CONTENT);
+    assert_eq!(anyone.get(&public).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn deleting_a_project_ends_its_shared_links() {
+    let (state, mut ada, _) = mapped_project(&[("src/app.ts", APP_TS)]).await;
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put(&ada.team("/writer"), writer).await;
+    written_docs(&mut ada).await;
+    let (_, share) = ada.post(&ada.project("/shares"), Value::Null).await;
+    let public = format!("/api/shares/{}", share["token"].as_str().unwrap());
+    ada.delete(&ada.project("")).await;
+    assert_eq!(
+        Client::new(&state).get(&public).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
 async fn a_plan_that_can_t_be_read_fails_the_run() {
     let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;

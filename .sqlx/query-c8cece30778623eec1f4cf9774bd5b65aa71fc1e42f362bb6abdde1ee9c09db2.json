@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM shares WHERE token = ? AND project_id =\n             (SELECT id FROM projects WHERE team_id = ? AND id = ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c8cece30778623eec1f4cf9774bd5b65aa71fc1e42f362bb6abdde1ee9c09db2"
+}

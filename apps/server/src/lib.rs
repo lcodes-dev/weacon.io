@@ -89,6 +89,15 @@ pub fn router(state: AppState) -> Router {
             get(docs::show).post(docs::start),
         )
         .route(
+            "/teams/{id}/projects/{project_id}/shares",
+            get(docs::shares).post(docs::share),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/shares/{token}",
+            delete(docs::end_share),
+        )
+        .route("/shares/{token}", get(docs::shared))
+        .route(
             "/teams/{id}/writer",
             put(writer::save).delete(writer::forget),
         )

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO share_pages (token, position, title, markdown) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "47290388d9dc13263663ce10f182c79fca19e6951fae3d09ef1394dfdfebe787"
+}
