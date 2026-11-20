@@ -22,7 +22,7 @@ export function Invite({ user }: { user: User | null }) {
       navigate("/")
     },
   })
-  const signOut = useMutation({ mutationFn: () => api("POST", "/sign-out"), onSuccess: refresh })
+  const signOut = useMutation({ mutationFn: () => api("POST", "/sign-out"), onSuccess: () => queryClient.resetQueries() })
 
   if (invited.isPending) return null
   const invitation = invited.data

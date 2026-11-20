@@ -2024,11 +2024,19 @@ pub async fn machine_by_token(pool: &SqlitePool, token: &str) -> sqlx::Result<Op
     .await
 }
 
-pub async fn add_machine_code(pool: &SqlitePool, code: &str, user_id: &str) -> sqlx::Result<()> {
+/// `machine_id` is the machine whose core asked for the code, when one did.
+pub async fn add_machine_code(
+    pool: &SqlitePool,
+    code: &str,
+    user_id: &str,
+    machine_id: Option<&str>,
+) -> sqlx::Result<()> {
     sqlx::query!(
-        "INSERT INTO machine_codes (code, user_id, created_at) VALUES (?, ?, unixepoch())",
+        "INSERT INTO machine_codes (code, user_id, machine_id, created_at)
+         VALUES (?, ?, ?, unixepoch())",
         code,
-        user_id
+        user_id,
+        machine_id
     )
     .execute(pool)
     .await?;
@@ -2052,24 +2060,24 @@ pub async fn pair_machine(
     )
     .fetch_optional(&mut *tx)
     .await?;
-    // An old code is used up all the same.
+    let asked = asked.filter(|asked| asked.created_at > since);
+    if let Some(asked) = &asked {
+        let id = new_id();
+        sqlx::query!(
+            "INSERT INTO machines (id, user_id, name, os, token, created_at)
+             VALUES (?, ?, ?, ?, ?, unixepoch())",
+            id,
+            asked.user_id,
+            name,
+            os,
+            token
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    // An old code is used up all the same; a machine that couldn't be saved leaves its code.
     tx.commit().await?;
-    let Some(asked) = asked.filter(|asked| asked.created_at > since) else {
-        return Ok(false);
-    };
-    let id = new_id();
-    sqlx::query!(
-        "INSERT INTO machines (id, user_id, name, os, token, created_at)
-         VALUES (?, ?, ?, ?, ?, unixepoch())",
-        id,
-        asked.user_id,
-        name,
-        os,
-        token
-    )
-    .execute(pool)
-    .await?;
-    Ok(true)
+    Ok(asked.is_some())
 }
 
 pub async fn delete_machine(pool: &SqlitePool, user_id: &str, id: &str) -> sqlx::Result<bool> {

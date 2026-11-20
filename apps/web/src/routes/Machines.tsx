@@ -104,6 +104,9 @@ export function Machines() {
           <button className="btn" onClick={() => navigator.clipboard.writeText(command)}>
             Copy
           </button>
+          <button className="btn" disabled={code.isPending} onClick={() => code.mutate()}>
+            New code
+          </button>
         </div>
       ) : (
         <button className="btn btn-primary self-start" disabled={code.isPending} onClick={() => code.mutate()}>

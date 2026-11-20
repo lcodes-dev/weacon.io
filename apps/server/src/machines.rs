@@ -2,18 +2,19 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, ORIGIN};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use core_link::{Agent, Found, FromCore, Ready, ToCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 use crate::db::{self, Machine, User};
 use crate::teams::refused;
@@ -27,6 +28,10 @@ const PATIENCE: Duration = Duration::from_secs(15 * 60);
 const AWAY: Duration = Duration::from_secs(10 * 60);
 /// How often a connection is checked to be alive.
 const PING: Duration = Duration::from_secs(30);
+/// A core answers every ping, so one this quiet is gone, whatever the network still says.
+const SILENCE: Duration = Duration::from_secs(75);
+/// How long sending one message to a core may take.
+const SLOW: Duration = Duration::from_secs(20);
 
 type Answer = Result<String, String>;
 
@@ -66,9 +71,16 @@ impl Cores {
         core.is_some_and(|(_, core)| core.send(message).is_ok())
     }
 
-    /// Ends a machine's connection, when it has one.
-    fn end(&self, machine: &str) {
-        self.lock().cores.remove(machine);
+    /// Ends everything a removed machine was part of: its connection, its sign-ins, and what
+    /// was asked of it, which is answered with `why` so that nothing waits for it.
+    fn end(&self, machine: &str, why: &str) {
+        let mut cores = self.lock();
+        cores.cores.remove(machine);
+        cores.terminals.retain(|(of, _), _| of != machine);
+        let asked = cores.asks.extract_if(|_, (of, ..)| of == machine);
+        for (_, (_, _, asker)) in asked {
+            asker.send(Err(why.to_owned())).ok();
+        }
     }
 }
 
@@ -104,18 +116,19 @@ pub async fn code(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
-    let user_id = match bearer(&headers) {
+    // A code a machine asked for goes with that machine.
+    let asker = match bearer(&headers) {
         Some(token) => db::machine_by_token(&state.pool, token)
             .await?
-            .map(|machine| machine.user_id),
+            .map(|machine| (machine.user_id, Some(machine.id))),
         None => crate::auth::signed_in(&state, &headers)
             .await?
-            .map(|user| user.id),
+            .map(|user| (user.id, None)),
     };
-    let user_id =
-        user_id.ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "Sign in first".into()))?;
+    let (user_id, machine_id) =
+        asker.ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "Sign in first".into()))?;
     let code = format!("{:032x}", rand::random::<u128>());
-    db::add_machine_code(&state.pool, &code, &user_id).await?;
+    db::add_machine_code(&state.pool, &code, &user_id, machine_id.as_deref()).await?;
     // The address the core is given is the one people open, which the server was told at startup.
     Ok(Json(json!({"code": code, "server": state.url})))
 }
@@ -156,7 +169,7 @@ pub async fn remove(
         return Err(not_found());
     }
     // Its core is refused when it connects again, and forgets its token.
-    state.cores.end(&id);
+    state.cores.end(&id, "The machine was removed");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -180,11 +193,13 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
     let connection = {
         let mut cores = state.cores.lock();
         cores.connections += 1;
-        // A core that connects twice keeps its newer connection: the older one ends when its sender goes.
+        // A core that connects twice keeps its newer connection. The older one is told, so that
+        // it doesn't dial again and take the connection back, and ends when its sender goes.
         let connection = cores.connections;
-        cores
-            .cores
-            .insert(machine.clone(), (connection, to_core.clone()));
+        let newer = (connection, to_core.clone());
+        if let Some((_, older)) = cores.cores.insert(machine.clone(), newer) {
+            older.send(ToCore::Replaced).ok();
+        }
         cores.left.remove(&machine);
         // What it was asked before it went away is asked again; a core knows an ask by its id.
         let waiting = cores.asks.values().filter(|(asked, ..)| *asked == machine);
@@ -195,26 +210,34 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
     };
     drop(to_core);
     let mut alive = tokio::time::interval(PING);
+    let mut last_heard = Instant::now();
     loop {
-        let sent = tokio::select! {
+        let send = tokio::select! {
             message = outgoing.recv() => match message {
-                Some(message) => socket.send(Message::Text(json!(message).to_string().into())).await,
+                Some(message) => Message::Text(json!(message).to_string().into()),
                 // The machine was removed, or its core connected anew.
                 None => break,
             },
-            _ = alive.tick() => socket.send(Message::Ping(Default::default())).await,
-            message = socket.recv() => match message {
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(message) = serde_json::from_str(&text) {
-                        heard(&state, &machine, message).await;
+            _ = alive.tick() => Message::Ping(Default::default()),
+            // A network that dropped without a word never says so itself.
+            _ = tokio::time::sleep_until(last_heard + SILENCE) => break,
+            message = socket.recv() => {
+                last_heard = Instant::now();
+                match message {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Ok(message) = serde_json::from_str(&text) {
+                            heard(&state, &machine, message).await;
+                        }
                     }
-                    Ok(())
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    // A pong, among others.
+                    Some(Ok(_)) => {}
                 }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => Ok(()),
-            },
+                continue;
+            }
         };
-        if sent.is_err() {
+        let sent = tokio::time::timeout(SLOW, socket.send(send)).await;
+        if !matches!(sent, Ok(Ok(()))) {
             break;
         }
     }
@@ -227,9 +250,9 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
         {
             cores.cores.remove(&machine);
             cores.left.insert(machine.clone(), Instant::now());
+            // A sign-in can't go on without its terminal. One opened over a newer connection stays.
+            cores.terminals.retain(|(of, _), _| *of != machine);
         }
-        // A sign-in can't go on without its terminal.
-        cores.terminals.retain(|(of, _), _| *of != machine);
     }
     db::see_machine(&state.pool, &machine, None).await.ok();
 }
@@ -245,7 +268,9 @@ async fn heard(state: &AppState, machine: &str, message: FromCore) {
         }
         FromCore::Answer { id, answer } => {
             let mut cores = state.cores.lock();
-            if let Some((_, _, asker)) = cores.asks.remove(&id) {
+            // Only the machine that was asked may answer.
+            let asked = cores.asks.get(&id).is_some_and(|(of, ..)| of == machine);
+            if asked && let Some((_, _, asker)) = cores.asks.remove(&id) {
                 asker.send(answer).ok();
             }
             // Also for an answer nobody waits for any more, so that the core forgets it.
@@ -335,8 +360,18 @@ pub async fn sign_in(
     State(state): State<AppState>,
     user: User,
     Path((id, agent)): Path<(String, String)>,
+    headers: HeaderMap,
     socket: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
+    // A browser sends the cookie along from any page of the same site, so the page itself
+    // must be Weacon's own.
+    if headers
+        .get(ORIGIN)
+        .is_none_or(|origin| origin.as_bytes() != state.url.as_bytes())
+    {
+        let message = "A sign-in is opened from Weacon's own pages";
+        return Err(ApiError(StatusCode::FORBIDDEN, message.into()));
+    }
     let machines = db::machines(&state.pool, &user.id).await?;
     let owned = machines.iter().any(|machine| machine.id == id);
     let agent = Agent::named(&agent)
@@ -358,11 +393,12 @@ pub async fn sign_in(
         }
         cores.terminals.insert(key, to_browser);
     }
-    Ok(socket.on_upgrade(move |socket| relay(state, id, agent, socket, from_core)))
+    Ok(socket.on_upgrade(move |socket| relay(state, headers, id, agent, socket, from_core)))
 }
 
 async fn relay(
     state: AppState,
+    headers: HeaderMap,
     machine: String,
     agent: Agent,
     mut socket: WebSocket,
@@ -372,8 +408,15 @@ async fn relay(
     state
         .cores
         .send(&machine, ToCore::TerminalOpen { agent, cols, rows });
+    let mut still = tokio::time::interval(PING);
     loop {
         tokio::select! {
+            // The terminal ends with the session it was opened in.
+            _ = still.tick() => {
+                if !matches!(crate::auth::signed_in(&state, &headers).await, Ok(Some(_))) {
+                    break;
+                }
+            }
             message = from_core.recv() => match message {
                 Some(FromCore::TerminalData { data, .. }) => {
                     let shown = json!({"type": "data", "data": data}).to_string();

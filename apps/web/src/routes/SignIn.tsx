@@ -16,7 +16,8 @@ export function SignIn({ setup, invitation }: { setup: boolean; invitation?: Inv
   })
   const verify = useMutation({
     mutationFn: (code: string) => api("POST", "/sign-in/verify", { email, code }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["session"] }),
+    // What an account that was signed in before left behind goes too.
+    onSuccess: () => queryClient.resetQueries(),
   })
 
   const title = setup ? "Set up Weacon" : registering ? "Create an account" : "Sign in"

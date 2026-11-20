@@ -40,6 +40,23 @@ fn paired() -> Option<Paired> {
     serde_json::from_str(&text).ok()
 }
 
+/// Whether what is sent to a server's address is encrypted on its way, or never leaves this
+/// computer. The token is sent with every connection, so nothing else will do.
+fn private(server: &str) -> bool {
+    let Some(address) = server.strip_prefix("http://") else {
+        return server.starts_with("https://");
+    };
+    // The host ends where a path begins, or a port: after the bracket of an IPv6 address.
+    let host = address.split('/').next().unwrap_or_default();
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or_default(),
+        None => host.split(':').next().unwrap_or_default(),
+    };
+    host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+const PLAIN: &str = "Weacon's address must start with https://, so that this machine's token can't be read on its way. Only an address on this computer itself may be plain.";
+
 /// What a command printed, when it ran and ended well.
 fn printed(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
@@ -59,7 +76,11 @@ fn fail(message: impl std::fmt::Display) -> ! {
 fn needs_pairing() -> Paired {
     let how =
         "This machine isn't paired. Open Machines in your Weacon and run the command it shows.";
-    paired().unwrap_or_else(|| fail(how))
+    let paired = paired().unwrap_or_else(|| fail(how));
+    if !private(&paired.server) {
+        fail(PLAIN);
+    }
+    paired
 }
 
 #[tokio::main]
@@ -78,5 +99,33 @@ async fn main() {
         ["uninstall"] => service::uninstall(),
         ["add", host] => setup::add(&needs_pairing(), host).await,
         _ => fail(USAGE),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::private;
+
+    // No request reaches the core's own checks in the server's tests.
+    #[test]
+    fn only_an_address_on_this_computer_may_be_plain() {
+        for server in [
+            "https://weacon.example.com",
+            "http://localhost:8080",
+            "http://127.0.0.1",
+            "http://[::1]:8080/",
+            "http://dev.localhost:5173",
+        ] {
+            assert!(private(server), "{server}");
+        }
+        for server in [
+            "http://weacon.example.com",
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com:80",
+            "http://10.0.0.5:8080",
+            "ws://localhost",
+        ] {
+            assert!(!private(server), "{server}");
+        }
     }
 }

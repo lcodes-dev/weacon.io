@@ -6,7 +6,7 @@ use std::process::Command;
 use core_link::Ready;
 use serde_json::{Value, json};
 
-use crate::{Paired, agents, fail, home, printed};
+use crate::{PLAIN, Paired, agents, fail, home, printed, private};
 
 const OS: &str = if cfg!(target_os = "macos") {
     "macos"
@@ -25,7 +25,10 @@ fn yes(question: &str) -> bool {
 
 /// Sends JSON to the server and returns its JSON answer, or ends with what the server said.
 async fn post(address: &str, token: Option<&str>, body: Value) -> Value {
-    let request = reqwest::Client::new().post(address).json(&body);
+    // A redirect could lead somewhere that isn't encrypted, so none is followed.
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let client = client.build().unwrap_or_else(|error| fail(error));
+    let request = client.post(address).json(&body);
     let request = match token {
         Some(token) => request.bearer_auth(token),
         None => request,
@@ -45,6 +48,9 @@ async fn post(address: &str, token: Option<&str>, body: Value) -> Value {
 /// Pairs this machine with the Weacon at `server`, with a code from its Machines page.
 pub async fn pair(server: &str, code: &str) {
     let server = server.trim_end_matches('/');
+    if !private(server) {
+        fail(PLAIN);
+    }
     let name = printed("hostname", &[]).unwrap_or_else(|| "A machine".into());
     let pairing = json!({"code": code, "name": name, "os": OS});
     let machine = post(&format!("{server}/api/machines"), None, pairing).await;
@@ -61,7 +67,10 @@ pub async fn pair(server: &str, code: &str) {
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let text = serde_json::to_string(&paired).expect("a pairing is JSON");
-        options.open(&file)?.write_all(text.as_bytes())
+        // Written beside and moved into place, so the file is never half a pairing.
+        let new = folder.join("core.json.new");
+        options.open(&new)?.write_all(text.as_bytes())?;
+        std::fs::rename(new, &file)
     });
     if let Err(error) = kept {
         fail(format!("{} can't be written: {error}", file.display()));

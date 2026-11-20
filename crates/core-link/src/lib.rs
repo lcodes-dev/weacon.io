@@ -80,6 +80,8 @@ pub enum ToCore {
         system: String,
         prompt: String,
     },
+    /// Another core has connected as this machine, so this one must stop and not dial again.
+    Replaced,
     /// The server has the answer to this `Ask`, so the core may forget it.
     Taken { id: String },
     /// Start the agent's own sign-in in a terminal of this size. The core picks the command.

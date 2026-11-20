@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO machines (id, user_id, name, os, token, created_at)\n             VALUES (?, ?, ?, ?, ?, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "8e2c14eed1b94cb555b23dd5b7547c2b2813fbe98a98b391e77d4aff2c2ff3c4"
+}

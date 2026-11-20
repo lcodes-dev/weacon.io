@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use axum::body::{Body, to_bytes};
 use axum::extract::{Path, State};
 use axum::http::header::{
-    AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, IF_NONE_MATCH, SET_COOKIE,
+    AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, IF_NONE_MATCH, ORIGIN, SET_COOKIE,
 };
 use axum::http::{HeaderMap, HeaderName, Method, Request, StatusCode};
 use axum::routing::{get, post};
@@ -2156,12 +2156,22 @@ async fn socket(
     path: &str,
     header: &(HeaderName, String),
 ) -> Result<Socket, StatusCode> {
+    socket_from("http://weacon.test", address, path, header).await
+}
+
+/// The same, from a page at `origin`, as a browser says where a page came from.
+async fn socket_from(
+    origin: &str,
+    address: &str,
+    path: &str,
+    header: &(HeaderName, String),
+) -> Result<Socket, StatusCode> {
     let mut request = format!("ws://{address}{path}")
         .into_client_request()
         .unwrap();
-    request
-        .headers_mut()
-        .insert(header.0.clone(), header.1.parse().unwrap());
+    let headers = request.headers_mut();
+    headers.insert(header.0.clone(), header.1.parse().unwrap());
+    headers.insert(ORIGIN, origin.parse().unwrap());
     match connect_async(request).await {
         Ok((socket, _)) => Ok(socket),
         Err(tungstenite::Error::Http(refused)) => Err(refused.status()),
@@ -2279,7 +2289,20 @@ async fn a_machine_is_paired_with_a_code_once_and_is_only_its_owner_s() {
     let (_, listed) = ada.get("/api/machines").await;
     assert_eq!(listed[1]["name"], "ada-box");
 
+    // A code a machine asked for goes with that machine.
+    let request = Request::post("/api/machines/codes")
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let answer = router(state.clone()).oneshot(request).await.unwrap();
+    let body = to_bytes(answer.into_body(), usize::MAX).await.unwrap();
+    let code: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(ada.delete(&machine).await, StatusCode::NO_CONTENT);
+    let orphaned = json!({"code": code["code"], "name": "Late", "os": "linux"});
+    assert_eq!(
+        nobody.post("/api/machines", orphaned).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
     assert_eq!(
         ada.get("/api/machines").await.1.as_array().unwrap().len(),
         1
@@ -2397,6 +2420,55 @@ async fn docs_are_written_on_a_machine_of_whoever_starts_the_run() {
 }
 
 #[tokio::test]
+async fn what_is_asked_of_a_machine_is_its_own_and_ends_with_it() {
+    let (state, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    ada.put(&ada.team("/writer"), json!({"kind": "claude_code"}))
+        .await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    let hers = paired(&mut eve, "Eve's laptop").await;
+    let address = listening(&state).await;
+
+    // A core that connects a second time takes the connection, and the first is told to stop.
+    let mut first = core(&address, &token, "signed_in").await.unwrap();
+    machines(&mut ada, true, Some("signed_in")).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    assert_eq!(
+        heard(&mut first).await.unwrap(),
+        json!({"type": "replaced"})
+    );
+    assert_eq!(heard(&mut first).await, None);
+    machines(&mut ada, true, Some("signed_in")).await;
+
+    let start = json!({"branch": "main"});
+    assert_eq!(
+        ada.post(&ada.project("/docs"), start).await.0,
+        StatusCode::ACCEPTED
+    );
+    let ask = heard(&mut laptop).await.unwrap();
+    // Someone else's core can't answer for Ada's, even knowing what was asked.
+    let mut other = core(&address, &hers, "signed_in").await.unwrap();
+    said(&mut other, answered(&ask)).await;
+    assert_eq!(
+        heard(&mut other).await.unwrap(),
+        json!({"type": "taken", "id": ask["id"]})
+    );
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["state"], "running");
+
+    // Removing the machine ends the run at once, with nothing left waiting for it.
+    let listed = ada.get("/api/machines").await.1;
+    let machine = format!("/api/machines/{}", listed[0]["id"].as_str().unwrap());
+    assert_eq!(ada.delete(&machine).await, StatusCode::NO_CONTENT);
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(
+        (&docs["state"], &docs["message"]),
+        (&json!("failed"), &json!("The machine was removed"))
+    );
+}
+
+#[tokio::test]
 async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core() {
     let state = server().await;
     let (mut ada, marco) = ada_and_marco(&state).await;
@@ -2421,6 +2493,9 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
         socket(&address, &terminal, &his).await.err(),
         Some(StatusCode::NOT_FOUND)
     );
+    // Not from a page of another site, though the browser sends her cookie along.
+    let elsewhere = socket_from("http://evil.test", &address, &terminal, &hers).await;
+    assert_eq!(elsewhere.err(), Some(StatusCode::FORBIDDEN));
     let shell = terminal.replace("claude", "bash");
     assert_eq!(
         socket(&address, &shell, &hers).await.err(),

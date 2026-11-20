@@ -10,6 +10,9 @@ use tokio::process::Command;
 /// A page can take minutes to write.
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
+/// How long an agent's program may take to say whether someone is signed in.
+const STATUS: Duration = Duration::from_secs(10);
+
 /// The environment variables an agent gets when it answers: enough to be found and signed in.
 const KEPT: [&str; 5] = ["PATH", "HOME", "USER", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
 
@@ -50,11 +53,14 @@ pub async fn found() -> Vec<Found> {
     for agent in Agent::ALL {
         let mut command = Command::new(agent.program());
         let quiet = command.args(status(agent)).stdin(Stdio::null());
-        let ended = quiet.stdout(Stdio::null()).stderr(Stdio::null()).status();
-        let ready = match ended.await {
-            Ok(ended) if ended.success() => Ready::SignedIn,
-            Ok(_) => Ready::SignedOut,
+        let quiet = quiet.stdout(Stdio::null()).stderr(Stdio::null());
+        let ready = match quiet.kill_on_drop(true).spawn() {
             Err(_) => Ready::Missing,
+            // A program that doesn't answer is there, and is of no use as it is.
+            Ok(mut asked) => match tokio::time::timeout(STATUS, asked.wait()).await {
+                Ok(Ok(ended)) if ended.success() => Ready::SignedIn,
+                _ => Ready::SignedOut,
+            },
         };
         found.push(Found { agent, ready });
     }

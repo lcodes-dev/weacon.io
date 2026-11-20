@@ -47,6 +47,18 @@ fn written(file: &PathBuf, text: &str) {
     }
 }
 
+/// A value as a property list's text takes it.
+fn xml(value: &str) -> String {
+    let value = value.replace('&', "&amp;").replace('<', "&lt;");
+    value.replace('>', "&gt;")
+}
+
+/// A value as systemd takes it between double quotes.
+fn quoted(value: &str) -> String {
+    let value = value.replace('\\', "\\\\").replace('"', "\\\"");
+    value.replace('%', "%%")
+}
+
 fn launch_agent() -> PathBuf {
     home().join(format!("Library/LaunchAgents/{NAME}.plist"))
 }
@@ -61,7 +73,7 @@ pub fn install() {
     if cfg!(target_os = "macos") {
         let variables: String = kept()
             .iter()
-            .map(|(name, value)| format!("<key>{name}</key><string>{value}</string>"))
+            .map(|(name, value)| format!("<key>{name}</key><string>{}</string>", xml(value)))
             .collect();
         let log = home().join("Library/Logs/weacon-core.log");
         let plist = format!(
@@ -69,14 +81,15 @@ pub fn install() {
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{NAME}</string>
-<key>ProgramArguments</key><array><string>{core}</string></array>
+<key>ProgramArguments</key><array><string>{program}</string></array>
 <key>EnvironmentVariables</key><dict>{variables}</dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
 <key>StandardErrorPath</key><string>{log}</string>
 </dict></plist>
 "#,
-            log = log.display()
+            program = xml(&core),
+            log = xml(&log.to_string_lossy())
         );
         let file = launch_agent();
         written(&file, &plist);
@@ -94,10 +107,11 @@ pub fn install() {
     }
     let variables: String = kept()
         .iter()
-        .map(|(name, value)| format!("Environment=\"{name}={value}\"\n"))
+        .map(|(name, value)| format!("Environment=\"{name}={}\"\n", quoted(value)))
         .collect();
     let unit = format!(
-        "[Unit]\nDescription=Weacon core\nAfter=network-online.target\n\n[Service]\nExecStart={core}\nRestart=always\nRestartSec=5\n{variables}\n[Install]\nWantedBy=default.target\n"
+        "[Unit]\nDescription=Weacon core\nAfter=network-online.target\n\n[Service]\nExecStart=\"{}\"\nRestart=always\nRestartSec=5\n{variables}\n[Install]\nWantedBy=default.target\n",
+        quoted(&core)
     );
     written(&user_service(), &unit);
     if !ran("systemctl", &["--user", "daemon-reload"]) {
@@ -134,4 +148,19 @@ pub fn uninstall() {
         tried("systemctl", &["--user", "daemon-reload"]);
     }
     println!("weacon-core no longer runs in the background. This machine is still paired.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{quoted, xml};
+
+    // No request reaches the service files in the server's tests.
+    #[test]
+    fn values_are_written_the_way_each_file_asks() {
+        assert_eq!(
+            xml("/Volumes/R&D <x>/bin"),
+            "/Volumes/R&amp;D &lt;x&gt;/bin"
+        );
+        assert_eq!(quoted(r#"/home/a b/50%"c\d"#), r#"/home/a b/50%%\"c\\d"#);
+    }
 }

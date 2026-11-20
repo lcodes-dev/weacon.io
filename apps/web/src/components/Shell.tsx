@@ -135,7 +135,8 @@ function Account({ user, team, openTeam }: { user: User; team: Team; openTeam: (
   const queryClient = useQueryClient()
   const signOut = useMutation({
     mutationFn: () => api("POST", "/sign-out"),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["session"] }),
+    // Everything remembered was the last account's.
+    onSuccess: () => queryClient.resetQueries(),
   })
   return (
     <div className="flex flex-col gap-2 rounded-md border border-line p-2">
