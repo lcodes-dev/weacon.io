@@ -2,12 +2,13 @@ import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
-import { api, type Team, type User, type Writer } from "../api"
+import { Link } from "react-router"
+import { api, type Team, type Writer } from "../api"
 
 const defaults = { claude_api: "claude-haiku-5-5", claude_code: "claude-haiku-5-5", codex: "gpt-5.6-luna" }
 
 /** Who writes the team's docs, in team settings. */
-export function WriterSection({ team, user, saved }: { team: Team; user: User; saved: Writer | null }) {
+export function WriterSection({ team, saved }: { team: Team; saved: Writer | null }) {
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<Writer["kind"]>(saved?.kind ?? "claude_api")
   const [key, setKey] = useState("")
@@ -36,12 +37,17 @@ export function WriterSection({ team, user, saved }: { team: Team; user: User; s
       <Field className="self-stretch">
         <FieldLabel>Writer</FieldLabel>
         <FieldControl render={<select />} value={kind} onChange={(event) => setKind(event.target.value as Writer["kind"])}>
-          <option value="claude_api">Claude, with an API key</option>
-          {/* A program runs on the account of whoever runs the server. */}
-          {user.is_owner && <option value="claude_code">Claude Code, signed in on the server's computer</option>}
-          {user.is_owner && <option value="codex">Codex, signed in on the server's computer</option>}
+          <option value="claude_api">Claude, on the server, with the team's API key</option>
+          <option value="claude_code">Claude Code, on a machine of whoever starts a run</option>
+          <option value="codex">Codex, on a machine of whoever starts a run</option>
         </FieldControl>
       </Field>
+      {kind !== "claude_api" && (
+        <p className="text-ink2">
+          A run, a request or a page's check then uses a machine of the person who causes it, on their own subscription. Each member pairs their own
+          under <Link to="/settings/machines" className="underline">Machines</Link>.
+        </p>
+      )}
       {kind === "claude_api" && (
         <Field className="self-stretch">
           <FieldLabel>Anthropic API key</FieldLabel>

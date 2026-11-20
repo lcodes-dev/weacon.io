@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT writer AS \"kind!: _\", writer_key AS key, writer_model AS model\n           FROM teams WHERE id = ? AND writer IS NOT NULL",
+  "query": "SELECT writer AS \"kind!: _\", writer_key AS key, writer_model AS model, '' AS \"asker!\"\n           FROM teams WHERE id = ? AND writer IS NOT NULL",
   "describe": {
     "columns": [
       {
@@ -35,6 +35,12 @@
             "name": "writer_model"
           }
         }
+      },
+      {
+        "name": "asker!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -43,8 +49,9 @@
     "nullable": [
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "7620a8b0d5b1f80e40d2be019e2dd0331a92cb581ef19468a2a5b9e3b5d49f85"
+  "hash": "87bfb0ca23caf333764aee96f82759be07c02665def08b93bc94144c95aa6aed"
 }

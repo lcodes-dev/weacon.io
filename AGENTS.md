@@ -1,10 +1,10 @@
 # Weacon: notes for coding agents
 
-Weacon is a web harness for coding agents with tasks, docs and team chats built in. One Rust server holds the data in SQLite and serves a React web app from the same binary. `docs/architecture.md` says how it fits together.
+Weacon is a web harness for coding agents with tasks, docs and team chats built in. One Rust server holds the data in SQLite and serves a React web app from the same binary. A second small program, the core, runs on each person's own machine and runs their agents there. `docs/architecture.md` says how it fits together.
 
 - **Keep it simple.** Write the shortest code that reads in one pass. Build nothing ahead of the feature that needs it: no abstractions, options or dependencies for later.
 - **Comment only when strictly necessary.** A comment says why, or something the code can't show, in one short line. Never restate what the code does.
-- **One word per thing.** A group of people is a "team", never a "workspace"; the first account on a server is its "owner".
+- **One word per thing.** A group of people is a "team", never a "workspace"; the first account on a server is its "owner"; a person's own computer is a "machine", and the program on it is the "core".
 - **`.legacy/` is the previous codebase.** Read it for reference; never edit it or build on it.
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
 - **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md`, and are deleted from it once answered. Improvements nobody asked for go in `.planning/improvements.md`. Neither goes in a plan.
@@ -23,6 +23,7 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | `scripts/prepare-queries.sh` | Writes `.sqlx/`, which the build checks every query against; run it after changing a query or a migration |
 | `npm --prefix apps/web run build` | Type-checks and builds the web app into `apps/web/dist/` |
 | `cargo test -p weacon-server` | Runs the server's tests in `apps/server/tests/`; build the web app first |
+| `cargo test -p weacon-core` | Runs the core's test of the agents' programs |
 | `cargo test -p code-map` | Runs the code map's tests: a small made-up repository per language |
 | `cargo run -p code-map --example map -- <folder>` | Prints which file uses which in a folder on this computer; `--example tree -- <file>` prints how a file is parsed and read |
 

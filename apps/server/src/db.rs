@@ -1044,7 +1044,7 @@ async fn uses(
 pub async fn writer(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Option<Writer>> {
     sqlx::query_as!(
         Writer,
-        r#"SELECT writer AS "kind!: _", writer_key AS key, writer_model AS model
+        r#"SELECT writer AS "kind!: _", writer_key AS key, writer_model AS model, '' AS "asker!"
            FROM teams WHERE id = ? AND writer IS NOT NULL"#,
         team_id
     )
@@ -1986,4 +1986,111 @@ pub async fn shared(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Share
         created_at: share.created_at,
         pages,
     }))
+}
+
+/// A person's own computer or virtual machine, as its page shows it.
+#[derive(Serialize)]
+pub struct Machine {
+    pub id: String,
+    #[serde(skip)]
+    pub user_id: String,
+    pub name: String,
+    pub os: String,
+    /// What its core last said of its agents, as a JSON list.
+    #[serde(serialize_with = "as_list")]
+    pub agents: String,
+    pub created_at: i64,
+    pub seen_at: Option<i64>,
+}
+
+pub async fn machines(pool: &SqlitePool, user_id: &str) -> sqlx::Result<Vec<Machine>> {
+    sqlx::query_as!(
+        Machine,
+        "SELECT id, user_id, name, os, agents, created_at, seen_at
+         FROM machines WHERE user_id = ? ORDER BY id",
+        user_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn machine_by_token(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Machine>> {
+    sqlx::query_as!(
+        Machine,
+        "SELECT id, user_id, name, os, agents, created_at, seen_at FROM machines WHERE token = ?",
+        token
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn add_machine_code(pool: &SqlitePool, code: &str, user_id: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "INSERT INTO machine_codes (code, user_id, created_at) VALUES (?, ?, unixepoch())",
+        code,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Uses up a pairing code made after `since` for a new machine of whoever asked for the code.
+/// False when the code is unknown, used or older.
+pub async fn pair_machine(
+    pool: &SqlitePool,
+    code: &str,
+    since: i64,
+    name: &str,
+    os: &str,
+    token: &str,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let asked = sqlx::query!(
+        "DELETE FROM machine_codes WHERE code = ? RETURNING user_id, created_at",
+        code
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    // An old code is used up all the same.
+    tx.commit().await?;
+    let Some(asked) = asked.filter(|asked| asked.created_at > since) else {
+        return Ok(false);
+    };
+    let id = new_id();
+    sqlx::query!(
+        "INSERT INTO machines (id, user_id, name, os, token, created_at)
+         VALUES (?, ?, ?, ?, ?, unixepoch())",
+        id,
+        asked.user_id,
+        name,
+        os,
+        token
+    )
+    .execute(pool)
+    .await?;
+    Ok(true)
+}
+
+pub async fn delete_machine(pool: &SqlitePool, user_id: &str, id: &str) -> sqlx::Result<bool> {
+    let deleted = sqlx::query!(
+        "DELETE FROM machines WHERE id = ? AND user_id = ?",
+        id,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(deleted.rows_affected() > 0)
+}
+
+/// Notes that a machine's core is or was just connected, and what it says of its agents, when it did.
+pub async fn see_machine(pool: &SqlitePool, id: &str, agents: Option<&str>) -> sqlx::Result<()> {
+    sqlx::query!(
+        "UPDATE machines SET seen_at = unixepoch(), agents = COALESCE(?, agents) WHERE id = ?",
+        agents,
+        id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }

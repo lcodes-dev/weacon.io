@@ -42,7 +42,7 @@ impl FromRequestParts<AppState> for Owner {
     }
 }
 
-async fn signed_in(state: &AppState, headers: &HeaderMap) -> Result<Option<User>, ApiError> {
+pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Result<Option<User>, ApiError> {
     match session_token(headers) {
         Some(token) => Ok(session_user(state, token).await?),
         None => Ok(None),

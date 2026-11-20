@@ -8,8 +8,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
-      "/api": server,
-      "/ws": { target: server, ws: true },
+      "/api": { target: server, ws: true },
     },
   },
 })

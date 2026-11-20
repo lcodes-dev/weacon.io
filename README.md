@@ -32,6 +32,26 @@ The result is `target/release/weacon-server`, with the web app inside it.
 | `WEACON_URL` | `http://localhost:8080` | The address people open in their browser, used for links in mail |
 | `RUST_LOG` | `info` | How much the server logs; `debug` adds every SQL query and SMTP exchange |
 
+## A machine of your own
+
+Agents run on your own computer or virtual machine, on your own sign-in to Claude Code or Codex. The program that connects it to Weacon is the core:
+
+```bash
+mise exec -- cargo build --release -p weacon-core
+```
+
+Copy `target/release/weacon-core` to the machine, on macOS, Linux, or WSL on Windows. Then, in Weacon, open "Machines", press "Add a machine" and run there the command it shows. After that:
+
+| Command | What it does |
+| --- | --- |
+| `weacon-core` | Connects, and stays connected |
+| `weacon-core install` | Starts with the computer and runs in the background; `uninstall` undoes it |
+| `weacon-core status` | Which Weacon this machine is paired with |
+| `weacon-core agents` | Which agents are installed and signed in |
+| `weacon-core add user@host` | Sets up a server of yours over SSH and pairs it |
+
+Signing in to an agent is done from Weacon's "Machines" page.
+
 ## Docs
 
 - [Architecture](docs/architecture.md)

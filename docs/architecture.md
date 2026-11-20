@@ -11,18 +11,21 @@ apps/
     assets/      files built into the binary: the logo for mail
     migrations/  numbered .sql files
     tests/       the server's tests
+  core/          the core: the program on a person's own machine
+    src/         main.rs holds its commands; link.rs its connection; agents.rs the vendors' programs
   web/           React, TypeScript, Vite, Tailwind, UI SDK
     src/         main.tsx holds the session and the top routes; api.ts the API's types
       routes/      one file per address, such as Project.tsx for /projects/:id
       components/  what routes are built from, such as Shell.tsx, the sidebar around a signed-in route
 crates/
   code-map/      reads a file's symbols and imports, and works out which file uses which
+  core-link/     the messages the server and a core send each other
 docs/            these docs
 .planning/       reference_ui.html, the clickable prototype the UI follows
 .legacy/         the previous codebase, for reference only
 ```
 
-The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and build into one `target/`. It has two members: the server and the `code-map` crate. A piece of work gets its own crate in `crates/` when it is complex enough to stand apart from the app that calls it: it has its own rules and its own tests, and the app only asks it for a result. Whether a second app needs it doesn't matter.
+The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and build into one `target/`. It has four members: the server, the core, and the `code-map` and `core-link` crates. A piece of work gets its own crate in `crates/` when it is complex enough to stand apart from the app that calls it: it has its own rules and its own tests, and the app only asks it for a result. Whether a second app needs it doesn't matter.
 
 ## Server
 
@@ -150,8 +153,7 @@ A project tracks chosen branches of its repository, and the server keeps a map o
 
 A project's docs are written by an AI model from the code map: an overview, "How it works" pages that walk through what a user does and gets, and "How it's built" pages on the project's own code. `docs.rs` holds the run and its prompts; `writer.rs` holds the writers.
 
-- **Writers.** The team's owner picks one in "Team settings". To the run they are the same thing, a prompt in and text out: the Anthropic API with the team's key, or the `claude` or `codex` program run on the server's computer, on the account signed in there. Only the server's owner can pick a program. The default models are cheap ones, `claude-haiku-5-5` and `gpt-5.6-luna`, and the team's owner can type another.
-- **Programs.** A program runs in an empty temporary folder with the prompt on its input and only the environment variables in `KEPT`. Neither is given a way to run a command or read a file: `claude` gets no tools and `--safe-mode`, which leaves out the person's own hooks and instructions; `codex` runs with its shell tools disabled and without the person's config and rules, since its read-only sandbox stops writing but not reading. So a repository's text can make the docs wrong but shouldn't be able to make the server do anything. That was checked by hand for `codex` and not yet for `claude`. A program still runs as the server's own account, with its home folder, which it needs to be signed in; a server that maps repositories it doesn't trust should run under an account that holds nothing else.
+- **Writers.** The team's owner picks one in "Team settings". To the run they are the same thing, a prompt in and text out. An API key is the team's and is used on the server: the Anthropic API. A subscription is a person's and is used only on that person's machines: Claude Code or Codex, on a machine of whoever starts the run, makes the request or edits the page being checked (see Machines). The default models are cheap ones, `claude-haiku-5-5` and `gpt-5.6-luna`, and the team's owner can type another. The server itself starts no program.
 - **Three stages.** First the writer gets the README and an outline of the repository, every file with its first 40 symbols, and answers as JSON with the folders that aren't the project's own code and up to 8 pages of each kind, each with the files it needs. Then each page is written from only its files, sent with line numbers, under the rules of its kind. Last comes the overview, written from the finished pages.
 - **Rules of each kind.** "How it works" is numbered steps in the product's own words, with no file or framework named; the server appends the files it was written from. "How it's built" explains how the code flows, then what to handle with care and what looks like a problem, each claim with its `path:line`. The framework is mentioned only where the flow needs it.
 - **The run.** `POST .../docs` claims the project, spawns a task and answers at once; the project's `docs_state` and `docs_message` say where the run is. What a run wrote is saved together at the end, as pages or as proposals (see below), so a run that fails changes nothing. Each run has a number kept in `docs_run`, and its progress, failure and pages are saved only while the project still holds it, so a run can't write into a project that was deleted or given another repository meanwhile. Such a run stops at its next progress update, before it asks the writer for anything more. A run reads the map and the files' text in one transaction, so both are of the same commit. Changing a project's repository keeps its pages, since people may have written in them, and drops what tied them to the old repository: their files, commit and notes, the proposals, and the project's branch and commit. A run that crashes is marked `failed`, and so is every project still marked `running` at startup, since a run can't outlive the server.
@@ -170,6 +172,21 @@ A project's docs are written by an AI model from the code map: an overview, "How
 - **Public links.** "Share" on the user docs opens a panel that lists the project's links. "Create link" copies those pages into `shares` and `share_pages`, behind a random token, and `/shared/{token}` shows the copy to anyone, without an account. A link shows the project's name, the day it was shared and the pages; the lines a run adds about a page's files are cut from the copy, so it names nothing of the repository. Editing the docs or changing the project's repository leaves a copy as it was; "Stop sharing" or deleting the project ends the link. The page asks search engines not to list it.
 - The docs page renders Markdown with `markdown-to-jsx`. It displays raw HTML as text, restricts link URLs to relative addresses and the allowed protocols in `DocPages.tsx`, which the docs page and the public page share, turns `image:` and `file:` addresses into the project's own, and shows an image on another host as a link, so that opening a page fetches nothing from another host.
 - The Anthropic API's address and the two programs' names are part of the router's state, so the tests use a fake API and a script standing in for the programs.
+
+## Machines
+
+A machine is a person's own computer or virtual machine, and only theirs. The core, `weacon-core` in `apps/core/`, runs on it: macOS, Linux, and on Windows inside WSL only. `machines.rs` holds the server's side.
+
+- **The rule.** An API key is the team's and is used on the server. A subscription is a person's and is used only on that person's machines, by the vendor's own unmodified program, which holds the sign-in. Weacon never reads, keeps or passes on a sign-in. This follows what Anthropic and OpenAI allow: a product may not use a person's plan on a server for others, nor offer the vendor's login as its own.
+- **Pairing.** "Add a machine" gives a command with a code good once for ten minutes: `weacon-core pair {server} {code}`. The core trades the code, with the computer's name and system, for a token, and keeps the server's address and the token in `~/.config/weacon-core/core.json`, readable by its user only. Which Weacon a core talks to is so the core's own setting. While pairing it looks for `claude` and `codex` and offers the vendor's installer for one that is missing, running it only on a yes.
+- **The connection.** It is always the core that dials: one WebSocket to `/api/machines/connect` with its token, so nothing listens on the machine. It dials again when the connection drops, waiting from a second up to a minute. A core refused with 401 was removed in Weacon: it forgets its token and stops. The server keeps who is connected in memory (`Cores`), and pings every 30 seconds.
+- **Messages** are JSON, one a frame, with their types in `crates/core-link/`. The core says `agents`: which of the two programs it finds and whether someone is signed in, learned from how `claude auth status` and `codex login status` end. It says so again every five minutes and after a sign-in.
+- **An ask.** The server sends `ask` with an agent, a model, a system prompt and a prompt; the core runs that agent in an empty temporary folder with only the environment variables in `KEPT`, and says `answer`. Neither agent is given a way to run a command or read a file: `claude` gets no tools and `--safe-mode`, which leaves out the person's own hooks and instructions; `codex` runs with its shell tools disabled and without the person's config and rules, since its read-only sandbox stops writing but not reading. So a repository's text can make the docs wrong but shouldn't be able to make the machine do anything.
+- **Work outlives the connection.** The core keeps an answer until the server says `taken`, and says it again after a drop. The server asks again, under the same id, what a core that came back hasn't answered. An ask fails when its machine has been away for ten minutes, or after fifteen minutes in all. Both sides keep this in memory, so it doesn't outlive a restart of either.
+- **Signing in** happens in a terminal in the web app. The server sends `terminal.open` with an agent; the core starts that vendor's own login, `claude auth login` or `codex login --device-auth`, in a pseudo-terminal, and what it shows and what is typed pass as `terminal.data` between the core and the owner's browser, through `/api/machines/{id}/sign-in/{agent}`. The core picks the command from the agent alone, so nothing sent from Weacon can start anything else there. The server hands the bytes on and keeps none, in the database or the log. The web app draws the terminal with `ghostty-web`, fetched when a sign-in is opened. The link and the one-time code of a sign-in so pass through the server; whether the vendors count that as going between is theirs to say, and is an open question.
+- **In the background.** `weacon-core install` writes a launch agent on macOS or a user service on Linux, with the `PATH` it was run with so that the agents are found, and turns on lingering so that it runs when nobody is logged in. In WSL that needs systemd turned on, which the command explains.
+- **A server over SSH.** `weacon-core add user@host`, on a paired machine, asks first, then copies itself to a host of the same system and processor, gets a pairing code with its own token, and runs `pair` and `install` there. SSH is only how the core gets there.
+- A machine is removed with its owner's account.
 
 ## Mail
 
@@ -221,7 +238,13 @@ Errors are `{"error": "..."}` with a status code.
 | `GET`, `POST /api/teams/{id}/projects/{project_id}/shares` | a member | The project's public links, or makes one from its user docs as they are now |
 | `DELETE /api/teams/{id}/projects/{project_id}/shares/{token}` | a member | Ends a public link |
 | `GET /api/shares/{token}` | anyone | What a public link shows: `{"title", "created_at", "pages"}` |
-| `PUT`, `DELETE /api/teams/{id}/writer` | the team's owner | Saves or forgets who writes the team's docs; a key is never read back, and only the server's owner can pick a program |
+| `PUT`, `DELETE /api/teams/{id}/writer` | the team's owner | Saves or forgets who writes the team's docs; a key is never read back |
+| `GET /api/machines` | signed in | Your machines, each with its agents and whether its core is connected |
+| `POST /api/machines/codes` | signed in, or a machine's token | `{"code", "server"}`: a pairing code for that person, good once for ten minutes, and the address to pair with |
+| `POST /api/machines` | anyone with a code | Trades `{"code", "name", "os"}` for `{"token"}` |
+| `DELETE /api/machines/{id}` | its owner | Ends the machine and cuts its core off |
+| `GET /api/machines/connect` | a machine's token | The core's WebSocket |
+| `GET /api/machines/{id}/sign-in/{agent}` | its owner | A WebSocket to the sign-in terminal of `claude` or `codex` there; refused while the machine is away or the sign-in is open elsewhere |
 | `GET /api/teams/{id}/github/branches?repo=` | a member | A repository's branches and which is the default |
 | `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |
 | `POST /api/teams/{id}/github` | the team's owner | Trades GitHub's `code` for the new app and saves it |

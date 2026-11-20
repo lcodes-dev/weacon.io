@@ -3,6 +3,7 @@ mod config;
 pub mod db;
 mod docs;
 mod github;
+mod machines;
 pub mod mail;
 pub mod map;
 mod pages;
@@ -37,9 +38,8 @@ pub struct AppState {
     pub map_wake: Arc<Notify>,
     /// `https://api.anthropic.com`, or a fake one in tests.
     pub anthropic_api: String,
-    /// The programs that write docs on the account signed in on this computer.
-    pub claude_program: String,
-    pub codex_program: String,
+    /// The cores of people's machines that are connected now.
+    pub cores: Arc<machines::Cores>,
     /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
 }
@@ -135,6 +135,11 @@ pub fn router(state: AppState) -> Router {
             delete(docs::end_share),
         )
         .route("/shares/{token}", get(docs::shared))
+        .route("/machines", get(machines::list).post(machines::pair))
+        .route("/machines/codes", post(machines::code))
+        .route("/machines/connect", get(machines::connect))
+        .route("/machines/{id}", delete(machines::remove))
+        .route("/machines/{id}/sign-in/{agent}", get(machines::sign_in))
         .route(
             "/teams/{id}/writer",
             put(writer::save).delete(writer::forget),

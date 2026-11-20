@@ -1,0 +1,96 @@
+//! What the server and a core say to each other over the core's WebSocket: JSON, one message a frame.
+
+use serde::{Deserialize, Serialize};
+
+/// The path the core's WebSocket is at, under the server's address.
+pub const CONNECT: &str = "/api/machines/connect";
+
+/// A coding agent's own program on a machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Agent {
+    Claude,
+    Codex,
+}
+
+impl Agent {
+    pub const ALL: [Agent; 2] = [Agent::Claude, Agent::Codex];
+
+    /// The program's name, which is also how the agent is written in an address.
+    pub fn program(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+
+    pub fn named(name: &str) -> Option<Agent> {
+        Agent::ALL.into_iter().find(|agent| agent.program() == name)
+    }
+}
+
+/// Whether an agent can be used on a machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ready {
+    /// Its program isn't on the machine.
+    Missing,
+    /// Its program is there, and nobody is signed in to it.
+    SignedOut,
+    SignedIn,
+}
+
+/// An agent as a machine finds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Found {
+    pub agent: Agent,
+    pub ready: Ready,
+}
+
+/// What a core tells the server.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FromCore {
+    /// The agents on the machine, sent on connecting and whenever it may have changed.
+    Agents { agents: Vec<Found> },
+    /// What an agent answered to an `Ask`, or why it didn't. Sent again after a dropped
+    /// connection until the server says `Taken`.
+    Answer {
+        id: String,
+        answer: Result<String, String>,
+    },
+    /// What a sign-in's terminal shows, as base64.
+    #[serde(rename = "terminal.data")]
+    TerminalData { agent: Agent, data: String },
+    /// The sign-in's command ended, or couldn't start.
+    #[serde(rename = "terminal.close")]
+    TerminalClose { agent: Agent },
+}
+
+/// What the server tells a core.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ToCore {
+    /// Have an agent answer one prompt, with no tools and none of the person's own settings.
+    Ask {
+        id: String,
+        agent: Agent,
+        /// Empty for the agent's cheap default.
+        model: String,
+        system: String,
+        prompt: String,
+    },
+    /// The server has the answer to this `Ask`, so the core may forget it.
+    Taken { id: String },
+    /// Start the agent's own sign-in in a terminal of this size. The core picks the command.
+    #[serde(rename = "terminal.open")]
+    TerminalOpen { agent: Agent, cols: u16, rows: u16 },
+    /// What the person typed, as base64.
+    #[serde(rename = "terminal.data")]
+    TerminalData { agent: Agent, data: String },
+    #[serde(rename = "terminal.size")]
+    TerminalSize { agent: Agent, cols: u16, rows: u16 },
+    /// The person closed the terminal.
+    #[serde(rename = "terminal.close")]
+    TerminalClose { agent: Agent },
+}

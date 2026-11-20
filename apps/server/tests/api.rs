@@ -4,11 +4,16 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Path, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, IF_NONE_MATCH, SET_COOKIE};
-use axum::http::{HeaderMap, Method, Request, StatusCode};
+use axum::http::header::{
+    AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, IF_NONE_MATCH, SET_COOKIE,
+};
+use axum::http::{HeaderMap, HeaderName, Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
 use tower::ServiceExt;
 use weacon_server::{AppState, db, map, router};
 
@@ -29,8 +34,7 @@ async fn server() -> AppState {
         github_api: "http://127.0.0.1:1".into(),
         map_wake: Arc::default(),
         anthropic_api: "http://127.0.0.1:1".into(),
-        claude_program: "false".into(),
-        codex_program: "false".into(),
+        cores: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
     }
 }
@@ -2007,12 +2011,12 @@ async fn the_team_owner_chooses_the_docs_writer() {
         marco.put(&ada.team("/writer"), with_key.clone()).await,
         StatusCode::FORBIDDEN
     );
-    // Marco owns team 2, but a program runs on the account of whoever runs the server.
+    // Marco owns team 2, and may have its docs written on the machines of whoever starts a run.
     assert_eq!(
         marco
             .put(&marco.team("/writer"), json!({"kind": "codex"}))
             .await,
-        StatusCode::FORBIDDEN
+        StatusCode::NO_CONTENT
     );
     assert_eq!(
         ada.put(&ada.team("/writer"), json!({"kind": "claude_api"}))
@@ -2135,24 +2139,325 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
 }
 
-#[tokio::test]
-async fn a_program_on_the_server_can_write_the_docs() {
-    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
-    let program = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fake_writer.sh");
-    ada.state.claude_program = program.into();
-    ada.state.codex_program = program.into();
+/// The server on a port of its own, for what needs a connection that stays open.
+async fn listening(state: &AppState) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap().to_string();
+    let app = router(state.clone());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    address
+}
 
-    for kind in ["claude_code", "codex"] {
-        ada.put(&ada.team("/writer"), json!({"kind": kind})).await;
-        let docs = written_docs(&mut ada).await;
-        assert_eq!(docs["state"], "idle", "{}", docs["message"]);
-        assert_eq!(docs["pages"][1]["title"], "Prices");
-        assert_eq!(docs["pages"][1]["markdown"], "Written by the program.");
+type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// Opens a WebSocket at `path` with one header, or gives the status it was refused with.
+async fn socket(
+    address: &str,
+    path: &str,
+    header: &(HeaderName, String),
+) -> Result<Socket, StatusCode> {
+    let mut request = format!("ws://{address}{path}")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert(header.0.clone(), header.1.parse().unwrap());
+    match connect_async(request).await {
+        Ok((socket, _)) => Ok(socket),
+        Err(tungstenite::Error::Http(refused)) => Err(refused.status()),
+        Err(error) => panic!("{error}"),
     }
+}
 
-    // A program that fails says why.
-    ada.state.codex_program = "false".into();
+/// The next message of a socket as JSON, or `None` once it is closed.
+async fn heard(socket: &mut Socket) -> Option<Value> {
+    let patience = std::time::Duration::from_secs(10);
+    loop {
+        let message = tokio::time::timeout(patience, socket.next()).await.unwrap();
+        match message {
+            Some(Ok(tungstenite::Message::Text(text))) => return serde_json::from_str(&text).ok(),
+            Some(Ok(tungstenite::Message::Close(_))) | Some(Err(_)) | None => return None,
+            Some(Ok(_)) => {}
+        }
+    }
+}
+
+async fn said(socket: &mut Socket, message: Value) {
+    let text = tungstenite::Message::Text(message.to_string().into());
+    socket.send(text).await.unwrap();
+}
+
+/// Stands in for a core: connects with a machine's token and says what agents it has.
+async fn core(address: &str, token: &str, ready: &str) -> Result<Socket, StatusCode> {
+    let bearer = (AUTHORIZATION, format!("Bearer {token}"));
+    let mut socket = socket(address, "/api/machines/connect", &bearer).await?;
+    let agents =
+        json!([{"agent": "claude", "ready": ready}, {"agent": "codex", "ready": "missing"}]);
+    said(&mut socket, json!({"type": "agents", "agents": agents})).await;
+    Ok(socket)
+}
+
+/// Pairs a machine for whoever the client is, and returns its token.
+async fn paired(client: &mut Client, name: &str) -> String {
+    let (status, code) = client.post("/api/machines/codes", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(code["server"], "http://weacon.test");
+    let pairing = json!({"code": code["code"], "name": name, "os": "linux"});
+    let (status, machine) = Client::new(&client.state)
+        .post("/api/machines", pairing)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    machine["token"].as_str().unwrap().to_owned()
+}
+
+/// The client's machines, once the first of them is connected or not, and its first agent ready or not, as asked.
+async fn machines(client: &mut Client, connected: bool, ready: Option<&str>) -> Value {
+    for _ in 0..200 {
+        let (_, machines) = client.get("/api/machines").await;
+        let agent = &machines[0]["agents"][0]["ready"];
+        if machines[0]["connected"] == connected && ready.is_none_or(|ready| agent == ready) {
+            return machines;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the machine never became connected: {connected}, with its agent {ready:?}");
+}
+
+#[tokio::test]
+async fn a_machine_is_paired_with_a_code_once_and_is_only_its_owner_s() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    let mut nobody = Client::new(&state);
+    let (status, _) = nobody.post("/api/machines/codes", Value::Null).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let (_, code) = ada.post("/api/machines/codes", Value::Null).await;
+    let pairing = json!({"code": code["code"], "name": " Ada's laptop ", "os": "macos"});
+    let unnamed = json!({"code": code["code"], "name": " ", "os": "macos"});
+    let (status, _) = nobody.post("/api/machines", unnamed).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, machine) = nobody.post("/api/machines", pairing.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let token = machine["token"].as_str().unwrap().to_owned();
+    // A code works once, and for ten minutes.
+    let (status, _) = nobody.post("/api/machines", pairing).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let old = sqlx::query!(
+        "INSERT INTO machine_codes (code, user_id, created_at) VALUES ('old', ?, unixepoch() - 601)",
+        ada.user_id
+    );
+    old.execute(&state.pool).await.unwrap();
+    let late = json!({"code": "old", "name": "Late", "os": "linux"});
+    let (status, _) = nobody.post("/api/machines", late).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    let (_, listed) = ada.get("/api/machines").await;
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    let laptop = &listed[0];
+    assert_eq!(
+        (&laptop["name"], &laptop["os"], &laptop["connected"]),
+        (&json!("Ada's laptop"), &json!("macos"), &json!(false))
+    );
+    assert_eq!(laptop["token"], Value::Null);
+    assert_eq!(marco.get("/api/machines").await.1, json!([]));
+    let machine = format!("/api/machines/{}", laptop["id"].as_str().unwrap());
+    assert_eq!(marco.delete(&machine).await, StatusCode::NOT_FOUND);
+
+    // A core gets a code for its own machine's owner, which is how it sets up a server of theirs.
+    let request = Request::post("/api/machines/codes")
+        .header(AUTHORIZATION, format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let answer = router(state.clone()).oneshot(request).await.unwrap();
+    let body = to_bytes(answer.into_body(), usize::MAX).await.unwrap();
+    let code: Value = serde_json::from_slice(&body).unwrap();
+    let pairing = json!({"code": code["code"], "name": "ada-box", "os": "linux"});
+    assert_eq!(
+        nobody.post("/api/machines", pairing).await.0,
+        StatusCode::OK
+    );
+    let (_, listed) = ada.get("/api/machines").await;
+    assert_eq!(listed[1]["name"], "ada-box");
+
+    assert_eq!(ada.delete(&machine).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        ada.get("/api/machines").await.1.as_array().unwrap().len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_core_connects_says_what_it_has_and_is_seen_until_it_leaves() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let address = listening(&state).await;
+    assert_eq!(
+        core(&address, "not-a-token", "signed_in").await.err(),
+        Some(StatusCode::UNAUTHORIZED)
+    );
+
+    let mut connected = core(&address, &token, "signed_out").await.unwrap();
+    let listed = machines(&mut ada, true, Some("signed_out")).await;
+    let found = json!({"agent": "claude", "ready": "signed_out"});
+    assert_eq!(listed[0]["agents"][0], found);
+    assert_eq!(listed[0]["name"], "Ada's laptop");
+
+    connected.close(None).await.unwrap();
+    let listed = machines(&mut ada, false, None).await;
+    assert!(listed[0]["seen_at"].is_i64());
+
+    // A removed machine's core is cut off, and refused when it comes back.
+    let mut connected = core(&address, &token, "signed_in").await.unwrap();
+    machines(&mut ada, true, None).await;
+    let machine = format!("/api/machines/{}", listed[0]["id"].as_str().unwrap());
+    assert_eq!(ada.delete(&machine).await, StatusCode::NO_CONTENT);
+    assert_eq!(heard(&mut connected).await, None);
+    assert_eq!(
+        core(&address, &token, "signed_in").await.err(),
+        Some(StatusCode::UNAUTHORIZED)
+    );
+}
+
+/// Answers what a stand-in core is asked, as the docs writer's answers go.
+fn answered(ask: &Value) -> Value {
+    let plan = json!({
+        "left_out": [], "works": [],
+        "built": [{"title": "Prices", "summary": "How prices are formatted.", "files": ["src/price.ts"]}],
+    });
+    let planning = ask["system"].as_str().unwrap().contains("Answer with JSON");
+    let text = if planning {
+        plan.to_string()
+    } else {
+        "Written on the machine.".to_owned()
+    };
+    json!({"type": "answer", "id": ask["id"], "answer": {"Ok": text}})
+}
+
+#[tokio::test]
+async fn docs_are_written_on_a_machine_of_whoever_starts_the_run() {
+    let (state, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    ada.put(&ada.team("/writer"), json!({"kind": "claude_code"}))
+        .await;
+
+    // Without a machine nothing is asked of anyone.
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["state"], "failed");
-    assert_eq!(docs["message"], "false failed: ");
+    assert_eq!(
+        docs["message"],
+        "Pair a machine of yours first, under Machines"
+    );
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let address = listening(&state).await;
+    let mut signed_out = core(&address, &token, "signed_out").await.unwrap();
+    machines(&mut ada, true, Some("signed_out")).await;
+    let docs = written_docs(&mut ada).await;
+    let message = "None of your machines is connected with claude signed in. Look under Machines";
+    assert_eq!(docs["message"], message);
+    signed_out.close(None).await.unwrap();
+    machines(&mut ada, false, None).await;
+
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    machines(&mut ada, true, Some("signed_in")).await;
+    let start = json!({"branch": "main"});
+    assert_eq!(
+        ada.post(&ada.project("/docs"), start).await.0,
+        StatusCode::ACCEPTED
+    );
+    let first = heard(&mut laptop).await.unwrap();
+    assert_eq!(
+        (&first["type"], &first["agent"]),
+        (&json!("ask"), &json!("claude"))
+    );
+
+    // The core goes away before it answers. Back again, it is asked the same and its answer is taken.
+    laptop.close(None).await.unwrap();
+    machines(&mut ada, false, None).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let again = heard(&mut laptop).await.unwrap();
+    assert_eq!(again["id"], first["id"]);
+    said(&mut laptop, answered(&again)).await;
+    assert_eq!(
+        heard(&mut laptop).await.unwrap(),
+        json!({"type": "taken", "id": first["id"]})
+    );
+    let answering = tokio::spawn(async move {
+        while let Some(message) = heard(&mut laptop).await {
+            if message["type"] == "ask" {
+                said(&mut laptop, answered(&message)).await;
+            }
+        }
+    });
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["state"], "idle", "{}", docs["message"]);
+    assert_eq!(docs["pages"][1]["title"], "Prices");
+    assert_eq!(docs["pages"][1]["markdown"], "Written on the machine.");
+    answering.abort();
+}
+
+#[tokio::test]
+async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core() {
+    let state = server().await;
+    let (mut ada, marco) = ada_and_marco(&state).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let address = listening(&state).await;
+    let listed = ada.get("/api/machines").await.1;
+    let terminal = format!(
+        "/api/machines/{}/sign-in/claude",
+        listed[0]["id"].as_str().unwrap()
+    );
+    let hers = (COOKIE, ada.cookie.clone().unwrap());
+
+    // Not while the machine is away, not for someone else, and not for an agent there isn't.
+    assert_eq!(
+        socket(&address, &terminal, &hers).await.err(),
+        Some(StatusCode::UNPROCESSABLE_ENTITY)
+    );
+    let mut laptop = core(&address, &token, "signed_out").await.unwrap();
+    machines(&mut ada, true, None).await;
+    let his = (COOKIE, marco.cookie.clone().unwrap());
+    assert_eq!(
+        socket(&address, &terminal, &his).await.err(),
+        Some(StatusCode::NOT_FOUND)
+    );
+    let shell = terminal.replace("claude", "bash");
+    assert_eq!(
+        socket(&address, &shell, &hers).await.err(),
+        Some(StatusCode::NOT_FOUND)
+    );
+
+    let mut browser = socket(&address, &terminal, &hers).await.unwrap();
+    let opened = json!({"type": "terminal.open", "agent": "claude", "cols": 80, "rows": 24});
+    assert_eq!(heard(&mut laptop).await.unwrap(), opened);
+    assert_eq!(
+        socket(&address, &terminal, &hers).await.err(),
+        Some(StatusCode::UNPROCESSABLE_ENTITY)
+    );
+
+    said(
+        &mut browser,
+        json!({"type": "size", "cols": 100, "rows": 30}),
+    )
+    .await;
+    said(&mut browser, json!({"type": "data", "data": "cGFzdGVk"})).await;
+    let sized = json!({"type": "terminal.size", "agent": "claude", "cols": 100, "rows": 30});
+    assert_eq!(heard(&mut laptop).await.unwrap(), sized);
+    let typed = json!({"type": "terminal.data", "agent": "claude", "data": "cGFzdGVk"});
+    assert_eq!(heard(&mut laptop).await.unwrap(), typed);
+    let shown = json!({"type": "terminal.data", "agent": "claude", "data": "T3BlbiB0aGlzIGxpbms="});
+    said(&mut laptop, shown).await;
+    let seen = json!({"type": "data", "data": "T3BlbiB0aGlzIGxpbms="});
+    assert_eq!(heard(&mut browser).await.unwrap(), seen);
+
+    // The sign-in's command ends, and so does the terminal; the core is told it is closed.
+    said(
+        &mut laptop,
+        json!({"type": "terminal.close", "agent": "claude"}),
+    )
+    .await;
+    assert_eq!(heard(&mut browser).await, None);
+    let closed = json!({"type": "terminal.close", "agent": "claude"});
+    assert_eq!(heard(&mut laptop).await.unwrap(), closed);
+    drop(socket(&address, &terminal, &hers).await.unwrap());
 }

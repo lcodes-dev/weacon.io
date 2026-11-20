@@ -78,7 +78,8 @@ pub async fn save(
         return Err(ApiError(StatusCode::CONFLICT, message.into()));
     }
     // The save doesn't wait for the writer's check of it.
-    if let Some(writer) = db::writer(&state.pool, &team_id).await? {
+    if let Some(mut writer) = db::writer(&state.pool, &team_id).await? {
+        writer.asker = user.id.clone();
         db::start_check(&state.pool, &page_id).await?;
         tokio::spawn(docs::check(state, writer, team_id, project_id, page_id));
     }

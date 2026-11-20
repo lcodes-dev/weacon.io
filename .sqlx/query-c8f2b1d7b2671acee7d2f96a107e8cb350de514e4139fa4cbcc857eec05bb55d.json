@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO machine_codes (code, user_id, created_at) VALUES ('old', ?, unixepoch() - 601)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "c8f2b1d7b2671acee7d2f96a107e8cb350de514e4139fa4cbcc857eec05bb55d"
+}

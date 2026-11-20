@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
 import { lazy, Suspense, useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { api, type Health, type MailConfig, type Project, type Team, type User } from "../api"
+import { agents, api, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { Machines } from "../routes/Machines"
 import { MailSettings } from "../routes/MailSettings"
 import { ProjectPage } from "../routes/Project"
 import { TeamSettings } from "../routes/TeamSettings"
@@ -10,7 +11,7 @@ import { TeamSettings } from "../routes/TeamSettings"
 // The docs page is the largest, so it is fetched when first opened.
 const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
 
-const sections = ["Your chats", "Direct", "Groups", "Machines"]
+const sections = ["Your chats", "Direct", "Groups"]
 
 export function Shell({ user }: { user: User }) {
   const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
@@ -41,6 +42,7 @@ export function Shell({ user }: { user: User }) {
             {section}
           </h2>
         ))}
+        <YourMachines />
         <div className="mt-auto flex flex-col gap-2">
           {user.is_owner && <OwnerMail />}
           <Account user={user} team={team} openTeam={openTeam} />
@@ -58,6 +60,7 @@ export function Shell({ user }: { user: User }) {
           />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
+          <Route path="/settings/machines" element={<Machines />} />
           {user.is_owner && <Route path="/settings/mail" element={<MailSettings />} />}
           <Route path="*" element={<p className="flex h-full items-center justify-center text-ink2">No chat open</p>} />
         </Routes>
@@ -82,6 +85,31 @@ function Projects({ team }: { team: Team }) {
       ))}
       <Link to="/projects/new" className="rounded-md px-2 py-1.5 text-ink2 hover:bg-hov">
         New project
+      </Link>
+    </nav>
+  )
+}
+
+/** Your machines, each with whether its core is connected and the agents ready on it. */
+function YourMachines() {
+  const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines"), refetchInterval: 5000 })
+  return (
+    <nav className="flex flex-col">
+      <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">Machines</h2>
+      {machines.data?.map((machine) => {
+        const ready = machine.agents.filter((found) => found.ready === "signed_in").map((found) => agents[found.agent].name)
+        return (
+          <Link key={machine.id} to="/settings/machines" className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-hov">
+            <span className={`size-2 shrink-0 rounded-full ${machine.connected ? "bg-ok" : "bg-fld"}`} />
+            <span className="flex min-w-0 flex-col">
+              <span className="truncate">{machine.name}</span>
+              <span className="truncate text-[12px] text-ink2">{machine.connected ? ready.join(", ") || "No agent signed in" : "Not connected"}</span>
+            </span>
+          </Link>
+        )
+      })}
+      <Link to="/settings/machines" className="rounded-md px-2 py-1.5 text-ink2 hover:bg-hov">
+        {machines.data?.length ? "Your machines" : "Add a machine"}
       </Link>
     </nav>
   )

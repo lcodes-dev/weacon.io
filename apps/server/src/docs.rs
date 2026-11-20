@@ -543,9 +543,11 @@ fn background(
     });
 }
 
-/// The team's writer and a run that holds the project, to write from `branch`, or why there is none.
+/// The team's writer, writing for `user`, and a run that holds the project, to write from
+/// `branch`, or why there is none.
 async fn claim(
     state: &AppState,
+    user: &User,
     team_id: &str,
     project_id: &str,
     branch: &str,
@@ -554,9 +556,10 @@ async fn claim(
     if commit.ok_or_else(crate::not_found)?.is_none() {
         return Err(refused("This branch isn't mapped yet"));
     }
-    let Some(writer) = db::writer(&state.pool, team_id).await? else {
+    let Some(mut writer) = db::writer(&state.pool, team_id).await? else {
         return Err(refused("Choose a docs writer in Team settings first"));
     };
+    writer.asker = user.id.clone();
     let run = rand::random::<u32>().into();
     if !db::claim_docs_run(&state.pool, project_id, run).await? {
         return Err(refused("The docs are already being written"));
@@ -577,7 +580,7 @@ pub async fn start(
     Json(start): Json<Start>,
 ) -> Result<StatusCode, ApiError> {
     membership(&user, &team_id)?;
-    let (writer, run) = claim(&state, &team_id, &project_id, &start.branch).await?;
+    let (writer, run) = claim(&state, &user, &team_id, &project_id, &start.branch).await?;
     background(state.pool.clone(), project_id.clone(), run, async move {
         generate(&state, &writer, &team_id, &project_id, run, &start.branch).await
     });
@@ -606,7 +609,7 @@ pub async fn ask(
     if request.text.trim().is_empty() {
         return Err(refused("Say what to change"));
     }
-    let (writer, run) = claim(&state, &team_id, &project_id, &request.branch).await?;
+    let (writer, run) = claim(&state, &user, &team_id, &project_id, &request.branch).await?;
     background(state.pool.clone(), project_id.clone(), run, async move {
         answer(&state, &writer, &team_id, &project_id, run, &request).await
     });

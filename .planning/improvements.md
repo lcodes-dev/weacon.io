@@ -49,3 +49,7 @@ Things noticed while working that could be better and that nobody has asked for.
 - **The code map could say why a line is there:** an import, a name in the same scope, or the guess. *(noted in plan 17)*
 - **Leaving the docs editor asks even when nothing was typed.** The editor could tell the page whether it holds changes. *(noted in plan 18)*
 - **The archive limit has no test,** since one would need an archive over 2 GB; the limit could be a setting of the reader so that a test can lower it. *(noted in plan 18)*
+- **A sign-in started from Weacon opens a browser on the machine too,** when it has a screen, since Claude Code's login does. The core could stop that for a person who isn't at the machine. *(noted in plan 19)*
+- **Asks and answers don't outlive a restart** of the core or the server. Chats will need them kept on disk. *(noted in plan 19)*
+- **A machine's token is kept as it is,** like a session's. Keeping only a hash would make a copy of the database useless for connecting as a machine. *(noted in plan 19)*
+- **A core doesn't say which version it is.** It could, so that the machines page shows it and says when a core is older than the server expects. *(noted in plan 19)*

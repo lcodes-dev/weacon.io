@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE machines SET seen_at = unixepoch(), agents = COALESCE(?, agents) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "af98822720b174813125d3d482796c129b9d6953d05a6cd1aa09e701748e3c42"
+}

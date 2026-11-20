@@ -32,8 +32,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         github_api: "https://api.github.com".into(),
         map_wake: Default::default(),
         anthropic_api: "https://api.anthropic.com".into(),
-        claude_program: "claude".into(),
-        codex_program: "codex".into(),
+        cores: Default::default(),
         files,
     };
     db::fail_interrupted_docs(&state.pool).await?;

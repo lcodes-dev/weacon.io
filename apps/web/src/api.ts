@@ -30,6 +30,26 @@ export type CodeMap = { commit: string | null; files: MapFile[]; uses: [string, 
 /** The team's GitHub App: its name, the account it is installed on, and the repositories it reaches. */
 export type Github = { app: string | null; account: string | null; repos: string[] }
 
+export type Agent = "claude" | "codex"
+
+/** What each agent is called, and its vendor's own installer for macOS, Linux and WSL. */
+export const agents = {
+  claude: { name: "Claude Code", installer: "curl -fsSL https://claude.ai/install.sh | bash" },
+  codex: { name: "Codex", installer: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
+}
+
+/** Your own computer or virtual machine, whose core runs agents for you. */
+export type Machine = {
+  id: string
+  name: string
+  os: "macos" | "linux"
+  /** What its core last said of its agents. */
+  agents: { agent: Agent; ready: "missing" | "signed_out" | "signed_in" }[]
+  seen_at: number | null
+  /** Whether its core is connected now. */
+  connected: boolean
+}
+
 export type Writer = { kind: "claude_api" | "claude_code" | "codex"; model: string | null; has_key: boolean }
 
 /** A project's generated docs, and the run that writes them. */
