@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT COALESCE(p.docs_branch, MIN(b.name)) AS \"branch: String\"\n           FROM projects p LEFT JOIN branches b ON b.project_id = p.id AND b.commit_sha IS NOT NULL\n           WHERE p.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "branch: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "49e5d9ef81578cd92200f4281b1bc527f7f1818d6f0dea57067b4241bf01a8bc"
+}

@@ -14,8 +14,10 @@ export function DocProposal(props: { path: string; proposal: Proposal; page?: Do
   const [left, setLeft] = useState<number[]>([])
   const done = (rejected?: Proposal) => queryClient.invalidateQueries({ queryKey: ["docs"] }).then(() => props.onDone(rejected))
   const accept = useMutation({
-    mutationFn: (markdown?: string) => api("POST", `${path}/docs/proposals/${proposal.id}`, { markdown }),
+    // The server refuses when the page is no longer at the version shown here.
+    mutationFn: (markdown?: string) => api("POST", `${path}/docs/proposals/${proposal.id}`, { markdown, version: page?.version }),
     onSuccess: () => done(),
+    onError: () => queryClient.invalidateQueries({ queryKey: ["docs"] }),
   })
   const reject = useMutation({
     mutationFn: () => api("DELETE", `${path}/docs/proposals/${proposal.id}`),

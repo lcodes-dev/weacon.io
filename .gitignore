@@ -6,3 +6,4 @@ apps/web/dist/
 
 # A database made by running the server from here with its default path.
 weacon.db*
+weacon.files/

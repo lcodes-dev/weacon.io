@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT f.path, b.scope AS \"scope!\"\n           FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob\n           WHERE f.project_id = ? AND f.branch = ? AND b.scope IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "path",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "branch_files",
+            "name": "path"
+          }
+        }
+      },
+      {
+        "name": "scope!",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "blobs",
+            "name": "scope"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "0b0dd8eb5a7842ee11773ccbb50a9d96c42561007d0f39c861e72f055aa0c8f9"
+}

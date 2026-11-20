@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::{Body, to_bytes};
 use axum::extract::{Path, State};
-use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, SET_COOKIE};
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE, COOKIE, IF_NONE_MATCH, SET_COOKIE};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -1338,10 +1338,18 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                     let text = if key == "odd-key" {
                         "} {".to_owned()
                     } else if system.contains("Someone asks for a change") {
-                        json!({
-                            "page": null, "section": "works", "title": "Refunds",
-                            "summary": "Getting money back.", "files": ["src/app.ts"],
-                        })
+                        // About a page that exists, a writer gives no set and no title.
+                        let page = prompt.split("The page they had open is ").nth(1);
+                        match page.and_then(|page| page.split(':').next()) {
+                            Some(page) => json!({
+                                "page": page, "section": null, "title": null,
+                                "summary": "Buying.", "files": ["src/app.ts"],
+                            }),
+                            None => json!({
+                                "page": null, "section": "works", "title": "Refunds",
+                                "summary": "Getting money back.", "files": ["src/app.ts"],
+                            }),
+                        }
                         .to_string()
                     } else if system.contains("Say which files") {
                         json!({"files": ["src/app.ts", "no/such.ts"]}).to_string()
@@ -1451,18 +1459,24 @@ async fn let_the_run_go_on(prompts: &Mutex<Vec<String>>) {
 }
 
 #[tokio::test]
-async fn changing_the_repository_removes_the_docs_and_stops_a_run_under_way() {
+async fn changing_the_repository_keeps_the_pages_and_stops_a_run_under_way() {
     let (mut ada, prompts) = docs_with_a_run_held_up().await;
     let project = json!({"name": "Storefront", "repo": "northwind/docs"});
     assert_eq!(
         ada.put(&ada.project(""), project).await,
         StatusCode::NO_CONTENT
     );
+    // People may have written in the pages, so they stay, without what tied them to the old repository.
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(
-        (&docs["state"], &docs["pages"]),
-        (&json!("idle"), &json!([]))
+        (&docs["state"], &docs["branch"], &docs["commit"]),
+        (&json!("idle"), &Value::Null, &Value::Null)
     );
+    let buy = &docs["pages"][1];
+    assert_eq!(buy["markdown"], "A page, citing `src/price.ts:1`.");
+    assert_eq!((&buy["files"], &buy["commit"]), (&json!([]), &Value::Null));
+    let history = format!("/docs/pages/{}/versions", buy["id"].as_str().unwrap());
+    assert_eq!(ada.get(&ada.project(&history)).await.0, StatusCode::OK);
 
     let_the_run_go_on(&prompts).await;
     let (_, after) = ada.get(&ada.project("/docs")).await;
@@ -1725,6 +1739,13 @@ async fn a_file_is_kept_for_its_team_and_served_by_a_link_whose_page_names_it() 
         (disposition.as_str(), bytes.as_slice()),
         ("inline", &png[..])
     );
+    // A browser that has the file asks before using its copy, and is told the copy is good.
+    let again = Request::get(format!("{public}/{shown}"))
+        .header(IF_NONE_MATCH, format!("\"{shown}\""))
+        .body(Body::empty())
+        .unwrap();
+    let answer = router(state.clone()).oneshot(again).await.unwrap();
+    assert_eq!(answer.status(), StatusCode::NOT_MODIFIED);
     // An attachment is downloaded and never shown, whatever it holds.
     let (status, kind, disposition, bytes) = fetched(&state, &format!("{public}/{attached}")).await;
     assert_eq!(
@@ -1770,10 +1791,7 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     let bought = &proposals[0];
     assert_eq!(bought["page"], buy["id"]);
     assert_eq!(bought["base"], before["pages"][1]["version"]);
-    assert_eq!(
-        bought["markdown"],
-        "A page, written again.\n\nWritten from: src/app.ts"
-    );
+    assert_eq!(bought["markdown"], "A page, written again.");
     assert_eq!(bought["reason"], "The code changed.");
     // Only the page a person edited gets a note on their words.
     assert_eq!(bought["notes"][0]["quote"], "By hand.");
@@ -1788,10 +1806,20 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(eve.delete(&proposal(bought)).await, StatusCode::NOT_FOUND);
 
+    // Accepted from a view of the page as it was before the edit, nothing happens and the proposal stays.
+    let stale = json!({"version": buy["version"]});
+    let (status, _) = ada.post(&proposal(bought), stale).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"], before["pages"]);
+    assert_eq!(docs["proposals"].as_array().unwrap().len(), 2);
+
     // Accepted whole, the text is the writer's; with some changes left out, the person's.
-    let (status, _) = ada.post(&proposal(&proposals[1]), json!({})).await;
+    let seen = json!({"version": before["pages"][2]["version"]});
+    let (status, _) = ada.post(&proposal(&proposals[1]), seen).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let mixed = json!({"markdown": "By hand, written again."});
+    let mixed =
+        json!({"version": before["pages"][1]["version"], "markdown": "By hand, written again."});
     ada.post(&proposal(bought), mixed).await;
     let (status, _) = ada.post(&proposal(bought), json!({})).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -1822,7 +1850,12 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
         ada.delete(&proposal(other.unwrap())).await,
         StatusCode::NO_CONTENT
     );
-    ada.post(&proposal(removal), json!({})).await;
+    // A page keeps the commit its text was written from, whatever a later run looked at.
+    assert_eq!(docs["commit"], "c2");
+    assert_eq!(docs["pages"][1]["commit"], "c1");
+    let seen = json!({"version": docs["pages"][2]["version"]});
+    let (status, _) = ada.post(&proposal(removal), seen).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let docs = settled_docs(&mut ada).await;
     let titles: Vec<&Value> = docs["pages"]
         .as_array()
@@ -1868,9 +1901,20 @@ async fn a_request_is_answered_with_one_proposal() {
     ada.post(&accept, json!({})).await;
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(docs["pages"][3]["title"], "Refunds");
+    assert_eq!(docs["pages"][3]["markdown"], "A new page.");
+    assert_eq!(docs["pages"][3]["files"], json!(["src/app.ts"]));
+    assert_eq!(docs["pages"][3]["commit"], "c1");
+
+    // A request made with a page open is about that page.
+    let buy = docs["pages"][1].clone();
+    let request = json!({"text": "Say more", "branch": "main", "page": buy["id"]});
+    assert_eq!(ada.post(&requests, request).await.0, StatusCode::ACCEPTED);
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["state"], "idle");
+    let proposal = &docs["proposals"][0];
     assert_eq!(
-        docs["pages"][3]["markdown"],
-        "A new page.\n\nWritten from: src/app.ts"
+        (&proposal["page"], &proposal["section"], &proposal["title"]),
+        (&buy["id"], &json!("works"), &json!("Buy"))
     );
 }
 
@@ -1903,6 +1947,14 @@ async fn a_person_s_edit_is_checked_against_the_code() {
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(docs["pages"][1]["notes"], json!([]));
 
+    // Words that look like the line a run once put under a page are part of the text, and shared whole.
+    let text = "By hand.\n\nWritten from: memory.\n\nAnd more.";
+    let edit = json!({"title": "Buy", "markdown": text, "version": docs["pages"][1]["version"]});
+    ada.put(&page, edit).await;
+    let (_, share) = ada.post(&ada.project("/shares"), Value::Null).await;
+    let public = format!("/api/shares/{}", share["token"].as_str().unwrap());
+    assert_eq!(ada.get(&public).await.1["pages"][0]["markdown"], text);
+
     // A page a person made is checked too, against the files the writer says it is about.
     let new = json!({"section": "works", "title": "Returns"});
     let (_, added) = ada.post(&ada.project("/docs/pages"), new).await;
@@ -1913,6 +1965,24 @@ async fn a_person_s_edit_is_checked_against_the_code() {
     ada.put(&page, edit).await;
     let docs = settled_docs(&mut ada).await;
     assert_eq!(docs["pages"][3]["notes"], json!([note]));
+}
+
+#[tokio::test]
+async fn a_page_written_before_any_run_is_checked_against_a_mapped_branch() {
+    let (_, mut ada, _) = mapped_project(&[("src/app.ts", APP_TS)]).await;
+    ada.state.anthropic_api = fake_anthropic().await.0;
+    let writer = json!({"kind": "claude_api", "key": "good-key"});
+    ada.put(&ada.team("/writer"), writer).await;
+    let new = json!({"section": "works", "title": "Returns"});
+    let (_, added) = ada.post(&ada.project("/docs/pages"), new).await;
+    let page = ada.project(&format!("/docs/pages/{}", added["id"].as_str().unwrap()));
+    let docs = settled_docs(&mut ada).await;
+    let edit =
+        json!({"title": "Returns", "markdown": "By hand.", "version": docs["pages"][0]["version"]});
+    ada.put(&page, edit).await;
+    let docs = settled_docs(&mut ada).await;
+    assert_eq!(docs["pages"][0]["notes"][0]["quote"], "By hand.");
+    assert_eq!(docs["pages"][0]["files"], json!(["src/app.ts"]));
 }
 
 #[tokio::test]
@@ -2031,9 +2101,12 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
         ]
     );
     assert_eq!(docs["pages"][0]["markdown"], "The overview.");
+    // What a page was written from is kept beside its text, not in it.
+    let buy = &docs["pages"][1];
+    assert_eq!(buy["markdown"], "A page, citing `src/price.ts:1`.");
     assert_eq!(
-        docs["pages"][1]["markdown"],
-        "A page, citing `src/price.ts:1`.\n\nWritten from: src/app.ts"
+        (&buy["files"], &buy["unread"], &buy["commit"]),
+        (&json!(["src/app.ts"]), &json!([]), &json!("c1"))
     );
 
     // The outline, one prompt per page with only that page's own files, then the overview.

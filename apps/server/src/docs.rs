@@ -22,10 +22,6 @@ const OUTLINE_CHARS: usize = 400_000;
 /// More symbols than this in one file say little, as in a minified bundle.
 const SYMBOLS_PER_FILE: usize = 40;
 
-/// What a run adds under a page about its files.
-const WRITTEN_FROM: &str = "\n\nWritten from: ";
-const NOT_READ: &str = "\n\nNot read, for lack of room: ";
-
 const WRITING: &str = "\
 Write for a person. Use plain sentences and short paragraphs, explain a term the first time you \
 use it, and start with what the reader most needs. Leave out anything that only restates the code.
@@ -193,16 +189,15 @@ struct Planned {
     files: Vec<String>,
 }
 
-/// Which page a request is about.
+/// Which page a request is about. A writer leaves out, or gives as null, what it has nothing
+/// to say about, such as the set of a page that exists.
 #[derive(Deserialize)]
 struct Target {
     page: Option<String>,
-    #[serde(default)]
-    section: String,
-    title: String,
-    summary: String,
-    #[serde(default)]
-    files: Vec<String>,
+    section: Option<String>,
+    title: Option<String>,
+    summary: Option<String>,
+    files: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Default)]
@@ -288,9 +283,9 @@ async fn sources(
     branch: &str,
 ) -> Result<Sources, String> {
     let sources = db::sources(&state.pool, team_id, project_id, branch).await;
-    let (map, texts) = sources.map_err(broken)?.ok_or("This branch isn't mapped")?;
-    let commit = map.commit.ok_or("This branch isn't mapped yet")?;
-    let outline = outline(&map.files);
+    let (commit, files, texts) = sources.map_err(broken)?.ok_or("This branch isn't mapped")?;
+    let commit = commit.ok_or("This branch isn't mapped yet")?;
+    let outline = outline(&files);
     if outline.len() > OUTLINE_CHARS {
         return Err("This repository is too large to write docs for yet".into());
     }
@@ -342,12 +337,10 @@ async fn write_page(
     }
     if let Some(current) = brief.current {
         write!(system, "\n\n{UPDATING}").ok();
-        let now = without_files(&current.markdown);
-        write!(prompt, "\n\nThe page as it is now:\n{now}").ok();
+        write!(prompt, "\n\nThe page as it is now:\n{}", current.markdown).ok();
         match current.written.as_deref() {
             Some(written) if written == current.markdown => {}
             Some(written) => {
-                let written = without_files(written);
                 write!(prompt, "\n\nThe page as you last wrote it:\n{written}").ok();
             }
             None => prompt.push_str("\n\nA person wrote the whole page."),
@@ -361,14 +354,8 @@ async fn write_page(
     let answer = writer.ask(state, &system, &prompt).await?;
     let (page, tail) = answer.split_once("---REASON---").unwrap_or((&answer, ""));
     let (reason, noted) = tail.split_once("---NOTES---").unwrap_or((tail, ""));
-    let mut markdown = if tailed { page.trim() } else { page }.to_owned();
+    let markdown = if tailed { page.trim() } else { page }.to_owned();
     files.retain(|path| !unread.contains(path));
-    if brief.section == "works" && !files.is_empty() {
-        write!(markdown, "{WRITTEN_FROM}{}", files.join(", ")).ok();
-    }
-    if !unread.is_empty() {
-        write!(markdown, "{NOT_READ}{}", unread.join(", ")).ok();
-    }
     let reason = Some(reason.trim()).filter(|reason| !reason.is_empty());
     Ok(Written {
         doc: brief
@@ -378,6 +365,7 @@ async fn write_page(
         title: brief.title.to_owned(),
         markdown: Some(markdown),
         files: json!(files).to_string(),
+        unread: json!(unread).to_string(),
         notes: notes(noted),
         reason: reason.unwrap_or(brief.covers).to_owned(),
     })
@@ -492,6 +480,7 @@ async fn generate(
             title: "Overview".to_owned(),
             markdown: Some(overview),
             files: "[]".into(),
+            unread: "[]".into(),
             notes: "[]".into(),
             reason: "Written again from the pages as they would be".into(),
         },
@@ -522,6 +511,7 @@ async fn generate(
                 title: doc.title.clone(),
                 markdown: None,
                 files: "[]".into(),
+                unread: "[]".into(),
                 notes: "[]".into(),
                 reason: "The files it was written from are no longer in the repository".into(),
             });
@@ -529,8 +519,8 @@ async fn generate(
     }
 
     let left_out = json!(plan.left_out).to_string();
-    let from = Some((branch, sources.commit.as_str(), left_out.as_str()));
-    let saved = db::save_written(&state.pool, project_id, run, from, None, &pages);
+    let (commit, from) = (&sources.commit, Some((branch, left_out.as_str())));
+    let saved = db::save_written(&state.pool, project_id, run, commit, from, None, &pages);
     saved.await.map_err(broken)
 }
 
@@ -649,8 +639,8 @@ async fn answer(
     }
     let open = |id: &String| existing.iter().find(|doc| doc.id == *id);
     if let Some(open) = request.page.as_ref().and_then(open) {
-        let text = without_files(&open.markdown);
-        write!(prompt, "\nThe page they had open is {}:\n{text}\n", open.id).ok();
+        let (id, text) = (&open.id, &open.markdown);
+        write!(prompt, "\nThe page they had open is {id}:\n{text}\n").ok();
     }
     write!(prompt, "\nRepository outline:\n{}", sources.outline).ok();
     let found = writer.ask(state, REQUEST, &prompt).await?;
@@ -659,16 +649,16 @@ async fn answer(
 
     progress(state, project_id, run, "Writing the page".into()).await?;
     let current = target.page.as_ref().and_then(open);
-    let new = if target.section == "works" {
-        "works"
-    } else {
-        "built"
+    let new = match target.section.as_deref() {
+        Some("works") => "works",
+        _ => "built",
     };
+    let title = current.map(|doc| &doc.title).or(target.title.as_ref());
     let brief = Brief {
         section: current.map_or(new, |doc| &doc.section),
-        title: current.map_or(&target.title, |doc| &doc.title),
-        covers: &target.summary,
-        files: &target.files,
+        title: title.ok_or("The writer didn't say which page to write")?,
+        covers: target.summary.as_deref().unwrap_or(&asked),
+        files: target.files.as_deref().unwrap_or_default(),
         left_out: &[],
         current,
         request: Some(&asked),
@@ -677,8 +667,8 @@ async fn answer(
     if current.map(|doc| &doc.markdown) == page.markdown.as_ref() {
         return Err("The writer found nothing to change".into());
     }
-    let (asked, pages) = (Some(request.text.trim()), [page]);
-    let saved = db::save_written(&state.pool, project_id, run, None, asked, &pages);
+    let (commit, asked, pages) = (&sources.commit, Some(request.text.trim()), [page]);
+    let saved = db::save_written(&state.pool, project_id, run, commit, None, asked, &pages);
     saved.await.map_err(broken)
 }
 
@@ -701,13 +691,12 @@ pub async fn check(
         if doc.written.as_ref() == Some(&doc.markdown) {
             return Ok((doc.files.clone(), "[]".to_owned()));
         }
-        let status = db::docs_status(&state.pool, &team_id, &project_id).await;
-        let branch = status.map_err(broken)?.and_then(|status| status.branch);
-        let branch = branch.ok_or("The docs haven't been written from a branch yet")?;
+        let branch = db::check_branch(&state.pool, &project_id).await;
+        let branch = branch.map_err(broken)?.ok_or("No branch is mapped yet")?;
         let sources = sources(&state, &team_id, &project_id, &branch).await?;
         let mut files: Vec<String> = serde_json::from_str(&doc.files).unwrap_or_default();
         files.retain(|path| sources.texts.contains_key(path));
-        let page = format!("The page, {}:\n{}", doc.title, without_files(&doc.markdown));
+        let page = format!("The page, {}:\n{}", doc.title, doc.markdown);
         // A page a person made has no files yet, so the writer says which it is about.
         if files.is_empty() {
             let prompt = format!("{page}\n\nRepository outline:\n{}", sources.outline);
@@ -720,7 +709,6 @@ pub async fn check(
         files.retain(|path| !unread.contains(path));
         let mut prompt = format!("{page}\n\nThe files it is about:\n{code}");
         if let Some(written) = &doc.written {
-            let written = without_files(written);
             write!(prompt, "\nThe page as you last wrote it:\n{written}").ok();
         }
         let answer = writer.ask(&state, CHECK, &prompt).await?;
@@ -757,13 +745,6 @@ pub async fn show(
     })))
 }
 
-/// A page without the lines a run added about its files, which a public link must not show.
-fn without_files(markdown: &str) -> &str {
-    let added = [WRITTEN_FROM, NOT_READ];
-    let ends = added.iter().filter_map(|line| markdown.rfind(line));
-    &markdown[..ends.min().unwrap_or(markdown.len())]
-}
-
 /// Makes a public link to a copy of the project's user docs.
 pub async fn share(
     State(state): State<AppState>,
@@ -775,7 +756,7 @@ pub async fn share(
     let pages: Vec<(&str, &str)> = pages
         .iter()
         .filter(|page| page.section == "works")
-        .map(|page| (page.title.as_str(), without_files(&page.markdown)))
+        .map(|page| (page.title.as_str(), page.markdown.as_str()))
         .collect();
     if pages.is_empty() {
         return Err(refused("This project has no user docs to share"));

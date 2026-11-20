@@ -6,8 +6,10 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::language;
 
-/// Words that stand for a folder in an import: `crate::db`, `@/lib/api`.
-const ROOTS: [&str; 5] = ["crate", "self", "super", "@", "~"];
+/// Words that stand for a folder above the importing file in an import: `crate::db`, `@/lib/api`.
+const ABOVE: [&str; 3] = ["crate", "@", "~"];
+/// Words that stand for a folder near it.
+const NEAR: [&str; 2] = ["self", "super"];
 
 /// A file of a branch, with what was read from it.
 pub struct File {
@@ -164,8 +166,8 @@ impl<'a> Index<'a> {
     }
 
     /// The file or folder that a path means to the file `from`. With `ending`, the path may be
-    /// the end of a longer one.
-    fn place(&self, from: usize, path: &str, ending: bool) -> Option<Found> {
+    /// the end of a longer one; with `above`, the highest such file over `from` is meant.
+    fn place(&self, from: usize, path: &str, ending: bool, above: bool) -> Option<Found> {
         let last = path.rsplit('/').next().unwrap_or(path);
         let fits = |place: &&Place| {
             let whole = place.path == path;
@@ -178,17 +180,32 @@ impl<'a> Index<'a> {
                 .is_none_or(|file| place.exact || self.families[file] == self.families[from]);
             (whole || ends) && reachable
         };
-        let places: Vec<&Place> = self.paths.get(last)?.iter().filter(fits).collect();
+        let places: Vec<&Place> = (self.paths.get(last).into_iter().flatten())
+            .filter(fits)
+            .collect();
+        // What stands before the path in a place's own, when that is a folder over `from`.
+        let over = |place: &&&Place| {
+            let before = &place.path[..place.path.len() - path.len()];
+            format!("{}/", self.folders[from]).starts_with(before)
+        };
+        let highest = places.iter().filter(|place| above && place.file.is_some());
+        let highest = highest.filter(over).min_by_key(|place| place.path.len());
         let files = places.iter().filter_map(|place| place.file);
-        if let Some(file) = self.nearest(from, files) {
+        let file = highest.and_then(|place| place.file);
+        if let Some(file) = file.or_else(|| self.nearest(from, files)) {
             return Some(Found::File(file));
         }
         // A folder stands for the files in it, as a package does in Go.
-        let folder = places.first()?.path;
-        let inside = self
-            .scopes
-            .get(&(self.families[from], format!("/{folder}")))?;
-        Some(Found::All(inside.clone()))
+        if let Some(folder) = places.first() {
+            let inside = self
+                .scopes
+                .get(&(self.families[from], format!("/{}", folder.path)))?;
+            return Some(Found::All(inside.clone()));
+        }
+        // TypeScript names the file it will become: `./price.js` is `price.ts`.
+        let (stem, _) = path.rsplit_once('.')?;
+        let same = language(path).is_some_and(|language| language.family == self.families[from]);
+        (same && !stem.ends_with('/')).then(|| self.place(from, stem, ending, above))?
     }
 
     /// What an import of the file `from` leads to.
@@ -201,9 +218,11 @@ impl<'a> Index<'a> {
             (language.separator != "/" && parts.len() > 1).then(|| &parts[..parts.len() - 1]);
         [&parts[..]].into_iter().chain(shorter).find_map(|parts| {
             let name = parts.join("/");
-            // A file may define the very name it imports, as `mod db;` does in Rust.
+            // A file that defines the very name it imports only says where it is, as `mod db;`
+            // does in Rust, so the name is then looked for as a path.
+            let declared = self.files[from].names.contains(&name);
             let named = self.named.get(&name).into_iter().flatten();
-            let named: Vec<usize> = named.copied().filter(|file| *file != from).collect();
+            let named: Vec<usize> = named.copied().filter(|_| !declared).collect();
             // Of two files that define it, the one whose path follows the name further is meant:
             // `App\Models\User` is `app/Models/User.php` before it is `Models/User.php`.
             let follows = |file: &usize| {
@@ -226,7 +245,7 @@ impl<'a> Index<'a> {
                 return Some(Found::All(files.clone()));
             }
             let beside = tidy(self.folders[from], parts);
-            if let Some(found) = self.place(from, &beside, false) {
+            if let Some(found) = self.place(from, &beside, false, false) {
                 return Some(found);
             }
             if parts
@@ -235,17 +254,20 @@ impl<'a> Index<'a> {
             {
                 return None;
             }
-            if let Some(found) = self.place(from, &name, false) {
+            if let Some(found) = self.place(from, &name, false, false) {
                 return Some(found);
             }
             // One part alone could be anything, unless a word for a folder came before it.
             // Dart names a package the same way: `package:shop/price.dart`.
-            let root = |part: &&String| ROOTS.contains(&part.as_str()) || part.contains(':');
+            let above = parts.first().is_some_and(|part| ABOVE.contains(&&**part));
+            let root = |part: &&String| {
+                ABOVE.contains(&&***part) || NEAR.contains(&&***part) || part.contains(':')
+            };
             let rooted = parts.iter().take_while(root).count();
             let least = if rooted > 0 { 1 } else { 2 };
             (rooted..parts.len())
                 .take_while(|start| parts.len() - start >= least)
-                .find_map(|start| self.place(from, &parts[start..].join("/"), true))
+                .find_map(|start| self.place(from, &parts[start..].join("/"), true, above))
         })
     }
 }

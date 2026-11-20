@@ -533,3 +533,44 @@ fn other_people_s_code_is_not_read() {
     let read = read("vendor/acme/Tool.php", b"<?php\nclass Tool {}");
     assert_eq!((read.lines, read.symbols.len(), read.text), (2, 0, None));
 }
+
+#[test]
+fn an_import_from_the_root_finds_the_file_highest_above() {
+    let found = lines(&[
+        ("app/src/lib.rs", "mod price;\nmod cart;"),
+        ("app/src/price.rs", "pub fn format() {}"),
+        ("app/src/cart/mod.rs", "mod price;\nmod total;"),
+        ("app/src/cart/price.rs", "pub fn format() {}"),
+        (
+            "app/src/cart/total.rs",
+            "use crate::price::format;\nuse super::price as near;",
+        ),
+        ("web/src/lib/api.ts", "export const get = 1"),
+        ("web/src/pages/lib/api.ts", "export const get = 2"),
+        ("web/src/pages/Home.ts", "import { get } from '@/lib/api'"),
+    ]);
+    assert_eq!(
+        found,
+        [
+            "app/src/lib.rs -> app/src/price.rs",
+            "app/src/lib.rs -> app/src/cart/mod.rs",
+            "app/src/cart/mod.rs -> app/src/cart/price.rs",
+            "app/src/cart/mod.rs -> app/src/cart/total.rs",
+            "app/src/cart/total.rs -> app/src/price.rs",
+            "app/src/cart/total.rs -> app/src/cart/price.rs",
+            "web/src/pages/Home.ts -> web/src/lib/api.ts",
+        ]
+    );
+}
+
+#[test]
+fn typescript_names_a_file_by_what_it_becomes() {
+    let found = lines(&[
+        ("src/price.ts", "export const price = 1"),
+        (
+            "src/cart.ts",
+            "import './price.js'\nimport { x } from './missing.js'",
+        ),
+    ]);
+    assert_eq!(found, ["src/cart.ts -> src/price.ts"]);
+}

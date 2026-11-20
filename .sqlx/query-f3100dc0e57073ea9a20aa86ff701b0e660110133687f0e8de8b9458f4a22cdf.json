@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT d.id, d.section, d.title, d.markdown, d.files, d.notes,\n                  d.checking AS \"checking: bool\",\n                  (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = d.id) AS \"version!\",\n                  (SELECT v.markdown FROM doc_versions v\n                   WHERE v.doc_id = d.id AND v.author IS NULL\n                   ORDER BY v.id DESC LIMIT 1) AS written\n           FROM docs d WHERE d.project_id = ? ORDER BY d.position",
+  "query": "SELECT d.id, d.section, d.title, d.markdown, d.files, d.unread, d.notes,\n                  d.commit_sha AS \"commit\", d.checking AS \"checking: bool\",\n                  (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = d.id) AS \"version!\",\n                  (SELECT v.markdown FROM doc_versions v\n                   WHERE v.doc_id = d.id AND v.author IS NULL\n                   ORDER BY v.id DESC LIMIT 1) AS written\n           FROM docs d WHERE d.project_id = ? ORDER BY d.position",
   "describe": {
     "columns": [
       {
@@ -59,8 +59,19 @@
         }
       },
       {
-        "name": "notes",
+        "name": "unread",
         "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "unread"
+          }
+        }
+      },
+      {
+        "name": "notes",
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -70,8 +81,19 @@
         }
       },
       {
+        "name": "commit",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "commit_sha"
+          }
+        }
+      },
+      {
         "name": "checking: bool",
-        "ordinal": 6,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -82,13 +104,13 @@
       },
       {
         "name": "version!",
-        "ordinal": 7,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "name": "written",
-        "ordinal": 8,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -107,11 +129,13 @@
       false,
       false,
       false,
+      false,
+      true,
       true,
       false,
       true,
       true
     ]
   },
-  "hash": "243375946183430f53705fc5892114dfe678bb5c5eacb9624956206e707713ed"
+  "hash": "f3100dc0e57073ea9a20aa86ff701b0e660110133687f0e8de8b9458f4a22cdf"
 }

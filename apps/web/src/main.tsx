@@ -1,13 +1,15 @@
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query"
-import { StrictMode } from "react"
+import { lazy, StrictMode, Suspense } from "react"
 import { createRoot } from "react-dom/client"
 import { BrowserRouter, Route, Routes } from "react-router"
 import { api, type Session } from "./api"
 import "./app.css"
 import { Shell } from "./components/Shell"
 import { Invite } from "./routes/Invite"
-import { Shared } from "./routes/Shared"
 import { SignIn } from "./routes/SignIn"
+
+// A public link's page shares little with the rest, so it is fetched when one is opened.
+const Shared = lazy(() => import("./routes/Shared").then((module) => ({ default: module.Shared })))
 
 function App() {
   const session = useQuery({ queryKey: ["session"], queryFn: () => api<Session>("GET", "/session") })
@@ -25,7 +27,14 @@ function App() {
   return (
     <Routes>
       <Route path="/invite/:token" element={<Invite user={user} />} />
-      <Route path="/shared/:token" element={<Shared />} />
+      <Route
+        path="/shared/:token"
+        element={
+          <Suspense>
+            <Shared />
+          </Suspense>
+        }
+      />
       <Route path="*" element={user ? <Shell user={user} /> : <SignIn setup={setup_needed} />} />
     </Routes>
   )

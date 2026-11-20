@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "DELETE FROM proposals\n         WHERE id = ? AND project_id = (SELECT id FROM projects WHERE team_id = ? AND id = ?)\n         RETURNING doc_id, section, title, markdown, files",
+  "query": "DELETE FROM proposals\n         WHERE id = ? AND project_id = (SELECT id FROM projects WHERE team_id = ? AND id = ?)\n         RETURNING doc_id, section, title, markdown, files, unread, commit_sha",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,28 @@
             "name": "files"
           }
         }
+      },
+      {
+        "name": "unread",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "unread"
+          }
+        }
+      },
+      {
+        "name": "commit_sha",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "commit_sha"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +89,10 @@
       false,
       false,
       true,
-      false
+      false,
+      false,
+      true
     ]
   },
-  "hash": "bb0beba8a80bb6786d13d8eb2e6a5a1e996830d005034ce0c030ad1fc8edc91a"
+  "hash": "78f12cf424fec5d983ffbc115605f8741020fbfff4fc90d12e924ef1cc6a8163"
 }

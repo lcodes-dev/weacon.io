@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, doc_id AS page, base, section, title, markdown, notes AS \"notes?\",\n                  reason, request\n           FROM proposals WHERE project_id = ? ORDER BY id",
+  "query": "SELECT id, doc_id AS page, base, section, title, markdown, notes AS \"notes?\",\n                  unread, reason, request\n           FROM proposals WHERE project_id = ? ORDER BY id",
   "describe": {
     "columns": [
       {
@@ -81,8 +81,19 @@
         }
       },
       {
-        "name": "reason",
+        "name": "unread",
         "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "unread"
+          }
+        }
+      },
+      {
+        "name": "reason",
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "request",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,8 +126,9 @@
       true,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "b81ed5afc4ab40bc09a31c5543657b7decf055e8a89ef6f2493844f1973db585"
+  "hash": "f5cad45704e102172f141007f2d66475771ecc8efb3ab7655d9308b959ca7c79"
 }

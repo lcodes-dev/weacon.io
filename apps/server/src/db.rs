@@ -596,10 +596,18 @@ pub async fn update_project(
     )
     .execute(&mut *tx)
     .await?;
-    // Another repository's maps and docs say nothing about this one.
+    // Another repository's maps say nothing about this one. The pages stay, since people wrote
+    // in them, without what tied them to the old repository.
     let moved = old_repo.as_deref() != repo;
     if moved {
-        sqlx::query!("DELETE FROM docs WHERE project_id = ?", project_id)
+        sqlx::query!(
+            "UPDATE docs SET files = '[]', unread = '[]', commit_sha = NULL, notes = NULL, checking = 0
+             WHERE project_id = ?",
+            project_id
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query!("DELETE FROM proposals WHERE project_id = ?", project_id)
             .execute(&mut *tx)
             .await?;
         sqlx::query!(
@@ -885,18 +893,27 @@ pub async fn map(
 ) -> sqlx::Result<Option<Map>> {
     // One transaction, so that a map saved meanwhile can't mix into this one.
     let mut tx = pool.begin().await?;
-    read_map(&mut tx, team_id, project_id, branch).await
+    let Some((commit, files)) = read_files(&mut tx, team_id, project_id, branch).await? else {
+        return Ok(None);
+    };
+    let uses = uses(&mut tx, project_id, branch, &files).await?;
+    Ok(Some(Map {
+        commit,
+        files,
+        uses,
+    }))
 }
 
-/// A branch's map with the text of its text files by path, both as they were at one moment.
+/// A branch's commit, its files with their symbols, and the text of its text files by path,
+/// all as they were at one moment. Which file uses which is left out: the docs writer has no use for it.
 pub async fn sources(
     pool: &SqlitePool,
     team_id: &str,
     project_id: &str,
     branch: &str,
-) -> sqlx::Result<Option<(Map, HashMap<String, String>)>> {
+) -> sqlx::Result<Option<(Option<String>, Vec<MapFile>, HashMap<String, String>)>> {
     let mut tx = pool.begin().await?;
-    let Some(map) = read_map(&mut tx, team_id, project_id, branch).await? else {
+    let Some((commit, files)) = read_files(&mut tx, team_id, project_id, branch).await? else {
         return Ok(None);
     };
     let texts = sqlx::query!(
@@ -909,21 +926,21 @@ pub async fn sources(
     .fetch_all(&mut *tx)
     .await?;
     let texts = texts.into_iter().map(|row| (row.path, row.text)).collect();
-    Ok(Some((map, texts)))
+    Ok(Some((commit, files, texts)))
 }
 
-async fn read_map(
+/// A branch's commit and its files with their symbols, in the order of their paths.
+async fn read_files(
     tx: &mut sqlx::SqliteConnection,
     team_id: &str,
     project_id: &str,
     branch: &str,
-) -> sqlx::Result<Option<Map>> {
+) -> sqlx::Result<Option<(Option<String>, Vec<MapFile>)>> {
     let Some(commit) = branch_commit(&mut *tx, team_id, project_id, branch).await? else {
         return Ok(None);
     };
-
     let files = sqlx::query!(
-        "SELECT f.path, b.lines, b.scope
+        "SELECT f.path, b.lines
          FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
          WHERE f.project_id = ? AND f.branch = ? ORDER BY f.path",
         project_id,
@@ -935,6 +952,45 @@ async fn read_map(
         "SELECT f.path, s.name, s.kind, s.line, s.end_line
          FROM branch_files f JOIN blob_symbols s ON s.project_id = f.project_id AND s.blob = f.blob
          WHERE f.project_id = ? AND f.branch = ? ORDER BY s.line",
+        project_id,
+        branch
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut by_path: HashMap<String, Vec<Symbol>> = HashMap::new();
+    for row in symbols {
+        let symbol = Symbol {
+            name: row.name,
+            kind: row.kind,
+            line: row.line,
+            end_line: row.end_line,
+        };
+        by_path.entry(row.path).or_default().push(symbol);
+    }
+    let files = files
+        .into_iter()
+        .map(|file| MapFile {
+            symbols: by_path.remove(&file.path).unwrap_or_default(),
+            language: code_map::language(&file.path).map(|language| language.name),
+            path: file.path,
+            lines: file.lines,
+        })
+        .collect();
+    Ok(Some((commit, files)))
+}
+
+/// The pairs of a file and a file it uses. It depends on where each file sits, so it is
+/// worked out when asked for, not kept.
+async fn uses(
+    tx: &mut sqlx::SqliteConnection,
+    project_id: &str,
+    branch: &str,
+    files: &[MapFile],
+) -> sqlx::Result<Vec<(String, String)>> {
+    let scopes = sqlx::query!(
+        r#"SELECT f.path, b.scope AS "scope!"
+           FROM branch_files f JOIN blobs b ON b.project_id = f.project_id AND b.blob = f.blob
+           WHERE f.project_id = ? AND f.branch = ? AND b.scope IS NOT NULL"#,
         project_id,
         branch
     )
@@ -959,55 +1015,30 @@ async fn read_map(
     .fetch_all(&mut *tx)
     .await?;
 
-    // Which file uses which depends on where each file sits, so it is worked out here, not kept.
     let place: HashMap<&str, usize> = (files.iter().map(|file| &*file.path)).zip(0..).collect();
     let mut read: Vec<code_map::File> = files
         .iter()
         .map(|file| code_map::File {
             path: file.path.clone(),
-            scope: file.scope.clone(),
-            names: Vec::new(),
+            scope: None,
+            names: (file.symbols.iter().map(|symbol| symbol.name.clone())).collect(),
             imports: Vec::new(),
             mentions: Vec::new(),
         })
         .collect();
-    let mut by_path: HashMap<&str, Vec<Symbol>> = HashMap::new();
-    for row in symbols {
-        let at = place[&*row.path];
-        read[at].names.push(row.name.clone());
-        let symbol = Symbol {
-            name: row.name,
-            kind: row.kind,
-            line: row.line,
-            end_line: row.end_line,
-        };
-        by_path.entry(&files[at].path).or_default().push(symbol);
+    for row in scopes {
+        read[place[&*row.path]].scope = Some(row.scope);
     }
     for row in imports {
         read[place[&*row.path]].imports.push(row.import);
     }
     for row in mentions {
-        read[place[&*row.path]]
-            .mentions
-            .push((row.name, row.member));
+        let mention = (row.name, row.member);
+        read[place[&*row.path]].mentions.push(mention);
     }
     let uses = code_map::link(&read).into_iter();
-    let uses = uses.map(|(user, used)| (files[user].path.clone(), files[used].path.clone()));
-    let uses = uses.collect();
-    let files = files
-        .iter()
-        .map(|file| MapFile {
-            symbols: by_path.remove(&*file.path).unwrap_or_default(),
-            language: code_map::language(&file.path).map(|language| language.name),
-            path: file.path.clone(),
-            lines: file.lines,
-        })
-        .collect();
-    Ok(Some(Map {
-        commit,
-        files,
-        uses,
-    }))
+    let path = |at: usize| files[at].path.clone();
+    Ok(uses.map(|(user, used)| (path(user), path(used))).collect())
 }
 
 pub async fn writer(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Option<Writer>> {
@@ -1050,11 +1081,15 @@ pub struct DocsStatus {
     pub left_out: Option<String>,
 }
 
-/// Writes a column that holds JSON as that JSON, not as a string of it.
-fn as_json<S: serde::Serializer>(json: &Option<String>, to: S) -> Result<S::Ok, S::Error> {
-    let value: serde_json::Value = serde_json::from_str(json.as_deref().unwrap_or("null"))
-        .map_err(serde::ser::Error::custom)?;
+/// Writes a column that holds a JSON list as that list, not as a string of it.
+fn as_list<S: serde::Serializer>(json: &str, to: S) -> Result<S::Ok, S::Error> {
+    let value: serde_json::Value = serde_json::from_str(json).map_err(serde::ser::Error::custom)?;
     value.serialize(to)
+}
+
+/// The same for a column that may hold nothing.
+fn as_json<S: serde::Serializer>(json: &Option<String>, to: S) -> Result<S::Ok, S::Error> {
+    as_list(json.as_deref().unwrap_or("null"), to)
 }
 
 #[derive(Serialize)]
@@ -1065,9 +1100,13 @@ pub struct Doc {
     pub markdown: String,
     /// The id of its newest version, which an edit names as what it started from.
     pub version: String,
-    /// A JSON list of the files it was written from.
-    #[serde(skip)]
+    /// JSON lists: the files it was written from, and those the writer had no room to read.
+    #[serde(serialize_with = "as_list")]
     pub files: String,
+    #[serde(serialize_with = "as_list")]
+    pub unread: String,
+    /// The commit its text was written from, which its citations point into.
+    pub commit: Option<String>,
     /// The text the docs writer last gave it, which tells a person's words from the writer's own.
     #[serde(skip)]
     pub written: Option<String>,
@@ -1086,8 +1125,32 @@ pub struct Written {
     pub markdown: Option<String>,
     /// JSON lists.
     pub files: String,
+    pub unread: String,
     pub notes: String,
     pub reason: String,
+}
+
+impl Written {
+    fn text<'a>(&'a self, markdown: &'a str, commit: Option<&'a str>) -> Text<'a> {
+        Text {
+            section: &self.section,
+            title: &self.title,
+            markdown,
+            files: &self.files,
+            unread: &self.unread,
+            commit,
+        }
+    }
+}
+
+/// A page's text with what it was written from.
+struct Text<'a> {
+    section: &'a str,
+    title: &'a str,
+    markdown: &'a str,
+    files: &'a str,
+    unread: &'a str,
+    commit: Option<&'a str>,
 }
 
 /// A change the writer suggests.
@@ -1104,6 +1167,9 @@ pub struct Proposal {
     pub markdown: Option<String>,
     #[serde(serialize_with = "as_json")]
     pub notes: Option<String>,
+    /// A JSON list of the files the writer had no room to read.
+    #[serde(serialize_with = "as_list")]
+    pub unread: String,
     pub reason: String,
     pub request: Option<String>,
 }
@@ -1139,8 +1205,8 @@ pub async fn docs_status(
 pub async fn docs(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<Doc>> {
     sqlx::query_as!(
         Doc,
-        r#"SELECT d.id, d.section, d.title, d.markdown, d.files, d.notes,
-                  d.checking AS "checking: bool",
+        r#"SELECT d.id, d.section, d.title, d.markdown, d.files, d.unread, d.notes,
+                  d.commit_sha AS "commit", d.checking AS "checking: bool",
                   (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = d.id) AS "version!",
                   (SELECT v.markdown FROM doc_versions v
                    WHERE v.doc_id = d.id AND v.author IS NULL
@@ -1200,21 +1266,20 @@ pub async fn fail_interrupted_docs(pool: &SqlitePool) -> sqlx::Result<()> {
 }
 
 /// Ends `run` with what it wrote, and does nothing unless it still holds the project.
-/// `from` is the branch, commit and left out folders of a run over the whole project, which
-/// drops the proposals nobody answered; a request has none. A project without pages gets
+/// `commit` is what it was all written from. `from` is the branch and the left out folders of
+/// a run over the whole project, which drops the proposals nobody answered; a request has none. A project without pages gets
 /// the pages themselves, and one with pages gets them as proposals.
 pub async fn save_written(
     pool: &SqlitePool,
     project_id: &str,
     run: i64,
-    from: Option<(&str, &str, &str)>,
+    commit: &str,
+    from: Option<(&str, &str)>,
     request: Option<&str>,
     written: &[Written],
 ) -> sqlx::Result<()> {
-    let (branch, commit, left_out) = match from {
-        Some((branch, commit, left_out)) => (Some(branch), Some(commit), Some(left_out)),
-        None => (None, None, None),
-    };
+    let (branch, left_out) = from.unzip();
+    let ran = from.map(|_| commit);
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let held = sqlx::query!(
         "UPDATE projects SET docs_state = 'idle', docs_message = NULL,
@@ -1222,7 +1287,7 @@ pub async fn save_written(
                 docs_left_out = COALESCE(?, docs_left_out)
          WHERE id = ? AND docs_run = ?",
         branch,
-        commit,
+        ran,
         left_out,
         project_id,
         run
@@ -1243,16 +1308,15 @@ pub async fn save_written(
     for page in written {
         if pages == 0 && from.is_some() {
             let text = page.markdown.as_deref().unwrap_or_default();
-            let (section, files) = (&page.section, &page.files);
-            add_page(&mut tx, project_id, section, &page.title, text, files, None).await?;
+            add_page(&mut tx, project_id, &page.text(text, Some(commit)), None).await?;
             continue;
         }
         let id = new_id();
         let (doc_id, base) = page.doc.clone().unzip();
         sqlx::query!(
-            "INSERT INTO proposals (id, project_id, doc_id, base, section, title, markdown,
-                                    files, notes, reason, request, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
+            "INSERT INTO proposals (id, project_id, doc_id, base, section, title, markdown, files,
+                                    unread, commit_sha, notes, reason, request, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
             id,
             project_id,
             doc_id,
@@ -1261,6 +1325,8 @@ pub async fn save_written(
             page.title,
             page.markdown,
             page.files,
+            page.unread,
+            commit,
             page.notes,
             page.reason,
             request
@@ -1275,7 +1341,7 @@ pub async fn proposals(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<
     sqlx::query_as!(
         Proposal,
         r#"SELECT id, doc_id AS page, base, section, title, markdown, notes AS "notes?",
-                  reason, request
+                  unread, reason, request
            FROM proposals WHERE project_id = ? ORDER BY id"#,
         project_id
     )
@@ -1283,22 +1349,25 @@ pub async fn proposals(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<
     .await
 }
 
-/// Does what a proposal suggests and deletes it. `markdown` is the text a person made of the
-/// proposal's, saved under their name; without it the proposal's own is saved as the writer's.
-/// False when the team's project has no such proposal.
+/// Does what a proposal suggests and deletes it. `seen` is the version of its page that the
+/// person accepting it looked at. `markdown` is the text they made of the proposal's, saved
+/// under their name; without it the proposal's own is saved as the writer's.
+/// `None` when the team's project has no such proposal, false when the page has changed
+/// since `seen`, which leaves the proposal as it was.
 pub async fn accept_proposal(
     pool: &SqlitePool,
     team_id: &str,
     project_id: &str,
     id: &str,
+    seen: Option<&str>,
     markdown: Option<&str>,
     user_id: &str,
-) -> sqlx::Result<bool> {
+) -> sqlx::Result<Option<bool>> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let proposal = sqlx::query!(
         "DELETE FROM proposals
          WHERE id = ? AND project_id = (SELECT id FROM projects WHERE team_id = ? AND id = ?)
-         RETURNING doc_id, section, title, markdown, files",
+         RETURNING doc_id, section, title, markdown, files, unread, commit_sha",
         id,
         team_id,
         project_id
@@ -1306,20 +1375,31 @@ pub async fn accept_proposal(
     .fetch_optional(&mut *tx)
     .await?;
     let Some(proposal) = proposal else {
-        return Ok(false);
+        return Ok(None);
     };
+    if let Some(doc_id) = &proposal.doc_id {
+        let current =
+            sqlx::query_scalar!("SELECT MAX(id) FROM doc_versions WHERE doc_id = ?", doc_id);
+        // Leaving here undoes the deletion above with the rest of the transaction.
+        if current.fetch_one(&mut *tx).await?.as_deref() != seen {
+            return Ok(Some(false));
+        }
+    }
     let author = markdown.map(|_| user_id);
-    let (title, files) = (&proposal.title, &proposal.files);
-    match (proposal.doc_id, markdown.or(proposal.markdown.as_deref())) {
-        (None, text) => {
-            let text = text.unwrap_or_default();
+    let text = |markdown| Text {
+        section: &proposal.section,
+        title: &proposal.title,
+        markdown,
+        files: &proposal.files,
+        unread: &proposal.unread,
+        commit: proposal.commit_sha.as_deref(),
+    };
+    match (&proposal.doc_id, markdown.or(proposal.markdown.as_deref())) {
+        (None, markdown) => {
             add_page(
                 &mut tx,
                 project_id,
-                &proposal.section,
-                title,
-                text,
-                files,
+                &text(markdown.unwrap_or_default()),
                 author,
             )
             .await?;
@@ -1329,22 +1409,26 @@ pub async fn accept_proposal(
                 .execute(&mut *tx)
                 .await?;
         }
-        (Some(doc_id), Some(text)) => {
+        (Some(doc_id), Some(markdown)) => {
+            let text = text(markdown);
             sqlx::query!(
-                "UPDATE docs SET title = ?, markdown = ?, files = ?, notes = NULL, checking = 0
+                "UPDATE docs SET title = ?, markdown = ?, files = ?, unread = ?, commit_sha = ?,
+                                 notes = NULL, checking = 0
                  WHERE id = ?",
-                title,
-                text,
-                files,
+                text.title,
+                text.markdown,
+                text.files,
+                text.unread,
+                text.commit,
                 doc_id
             )
             .execute(&mut *tx)
             .await?;
-            add_version(&mut tx, &doc_id, title, text, author).await?;
+            add_version(&mut tx, doc_id, text.title, text.markdown, author).await?;
         }
     }
     tx.commit().await?;
-    Ok(true)
+    Ok(Some(true))
 }
 
 pub async fn delete_proposal(
@@ -1363,6 +1447,19 @@ pub async fn delete_proposal(
     .execute(pool)
     .await?;
     Ok(deleted.rows_affected() > 0)
+}
+
+/// The branch a page is checked against: the one the docs were last written from, or else
+/// the first of the project's branches that is mapped.
+pub async fn check_branch(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar!(
+        r#"SELECT COALESCE(p.docs_branch, MIN(b.name)) AS "branch: String"
+           FROM projects p LEFT JOIN branches b ON b.project_id = p.id AND b.commit_sha IS NOT NULL
+           WHERE p.id = ?"#,
+        project_id
+    )
+    .fetch_one(pool)
+    .await
 }
 
 /// Marks a page as being checked against the code.
@@ -1420,28 +1517,28 @@ pub async fn dismiss_note(
 async fn add_page(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,
-    section: &str,
-    title: &str,
-    markdown: &str,
-    files: &str,
+    text: &Text<'_>,
     author: Option<&str>,
 ) -> sqlx::Result<()> {
     let id = new_id();
     sqlx::query!(
-        "INSERT INTO docs (id, project_id, section, position, title, markdown, files)
+        "INSERT INTO docs (id, project_id, section, position, title, markdown, files, unread,
+                           commit_sha)
          VALUES (?1, ?2, ?3,
                  (SELECT COALESCE(MAX(position), -1) + 1 FROM docs WHERE project_id = ?2),
-                 ?4, ?5, ?6)",
+                 ?4, ?5, ?6, ?7, ?8)",
         id,
         project_id,
-        section,
-        title,
-        markdown,
-        files
+        text.section,
+        text.title,
+        text.markdown,
+        text.files,
+        text.unread,
+        text.commit
     )
     .execute(&mut *tx)
     .await?;
-    add_version(tx, &id, title, markdown, author).await
+    add_version(tx, &id, text.title, text.markdown, author).await
 }
 
 async fn add_version(

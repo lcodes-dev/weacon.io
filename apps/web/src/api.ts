@@ -56,6 +56,11 @@ export type DocsPage = {
   markdown: string
   /** The id of the page's newest version, which an edit names as what it started from. */
   version: string
+  /** The files the docs writer wrote it from, and those it was given and had no room to read. */
+  files: string[]
+  unread: string[]
+  /** The commit its text was written from, which its citations point into. */
+  commit: string | null
   /** The writer's notes on the page as it is, or null when it hasn't checked it. */
   notes: Note[] | null
   /** Whether the writer is checking the page after an edit. */

@@ -102,12 +102,13 @@ export function DocsPage({ team }: { team: Team }) {
   const stale = commit && docs.data.branch === branch?.name && commit !== branch.commit_sha
   const lines = new Map(map.data?.files.map((file) => [file.path, file.lines]))
   // `path:line` or `path:line-line` in backticks links to GitHub, when the map has those lines.
-  const code = ({ children }: { children?: React.ReactNode }) => {
+  // The link goes to the commit the page was written from, which a later run doesn't change.
+  const citing = (from: string | null) => ({ children }: { children?: React.ReactNode }) => {
     const cited = /^(.+):(\d+)(?:-(\d+))?$/.exec(String(children))
     const [first, last] = cited ? [Number(cited[2]), Number(cited[3] ?? cited[2])] : [0, 0]
-    if (cited && 1 <= first && first <= last && last <= (lines.get(cited[1]) ?? 0)) {
+    if (cited && from && 1 <= first && first <= last && last <= (lines.get(cited[1]) ?? 0)) {
       const to = cited[3] ? `-L${cited[3]}` : ""
-      const href = `https://github.com/${project.repo}/blob/${commit}/${cited[1]}#L${cited[2]}${to}`
+      const href = `https://github.com/${project.repo}/blob/${from}/${cited[1]}#L${cited[2]}${to}`
       return (
         <a href={href} target="_blank" rel="noreferrer" title={cited[1]}>
           {/* The file's name is enough to read; the whole path is in the tooltip and the link. */}
@@ -119,6 +120,17 @@ export function DocsPage({ team }: { team: Team }) {
       )
     }
     return <code>{children}</code>
+  }
+  // Leaving an open editor loses what was typed, so it asks first.
+  const leave = async () => {
+    if (view?.mode !== "edit") return true
+    const sure = await confirm({
+      title: "Leave the editor?",
+      description: "What you typed and haven't saved is lost.",
+      confirmLabel: "Leave",
+    })
+    if (sure) setView(undefined)
+    return sure
   }
   return (
     <div className="page page-wide">
@@ -186,7 +198,7 @@ export function DocsPage({ team }: { team: Team }) {
             {proposals.length} {proposals.length === 1 ? "proposal" : "proposals"} to review
           </span>
           {proposals.map((proposal) => (
-            <button key={proposal.id} className="btn btn-sm bg-bg" onClick={() => setProposed(proposal.id)}>
+            <button key={proposal.id} className="btn btn-sm bg-bg" onClick={async () => (await leave()) && setProposed(proposal.id)}>
               {!proposal.page ? "New: " : proposal.markdown === null ? "Remove: " : ""}
               {proposal.title}
             </button>
@@ -225,7 +237,7 @@ export function DocsPage({ team }: { team: Team }) {
               Ask
             </button>
           </form>
-          <Tabs value={tab.value} onValueChange={(value) => value && setParams({ tab: value })}>
+          <Tabs value={tab.value} onValueChange={async (value) => value && (await leave()) && setParams({ tab: value })}>
             <div className="flex items-center border-b border-line">
               <TabsList aria-label="Docs" className="mr-auto">
                 {tabs.map((tab) => (
@@ -241,17 +253,16 @@ export function DocsPage({ team }: { team: Team }) {
                 <DocPages
                   pages={tab.pages}
                   open={params.get("page")}
-                  onOpen={(page) => setParams({ tab: tab.value, page })}
+                  onOpen={async (page) => (await leave()) && setParams({ tab: tab.value, page })}
                   // The other tab's pages keep their order, ahead of this tab's.
                   onOrder={(ids) => order.mutate([...pages.filter((page) => !tab.pages.includes(page)).map((page) => page.id), ...ids])}
-                  code={code}
                   file={file}
                   note={
                     <>
                       <button
                         className="flex items-center gap-1.5 rounded-md py-1 pr-2 pl-5 text-left text-ink2 hover:bg-hov hover:text-ink"
                         disabled={add.isPending}
-                        onClick={() => add.mutate(tab.section)}
+                        onClick={async () => (await leave()) && add.mutate(tab.section)}
                       >
                         <PlusIcon aria-hidden="true" className="size-3.5" />
                         Add page
@@ -284,7 +295,9 @@ export function DocsPage({ team }: { team: Team }) {
                     return (
                       <div className="flex min-w-0 flex-1 items-start gap-3">
                         <div className="flex min-w-0 flex-1 flex-col gap-3">
-                          <DocArticle {...page} code={code} file={file} />
+                          <DocArticle {...page} code={citing(page.commit)} file={file} />
+                          {page.section === "works" && page.files.length > 0 && <p className="text-ink2">Written from: {page.files.join(", ")}</p>}
+                          {page.unread.length > 0 && <p className="text-ink2">Not read, for lack of room: {page.unread.join(", ")}</p>}
                           <PageNotes path={path} page={page} />
                     </div>
                         <button className="btn" onClick={() => setView({ page: page.id, mode: "edit" })}>

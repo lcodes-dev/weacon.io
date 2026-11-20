@@ -176,14 +176,18 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
       .action(getMarkdown())
       .replace(/^<br \/>\n+/gm, "")
       .replaceAll(`(${files}`, "(image:")
+      .replace(/(!\[[^\]]*\]\()unloaded:/g, "$1")
       .trimEnd()
+  // An image on another host would be fetched on sight, telling it who edits what, so its
+  // address is made one a browser doesn't fetch until the page is saved.
+  const loaded = page.markdown.replaceAll("(image:", `(${files}`).replace(/(!\[[^\]]*\]\()(?=https?:)/g, "$1unloaded:")
 
   useEffect(() => {
     let gone = false
     const made = Editor.make()
       .config((ctx) => {
         ctx.set(rootCtx, root.current)
-        ctx.set(defaultValueCtx, page.markdown.replaceAll("(image:", `(${files}`))
+        ctx.set(defaultValueCtx, loaded)
         // Write lists and dividers the way the docs writer does, so that a save changes less.
         ctx.update(remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: "-" as const, rule: "-" as const }))
         ctx.update(uploadConfig.key, (config) => ({

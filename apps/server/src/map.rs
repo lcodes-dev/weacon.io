@@ -34,7 +34,9 @@ fn read_archive(
 ) -> io::Result<Vec<(String, Reading)>> {
     let mut readings = Vec::new();
     let mut kept = 0;
-    let mut archive = tar::Archive::new(GzDecoder::new(archive).take(MAX_UNPACKED));
+    // One byte past the limit can be read, which tells an archive that is too large from one that ends there.
+    let mut unpacked = GzDecoder::new(archive).take(MAX_UNPACKED + 1);
+    let mut archive = tar::Archive::new(&mut unpacked);
     for entry in archive.entries()? {
         let mut entry = entry?;
         // Everything in GitHub's archive sits in one folder named after the commit.
@@ -52,6 +54,11 @@ fn read_archive(
             return Err(io::Error::other("it holds too much text to map yet"));
         }
         readings.push((blob, read(&path, &bytes)));
+    }
+    if unpacked.limit() == 0 {
+        return Err(io::Error::other(
+            "it unpacks to more than can be mapped yet",
+        ));
     }
     // Whatever the archive lacks, such as a link, is recorded so it isn't asked for again.
     readings.extend(new.into_values().map(|blob| (blob, Reading::default())));

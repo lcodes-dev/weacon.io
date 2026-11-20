@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docs SET title = ?, markdown = ?, files = ?, unread = ?, commit_sha = ?,\n                                 notes = NULL, checking = 0\n                 WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b878e4e0255eaf0ba357ec6e470e2949ee2b5443a789a73c5baf399f908c8a4c"
+}

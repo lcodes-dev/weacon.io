@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT MAX(id) FROM doc_versions WHERE doc_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "MAX(id)",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "d359febf31c8aab81851bf64771f0dced734e4c5837a279d3be40d96d6d4af4f"
+}

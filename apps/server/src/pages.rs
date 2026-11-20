@@ -3,11 +3,11 @@
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::http::header::{
-    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS,
+    CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, ETAG, IF_NONE_MATCH, X_CONTENT_TYPE_OPTIONS,
 };
-use axum::response::IntoResponse;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -87,7 +87,9 @@ pub async fn save(
 
 #[derive(Deserialize)]
 pub struct Accepted {
-    /// The text a person made of the proposal's, when they took only some of its changes.
+    /// The version of the proposal's page that the person looked at; none for a new page.
+    version: Option<String>,
+    /// The text they made of the proposal's, when they took only some of its changes.
     markdown: Option<String>,
 }
 
@@ -104,11 +106,13 @@ pub async fn accept(
         &team_id,
         &project_id,
         &proposal_id,
+        accepted.version.as_deref(),
         accepted.markdown.as_deref(),
         &user.id,
     );
-    if !accepted.await? {
-        return Err(not_found());
+    if !accepted.await?.ok_or_else(not_found)? {
+        let message = "The page changed after this proposal was shown. Look at it again";
+        return Err(ApiError(StatusCode::CONFLICT, message.into()));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -250,13 +254,27 @@ fn unkept(error: std::io::Error) -> ApiError {
     ApiError(StatusCode::INTERNAL_SERVER_ERROR, message.into())
 }
 
-/// The file `id`, which the database said exists.
+/// The file `id`, which the database said exists and the asker may have.
 async fn served(
     state: &AppState,
     id: &str,
     kept: Option<Kept>,
-) -> Result<impl IntoResponse + use<>, ApiError> {
+    asked: &HeaderMap,
+) -> Result<Response, ApiError> {
     let Kept { kind, name } = kept.ok_or_else(not_found)?;
+    // A browser asks before it uses its copy, so that a file it may no longer have isn't shown
+    // from there. A file never changes, so its id says whether the copy is good.
+    let tag = format!("\"{id}\"");
+    let caching = [
+        (CACHE_CONTROL, "private, no-cache".to_owned()),
+        (ETAG, tag.clone()),
+    ];
+    if asked
+        .get(IF_NONE_MATCH)
+        .is_some_and(|had| had.as_bytes() == tag.as_bytes())
+    {
+        return Ok((StatusCode::NOT_MODIFIED, caching).into_response());
+    }
     let bytes = tokio::fs::read(state.files.join(id)).await;
     // Only an image is shown. Anything else is downloaded, so that it can't run in the reader's browser.
     let shown = kind.starts_with("image/");
@@ -268,27 +286,27 @@ async fn served(
             if shown { "inline".into() } else { disposition },
         ),
         (X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
-        // A file never changes, and is for the person who may see it only.
-        (CACHE_CONTROL, "private, max-age=31536000, immutable".into()),
     ];
-    Ok((headers, bytes.map_err(|_| not_found())?))
+    Ok((caching, headers, bytes.map_err(|_| not_found())?).into_response())
 }
 
 pub async fn file(
     State(state): State<AppState>,
     user: User,
     Path((team_id, project_id, file_id)): Path<(String, String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
+    asked: HeaderMap,
+) -> Result<Response, ApiError> {
     membership(&user, &team_id)?;
     let kept = db::file(&state.pool, &team_id, &project_id, &file_id).await?;
-    served(&state, &file_id, kept).await
+    served(&state, &file_id, kept, &asked).await
 }
 
 /// A file of a public link, to anyone who has the link, when one of its pages shows or links to it.
 pub async fn shared_file(
     State(state): State<AppState>,
     Path((token, file_id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiError> {
+    asked: HeaderMap,
+) -> Result<Response, ApiError> {
     let kept = db::shared_file(&state.pool, &token, &file_id).await?;
-    served(&state, &file_id, kept).await
+    served(&state, &file_id, kept, &asked).await
 }

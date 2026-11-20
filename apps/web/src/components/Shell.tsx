@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
-import { useState } from "react"
+import { lazy, Suspense, useState } from "react"
 import { Link, Route, Routes } from "react-router"
 import { api, type Health, type MailConfig, type Project, type Team, type User } from "../api"
 import { MailSettings } from "../routes/MailSettings"
 import { ProjectPage } from "../routes/Project"
-import { DocsPage } from "../routes/ProjectDocs"
 import { TeamSettings } from "../routes/TeamSettings"
+
+// The docs page is the largest, so it is fetched when first opened.
+const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
 
 const sections = ["Your chats", "Direct", "Groups", "Machines"]
 
@@ -46,7 +48,14 @@ export function Shell({ user }: { user: User }) {
       </aside>
       <main className="flex-1 overflow-auto">
         <Routes>
-          <Route path="/projects/:id/docs" element={<DocsPage team={team} />} />
+          <Route
+            path="/projects/:id/docs"
+            element={
+              <Suspense>
+                <DocsPage team={team} />
+              </Suspense>
+            }
+          />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
           {user.is_owner && <Route path="/settings/mail" element={<MailSettings />} />}

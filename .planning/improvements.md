@@ -29,7 +29,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A file in the graph can only be chosen with a pointer.** A labeled list of files would let the keyboard and a screen reader open the same panel. *(noted in plan 08)*
 - **The status dot starts red.** Until the first health call answers, the dot shows "unreachable" for a moment.
 - **The shell is plainer than the reference.** It has no search field, no icons beside Tasks and Docs, and no workspace and account rows at the bottom of the sidebar.
-- **The web app is one bundle of over 500 kB.** The build warns about it since plan 15; the docs editor, the code map and the Markdown renderer could each load when first opened. *(noted in plan 15)*
 
 ## Setup
 
@@ -46,6 +45,7 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A rejected request is remembered only by the open page.** Keeping rejected proposals on the server would let the writer see earlier tries after a reload, and let a team see what was turned down. *(noted in plan 15)*
 - **A check that fails says nothing to the person.** The page could say that the writer couldn't check it, and offer to try again. *(noted in plan 15)*
 - **A link's address in the docs editor is asked with the browser's prompt,** and no toolbar button lights up for the format under the caret. *(noted in plan 16)*
-- **Linking a branch is done on every request for its map,** and again for every docs run. Reading and linking a folder of 7,400 files took about 11 seconds in a debug build; how much of that is the linking was not measured. Keeping the result per commit would make it free. *(noted in plan 17)*
+- **Linking a branch is done on every request for its map.** Keeping the result per commit would make it free; it takes about 50 ms for 422 files. *(noted in plan 17)*
 - **The code map could say why a line is there:** an import, a name in the same scope, or the guess. *(noted in plan 17)*
-
+- **Leaving the docs editor asks even when nothing was typed.** The editor could tell the page whether it holds changes. *(noted in plan 18)*
+- **The archive limit has no test,** since one would need an archive over 2 GB; the limit could be a setting of the reader so that a test can lower it. *(noted in plan 18)*
