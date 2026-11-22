@@ -8,6 +8,7 @@ publish = false
 unsafe_code = "forbid"
 
 [dependencies]
+agent-run = { path = "../../crates/agent-run" }
 base64 = "0.23.1"
 core-link = { path = "../../crates/core-link" }
 futures-util = "0.3.34"

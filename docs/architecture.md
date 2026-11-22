@@ -18,6 +18,7 @@ apps/
       routes/      one file per address, such as Project.tsx for /projects/:id
       components/  what routes are built from, such as Shell.tsx, the sidebar around a signed-in route
 crates/
+  agent-run/     runs one turn of Claude Code or Codex in a folder, and tells it in common words
   code-map/      reads a file's symbols and imports, and works out which file uses which
   core-link/     the messages the server and a core send each other
 docs/            these docs
@@ -25,7 +26,7 @@ docs/            these docs
 .legacy/         the previous codebase, for reference only
 ```
 
-The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and build into one `target/`. It has four members: the server, the core, and the `code-map` and `core-link` crates. A piece of work gets its own crate in `crates/` when it is complex enough to stand apart from the app that calls it: it has its own rules and its own tests, and the app only asks it for a result. Whether a second app needs it doesn't matter.
+The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and build into one `target/`. It has five members: the server, the core, and the `agent-run`, `code-map` and `core-link` crates. A piece of work gets its own crate in `crates/` when it is complex enough to stand apart from the app that calls it: it has its own rules and its own tests, and the app only asks it for a result. Whether a second app needs it doesn't matter.
 
 ## Server
 
@@ -189,6 +190,20 @@ A machine is a person's own computer or virtual machine, and only theirs. The co
 - **A server over SSH.** `weacon-core add user@host`, on a paired machine, asks first, then copies itself to a host of the same system and processor, gets a pairing code with its own token, which is gone if that machine is removed before it is used, and runs `pair` and `install` there. SSH is only how the core gets there.
 - A machine is removed with its owner's account.
 
+## Chats
+
+A chat is a person's conversation with Claude Code or Codex about a project. The agent works on one of that person's machines, in a folder of the chat's own, on that person's own sign-in. `chats.rs` holds the server's side, `apps/core/src/chats.rs` the machine's, and the `agent-run` crate knows the two programs.
+
+- **Whose it is.** A chat belongs to who started it, on one project, with one agent and one of their machines, picked at the start and kept. Every member of the project's team may read it; only its owner writes in it or stops it. A project needs a repository with a mapped branch to have chats.
+- **Turns.** The person writes, the agent answers, and the turn ends; nothing more can be asked while one runs. The chat's row says whether a turn is `running`, what was last `asked`, and the agent's own `session`, which is how the program goes on with the conversation next time. The vendor's program keeps the conversation; Weacon keeps what was said and done.
+- **The folder.** On the machine a chat has `chats/{id}/` under the core's folder: `repository/`, a copy of the project's repository, and `events.jsonl`. The copy is made on the first turn, at the newest commit of the chat's branch, without its history. The server gives the core a GitHub token for it that reads that one repository and that GitHub ends after an hour; the core hands it to `git` in the environment and keeps it nowhere. Later turns work on in the same copy, and nothing is pushed.
+- **A turn on the machine.** The server sends `turn`. The core starts the vendor's unmodified program in the copy, one process a turn: `claude --print --output-format stream-json`, or `codex exec --json`, each with `--resume` or `resume` and the session from the second turn on. `agent-run` reads what the program prints and tells it as events that are the same for both: `said`, the agent's words; `did`, a file read or edited or a command run; and at the end `done`, with the session and the files that differ from the commit the copy started from, or `failed`, with why.
+- **What the agent may do.** It reads and edits files in the copy. A command runs in the vendor's own sandbox, Claude Code's for commands and Codex's `workspace-write`, which keeps writes to the copy and has no network. Nothing asks a person: what would need a yes is refused, and the agent is told. None of the person's own setup is loaded, their hooks, instructions and tool servers; with Claude Code that leaves out the repository's `CLAUDE.md` too. Neither sandbox stops a command from reading other files of the machine, so a repository's text could make the agent show one in the chat, which the team reads. It can't send one anywhere.
+- **Events** are numbered by the core, from 1, by their line in `events.jsonl`, where each is written before it is sent. The server takes an event only when it is the next one from the chat's own machine, and counts them in `heard`. So an event that comes twice or early changes nothing.
+- **Work outlives the connection.** A turn goes on while the server or the network is away. When a core connects, the server sends `turn` again for each chat it believes is running there, with `heard`: a core that is running the turn, or has finished it, sends what came after; one that never got it starts it; one that was restarted in the middle says the turn failed, since the program went with it. A turn asked of a machine that is away so waits for it.
+- **Stop.** The server sends `stop` and the core interrupts the program as Ctrl-C would, which has each program end the command it is running before itself, and kills it after five seconds if it hasn't gone. It needs the machine connected. Removing a machine ends the turns that were running on it, and its chats can still be read.
+- **The web app** lists the team's chats in the sidebar, the person's own first. A chat's page asks for the events after the last one it has, every second while a turn runs and every five otherwise. What an agent says is rendered as Markdown, with an image shown as a link and a link to a file of the copy as plain text.
+
 ## Mail
 
 `mail.rs` has one way to send: `mail::send(pool, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
@@ -245,6 +260,11 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/machines` | anyone with a code | Trades `{"code", "name", "os"}` for `{"token"}` |
 | `DELETE /api/machines/{id}` | its owner | Ends the machine and cuts its core off |
 | `GET /api/machines/connect` | a machine's token | The core's WebSocket |
+| `GET /api/teams/{id}/chats` | member | The team's chats, newest first |
+| `POST /api/teams/{id}/projects/{project_id}/chats` | member | `{"agent", "machine_id", "branch", "text"}`: starts a chat on one of the person's own machines with its first message |
+| `GET /api/teams/{id}/chats/{chat_id}` | member | The chat, whether it is `mine` and its machine `connected`, and its `events`, or with `?after={event id}` those after one |
+| `POST /api/teams/{id}/chats/{chat_id}/messages` | the chat's owner | `{"text"}`: the next turn; 409 while one runs |
+| `POST /api/teams/{id}/chats/{chat_id}/stop` | the chat's owner | Ends the running turn, if the machine is connected |
 | `GET /api/machines/{id}/sign-in/{agent}` | its owner | A WebSocket to the sign-in terminal of `claude` or `codex` there; refused for a page of another site, while the machine is away or the sign-in is open elsewhere |
 | `GET /api/teams/{id}/github/branches?repo=` | a member | A repository's branches and which is the default |
 | `GET /api/teams/{id}/github` | a member | The team's GitHub App, the account it is installed on, and the repositories it reaches |
@@ -263,6 +283,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks, and docs generated from it. The shell is still the empty layout from the reference.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks, and docs generated from it. A person pairs machines of their own, and chats there with Claude Code or Codex about a project. Tasks, direct messages and groups are still headings in the sidebar.
 
 Not built yet, each waiting for the first feature that needs it: the WebSocket.

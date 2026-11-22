@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\"\n           FROM chats c JOIN projects p ON p.id = c.project_id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id\n           WHERE c.id = ? AND p.team_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "agent",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "agent"
+          }
+        }
+      },
+      {
+        "name": "branch",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "branch"
+          }
+        }
+      },
+      {
+        "name": "running: bool",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "running"
+          }
+        }
+      },
+      {
+        "name": "project_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "project",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "user_id",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "name": "user",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "machine?",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "machines",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "ccafc6cec0a2b2bc8b600a42b44c162185c4612c44585a47a09155aa0c3f6f92"
+}

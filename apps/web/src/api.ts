@@ -50,6 +50,34 @@ export type Machine = {
   connected: boolean
 }
 
+/** A person's conversation with an agent that works on a project, on one of that person's machines. */
+export type Chat = {
+  id: string
+  title: string
+  agent: Agent
+  branch: string
+  /** Whether the agent is working on a turn now. */
+  running: boolean
+  project_id: string
+  project: string
+  user_id: string
+  user: string
+  /** Null once the machine was removed. */
+  machine: string | null
+}
+
+/** What was written and done in a chat. A file's lines are counted against the commit the chat started from. */
+export type ChatEvent = { id: string } & (
+  | { kind: "asked"; text: string }
+  | { kind: "said"; text: string }
+  | { kind: "did"; deed: "read" | "edit" | "command" | "other"; what: string }
+  | { kind: "done"; changed: { path: string; added: number; removed: number }[] }
+  | { kind: "failed"; why: string }
+)
+
+/** A chat as its page shows it. Only the person it is `mine` for writes in it. */
+export type OpenChat = Chat & { mine: boolean; connected: boolean; events: ChatEvent[] }
+
 export type Writer = { kind: "claude_api" | "claude_code" | "codex"; model: string | null; has_key: boolean }
 
 /** A project's generated docs, and the run that writes them. */

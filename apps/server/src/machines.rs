@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use crate::db::{self, Machine, User};
 use crate::teams::refused;
-use crate::{ApiError, AppState, not_found};
+use crate::{ApiError, AppState, chats, not_found};
 
 /// How long a pairing code works, in seconds.
 const CODE_SECONDS: i64 = 600;
@@ -60,12 +60,12 @@ impl Cores {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn connected(&self, machine: &str) -> bool {
+    pub fn connected(&self, machine: &str) -> bool {
         self.lock().cores.contains_key(machine)
     }
 
     /// Sends to a machine's core, and says whether it is connected.
-    fn send(&self, machine: &str, message: ToCore) -> bool {
+    pub fn send(&self, machine: &str, message: ToCore) -> bool {
         let cores = self.lock();
         let core = cores.cores.get(machine);
         core.is_some_and(|(_, core)| core.send(message).is_ok())
@@ -170,6 +170,7 @@ pub async fn remove(
     }
     // Its core is refused when it connects again, and forgets its token.
     state.cores.end(&id, "The machine was removed");
+    chats::orphaned(&state).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -209,6 +210,7 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
         connection
     };
     drop(to_core);
+    chats::resume(&state, &machine).await;
     let mut alive = tokio::time::interval(PING);
     let mut last_heard = Instant::now();
     loop {
@@ -278,6 +280,11 @@ async fn heard(state: &AppState, machine: &str, message: FromCore) {
                 core.send(ToCore::Taken { id }).ok();
             }
         }
+        FromCore::Event {
+            chat,
+            number,
+            event,
+        } => chats::heard(state, machine, &chat, number, event).await,
         FromCore::TerminalData { agent, .. } | FromCore::TerminalClose { agent } => {
             let cores = state.cores.lock();
             if let Some(browser) = cores.terminals.get(&(machine.to_owned(), agent)) {

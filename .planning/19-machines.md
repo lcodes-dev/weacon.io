@@ -1,6 +1,6 @@
 # Plan 19: machines
 
-**Status: in progress**
+**Status: done** (2026-11-22)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -183,7 +183,7 @@ Part 2:
 Both:
 
 - [x] Docs: `docs/architecture.md`, and how to run the core in `README.md`
-- [ ] Checked by hand with a real machine
+- [x] Checked by hand with a real machine
 
 ## Outcome
 
@@ -191,7 +191,13 @@ Built as planned, with these differences and limits:
 
 - **The hand check covers part of the plan,** so the plan stays in progress and its last step unticked. Done on this computer, with the core's and the agents' folders pointed at scratch ones so that no real sign-in was touched: pairing with a code, a second use of the code refused, the token's file readable by its user only, the core connecting and showing in the sidebar and on its page, both vendors' sign-ins shown in the web app's terminal, typed keys and a pasted code arriving whole, a docs request going from the server through the real core to a stand-in for `claude` and back, and a removed machine's core being cut off, refused and forgetting its token.
 - **`install` and `uninstall` were checked on macOS** once the owner agreed, on 20 November: the launch agent was written and valid, the core ran under it and connected, found the agents signed in from there, was started again within seconds of being killed and connected anew, and was gone after `uninstall`. Its log file stays in `~/Library/Logs`, which `uninstall` doesn't remove.
-- **Not checked by hand:** `install` on Linux and in WSL; `add`, for lack of a server to add; a sign-in carried through to the end; and a run on a real, signed-in agent through a machine.
+- **Checked on 22 November,** once the owner asked for it:
+  - **A real agent through a machine.** A core on this computer, paired with the dev server and using the owner's own Claude Code sign-in, answered a docs request on ContentWrite; the proposal it wrote is there to review.
+  - **`install` on Linux,** in a temporary Ubuntu virtual machine on ARM with a core built for it: the user service was written, started and connected, and was started again within seconds of being killed. `uninstall` stopped and removed it.
+  - **`add user@host`,** from that virtual machine to a second one over SSH with a key: it copied the core to `~/.local/bin`, paired it and installed the service, which connected.
+  - Removing the three machines in Weacon stopped each core.
+- **Still not checked:** `install` in WSL, for lack of Windows; and a sign-in carried through to the end, which needs the owner's own account in a browser.
+- **Answered by the owner on 22 November:** one sign-in per machine for now; no letter to the vendors; and the core is to be downloadable and installable on each machine, which is a plan of its own.
 - **The trial of `ghostty-web` passed** on both login screens, with one thing learned: text put in by a script's "type" didn't arrive, while real key presses and a paste did.
 - **Claude Code's login opens a browser on the machine itself** besides printing its link. On a machine with a screen, a tab opens there when a sign-in is started from Weacon, wherever the person is.
 - **Codex is signed in with its device code,** `codex login --device-auth`, since its usual login needs a browser on the machine. OpenAI's page says that way must be turned on in ChatGPT's security settings.

@@ -53,3 +53,12 @@ Things noticed while working that could be better and that nobody has asked for.
 - **Asks and answers don't outlive a restart** of the core or the server. Chats will need them kept on disk. *(noted in plan 19)*
 - **A machine's token is kept as it is,** like a session's. Keeping only a hash would make a copy of the database useless for connecting as a machine. *(noted in plan 19)*
 - **A core doesn't say which version it is.** It could, so that the machines page shows it and says when a core is older than the server expects. *(noted in plan 19)*
+- **A removed machine's background service starts again every few seconds for good,** each time stopping with "not paired". Being removed could also undo `install`. *(seen checking plan 19 on Linux)*
+- **`install` says the service only runs while logged in when lingering was already on** and the system refused to turn it on again. It could look first. *(seen checking plan 19 on Linux)*
+- **A chat can't be deleted,** and its folder stays on the machine for good. Deleting one should remove both. *(plan 21)*
+- **A command of an agent can read any file its person can.** Both sandboxes stop writing and the network, not reading. Codex and Claude Code can each be told which folders to keep out of. *(plan 21)*
+- **An agent's program outlives a core that is killed,** until it next prints. The core could end its turns when it is told to stop. *(seen checking plan 21)*
+- **A command Codex ran is shown as Codex quoted it for its shell,** so `\n` reads `\\n`. *(seen checking plan 21)*
+- **A chat's page asks for news every five seconds when nothing runs,** and every second when something does. A WebSocket would do both better. *(plan 21)*
+- **Chats have no model picker:** each program uses its own default. *(plan 21)*
+

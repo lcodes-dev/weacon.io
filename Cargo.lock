@@ -9,6 +9,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-run"
+version = "0.1.0"
+dependencies = [
+ "core-link",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3150,6 +3159,7 @@ dependencies = [
 name = "weacon-core"
 version = "0.1.0"
 dependencies = [
+ "agent-run",
  "base64 0.23.1",
  "core-link",
  "futures-util",

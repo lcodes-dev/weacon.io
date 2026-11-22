@@ -3,6 +3,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
+use agent_run::KEPT;
 use core_link::{Agent, Found, Ready};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -12,9 +13,6 @@ const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
 /// How long an agent's program may take to say whether someone is signed in.
 const STATUS: Duration = Duration::from_secs(10);
-
-/// The environment variables an agent gets when it answers: enough to be found and signed in.
-const KEPT: [&str; 5] = ["PATH", "HOME", "USER", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
 
 /// The vendor's command that says, by how it ends, whether someone is signed in.
 fn status(agent: Agent) -> &'static [&'static str] {

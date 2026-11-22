@@ -91,9 +91,11 @@ fn app_token(app: &GithubApp) -> Result<String, ApiError> {
 }
 
 /// The account the app is installed on and a token to act there, once it is installed.
+/// With `only`, the token reads that one repository's files and nothing else.
 async fn installation(
     state: &AppState,
     app: &GithubApp,
+    only: Option<&str>,
 ) -> Result<Option<(String, String)>, ApiError> {
     let app_token = app_token(app)?;
     let installations = request(state, Method::GET, "/app/installations").bearer_auth(&app_token);
@@ -103,14 +105,24 @@ async fn installation(
         return Ok(None);
     };
     let path = format!("/app/installations/{}/access_tokens", installation.id);
-    let token: Token = answer(request(state, Method::POST, &path).bearer_auth(&app_token)).await?;
+    let mut tokens = request(state, Method::POST, &path).bearer_auth(&app_token);
+    if let Some(repo) = only {
+        // GitHub wants the name without its owner.
+        let name = repo.rsplit('/').next();
+        tokens = tokens.json(&json!({"repositories": [name], "permissions": {"contents": "read"}}));
+    }
+    let token: Token = answer(tokens).await?;
     Ok(Some((installation.account.login, token.token)))
 }
 
-/// A token to read the team's repositories with.
-pub async fn token(state: &AppState, team_id: &str) -> Result<String, ApiError> {
+/// A token to read the team's repositories with, or `only` one of them. GitHub ends it after an hour.
+pub async fn token(
+    state: &AppState,
+    team_id: &str,
+    only: Option<&str>,
+) -> Result<String, ApiError> {
     let installed = match db::github_app(&state.pool, team_id).await? {
-        Some(app) => installation(state, &app).await?,
+        Some(app) => installation(state, &app, only).await?,
         None => None,
     };
     let (_, token) = installed.ok_or_else(|| failed("the team has no installed GitHub App"))?;
@@ -129,7 +141,7 @@ pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status, ApiE
     let Some(app) = db::github_app(&state.pool, team_id).await? else {
         return Ok(Status::default());
     };
-    let installed = installation(state, &app).await?;
+    let installed = installation(state, &app, None).await?;
     let mut status = Status {
         app: Some(app.slug),
         ..Status::default()
@@ -266,7 +278,7 @@ pub async fn repo_branches(
     if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
         return Err(crate::not_found());
     }
-    let token = token(&state, &team_id).await?;
+    let token = token(&state, &team_id, None).await?;
     let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
     let mut names: Vec<String> = branches(&state, &token, &of.repo)
         .await?

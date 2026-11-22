@@ -47,6 +47,58 @@ pub struct Found {
     pub ready: Ready,
 }
 
+/// What an agent may be seen doing in a chat.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Deed {
+    Read,
+    Edit,
+    Command,
+    /// Anything else, named by the agent's own word for it.
+    Other,
+}
+
+/// A file a chat's folder holds changed, against the commit it started from.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Changed {
+    pub path: String,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// What happens in a chat's turn on a machine, the same for every agent.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Event {
+    /// The agent's words.
+    Said {
+        text: String,
+    },
+    /// Something the agent did: `what` is the file, the command, or the tool's name.
+    Did {
+        deed: Deed,
+        what: String,
+    },
+    /// The turn ended. `session` is how the agent's program knows the conversation next time.
+    Done {
+        session: String,
+        changed: Vec<Changed>,
+    },
+    Failed {
+        why: String,
+    },
+}
+
+/// Where a chat's folder gets its files the first time.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Repository {
+    /// The address to fetch from, over https.
+    pub url: String,
+    pub branch: String,
+    /// Good for this repository alone, for an hour. Used to fetch and kept nowhere.
+    pub token: String,
+}
+
 /// What a core tells the server.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -58,6 +110,12 @@ pub enum FromCore {
     Answer {
         id: String,
         answer: Result<String, String>,
+    },
+    /// The `number`th event of a chat on this machine, counted from 1.
+    Event {
+        chat: String,
+        number: u64,
+        event: Event,
     },
     /// What a sign-in's terminal shows, as base64.
     #[serde(rename = "terminal.data")]
@@ -80,6 +138,19 @@ pub enum ToCore {
         system: String,
         prompt: String,
     },
+    /// Run a chat's turn in its folder, or go on telling of the one that is running. `heard`
+    /// is how many of the chat's events the server has, so the core sends what came after.
+    Turn {
+        chat: String,
+        agent: Agent,
+        /// The conversation to go on with, if the chat has had a turn.
+        session: Option<String>,
+        prompt: String,
+        repository: Repository,
+        heard: u64,
+    },
+    /// End a chat's turn.
+    Stop { chat: String },
     /// Another core has connected as this machine, so this one must stop and not dial again.
     Replaced,
     /// The server has the answer to this `Ask`, so the core may forget it.

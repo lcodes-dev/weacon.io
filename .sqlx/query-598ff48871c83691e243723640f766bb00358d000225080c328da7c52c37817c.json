@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT json_set(body, '$.id', id) AS \"event!: String\" FROM chat_events\n           WHERE chat_id = ? AND id > ? ORDER BY id",
+  "describe": {
+    "columns": [
+      {
+        "name": "event!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "598ff48871c83691e243723640f766bb00358d000225080c328da7c52c37817c"
+}

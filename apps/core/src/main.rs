@@ -2,6 +2,7 @@
 //! connected to it, and runs their agents there on their own sign-in.
 
 mod agents;
+mod chats;
 mod link;
 mod service;
 mod setup;

@@ -1,4 +1,5 @@
 mod auth;
+mod chats;
 mod config;
 pub mod db;
 mod docs;
@@ -135,6 +136,14 @@ pub fn router(state: AppState) -> Router {
             delete(docs::end_share),
         )
         .route("/shares/{token}", get(docs::shared))
+        .route("/teams/{id}/chats", get(chats::list))
+        .route(
+            "/teams/{id}/projects/{project_id}/chats",
+            post(chats::start),
+        )
+        .route("/teams/{id}/chats/{chat_id}", get(chats::show))
+        .route("/teams/{id}/chats/{chat_id}/messages", post(chats::say))
+        .route("/teams/{id}/chats/{chat_id}/stop", post(chats::stop))
         .route("/machines", get(machines::list).post(machines::pair))
         .route("/machines/codes", post(machines::code))
         .route("/machines/connect", get(machines::connect))

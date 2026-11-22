@@ -12,7 +12,7 @@ type Rendering = {
   file: (id: string) => string
 }
 
-function safeUrl(value: string) {
+export function safeUrl(value: string) {
   try {
     const { protocol } = new URL(value, "https://weacon.invalid")
     return /^(https?|ircs?|mailto|xmpp|image|file):$/.test(protocol) ? value : null

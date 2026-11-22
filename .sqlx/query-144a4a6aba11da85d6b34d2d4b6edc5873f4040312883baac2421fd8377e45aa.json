@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET heard = heard + 1, running = ?, session = COALESCE(?, session)\n         WHERE id = ? AND machine_id = ? AND heard = ? - 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "144a4a6aba11da85d6b34d2d4b6edc5873f4040312883baac2421fd8377e45aa"
+}

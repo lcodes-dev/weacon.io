@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::{Error, Message};
 
-use crate::{Paired, agents, fail, home};
+use crate::{Paired, agents, chats, fail, home};
 
 /// How often the core looks again at its agents.
 const LOOK: Duration = Duration::from_secs(5 * 60);
@@ -28,9 +28,11 @@ const SLOW: Duration = Duration::from_secs(20);
 
 /// What outlives a connection: the work asked for, and where to say things while connected.
 #[derive(Default)]
-struct Work {
+pub struct Work {
     /// The way to the server, while there is one.
-    out: Option<mpsc::UnboundedSender<FromCore>>,
+    pub out: Option<mpsc::UnboundedSender<FromCore>>,
+    /// The chats that have had a turn since the core started.
+    pub chats: HashMap<String, chats::Chat>,
     /// The asks an agent is answering now.
     answering: HashSet<String>,
     /// The answers the server hasn't said it has.
@@ -64,7 +66,7 @@ enum Ended {
     Replaced,
 }
 
-type Shared = Arc<Mutex<Work>>;
+pub type Shared = Arc<Mutex<Work>>;
 
 fn say(work: &Shared, message: FromCore) {
     if let Some(out) = &work.lock().unwrap().out {
@@ -245,6 +247,15 @@ fn asked(work: &Shared, message: ToCore) {
                 terminal.sign_in.kill().ok();
             }
         }
+        ToCore::Turn {
+            chat,
+            agent,
+            session,
+            prompt,
+            repository,
+            heard,
+        } => chats::turn(work, chat, agent, session, prompt, repository, heard),
+        ToCore::Stop { chat } => chats::stop(work, &chat),
         // Taken care of where the connection is held.
         ToCore::Replaced => {}
     }

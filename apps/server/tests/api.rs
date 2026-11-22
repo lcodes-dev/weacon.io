@@ -684,9 +684,17 @@ async fn fake_github() -> (String, Repo) {
         )
         .route(
             "/app/installations/3/access_tokens",
-            post(async |headers: HeaderMap| {
+            post(async |headers: HeaderMap, only: String| {
                 assert!(signed(&headers));
-                Json(json!({"token": "installation-token"}))
+                // A token asked for one repository reads that one and nothing else.
+                if only.is_empty() {
+                    return Json(json!({"token": "installation-token"}));
+                }
+                let only: Value = serde_json::from_str(&only).unwrap();
+                let scope =
+                    json!({"repositories": ["storefront"], "permissions": {"contents": "read"}});
+                assert_eq!(only, scope);
+                Json(json!({"token": "repository-token"}))
             }),
         )
         .route(
@@ -2535,4 +2543,180 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
     let closed = json!({"type": "terminal.close", "agent": "claude"});
     assert_eq!(heard(&mut laptop).await.unwrap(), closed);
     drop(socket(&address, &terminal, &hers).await.unwrap());
+}
+
+/// The chat at `path`, once its turn is running or not, as asked.
+async fn chat(client: &mut Client, path: &str, running: bool) -> Value {
+    for _ in 0..200 {
+        let (_, chat) = client.get(path).await;
+        if chat["running"] == running {
+            return chat;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the chat never became running: {running}");
+}
+
+fn kinds(chat: &Value) -> Vec<&str> {
+    let events = chat["events"].as_array().unwrap().iter();
+    events
+        .map(|event| event["kind"].as_str().unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
+    let (state, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut marco = Client::new(&state);
+    let invite = ada.invite("marco@example.com").await;
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    marco
+        .post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+    paired(&mut marco, "Marco's laptop").await;
+    let his = marco.get("/api/machines").await.1[0]["id"].clone();
+
+    // A chat needs a machine of one's own, a mapped branch and something to do.
+    let start = |machine: &Value, branch: &str, text: &str| json!({"agent": "claude", "machine_id": machine, "branch": branch, "text": text});
+    let chats = ada.project("/chats");
+    for refused in [
+        start(&his, "main", "Add a returns link"),
+        start(&machine, "next", "Add a returns link"),
+        start(&machine, "main", " "),
+    ] {
+        let (status, _) = ada.post(&chats, refused).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // Started while the machine is away, the turn waits for it.
+    let text = "Add a returns link\nto the footer";
+    let (status, started) = ada.post(&chats, start(&machine, "main", text)).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = started["id"].as_str().unwrap();
+    let path = ada.team(&format!("/chats/{id}"));
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let repository = json!({
+        "url": "https://github.com/northwind/storefront.git", "branch": "main", "token": "repository-token",
+    });
+    let turn = json!({
+        "type": "turn", "chat": id, "agent": "claude", "session": null, "prompt": text,
+        "repository": repository, "heard": 0,
+    });
+    assert_eq!(heard(&mut laptop).await.unwrap(), turn);
+
+    // What the machine tells is kept in its order: one that comes early or twice is left out.
+    let event = |number: u64, event: Value| json!({"type": "event", "chat": id, "number": number, "event": event});
+    let reading = json!({"kind": "did", "deed": "read", "what": "src/Footer.tsx"});
+    said(&mut laptop, event(2, reading.clone())).await;
+    said(
+        &mut laptop,
+        event(
+            1,
+            json!({"kind": "said", "text": "I'll look at the footer."}),
+        ),
+    )
+    .await;
+    said(&mut laptop, event(2, reading.clone())).await;
+    said(&mut laptop, event(2, reading)).await;
+    let writing = json!({"type": "event", "chat": id, "number": 1, "event": {"kind": "said", "text": "Not mine."}});
+    // Another person's machine can't write into the chat.
+    let mut other = core(
+        &address,
+        &paired(&mut marco, "Marco's server").await,
+        "signed_in",
+    )
+    .await;
+    said(other.as_mut().unwrap(), writing).await;
+
+    // While the agent works, nothing more can be asked.
+    let more = ada.team(&format!("/chats/{id}/messages"));
+    let (status, _) = ada.post(&more, json!({"text": "And in the menu"})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A core that comes back is told how much the server has, so it can tell the rest.
+    drop(laptop);
+    machines(&mut ada, false, None).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    assert_eq!(heard(&mut laptop).await.unwrap()["heard"], 2);
+    let changed = json!([{"path": "src/Footer.tsx", "added": 12, "removed": 1}]);
+    let done = json!({"kind": "done", "session": "s-1", "changed": changed});
+    said(&mut laptop, event(3, done)).await;
+
+    let shown = chat(&mut ada, &path, false).await;
+    assert_eq!(kinds(&shown), ["asked", "said", "did", "done"]);
+    assert_eq!(
+        (&shown["title"], &shown["project"], &shown["machine"]),
+        (
+            &json!("Add a returns link"),
+            &json!("Storefront"),
+            &json!("Ada's laptop")
+        )
+    );
+    assert_eq!(
+        (&shown["mine"], &shown["connected"]),
+        (&json!(true), &json!(true))
+    );
+    assert_eq!(shown["events"][3]["changed"][0]["added"], 12);
+    // The web app asks for what came after the last event it has.
+    let second = shown["events"][1]["id"].as_str().unwrap();
+    let (_, later) = ada.get(&format!("{path}?after={second}")).await;
+    assert_eq!(kinds(&later), ["did", "done"]);
+
+    // The next turn goes on with the agent's own conversation.
+    let (status, _) = ada.post(&more, json!({"text": "And in the menu"})).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let next = heard(&mut laptop).await.unwrap();
+    assert_eq!(
+        (&next["session"], &next["prompt"], &next["heard"]),
+        (&json!("s-1"), &json!("And in the menu"), &json!(3))
+    );
+
+    // The team reads the chat, and only its owner writes in it or stops it.
+    let listed = marco.get(&ada.team("/chats")).await.1;
+    assert_eq!(
+        (&listed[0]["id"], &listed[0]["user"]),
+        (&json!(id), &json!("Ada"))
+    );
+    let read = marco.get(&path).await.1;
+    assert_eq!((&read["mine"], kinds(&read).len()), (&json!(false), 5));
+    let stop = ada.team(&format!("/chats/{id}/stop"));
+    for hers in [&more, &stop] {
+        let (status, _) = marco.post(hers, json!({"text": "Mine now"})).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(eve.get(&path).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(eve.get(&ada.team("/chats")).await.0, StatusCode::NOT_FOUND);
+
+    let (status, _) = ada.post(&stop, Value::Null).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(
+        heard(&mut laptop).await.unwrap(),
+        json!({"type": "stop", "chat": id})
+    );
+    said(
+        &mut laptop,
+        event(4, json!({"kind": "failed", "why": "Stopped"})),
+    )
+    .await;
+    let shown = chat(&mut ada, &path, false).await;
+    assert_eq!(shown["events"][5]["why"], "Stopped");
+
+    // A chat whose machine is removed ends its turn, and can be read and not gone on with.
+    ada.post(&more, json!({"text": "Once more"})).await;
+    heard(&mut laptop).await.unwrap();
+    let removed = format!("/api/machines/{}", machine.as_str().unwrap());
+    assert_eq!(ada.delete(&removed).await, StatusCode::NO_CONTENT);
+    let shown = chat(&mut ada, &path, false).await;
+    assert_eq!(shown["events"][7]["why"], "The machine was removed");
+    assert_eq!(
+        (&shown["machine"], &shown["connected"]),
+        (&Value::Null, &json!(false))
+    );
+    let (status, _) = ada.post(&more, json!({"text": "Still there?"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }

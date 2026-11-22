@@ -2,16 +2,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
 import { lazy, Suspense, useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { agents, api, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { agents, api, type Chat, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { ChatPage } from "../routes/Chat"
 import { Machines } from "../routes/Machines"
 import { MailSettings } from "../routes/MailSettings"
+import { NewChat } from "../routes/NewChat"
 import { ProjectPage } from "../routes/Project"
 import { TeamSettings } from "../routes/TeamSettings"
 
 // The docs page is the largest, so it is fetched when first opened.
 const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
 
-const sections = ["Your chats", "Direct", "Groups"]
+const sections = ["Direct", "Groups"]
 
 export function Shell({ user }: { user: User }) {
   const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
@@ -29,14 +31,15 @@ export function Shell({ user }: { user: User }) {
           </Link>
           <ServerStatus />
         </div>
-        <button className="rounded-md bg-pri py-1.5 font-medium text-pri-text hover:bg-pri-hover">
+        <Link to="/chats/new" className="rounded-md bg-pri py-1.5 text-center font-medium text-pri-text hover:bg-pri-hover">
           New chat
-        </button>
+        </Link>
         <nav className="flex flex-col">
           <a className="rounded-md px-2 py-1.5 hover:bg-hov">Tasks</a>
           <a className="rounded-md px-2 py-1.5 hover:bg-hov">Docs</a>
         </nav>
         <Projects team={team} />
+        <Chats team={team} user={user} />
         {sections.map((section) => (
           <h2 key={section} className="px-2 pt-2 font-mono text-[10px] tracking-wider text-ink3 uppercase">
             {section}
@@ -59,6 +62,8 @@ export function Shell({ user }: { user: User }) {
             }
           />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
+          <Route path="/chats/new" element={<NewChat team={team} />} />
+          <Route path="/chats/:id" element={<ChatPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
           <Route path="/settings/machines" element={<Machines />} />
           {user.is_owner && <Route path="/settings/mail" element={<MailSettings />} />}
@@ -87,6 +92,39 @@ function Projects({ team }: { team: Team }) {
         New project
       </Link>
     </nav>
+  )
+}
+
+/** The team's chats: your own, then your teammates', which you can read. */
+function Chats({ team, user }: { team: Team; user: User }) {
+  const chats = useQuery({
+    queryKey: ["chats", team.id],
+    queryFn: () => api<Chat[]>("GET", `/teams/${team.id}/chats`),
+    refetchInterval: 5000,
+  })
+  const list = (title: string, chats: Chat[], whose: boolean) => (
+    <nav className="flex flex-col">
+      <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">{title}</h2>
+      {chats.map((chat) => (
+        <Link key={chat.id} to={`/chats/${chat.id}`} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-hov">
+          <span className={`size-2 shrink-0 rounded-full ${chat.running ? "animate-pulse bg-ok" : "bg-fld"}`} />
+          <span className="flex min-w-0 flex-col">
+            <span className="truncate">{chat.title}</span>
+            <span className="truncate text-[12px] text-ink2">
+              {whose && `${chat.user} · `}
+              {chat.project} · {agents[chat.agent].name}
+            </span>
+          </span>
+        </Link>
+      ))}
+    </nav>
+  )
+  const theirs = chats.data?.filter((chat) => chat.user_id !== user.id) ?? []
+  return (
+    <>
+      {list("Your chats", chats.data?.filter((chat) => chat.user_id === user.id) ?? [], false)}
+      {theirs.length > 0 && list("Your team's chats", theirs, true)}
+    </>
   )
 }
 
