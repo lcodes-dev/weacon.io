@@ -61,4 +61,7 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A command Codex ran is shown as Codex quoted it for its shell,** so `\n` reads `\\n`. *(seen checking plan 21)*
 - **A chat's page asks for news every five seconds when nothing runs,** and every second when something does. A WebSocket would do both better. *(plan 21)*
 - **Chats have no model picker:** each program uses its own default. *(plan 21)*
-
+- **A chat's commit isn't signed,** since the core reads only the name and mail from the person's git settings. *(plan 22)*
+- **"Commit and push" shows also when nothing new was changed.** The core could say with a turn's end whether the copy holds anything unpushed. *(plan 22)*
+- **A pull request's title and body can't be written in Weacon:** the title is the commit's first line. *(plan 22)*
+- **The line about an app that only reads has no link** to the app's settings on GitHub. *(plan 22)*

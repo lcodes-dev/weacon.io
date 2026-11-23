@@ -77,8 +77,14 @@ fn failed(error: impl Display) -> ApiError {
 }
 
 async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T, ApiError> {
-    let answer = async { request.send().await?.error_for_status()?.json().await };
-    answer.await.map_err(|error: reqwest::Error| failed(error))
+    let answer = request.send().await.map_err(failed)?;
+    if !answer.status().is_success() {
+        // GitHub says why in the body, which is what tells one refusal from another.
+        let (status, url) = (answer.status(), answer.url().clone());
+        let said = answer.text().await.unwrap_or_default();
+        return Err(failed(format!("{status} for {url}: {said}")));
+    }
+    answer.json().await.map_err(failed)
 }
 
 /// Signs the short-lived token that proves the server is the app.
@@ -91,11 +97,12 @@ fn app_token(app: &GithubApp) -> Result<String, ApiError> {
 }
 
 /// The account the app is installed on and a token to act there, once it is installed.
-/// With `only`, the token reads that one repository's files and nothing else.
+/// The token may do what `may` says and no more, in `only` one repository if that is given.
 async fn installation(
     state: &AppState,
     app: &GithubApp,
     only: Option<&str>,
+    may: Value,
 ) -> Result<Option<(String, String)>, ApiError> {
     let app_token = app_token(app)?;
     let installations = request(state, Method::GET, "/app/installations").bearer_auth(&app_token);
@@ -104,29 +111,77 @@ async fn installation(
     let Some(installation) = installations.into_iter().next() else {
         return Ok(None);
     };
-    let path = format!("/app/installations/{}/access_tokens", installation.id);
-    let mut tokens = request(state, Method::POST, &path).bearer_auth(&app_token);
+    let mut scope = json!({"permissions": may});
     if let Some(repo) = only {
         // GitHub wants the name without its owner.
-        let name = repo.rsplit('/').next();
-        tokens = tokens.json(&json!({"repositories": [name], "permissions": {"contents": "read"}}));
+        scope["repositories"] = json!([repo.rsplit('/').next()]);
     }
-    let token: Token = answer(tokens).await?;
+    let path = format!("/app/installations/{}/access_tokens", installation.id);
+    let tokens = request(state, Method::POST, &path).bearer_auth(&app_token);
+    let token = tokens.json(&scope).send().await.map_err(failed)?;
+    // GitHub's answer to asking for more than the app was given.
+    if token.status() == StatusCode::UNPROCESSABLE_ENTITY {
+        let said = token.text().await.unwrap_or_default();
+        tracing::error!("GitHub gave no token for {scope}: {said}");
+        let message = "The team's GitHub App may only read. Its owner has to let it write \
+            contents and pull requests, in the app's settings on GitHub, and accept the \
+            change where the app is installed.";
+        return Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, message.into()));
+    }
+    let token = async { token.error_for_status()?.json::<Token>().await };
+    let token = token.await.map_err(failed)?;
     Ok(Some((installation.account.login, token.token)))
 }
 
-/// A token to read the team's repositories with, or `only` one of them. GitHub ends it after an hour.
+/// What a token may do when it only reads files.
+pub fn reading() -> Value {
+    json!({"contents": "read"})
+}
+
+/// A token for the team's repositories, or `only` one of them, that may do what `may`
+/// says. GitHub ends it after an hour.
 pub async fn token(
     state: &AppState,
     team_id: &str,
     only: Option<&str>,
+    may: Value,
 ) -> Result<String, ApiError> {
     let installed = match db::github_app(&state.pool, team_id).await? {
-        Some(app) => installation(state, &app, only).await?,
+        Some(app) => installation(state, &app, only, may).await?,
         None => None,
     };
     let (_, token) = installed.ok_or_else(|| failed("the team has no installed GitHub App"))?;
     Ok(token)
+}
+
+#[derive(Deserialize)]
+pub struct Pull {
+    pub number: i64,
+    pub html_url: String,
+}
+
+/// Opens a pull request from the branch `head` into `base`, as a draft where the repository has those.
+pub async fn open_pull(
+    state: &AppState,
+    token: &str,
+    repo: &str,
+    (head, base): (&str, &str),
+    (title, body): (&str, &str),
+) -> Result<Pull, ApiError> {
+    let path = format!("/repos/{repo}/pulls");
+    let pull = |draft: bool| {
+        let pull =
+            json!({"title": title, "body": body, "head": head, "base": base, "draft": draft});
+        answer(
+            request(state, Method::POST, &path)
+                .bearer_auth(token)
+                .json(&pull),
+        )
+    };
+    match pull(true).await {
+        Ok(pull) => Ok(pull),
+        Err(_) => pull(false).await,
+    }
 }
 
 async fn get<T: DeserializeOwned>(
@@ -141,7 +196,7 @@ pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status, ApiE
     let Some(app) = db::github_app(&state.pool, team_id).await? else {
         return Ok(Status::default());
     };
-    let installed = installation(state, &app, None).await?;
+    let installed = installation(state, &app, None, reading()).await?;
     let mut status = Status {
         app: Some(app.slug),
         ..Status::default()
@@ -278,7 +333,7 @@ pub async fn repo_branches(
     if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
         return Err(crate::not_found());
     }
-    let token = token(&state, &team_id, None).await?;
+    let token = token(&state, &team_id, None, reading()).await?;
     let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
     let mut names: Vec<String> = branches(&state, &token, &of.repo)
         .await?

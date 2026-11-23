@@ -205,7 +205,8 @@ async fn tell(state: &AppState, turn: Turn) {
         return;
     }
     // The machine fetches with a token for this repository alone, which GitHub ends after an hour.
-    let token = match github::token(state, &turn.team_id, Some(repo)).await {
+    let token = github::token(state, &turn.team_id, Some(repo), github::reading());
+    let token = match token.await {
         Ok(token) => token,
         Err(ApiError(_, why)) => {
             return db::fail_chat(&state.pool, &turn.id, &why)
@@ -213,11 +214,7 @@ async fn tell(state: &AppState, turn: Turn) {
                 .unwrap_or_default();
         }
     };
-    let repository = Repository {
-        url: format!("https://github.com/{repo}.git"),
-        branch: turn.branch,
-        token,
-    };
+    let repository = repository(repo, turn.branch, token);
     let message = ToCore::Turn {
         chat: turn.id,
         agent,
@@ -229,14 +226,106 @@ async fn tell(state: &AppState, turn: Turn) {
     state.cores.send(machine, message);
 }
 
+fn repository(repo: &str, branch: String, token: String) -> Repository {
+    Repository {
+        url: format!("https://github.com/{repo}.git"),
+        branch,
+        token,
+    }
+}
+
 /// Takes in what a machine tells of a chat of its own.
 pub async fn heard(state: &AppState, machine: &str, chat: &str, number: u64, event: Event) {
-    let (running, session) = match &event {
-        Event::Done { session, .. } => (false, Some(session.as_str())),
-        Event::Failed { .. } => (false, None),
-        Event::Said { .. } | Event::Did { .. } => (true, None),
-    };
-    let (number, body) = (number as i64, json!(event));
-    let heard = db::hear_chat(&state.pool, machine, chat, number, &body, running, session);
+    let heard = db::hear_chat(&state.pool, machine, chat, number as i64, &event);
     heard.await.ok();
+}
+
+/// Everything a chat changed in its folder, as git writes it.
+pub async fn diff(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    membership(&user, &team_id)?;
+    let diff = db::chat_diff(&state.pool, &team_id, &id).await?;
+    Ok(Json(json!({"diff": diff.ok_or_else(not_found)?})))
+}
+
+/// The branch a chat's work is pushed to: its title, and the end of its id to tell it from a chat called the same.
+fn pushed_to(chat: &Chat) -> String {
+    let letters = chat.title.to_lowercase();
+    let words = letters.split(|c: char| !c.is_ascii_alphanumeric());
+    let words: Vec<&str> = words.filter(|word| !word.is_empty()).collect();
+    let title: String = words.join("-").chars().take(40).collect();
+    let end = &chat.id[chat.id.len() - 4..];
+    format!("weacon/{}-{end}", title.trim_end_matches('-'))
+}
+
+/// Has the chat's machine commit and push what its folder holds changed, and opens the
+/// chat's pull request if it has none.
+pub async fn push(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, id)): Path<(String, String)>,
+    Json(message): Json<Message>,
+) -> Result<Json<Value>, ApiError> {
+    let chat = own(&state, &user, &team_id, &id).await?;
+    let message = message.text.trim();
+    if message.is_empty() {
+        return Err(refused("Write what the commit should be called"));
+    }
+    if chat.running {
+        let message = "The agent is still working. Stop it, or wait for it to finish";
+        return Err(ApiError(StatusCode::CONFLICT, message.into()));
+    }
+    let (Some(machine), Some(name)) = (&chat.machine_id, &chat.machine) else {
+        return Err(refused(
+            "This chat's machine was removed, and its folder with it",
+        ));
+    };
+    if !state.cores.connected(machine) {
+        return Err(refused(format!(
+            "{name} is away, and the chat's files are on it"
+        )));
+    }
+    let projects = db::projects(&state.pool, &team_id).await?;
+    let project = projects
+        .iter()
+        .find(|project| project.id == chat.project_id);
+    let repo = project.and_then(|project| project.repo.as_deref());
+    let repo = repo.ok_or_else(|| refused("The project has no repository any more"))?;
+
+    // Each token may do one thing in this one repository: the machine's pushes, the server's opens the pull request.
+    let token = |may| github::token(&state, &team_id, Some(repo), may);
+    let pushing = token(json!({"contents": "write"})).await?;
+    let opening = token(json!({"pull_requests": "write", "contents": "read"})).await?;
+    let to = pushed_to(&chat);
+    let asked = |id| ToCore::Push {
+        id,
+        chat: chat.id.clone(),
+        repository: repository(repo, chat.branch.clone(), pushing),
+        to: to.clone(),
+        message: message.to_owned(),
+        name: user.name.clone(),
+        mail: user.email.clone(),
+    };
+    let slow = format!("{name} took too long to push");
+    let pushed = crate::machines::answered(&state, (machine, name), &slow, asked).await;
+    let commit = pushed.map_err(refused)?;
+
+    let mut pull = json!({"commit": commit, "number": chat.pull_number, "url": chat.pull_url});
+    if chat.pull_url.is_none() {
+        let title = message.lines().next().unwrap_or_default();
+        let asker = format!(
+            "Asked for by {} in a Weacon chat: {}/chats/{}",
+            user.name, state.url, chat.id
+        );
+        let opened =
+            github::open_pull(&state, &opening, repo, (&to, &chat.branch), (title, &asker));
+        let opened = opened.await?;
+        db::set_chat_pull(&state.pool, &chat.id, opened.number, &opened.html_url).await?;
+        pull["number"] = json!(opened.number);
+        pull["url"] = json!(opened.html_url);
+    }
+    Ok(Json(pull))
 }

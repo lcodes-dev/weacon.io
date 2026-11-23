@@ -64,6 +64,9 @@ export type Chat = {
   user: string
   /** Null once the machine was removed. */
   machine: string | null
+  /** The pull request the chat opened, once it has. */
+  pull_number: number | null
+  pull_url: string | null
 }
 
 /** What was written and done in a chat. A file's lines are counted against the commit the chat started from. */

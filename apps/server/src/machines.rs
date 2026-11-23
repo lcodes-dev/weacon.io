@@ -322,18 +322,31 @@ pub async fn ask(
             ),
         });
     };
-    let id = uuid::Uuid::now_v7().to_string();
-    let message = ToCore::Ask {
-        id: id.clone(),
+    let slow = format!("{} took too long", agent.program());
+    let message = |id| ToCore::Ask {
+        id,
         agent,
         model: model.to_owned(),
         system: system.to_owned(),
         prompt: prompt.to_owned(),
     };
+    answered(state, (&machine.id, &machine.name), &slow, message).await
+}
+
+/// Sends a machine what `message` makes of a new id, and waits for its answer under that
+/// id. `slow` is what to say when none comes.
+pub async fn answered(
+    state: &AppState,
+    (machine, name): (&str, &str),
+    slow: &str,
+    message: impl FnOnce(String) -> ToCore,
+) -> Answer {
+    let id = uuid::Uuid::now_v7().to_string();
+    let message = message(id.clone());
     let (asker, mut answer) = oneshot::channel();
-    let asked = (machine.id.clone(), message.clone(), asker);
+    let asked = (machine.to_owned(), message.clone(), asker);
     state.cores.lock().asks.insert(id.clone(), asked);
-    state.cores.send(&machine.id, message);
+    state.cores.send(machine, message);
 
     let started = Instant::now();
     let gave_up = loop {
@@ -341,12 +354,12 @@ pub async fn ask(
             answer = &mut answer => return answer.unwrap_or_else(|_| Err("Something went wrong".into())),
             _ = tokio::time::sleep(Duration::from_secs(5)) => {}
         }
-        let left = state.cores.lock().left.get(&machine.id).copied();
+        let left = state.cores.lock().left.get(machine).copied();
         if left.is_some_and(|left| left.elapsed() > AWAY) {
-            break format!("{} went away and didn't come back", machine.name);
+            break format!("{name} went away and didn't come back");
         }
         if started.elapsed() > PATIENCE {
-            break format!("{} took too long", agent.program());
+            break slow.to_owned();
         }
     };
     state.cores.lock().asks.remove(&id);

@@ -1,14 +1,10 @@
 //! Chats: each has a folder here, with a copy of its repository and what its turns told.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use core_link::{Agent, Changed, Event, FromCore, Repository};
-use tokio::process::Command;
+use core_link::{Agent, Event, FromCore, Repository};
 use tokio::sync::Notify;
 
 use crate::home;
@@ -27,6 +23,11 @@ pub struct Chat {
 fn folder(chat: &str) -> Option<PathBuf> {
     let id = !chat.is_empty() && chat.chars().all(|c| c.is_ascii_hexdigit() || c == '-');
     id.then(|| home().join("chats").join(chat))
+}
+
+/// Any other kind of address could name a folder of this machine, or a program to run.
+fn safe(repository: &Repository) -> bool {
+    repository.url.starts_with("https://")
 }
 
 fn numbered(chat: &str, number: u64, event: Event) -> FromCore {
@@ -108,21 +109,28 @@ pub fn turn(
     tokio::spawn({
         let work = work.clone();
         async move {
-            let copy = folder.join("repository");
-            let ended = match fetched(&copy, &repository).await {
+            let fetched = match safe(&repository) {
+                true => chat_copy::fetch(&folder, &repository).await,
+                false => Err("its address isn't an https one".into()),
+            };
+            let ended = match fetched {
                 Ok(()) => {
                     let tell = |event| tell(&work, &chat, event);
                     let (session, stop) = (session.as_deref(), stop.notified());
-                    let program = agent.program();
+                    let (program, copy) = (agent.program(), chat_copy::folder(&folder));
                     agent_run::turn(program, agent, &copy, session, &prompt, stop, tell).await
                 }
                 Err(why) => Err(format!("The repository couldn't be fetched: {why}")),
             };
             let ended = match ended {
-                Ok(session) => Event::Done {
-                    session,
-                    changed: changed(&copy).await,
-                },
+                Ok(session) => {
+                    let (changed, diff) = chat_copy::changes(&folder).await;
+                    Event::Done {
+                        session,
+                        changed,
+                        diff,
+                    }
+                }
                 Err(why) => Event::Failed { why },
             };
             // Forgotten first, so that the next turn can start as soon as the server hears of the end.
@@ -144,80 +152,15 @@ pub fn stop(work: &Shared, chat: &str) {
     }
 }
 
-/// Runs git in a folder and returns what it prints, or what it complains of.
-async fn git(folder: &Path, args: &[&str], header: Option<&str>) -> Result<String, String> {
-    let mut command = Command::new("git");
-    command.args(args).current_dir(folder).stdin(Stdio::null());
-    command.env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(header) = header {
-        // Given in the environment, so that it is in no file and no list of running programs.
-        command.env("GIT_CONFIG_COUNT", "1");
-        command.env("GIT_CONFIG_KEY_0", "http.extraHeader");
-        command.env("GIT_CONFIG_VALUE_0", header);
-    }
-    let output = command.kill_on_drop(true).output().await;
-    let output = output.map_err(|error| format!("git could not be started: {error}"))?;
-    match output.status.success() {
-        true => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
-        false => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-    }
-}
-
-/// Makes the chat's copy of its repository, at the branch's newest commit, unless it is there.
-async fn fetched(copy: &Path, repository: &Repository) -> Result<(), String> {
-    if copy.join(".git").exists() {
-        return Ok(());
-    }
-    let made = tokio::fs::create_dir_all(copy).await;
-    made.map_err(|error| error.to_string())?;
-    let basic = BASE64.encode(format!("x-access-token:{}", repository.token));
-    let header = format!("Authorization: Basic {basic}");
-    let fetch = [
-        "fetch",
-        "--quiet",
-        "--depth",
-        "1",
-        &repository.url,
-        &repository.branch,
-    ];
-    let branch = [
-        "checkout",
-        "--quiet",
-        "-B",
-        &repository.branch,
-        "FETCH_HEAD",
-    ];
-    let fetched = async {
-        git(copy, &["init", "--quiet"], None).await?;
-        git(copy, &fetch, Some(&header)).await?;
-        git(copy, &branch, None).await
-    };
-    if let Err(why) = fetched.await {
-        // A half-made copy would pass for a whole one next time.
-        tokio::fs::remove_dir_all(copy).await.ok();
-        return Err(why);
-    }
-    Ok(())
-}
-
-/// The files that differ from the commit the copy started from, new ones included.
-async fn changed(copy: &Path) -> Vec<Changed> {
-    git(copy, &["add", "--all", "--intent-to-add"], None)
-        .await
-        .ok();
-    let counted = git(copy, &["diff", "--numstat", "HEAD"], None).await;
-    let counted = counted.unwrap_or_default();
-    let files = counted.lines().filter_map(|line| {
-        let mut parts = line.splitn(3, '\t');
-        // A file that isn't text is counted as "-".
-        let mut count = || parts.next().map(|count| count.parse().unwrap_or(0));
-        let (added, removed) = (count()?, count()?);
-        let path = parts.next()?.to_owned();
-        Some(Changed {
-            path,
-            added,
-            removed,
-        })
-    });
-    files.collect()
+/// Commits and pushes what a chat's folder holds changed, and returns the commit.
+pub async fn push(
+    chat: &str,
+    repository: Repository,
+    to: &str,
+    message: &str,
+    author: (&str, &str),
+) -> Result<String, String> {
+    let folder = folder(chat).filter(|_| safe(&repository));
+    let folder = folder.ok_or("This isn't a chat's repository")?;
+    chat_copy::push(&folder, &repository, to, message, author).await
 }

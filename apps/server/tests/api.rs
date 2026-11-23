@@ -640,6 +640,10 @@ struct RepoState {
     truncated: bool,
     /// The archive arrives damaged.
     broken: bool,
+    /// The app was never allowed to write.
+    reads_only: bool,
+    /// The pull requests that were opened.
+    pulls: Vec<Value>,
 }
 
 impl Repo {
@@ -684,18 +688,46 @@ async fn fake_github() -> (String, Repo) {
         )
         .route(
             "/app/installations/3/access_tokens",
-            post(async |headers: HeaderMap, only: String| {
-                assert!(signed(&headers));
-                // A token asked for one repository reads that one and nothing else.
-                if only.is_empty() {
-                    return Json(json!({"token": "installation-token"}));
-                }
-                let only: Value = serde_json::from_str(&only).unwrap();
-                let scope =
-                    json!({"repositories": ["storefront"], "permissions": {"contents": "read"}});
-                assert_eq!(only, scope);
-                Json(json!({"token": "repository-token"}))
-            }),
+            post(
+                async |State(repo): State<Repo>, headers: HeaderMap, Json(scope): Json<Value>| {
+                    assert!(signed(&headers));
+                    // A token is asked for what it is needed for, and nothing else.
+                    let one = json!(["storefront"]);
+                    let token = match (&scope["repositories"], scope["permissions"].to_string()) {
+                        (Value::Null, may) if may == r#"{"contents":"read"}"# => {
+                            "installation-token"
+                        }
+                        (only, may) if *only == one && may == r#"{"contents":"read"}"# => {
+                            "repository-token"
+                        }
+                        (only, _) if *only == one && repo.0.lock().unwrap().reads_only => {
+                            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+                        }
+                        (only, may) if *only == one && may == r#"{"contents":"write"}"# => {
+                            "pushing-token"
+                        }
+                        (only, may)
+                            if *only == one
+                                && may == r#"{"contents":"read","pull_requests":"write"}"# =>
+                        {
+                            "opening-token"
+                        }
+                        _ => panic!("an unexpected token was asked for: {scope}"),
+                    };
+                    Ok(Json(json!({"token": token})))
+                },
+            ),
+        )
+        .route(
+            "/repos/northwind/storefront/pulls",
+            post(
+                async |State(repo): State<Repo>, headers: HeaderMap, Json(pull): Json<Value>| {
+                    assert_eq!(headers["authorization"], "Bearer opening-token");
+                    repo.0.lock().unwrap().pulls.push(pull);
+                    let address = "https://github.com/northwind/storefront/pull/12";
+                    Json(json!({"number": 12, "html_url": address}))
+                },
+            ),
         )
         .route(
             "/installation/repositories",
@@ -2719,4 +2751,130 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     );
     let (status, _) = ada.post(&more, json!({"text": "Still there?"})).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request() {
+    let (state, mut ada, repo) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut marco = Client::new(&state);
+    let invite = ada.invite("marco@example.com").await;
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    marco
+        .post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let start = json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Add a returns link!"});
+    let id = ada.post(&ada.project("/chats"), start).await.1["id"].clone();
+    let id = id.as_str().unwrap();
+    let path = ada.team(&format!("/chats/{id}"));
+    let (diff, push) = (format!("{path}/diff"), format!("{path}/push"));
+    heard(&mut laptop).await.unwrap();
+
+    // Nothing is pushed in the middle of a turn.
+    let commit = json!({"text": "Add a returns link\n\nTo the footer."});
+    assert_eq!(
+        ada.post(&push, commit.clone()).await.0,
+        StatusCode::CONFLICT
+    );
+
+    // A turn's end brings the diff of the whole chat, which is kept apart from its events.
+    let done = |number: u64, diff: &str| {
+        let changed = json!([{"path": "src/Footer.tsx", "added": 1, "removed": 0}]);
+        let event = json!({"kind": "done", "session": "s-1", "changed": changed, "diff": diff});
+        json!({"type": "event", "chat": id, "number": number, "event": event})
+    };
+    said(&mut laptop, done(1, "+a link")).await;
+    let shown = chat(&mut ada, &path, false).await;
+    assert_eq!(shown["events"][1]["diff"], Value::Null);
+    assert_eq!(shown["pull_url"], Value::Null);
+    assert_eq!(marco.get(&diff).await.1, json!({"diff": "+a link"}));
+    // The next turn's diff takes its place.
+    ada.post(&format!("{path}/messages"), json!({"text": "And another"}))
+        .await;
+    heard(&mut laptop).await.unwrap();
+    said(&mut laptop, done(2, "+two links")).await;
+    chat(&mut ada, &path, false).await;
+    assert_eq!(marco.get(&diff).await.1, json!({"diff": "+two links"}));
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(eve.get(&diff).await.0, StatusCode::NOT_FOUND);
+
+    // Only the chat's owner pushes it, with a message, and only an app that may write.
+    assert_eq!(
+        marco.post(&push, commit.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, _) = ada.post(&push, json!({"text": " "})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    repo.0.lock().unwrap().reads_only = true;
+    let (status, why) = ada.post(&push, commit.clone()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(why["error"].as_str().unwrap().contains("may only read"));
+    repo.0.lock().unwrap().reads_only = false;
+
+    // The machine commits and pushes with a token of its own, and the server opens a draft pull request.
+    let mut pushed = async |commit: &str| {
+        let asked = heard(&mut laptop).await.unwrap();
+        let answer = json!({"type": "answer", "id": asked["id"], "answer": {"Ok": commit}});
+        said(&mut laptop, answer).await;
+        assert_eq!(heard(&mut laptop).await.unwrap()["type"], "taken");
+        asked
+    };
+    let ((status, pull), asked) = tokio::join!(ada.post(&push, commit.clone()), pushed("abc123"));
+    assert_eq!(status, StatusCode::OK);
+    let to = format!("weacon/add-a-returns-link-{}", &id[id.len() - 4..]);
+    let repository = json!({
+        "url": "https://github.com/northwind/storefront.git", "branch": "main", "token": "pushing-token",
+    });
+    let expected = json!({
+        "type": "push", "id": asked["id"], "chat": id, "repository": repository, "to": to,
+        "message": "Add a returns link\n\nTo the footer.", "name": "Ada", "mail": "ada@example.com",
+    });
+    assert_eq!(asked, expected);
+    let address = "https://github.com/northwind/storefront/pull/12";
+    assert_eq!(
+        pull,
+        json!({"commit": "abc123", "number": 12, "url": address})
+    );
+    let opened = repo.0.lock().unwrap().pulls.clone();
+    let body = format!(
+        "Asked for by Ada in a Weacon chat: {}/chats/{id}",
+        state.url
+    );
+    let expected = json!({"title": "Add a returns link", "body": body, "head": to, "base": "main", "draft": true});
+    assert_eq!(opened, [expected]);
+    let shown = marco.get(&path).await.1;
+    assert_eq!(
+        (&shown["pull_number"], &shown["pull_url"]),
+        (&json!(12), &json!(address))
+    );
+
+    // Later work is pushed to the same branch, and the pull request is the one there is.
+    let ((status, pull), _) = tokio::join!(ada.post(&push, commit.clone()), pushed("def456"));
+    assert_eq!(
+        (status, &pull["commit"], &pull["number"]),
+        (StatusCode::OK, &json!("def456"), &json!(12))
+    );
+    assert_eq!(repo.0.lock().unwrap().pulls.len(), 1);
+
+    // What the machine couldn't do is said, and a machine that is away is not asked.
+    let failed = async {
+        let asked = heard(&mut laptop).await.unwrap();
+        let answer = json!({"type": "answer", "id": asked["id"], "answer": {"Err": "rejected"}});
+        said(&mut laptop, answer).await;
+    };
+    let ((status, why), _) = tokio::join!(ada.post(&push, commit.clone()), failed);
+    assert_eq!(
+        (status, &why["error"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("rejected"))
+    );
+    drop(laptop);
+    machines(&mut ada, false, None).await;
+    let (status, why) = ada.post(&push, commit).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(why["error"].as_str().unwrap().contains("is away"));
 }

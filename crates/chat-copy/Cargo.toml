@@ -1,0 +1,16 @@
+[package]
+name = "chat-copy"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+base64 = "0.23.1"
+core-link = { path = "../core-link" }
+tokio = { version = "1.54.1", features = ["process", "fs"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["rt", "macros"] }

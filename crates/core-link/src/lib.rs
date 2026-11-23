@@ -83,19 +83,23 @@ pub enum Event {
     Done {
         session: String,
         changed: Vec<Changed>,
+        /// Everything the chat changed, as git writes it. Empty when too long to show.
+        #[serde(default)]
+        diff: String,
     },
     Failed {
         why: String,
     },
 }
 
-/// Where a chat's folder gets its files the first time.
+/// Where a chat's folder gets its files the first time, and where its work is pushed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Repository {
-    /// The address to fetch from, over https.
+    /// The address to fetch from and push to, over https.
     pub url: String,
+    /// The branch the chat starts from.
     pub branch: String,
-    /// Good for this repository alone, for an hour. Used to fetch and kept nowhere.
+    /// Good for this repository alone, for an hour. Used once and kept nowhere.
     pub token: String,
 }
 
@@ -105,8 +109,8 @@ pub struct Repository {
 pub enum FromCore {
     /// The agents on the machine, sent on connecting and whenever it may have changed.
     Agents { agents: Vec<Found> },
-    /// What an agent answered to an `Ask`, or why it didn't. Sent again after a dropped
-    /// connection until the server says `Taken`.
+    /// What an agent answered to an `Ask`, or the commit of a `Push`, or why there is
+    /// neither. Sent again after a dropped connection until the server says `Taken`.
     Answer {
         id: String,
         answer: Result<String, String>,
@@ -151,9 +155,21 @@ pub enum ToCore {
     },
     /// End a chat's turn.
     Stop { chat: String },
+    /// Commit what a chat's folder holds changed and push it to the branch `to`, also when
+    /// nothing changed. Answered like an `Ask`, with the commit.
+    Push {
+        id: String,
+        chat: String,
+        repository: Repository,
+        to: String,
+        message: String,
+        /// Who the commit is by, where the machine's own git doesn't say.
+        name: String,
+        mail: String,
+    },
     /// Another core has connected as this machine, so this one must stop and not dial again.
     Replaced,
-    /// The server has the answer to this `Ask`, so the core may forget it.
+    /// The server has the answer to this `Ask` or `Push`, so the core may forget it.
     Taken { id: String },
     /// Start the agent's own sign-in in a terminal of this size. The core picks the command.
     #[serde(rename = "terminal.open")]

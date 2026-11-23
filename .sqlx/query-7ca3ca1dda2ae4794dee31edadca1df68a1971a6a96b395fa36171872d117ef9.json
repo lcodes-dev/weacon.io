@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT c.diff FROM chats c JOIN projects p ON p.id = c.project_id\n         WHERE c.id = ? AND p.team_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "diff",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "diff"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7ca3ca1dda2ae4794dee31edadca1df68a1971a6a96b395fa36171872d117ef9"
+}

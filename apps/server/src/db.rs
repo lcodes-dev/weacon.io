@@ -2119,6 +2119,9 @@ pub struct Chat {
     /// The machine it runs on, unless that was removed.
     pub machine_id: Option<String>,
     pub machine: Option<String>,
+    /// The pull request it opened, once it has.
+    pub pull_number: Option<i64>,
+    pub pull_url: Option<String>,
 }
 
 /// A team's chats, newest first.
@@ -2126,7 +2129,8 @@ pub async fn chats(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Chat>> 
     sqlx::query_as!(
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
-                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?"
+                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
+                  c.pull_number, c.pull_url
            FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id
            WHERE p.team_id = ? ORDER BY c.id DESC"#,
@@ -2140,7 +2144,8 @@ pub async fn chat(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Op
     sqlx::query_as!(
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
-                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?"
+                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
+                  c.pull_number, c.pull_url
            FROM chats c JOIN projects p ON p.id = c.project_id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id
            WHERE c.id = ? AND p.team_id = ?"#,
@@ -2231,22 +2236,31 @@ pub async fn ask_chat(pool: &SqlitePool, id: &str, asked: &str) -> sqlx::Result<
 }
 
 /// Takes in the `number`th event a machine tells of a chat of its own, when it is the next
-/// one. `running` is whether the turn goes on after it, and `session` what a turn that ended well goes on with.
+/// one. A turn that ended well gives the session to go on with and the diff of what the
+/// chat changed, which is kept once, on the chat, and not with every turn's end.
 pub async fn hear_chat(
     pool: &SqlitePool,
     machine_id: &str,
     id: &str,
     number: i64,
-    body: &serde_json::Value,
-    running: bool,
-    session: Option<&str>,
+    event: &core_link::Event,
 ) -> sqlx::Result<()> {
+    use core_link::Event;
+    let (running, session, diff) = match event {
+        Event::Done { session, diff, .. } => (false, Some(session), Some(diff)),
+        Event::Failed { .. } => (false, None, None),
+        Event::Said { .. } | Event::Did { .. } => (true, None, None),
+    };
+    let mut body = serde_json::json!(event);
+    body.as_object_mut().map(|body| body.remove("diff"));
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let next = sqlx::query!(
-        "UPDATE chats SET heard = heard + 1, running = ?, session = COALESCE(?, session)
+        "UPDATE chats SET heard = heard + 1, running = ?, session = COALESCE(?, session),
+                diff = COALESCE(?, diff)
          WHERE id = ? AND machine_id = ? AND heard = ? - 1",
         running,
         session,
+        diff,
         id,
         machine_id,
         number
@@ -2254,7 +2268,7 @@ pub async fn hear_chat(
     .execute(&mut *tx)
     .await?;
     if next.rows_affected() == 1 {
-        add_chat_event(&mut tx, id, body).await?;
+        add_chat_event(&mut tx, id, &body).await?;
         tx.commit().await?;
     }
     Ok(())
@@ -2278,6 +2292,35 @@ pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<(
         .await?;
         tx.commit().await?;
     }
+    Ok(())
+}
+
+/// Everything a chat changed, as git writes it.
+pub async fn chat_diff(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar!(
+        "SELECT c.diff FROM chats c JOIN projects p ON p.id = c.project_id
+         WHERE c.id = ? AND p.team_id = ?",
+        id,
+        team_id
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+pub async fn set_chat_pull(
+    pool: &SqlitePool,
+    id: &str,
+    number: i64,
+    url: &str,
+) -> sqlx::Result<()> {
+    sqlx::query!(
+        "UPDATE chats SET pull_number = ?, pull_url = ? WHERE id = ?",
+        number,
+        url,
+        id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

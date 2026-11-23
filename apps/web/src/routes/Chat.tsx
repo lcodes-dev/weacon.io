@@ -34,6 +34,19 @@ export function ChatPage({ team }: { team: Team }) {
     },
   })
   const stop = useMutation({ mutationFn: () => api("POST", `/teams/${team.id}/chats/${id}/stop`), onSuccess: refresh })
+  const [message, setMessage] = useState<string>()
+  const push = useMutation({
+    mutationFn: (text: string) => api("POST", `/teams/${team.id}/chats/${id}/push`, { text }),
+    onSuccess: refresh,
+  })
+  // The chat's files as its last finished turn left them, which is what the diff is of.
+  const done = chat.data?.events.filter((event) => event.kind === "done").at(-1)
+  const changed = done?.kind === "done" && done.changed.length > 0
+  const diff = useQuery({
+    queryKey: ["chat-diff", team.id, id, done?.id],
+    queryFn: () => api<{ diff: string }>("GET", `/teams/${team.id}/chats/${id}/diff`),
+    enabled: changed,
+  })
 
   // The newest event stays in view as the agent works.
   const end = useRef<HTMLDivElement>(null)
@@ -44,8 +57,8 @@ export function ChatPage({ team }: { team: Team }) {
 
   if (chat.error) return <p className="page text-ink2">{chat.error.message}</p>
   if (!chat.data) return null
-  const { title, project, branch, agent, machine, connected, running, mine, user, events } = chat.data
-  const error = say.error ?? stop.error
+  const { title, project, branch, agent, machine, connected, running, mine, user, events, pull_number, pull_url } = chat.data
+  const error = say.error ?? stop.error ?? push.error
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
       <header className="flex flex-col gap-1 border-b border-line py-4">
@@ -55,16 +68,43 @@ export function ChatPage({ team }: { team: Team }) {
           <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
           {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
           {!mine && ` · ${user}'s chat`}
+          {pull_url && (
+            <>
+              ·
+              <a className="underline" href={pull_url} target="_blank" rel="noreferrer">
+                Pull request #{pull_number}
+              </a>
+            </>
+          )}
         </span>
       </header>
       <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
         {events.map((event) => (
-          <Event key={event.id} event={event} user={user} />
+          <Event key={event.id} event={event} user={user} diff={event === done ? diff.data?.diff : undefined} />
         ))}
         {running && <p className="animate-pulse text-ink2">{connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
         <div ref={end} />
       </div>
       {error && <p className="text-acc">{error.message}</p>}
+      {mine && machine && changed && !running && (
+        <form
+          className="flex items-center gap-2 border-t border-line pt-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            push.mutate(message ?? title)
+          }}
+        >
+          <input
+            aria-label="Commit message"
+            className="min-w-0 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
+            value={message ?? title}
+            onChange={(event) => setMessage(event.target.value)}
+          />
+          <button className="btn" disabled={push.isPending || !(message ?? title).trim()}>
+            {push.isPending ? "Pushing…" : pull_url ? "Commit and push" : "Commit and open pull request"}
+          </button>
+        </form>
+      )}
       {mine && machine && (
         <form
           className="flex items-end gap-2 border-t border-line py-4"
@@ -102,7 +142,16 @@ export function ChatPage({ team }: { team: Team }) {
   )
 }
 
-function Event({ event, user }: { event: ChatEvent; user: string }) {
+/** One file's part of a diff, without git's own lines above the first changed place. */
+function lines(diff: string, path: string) {
+  const file = diff.split(/^diff --git /m).find((file) => file.split("\n", 1)[0].endsWith(` b/${path}`))
+  const all = file?.split("\n").slice(1, -1) ?? []
+  const first = all.findIndex((line) => line.startsWith("@@"))
+  // A file that isn't text has no changed place, only a line saying so.
+  return first < 0 ? all.slice(-1) : all.slice(first)
+}
+
+function Event({ event, user, diff }: { event: ChatEvent; user: string; diff?: string }) {
   if (event.kind === "asked")
     return (
       <div className="flex flex-col gap-1 self-end rounded-lg bg-sur px-3 py-2">
@@ -147,13 +196,33 @@ function Event({ event, user }: { event: ChatEvent; user: string }) {
       <span className="lbl">
         {event.changed.length} {event.changed.length === 1 ? "file" : "files"} changed on the machine
       </span>
-      {event.changed.map((file) => (
-        <div key={file.path} className="flex gap-3 font-mono text-[12px]">
-          <span className="mr-auto truncate">{file.path}</span>
-          <span className="text-ok">+{file.added}</span>
-          <span className="text-acc">−{file.removed}</span>
-        </div>
-      ))}
+      {event.changed.map((file) => {
+        const counts = (
+          <>
+            <span className="mr-auto truncate">{file.path}</span>
+            <span className="text-ok">+{file.added}</span>
+            <span className="text-acc">−{file.removed}</span>
+          </>
+        )
+        // Only the newest turn's files open: the diff is of the chat as it is now.
+        if (!diff) return <div key={file.path} className="flex gap-3 font-mono text-[12px]">{counts}</div>
+        return (
+          <details key={file.path} className="font-mono text-[12px]">
+            <summary className="flex cursor-pointer gap-3">{counts}</summary>
+            <pre className="mt-1 overflow-auto rounded-md border border-line py-1 leading-[1.6]">
+              {lines(diff, file.path).map((line, at) => (
+                <div
+                  key={at}
+                  className={`px-2 ${line[0] === "+" ? "bg-ok/10 text-ok" : line[0] === "-" ? "bg-acc/10 text-acc" : line[0] === "@" ? "text-ink2" : ""}`}
+                >
+                  {line || " "}
+                </div>
+              ))}
+            </pre>
+          </details>
+        )
+      })}
+      {diff === "" && <span className="lbl">The changes are too long to show here.</span>}
     </div>
   )
 }

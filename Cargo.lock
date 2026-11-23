@@ -254,6 +254,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "chat-copy"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "core-link",
+ "tokio",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3161,6 +3170,7 @@ version = "0.1.0"
 dependencies = [
  "agent-run",
  "base64 0.23.1",
+ "chat-copy",
  "core-link",
  "futures-util",
  "portable-pty",

@@ -192,6 +192,34 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
     ended
 }
 
+/// Answers what the server asked under an id, once, however often the server repeats it.
+fn answer(
+    work: &Shared,
+    id: String,
+    answer: impl Future<Output = Result<String, String>> + Send + 'static,
+) {
+    let mut known = work.lock().unwrap();
+    if let Some(answer) = known.answers.get(&id).cloned() {
+        drop(known);
+        return say(work, FromCore::Answer { id, answer });
+    }
+    // An ask the server repeats after a lost connection is already being answered.
+    if !known.answering.insert(id.clone()) {
+        return;
+    }
+    drop(known);
+    let work = work.clone();
+    tokio::spawn(async move {
+        let answer = answer.await;
+        {
+            let mut work = work.lock().unwrap();
+            work.answering.remove(&id);
+            work.answers.insert(id.clone(), answer.clone());
+        }
+        say(&work, FromCore::Answer { id, answer });
+    });
+}
+
 /// Does what the server asked.
 fn asked(work: &Shared, message: ToCore) {
     match message {
@@ -201,28 +229,20 @@ fn asked(work: &Shared, message: ToCore) {
             model,
             system,
             prompt,
-        } => {
-            let mut known = work.lock().unwrap();
-            if let Some(answer) = known.answers.get(&id).cloned() {
-                drop(known);
-                return say(work, FromCore::Answer { id, answer });
-            }
-            // An ask the server repeats after a lost connection is already being answered.
-            if !known.answering.insert(id.clone()) {
-                return;
-            }
-            drop(known);
-            let work = work.clone();
-            tokio::spawn(async move {
-                let answer = agents::ask(agent, &model, &system, &prompt).await;
-                {
-                    let mut work = work.lock().unwrap();
-                    work.answering.remove(&id);
-                    work.answers.insert(id.clone(), answer.clone());
-                }
-                say(&work, FromCore::Answer { id, answer });
-            });
-        }
+        } => answer(work, id, async move {
+            agents::ask(agent, &model, &system, &prompt).await
+        }),
+        ToCore::Push {
+            id,
+            chat,
+            repository,
+            to,
+            message,
+            name,
+            mail,
+        } => answer(work, id, async move {
+            chats::push(&chat, repository, &to, &message, (&name, &mail)).await
+        }),
         ToCore::Taken { id } => {
             work.lock().unwrap().answers.remove(&id);
         }

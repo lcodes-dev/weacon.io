@@ -10,6 +10,7 @@ unsafe_code = "forbid"
 [dependencies]
 agent-run = { path = "../../crates/agent-run" }
 base64 = "0.23.1"
+chat-copy = { path = "../../crates/chat-copy" }
 core-link = { path = "../../crates/core-link" }
 futures-util = "0.3.34"
 portable-pty = "0.9.0"

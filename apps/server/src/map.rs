@@ -98,7 +98,7 @@ pub async fn round(state: &AppState) {
 
 async fn notice(state: &AppState) -> sqlx::Result<()> {
     for project in db::tracked_projects(&state.pool).await? {
-        let heads = match github::token(state, &project.team_id, None).await {
+        let heads = match github::token(state, &project.team_id, None, github::reading()).await {
             Ok(token) => github::branches(state, &token, &project.repo).await,
             Err(error) => Err(error),
         };
@@ -117,7 +117,7 @@ async fn notice(state: &AppState) -> sqlx::Result<()> {
 }
 
 async fn map(state: &AppState, branch: &Waiting) -> Result<(), ApiError> {
-    let token = github::token(state, &branch.team_id, None).await?;
+    let token = github::token(state, &branch.team_id, None, github::reading()).await?;
     let files = github::files(state, &token, &branch.repo, &branch.head_sha).await?;
     let files: Vec<(String, String)> = files
         .into_iter()

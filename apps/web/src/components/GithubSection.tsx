@@ -34,7 +34,8 @@ export function GithubSection({ team }: { team: Team }) {
     redirect_url: `${origin}/settings/team`,
     setup_url: `${origin}/settings/team`,
     public: false,
-    default_permissions: { contents: "read" },
+    // Writing is for a chat's branch and its pull request; everything else asks for a token that only reads.
+    default_permissions: { contents: "write", pull_requests: "write" },
   }
   const owner = organization ? `organizations/${organization}/` : ""
   const error = github.error ?? register.error ?? forget.error
