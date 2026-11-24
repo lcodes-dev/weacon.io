@@ -67,6 +67,11 @@ export type Chat = {
   /** The pull request the chat opened, once it has. */
   pull_number: number | null
   pull_url: string | null
+  /** The hosts the chat's commands may reach. */
+  hosts: string[]
+  /** The id under which the agent waits to hear whether it may reach `asking_host`. */
+  asking: string | null
+  asking_host: string | null
 }
 
 /** What was written and done in a chat. A file's lines are counted against the commit the chat started from. */
@@ -76,6 +81,9 @@ export type ChatEvent = { id: string } & (
   | { kind: "did"; deed: "read" | "edit" | "command" | "other"; what: string }
   | { kind: "done"; changed: { path: string; added: number; removed: number }[] }
   | { kind: "failed"; why: string }
+  /** A command wanted a host. With `ask`, the agent's program waited to be answered. */
+  | { kind: "wants"; host: string; ask: string | null }
+  | { kind: "answered"; host: string; allowed: boolean }
 )
 
 /** A chat as its page shows it. Only the person it is `mine` for writes in it. */

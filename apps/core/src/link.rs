@@ -267,14 +267,8 @@ fn asked(work: &Shared, message: ToCore) {
                 terminal.sign_in.kill().ok();
             }
         }
-        ToCore::Turn {
-            chat,
-            agent,
-            session,
-            prompt,
-            repository,
-            heard,
-        } => chats::turn(work, chat, agent, session, prompt, repository, heard),
+        ToCore::Turn(turn) => chats::turn(work, turn),
+        ToCore::Answer { chat, ask, allowed } => chats::answer(work, &chat, ask, allowed),
         ToCore::Stop { chat } => chats::stop(work, &chat),
         // Taken care of where the connection is held.
         ToCore::Replaced => {}

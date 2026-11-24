@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
+use sqlx::types::Json;
 
 use crate::mail::Smtp;
 use crate::writer::Writer;
@@ -2122,6 +2123,11 @@ pub struct Chat {
     /// The pull request it opened, once it has.
     pub pull_number: Option<i64>,
     pub pull_url: Option<String>,
+    /// The hosts its commands may reach.
+    pub hosts: Json<Vec<String>>,
+    /// The id under which its agent waits to hear whether it may reach `asking_host`.
+    pub asking: Option<String>,
+    pub asking_host: Option<String>,
 }
 
 /// A team's chats, newest first.
@@ -2130,7 +2136,8 @@ pub async fn chats(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Chat>> 
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
                   p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
-                  c.pull_number, c.pull_url
+                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.asking,
+                  c.asking_host
            FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id
            WHERE p.team_id = ? ORDER BY c.id DESC"#,
@@ -2145,7 +2152,8 @@ pub async fn chat(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Op
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
                   p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
-                  c.pull_number, c.pull_url
+                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.asking,
+                  c.asking_host
            FROM chats c JOIN projects p ON p.id = c.project_id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id
            WHERE c.id = ? AND p.team_id = ?"#,
@@ -2249,18 +2257,28 @@ pub async fn hear_chat(
     let (running, session, diff) = match event {
         Event::Done { session, diff, .. } => (false, Some(session), Some(diff)),
         Event::Failed { .. } => (false, None, None),
-        Event::Said { .. } | Event::Did { .. } => (true, None, None),
+        Event::Said { .. } | Event::Did { .. } | Event::Wants { .. } => (true, None, None),
     };
+    // A host the agent's program is waiting to hear about, which the turn's end forgets.
+    let (asking, host) = match event {
+        Event::Wants { host, ask } => (ask.as_deref(), Some(host)),
+        _ => (None, None),
+    };
+    let host = host.filter(|_| asking.is_some());
     let mut body = serde_json::json!(event);
     body.as_object_mut().map(|body| body.remove("diff"));
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let next = sqlx::query!(
-        "UPDATE chats SET heard = heard + 1, running = ?, session = COALESCE(?, session),
-                diff = COALESCE(?, diff)
-         WHERE id = ? AND machine_id = ? AND heard = ? - 1",
+        "UPDATE chats SET heard = heard + 1, running = ?1, session = COALESCE(?2, session),
+                diff = COALESCE(?3, diff),
+                asking = CASE WHEN ?1 THEN COALESCE(?4, asking) END,
+                asking_host = CASE WHEN ?1 THEN COALESCE(?5, asking_host) END
+         WHERE id = ?6 AND machine_id = ?7 AND heard = ?8 - 1",
         running,
         session,
         diff,
+        asking,
+        host,
         id,
         machine_id,
         number
@@ -2278,7 +2296,8 @@ pub async fn hear_chat(
 pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let ended = sqlx::query!(
-        "UPDATE chats SET running = 0 WHERE id = ? AND running = 1",
+        "UPDATE chats SET running = 0, asking = NULL, asking_host = NULL
+         WHERE id = ? AND running = 1",
         id
     )
     .execute(&mut *tx)
@@ -2292,6 +2311,63 @@ pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<(
         .await?;
         tx.commit().await?;
     }
+    Ok(())
+}
+
+/// Takes the owner's answer about a host: one that is allowed joins the chat's hosts. With
+/// `ask`, the answer is to what the agent's program asks under that id, and false is
+/// returned, with nothing done, when it isn't waiting for it any more.
+pub async fn answer_chat(
+    pool: &SqlitePool,
+    id: &str,
+    ask: Option<&str>,
+    host: &str,
+    allowed: bool,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    if let Some(ask) = ask {
+        let waiting = sqlx::query!(
+            "UPDATE chats SET asking = NULL, asking_host = NULL
+             WHERE id = ? AND asking = ? AND asking_host = ?",
+            id,
+            ask,
+            host
+        )
+        .execute(&mut *tx)
+        .await?;
+        if waiting.rows_affected() == 0 {
+            return Ok(false);
+        }
+    }
+    if allowed {
+        sqlx::query!(
+            "UPDATE chats SET hosts = (
+                 SELECT json_group_array(value)
+                 FROM (SELECT value FROM json_each(chats.hosts) UNION SELECT ?))
+             WHERE id = ?",
+            host,
+            id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    let answered = serde_json::json!({"kind": "answered", "host": host, "allowed": allowed});
+    add_chat_event(&mut tx, id, &answered).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// Takes a host off those a chat's commands may reach.
+pub async fn forget_chat_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "UPDATE chats SET hosts = (
+             SELECT json_group_array(value) FROM json_each(chats.hosts) WHERE value <> ?)
+         WHERE id = ?",
+        host,
+        id
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -2335,15 +2411,17 @@ pub struct Turn {
     pub session: Option<String>,
     pub heard: i64,
     pub repo: Option<String>,
+    pub hosts: Json<Vec<String>>,
 }
 
 /// The turns running on a machine, or on none any more when `machine_id` is `None`.
 pub async fn running_turns(pool: &SqlitePool, machine_id: Option<&str>) -> sqlx::Result<Vec<Turn>> {
     sqlx::query_as!(
         Turn,
-        "SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo
+        r#"SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard,
+                  p.repo, c.hosts AS "hosts: Json<Vec<String>>"
          FROM chats c JOIN projects p ON p.id = c.project_id
-         WHERE c.machine_id IS ? AND c.running = 1",
+         WHERE c.machine_id IS ? AND c.running = 1"#,
         machine_id
     )
     .fetch_all(pool)
@@ -2353,9 +2431,10 @@ pub async fn running_turns(pool: &SqlitePool, machine_id: Option<&str>) -> sqlx:
 pub async fn running_turn(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Turn>> {
     sqlx::query_as!(
         Turn,
-        "SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo
+        r#"SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard,
+                  p.repo, c.hosts AS "hosts: Json<Vec<String>>"
          FROM chats c JOIN projects p ON p.id = c.project_id
-         WHERE c.id = ? AND c.running = 1",
+         WHERE c.id = ? AND c.running = 1"#,
         id
     )
     .fetch_optional(pool)

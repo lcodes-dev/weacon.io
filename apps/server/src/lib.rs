@@ -146,6 +146,11 @@ pub fn router(state: AppState) -> Router {
         .route("/teams/{id}/chats/{chat_id}/stop", post(chats::stop))
         .route("/teams/{id}/chats/{chat_id}/diff", get(chats::diff))
         .route("/teams/{id}/chats/{chat_id}/push", post(chats::push))
+        .route("/teams/{id}/chats/{chat_id}/hosts", post(chats::answer))
+        .route(
+            "/teams/{id}/chats/{chat_id}/hosts/{host}",
+            delete(chats::forget_host),
+        )
         .route("/machines", get(machines::list).post(machines::pair))
         .route("/machines/codes", post(machines::code))
         .route("/machines/connect", get(machines::connect))

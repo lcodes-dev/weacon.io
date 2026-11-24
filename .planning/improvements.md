@@ -65,3 +65,8 @@ Things noticed while working that could be better and that nobody has asked for.
 - **"Commit and push" shows also when nothing new was changed.** The core could say with a turn's end whether the copy holds anything unpushed. *(plan 22)*
 - **A pull request's title and body can't be written in Weacon:** the title is the commit's first line. *(plan 22)*
 - **The line about an app that only reads has no link** to the app's settings on GitHub. *(plan 22)*
+- **A host can only be allowed once a command has wanted it.** The chat's list could take a host typed in ahead. *(plan 23)*
+- **Codex needs another turn after a host is allowed,** since its proxy refuses and can't be made to ask. Its `app-server` has a request that names a host; nothing documents what turns it on. *(plan 23)*
+- **The system's `curl` fails its certificate check in Claude Code's sandbox on macOS.** *(seen checking plan 23)*
+- **A tool that downloads packages and isn't on `agent-run`'s list fails in a chat,** as Cargo, Bundler and pnpm would. Each needs its setting added, or the owner a way to allow a folder by name. *(plan 23)*
+- **Every chat downloads its packages anew,** since its cache starts empty. A cache for each project on a machine would be shared by its chats. *(plan 23)*

@@ -90,6 +90,44 @@ pub enum Event {
     Failed {
         why: String,
     },
+    /// A command wanted a host the chat doesn't allow. With `ask`, the agent's program is
+    /// waiting to be answered under that id; without, the command was refused.
+    Wants {
+        host: String,
+        ask: Option<String>,
+    },
+}
+
+/// Whether a host is an exact name, as a chat may allow: no pattern, no port, no address.
+pub fn host(name: &str) -> bool {
+    let label = |label: &str| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    };
+    name.len() <= 253
+        && name.contains('.')
+        && name.split('.').all(label)
+        && name.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// A chat's turn, as the server asks a machine for it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Turn {
+    pub chat: String,
+    pub agent: Agent,
+    /// The conversation to go on with, if the chat has had a turn.
+    pub session: Option<String>,
+    pub prompt: String,
+    pub repository: Repository,
+    /// How many of the chat's events the server has, so the core sends what came after.
+    pub heard: u64,
+    /// The hosts the agent's commands may reach.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 /// Where a chat's folder gets its files the first time, and where its work is pushed.
@@ -142,16 +180,13 @@ pub enum ToCore {
         system: String,
         prompt: String,
     },
-    /// Run a chat's turn in its folder, or go on telling of the one that is running. `heard`
-    /// is how many of the chat's events the server has, so the core sends what came after.
-    Turn {
+    /// Run a chat's turn in its folder, or go on telling of the one that is running.
+    Turn(Turn),
+    /// Whether the host an agent asked about under `ask` may be reached.
+    Answer {
         chat: String,
-        agent: Agent,
-        /// The conversation to go on with, if the chat has had a turn.
-        session: Option<String>,
-        prompt: String,
-        repository: Repository,
-        heard: u64,
+        ask: String,
+        allowed: bool,
     },
     /// End a chat's turn.
     Stop { chat: String },

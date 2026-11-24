@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET hosts = (\n             SELECT json_group_array(value) FROM json_each(chats.hosts) WHERE value <> ?)\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d74a68db9a027ecd2df069b50651e61aa140723891a7fa8cb41c698a14a497b8"
+}

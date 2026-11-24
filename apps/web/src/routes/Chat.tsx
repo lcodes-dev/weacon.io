@@ -39,6 +39,15 @@ export function ChatPage({ team }: { team: Team }) {
     mutationFn: (text: string) => api("POST", `/teams/${team.id}/chats/${id}/push`, { text }),
     onSuccess: refresh,
   })
+  const answer = useMutation({
+    mutationFn: (answer: { host: string; allowed: boolean; ask: string | null }) =>
+      api("POST", `/teams/${team.id}/chats/${id}/hosts`, answer),
+    onSuccess: refresh,
+  })
+  const forget = useMutation({
+    mutationFn: (host: string) => api("DELETE", `/teams/${team.id}/chats/${id}/hosts/${host}`),
+    onSuccess: refresh,
+  })
   // The chat's files as its last finished turn left them, which is what the diff is of.
   const done = chat.data?.events.filter((event) => event.kind === "done").at(-1)
   const changed = done?.kind === "done" && done.changed.length > 0
@@ -58,7 +67,10 @@ export function ChatPage({ team }: { team: Team }) {
   if (chat.error) return <p className="page text-ink2">{chat.error.message}</p>
   if (!chat.data) return null
   const { title, project, branch, agent, machine, connected, running, mine, user, events, pull_number, pull_url } = chat.data
-  const error = say.error ?? stop.error ?? push.error
+  const { hosts, asking } = chat.data
+  const error = say.error ?? stop.error ?? push.error ?? answer.error ?? forget.error
+  // Only the newest time a host was wanted can be answered.
+  const wanted = new Map(events.flatMap((event) => (event.kind === "wants" ? [[event.host, event.id]] : [])))
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
       <header className="flex flex-col gap-1 border-b border-line py-4">
@@ -77,12 +89,55 @@ export function ChatPage({ team }: { team: Team }) {
             </>
           )}
         </span>
+        {hosts.length > 0 && (
+          <span className="lbl flex flex-wrap items-center gap-2">
+            Commands may reach
+            {hosts.map((host) => (
+              <span key={host} className="flex items-center gap-1 rounded border border-line px-1.5 font-mono normal-case">
+                {host}
+                {mine && (
+                  <button type="button" aria-label={`Stop allowing ${host}`} onClick={() => forget.mutate(host)}>
+                    ×
+                  </button>
+                )}
+              </span>
+            ))}
+          </span>
+        )}
       </header>
       <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
         {events.map((event) => (
-          <Event key={event.id} event={event} user={user} diff={event === done ? diff.data?.diff : undefined} />
+          <div key={event.id} className="contents">
+            <Event event={event} user={user} diff={event === done ? diff.data?.diff : undefined} />
+            {event.kind === "wants" &&
+              mine &&
+              machine &&
+              !hosts.includes(event.host) &&
+              wanted.get(event.host) === event.id &&
+              // The agent's program is waiting for the answer, or was refused and has ended its turn.
+              (event.ask && event.ask === asking ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" className="btn btn-primary" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: true, ask: event.ask })}>
+                    Allow in this chat
+                  </button>
+                  <button type="button" className="btn" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: false, ask: event.ask })}>
+                    Deny
+                  </button>
+                  <span className="lbl normal-case">Commands in this chat can then send data to this host.</span>
+                </div>
+              ) : (
+                !running && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button type="button" className="btn" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: true, ask: null })}>
+                      Allow and try again
+                    </button>
+                    <span className="lbl normal-case">Commands in this chat can then send data to this host.</span>
+                  </div>
+                )
+              ))}
+          </div>
         ))}
-        {running && <p className="animate-pulse text-ink2">{connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
+        {running && <p className="animate-pulse text-ink2">{asking ? "Waiting for an answer…" : connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
         <div ref={end} />
       </div>
       {error && <p className="text-acc">{error.message}</p>}
@@ -190,6 +245,18 @@ function Event({ event, user, diff }: { event: ChatEvent; user: string; diff?: s
     )
   }
   if (event.kind === "failed") return <p className="text-acc">{event.why}</p>
+  if (event.kind === "wants")
+    return (
+      <p className="text-ink2">
+        A command wants to reach <code className="font-mono text-[12px]">{event.host}</code>
+      </p>
+    )
+  if (event.kind === "answered")
+    return (
+      <p className="lbl normal-case">
+        <code className="font-mono">{event.host}</code> {event.allowed ? "is allowed in this chat" : "was refused"}
+      </p>
+    )
   if (!event.changed.length) return <p className="lbl">Done · no file changed</p>
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-line p-3">

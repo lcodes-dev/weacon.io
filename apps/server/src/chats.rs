@@ -165,6 +165,72 @@ pub async fn stop(
     Ok(StatusCode::ACCEPTED)
 }
 
+#[derive(Deserialize)]
+pub struct Answer {
+    host: String,
+    allowed: bool,
+    /// The id the agent's program asked under, when it is waiting for the answer.
+    ask: Option<String>,
+}
+
+/// The owner's answer about a host the chat's commands wanted. An allowed host joins the
+/// chat's hosts. A program that waits is answered; one that was refused is told in a next
+/// turn to try again.
+pub async fn answer(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, id)): Path<(String, String)>,
+    Json(answer): Json<Answer>,
+) -> Result<StatusCode, ApiError> {
+    let chat = own(&state, &user, &team_id, &id).await?;
+    let Answer { host, allowed, ask } = answer;
+    if !core_link::host(&host) {
+        return Err(refused(
+            "A host is an exact name, such as registry.npmjs.org",
+        ));
+    }
+    let Some(machine) = &chat.machine_id else {
+        return Err(refused(
+            "This chat's machine was removed, and its folder with it",
+        ));
+    };
+    match ask {
+        Some(ask) => {
+            if !state.cores.connected(machine) {
+                return Err(refused(
+                    "The machine is away, so its agent can't be answered from here",
+                ));
+            }
+            if !db::answer_chat(&state.pool, &id, Some(&ask), &host, allowed).await? {
+                return Err(refused("The agent isn't waiting for that any more"));
+            }
+            let chat = id.clone();
+            let answer = ToCore::Answer { chat, ask, allowed };
+            state.cores.send(machine, answer);
+        }
+        None if allowed => {
+            db::answer_chat(&state.pool, &id, None, &host, true).await?;
+            let again = format!("{host} can be reached now. Try again what needed it.");
+            if db::ask_chat(&state.pool, &id, &again).await? {
+                run(&state, &id).await;
+            }
+        }
+        None => return Err(refused("No agent is waiting to be refused")),
+    }
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Takes a host off those the chat's commands may reach, from its next turn on.
+pub async fn forget_host(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, id, host)): Path<(String, String, String)>,
+) -> Result<StatusCode, ApiError> {
+    own(&state, &user, &team_id, &id).await?;
+    db::forget_chat_host(&state.pool, &id, &host).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Tells a chat's machine to run its turn, if it is connected. One that is away is told when it connects.
 async fn run(state: &AppState, id: &str) {
     if let Ok(Some(turn)) = db::running_turn(&state.pool, id).await {
@@ -215,14 +281,15 @@ async fn tell(state: &AppState, turn: Turn) {
         }
     };
     let repository = repository(repo, turn.branch, token);
-    let message = ToCore::Turn {
+    let message = ToCore::Turn(core_link::Turn {
         chat: turn.id,
         agent,
         session: turn.session,
         prompt: turn.asked,
         repository,
         heard: turn.heard as u64,
-    };
+        hosts: turn.hosts.0,
+    });
     state.cores.send(machine, message);
 }
 

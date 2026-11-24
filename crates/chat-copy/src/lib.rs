@@ -20,6 +20,11 @@ pub fn folder(chat: &Path) -> PathBuf {
     chat.join("repository")
 }
 
+/// Where the chat's commands may keep what they download, which is no part of its repository.
+pub fn cache(chat: &Path) -> PathBuf {
+    chat.join("cache")
+}
+
 /// Runs git on the chat's copy and returns what it prints, or what it complains of.
 async fn git(chat: &Path, args: &[&str], token: Option<&str>) -> Result<String, String> {
     let mut command = Command::new("git");

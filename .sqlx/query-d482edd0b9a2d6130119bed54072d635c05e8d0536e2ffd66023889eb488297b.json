@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url\n           FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id\n           WHERE p.team_id = ? ORDER BY c.id DESC",
+  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url, c.hosts AS \"hosts: Json<Vec<String>>\", c.asking,\n                  c.asking_host\n           FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id\n           WHERE p.team_id = ? ORDER BY c.id DESC",
   "describe": {
     "columns": [
       {
@@ -145,6 +145,39 @@
             "name": "pull_url"
           }
         }
+      },
+      {
+        "name": "hosts: Json<Vec<String>>",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "hosts"
+          }
+        }
+      },
+      {
+        "name": "asking",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "asking"
+          }
+        }
+      },
+      {
+        "name": "asking_host",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "asking_host"
+          }
+        }
       }
     ],
     "parameters": {
@@ -163,8 +196,11 @@
       true,
       true,
       true,
+      true,
+      false,
+      true,
       true
     ]
   },
-  "hash": "b96884c0b2a8ff12950308200b73928f1c965fbce7a6990f5b032de26c0d4ce5"
+  "hash": "d482edd0b9a2d6130119bed54072d635c05e8d0536e2ffd66023889eb488297b"
 }

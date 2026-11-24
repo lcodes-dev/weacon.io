@@ -2635,7 +2635,7 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     });
     let turn = json!({
         "type": "turn", "chat": id, "agent": "claude", "session": null, "prompt": text,
-        "repository": repository, "heard": 0,
+        "repository": repository, "heard": 0, "hosts": [],
     });
     assert_eq!(heard(&mut laptop).await.unwrap(), turn);
 
@@ -2875,6 +2875,147 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     drop(laptop);
     machines(&mut ada, false, None).await;
     let (status, why) = ada.post(&push, commit).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(why["error"].as_str().unwrap().contains("is away"));
+}
+
+#[tokio::test]
+async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
+    let (state, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut marco = Client::new(&state);
+    let invite = ada.invite("marco@example.com").await;
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    marco
+        .post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let start =
+        json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Install it"});
+    let id = ada.post(&ada.project("/chats"), start).await.1["id"].clone();
+    let id = id.as_str().unwrap();
+    let path = ada.team(&format!("/chats/{id}"));
+    let hosts = format!("{path}/hosts");
+    assert_eq!(heard(&mut laptop).await.unwrap()["hosts"], json!([]));
+    let event = |number: u64, event: Value| json!({"type": "event", "chat": id, "number": number, "event": event});
+    let wants = |host: &str, ask: Value| json!({"kind": "wants", "host": host, "ask": ask});
+    let answer = |host: &str, allowed: bool, ask: Value| json!({"host": host, "allowed": allowed, "ask": ask});
+    /// The chat once it waits to hear about a host, or no longer does.
+    async fn asking(client: &mut Client, path: &str, host: Value) -> Value {
+        for _ in 0..200 {
+            let (_, chat) = client.get(path).await;
+            if chat["asking_host"] == host {
+                return chat;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("the chat never asked about {host}");
+    }
+
+    // The agent's program asks about a host and waits, which the team sees.
+    said(
+        &mut laptop,
+        event(1, wants("registry.npmjs.org", json!("ask-1"))),
+    )
+    .await;
+    let shown = asking(&mut marco, &path, json!("registry.npmjs.org")).await;
+    assert_eq!(
+        (&shown["asking"], &shown["hosts"]),
+        (&json!("ask-1"), &json!([]))
+    );
+    assert_eq!(marco.get(&ada.team("/chats")).await.1[0]["asking"], "ask-1");
+
+    // Only the chat's owner answers, about an exact name, and what is being asked.
+    let yes = answer("registry.npmjs.org", true, json!("ask-1"));
+    assert_eq!(
+        marco.post(&hosts, yes.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    for refused in [
+        answer("*.npmjs.org", true, json!("ask-1")),
+        answer("registry.npmjs.org", true, json!("ask-0")),
+        answer("example.com", true, json!("ask-1")),
+        answer("registry.npmjs.org", false, Value::Null),
+    ] {
+        let (status, _) = ada.post(&hosts, refused).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // A yes reaches the waiting program and puts the host among the chat's.
+    assert_eq!(ada.post(&hosts, yes.clone()).await.0, StatusCode::ACCEPTED);
+    let allowed = json!({"type": "answer", "chat": id, "ask": "ask-1", "allowed": true});
+    assert_eq!(heard(&mut laptop).await.unwrap(), allowed);
+    let shown = asking(&mut ada, &path, Value::Null).await;
+    assert_eq!(shown["hosts"], json!(["registry.npmjs.org"]));
+    assert_eq!(kinds(&shown), ["asked", "wants", "answered"]);
+    assert_eq!(shown["events"][2]["allowed"], true);
+    // It can't be answered twice.
+    assert_eq!(
+        ada.post(&hosts, yes).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // A no reaches it too, and leaves the hosts as they were.
+    said(
+        &mut laptop,
+        event(2, wants("evil.example.com", json!("ask-2"))),
+    )
+    .await;
+    asking(&mut ada, &path, json!("evil.example.com")).await;
+    let no = answer("evil.example.com", false, json!("ask-2"));
+    assert_eq!(ada.post(&hosts, no).await.0, StatusCode::ACCEPTED);
+    let denied = json!({"type": "answer", "chat": id, "ask": "ask-2", "allowed": false});
+    assert_eq!(heard(&mut laptop).await.unwrap(), denied);
+
+    // A turn that ends forgets what it was waiting to hear.
+    said(
+        &mut laptop,
+        event(3, wants("cdn.example.com", json!("ask-3"))),
+    )
+    .await;
+    asking(&mut ada, &path, json!("cdn.example.com")).await;
+    let done = json!({"kind": "done", "session": "s-1", "changed": []});
+    said(&mut laptop, event(4, done)).await;
+    let shown = chat(&mut ada, &path, false).await;
+    assert_eq!(
+        (&shown["asking"], &shown["hosts"]),
+        (&Value::Null, &json!(["registry.npmjs.org"]))
+    );
+
+    // A host that was refused without asking is allowed afterwards, and the agent told in a next turn.
+    let later = answer("cdn.example.com", true, Value::Null);
+    assert_eq!(ada.post(&hosts, later).await.0, StatusCode::ACCEPTED);
+    let next = heard(&mut laptop).await.unwrap();
+    assert_eq!(
+        next["hosts"],
+        json!(["cdn.example.com", "registry.npmjs.org"])
+    );
+    assert_eq!(
+        next["prompt"],
+        "cdn.example.com can be reached now. Try again what needed it."
+    );
+    assert_eq!(next["session"], "s-1");
+
+    // A host is taken off again, by the owner alone.
+    let one = format!("{hosts}/cdn.example.com");
+    assert_eq!(marco.delete(&one).await, StatusCode::FORBIDDEN);
+    assert_eq!(ada.delete(&one).await, StatusCode::NO_CONTENT);
+    assert_eq!(
+        ada.get(&path).await.1["hosts"],
+        json!(["registry.npmjs.org"])
+    );
+
+    // A machine that is away can't be answered.
+    said(&mut laptop, event(5, wants("pypi.org", json!("ask-4")))).await;
+    asking(&mut ada, &path, json!("pypi.org")).await;
+    drop(laptop);
+    machines(&mut ada, false, None).await;
+    let (status, why) = ada
+        .post(&hosts, answer("pypi.org", true, json!("ask-4")))
+        .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(why["error"].as_str().unwrap().contains("is away"));
 }

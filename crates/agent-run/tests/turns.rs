@@ -1,9 +1,31 @@
 //! A turn of each agent, with a stand-in that prints what the real program printed.
 
-use agent_run::turn;
+use std::path::{Path, PathBuf};
+
+use agent_run::{Turn, turn};
 use core_link::{Agent, Deed, Event};
+use tokio::sync::mpsc;
 
 const PROGRAM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/agent.sh");
+
+fn of<'a>(program: &'a str, agent: Agent, folder: &'a Path, prompt: &'a str) -> Turn<'a> {
+    Turn {
+        program,
+        agent,
+        folder,
+        session: None,
+        prompt,
+        hosts: &[],
+        cache: Path::new("/the/chat's cache"),
+    }
+}
+
+fn folder(name: &str, agent: Agent) -> PathBuf {
+    let name = format!("agent-run-{}-{name}", std::process::id());
+    let folder = std::env::temp_dir().join(name).join(agent.program());
+    std::fs::create_dir_all(&folder).unwrap();
+    folder
+}
 
 /// A turn in a new folder: what it told, how it ended, and what the program was started with.
 async fn ran(
@@ -11,14 +33,25 @@ async fn ran(
     session: Option<&str>,
     prompt: &str,
 ) -> (Vec<Event>, Result<String, String>, String) {
-    let name = format!("agent-run-{}-{}", std::process::id(), prompt.len());
-    let folder = std::env::temp_dir().join(name).join(agent.program());
-    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder(&prompt.len().to_string(), agent);
     let mut told = Vec::new();
     let tell = |event| told.push(event);
     let never = std::future::pending();
-    let ended = turn(PROGRAM, agent, &folder, session, prompt, never, tell).await;
-    let started = std::fs::read_to_string(folder.join("started")).unwrap_or_default();
+    let hosts = ["example.com".to_owned(), "*.bad".to_owned()];
+    let asked = Turn {
+        session,
+        hosts: &hosts,
+        ..of(PROGRAM, agent, &folder, prompt)
+    };
+    let (_answer, mut answers) = mpsc::unbounded_channel();
+    let ended = turn(asked, never, &mut answers, tell).await;
+    let read = |file: &str| std::fs::read_to_string(folder.join(file)).unwrap_or_default();
+    // A tool that downloads packages is told to keep them in the chat's cache.
+    let (started, cache) = (read("started"), read("cache"));
+    assert!(
+        started.is_empty() || cache == "/the/chat's cache/npm\n",
+        "{cache}"
+    );
     std::fs::remove_dir_all(&folder).ok();
     (told, ended, started)
 }
@@ -39,7 +72,16 @@ fn said(event: &Event) -> &str {
 async fn claude_code_s_turn_is_told_in_common_words() {
     let (told, ended, started) = ran(Agent::Claude, None, "Add double").await;
     assert_eq!(ended.unwrap(), "6519d1c4-62a2-4f52-b380-8edfefe39125");
-    assert!(started.contains("--permission-prompts none") && !started.contains("--resume"));
+    assert!(started.contains("--permission-prompts host") && !started.contains("--resume"));
+    // Its sandbox is told the hosts that are exact names, and no other.
+    assert!(
+        started.contains(r#""allowedDomains":["example.com"]"#),
+        "{started}"
+    );
+    assert!(
+        started.contains(r#""allowWrite":["/the/chat's cache"]"#),
+        "{started}"
+    );
     assert!(said(&told[0]).starts_with("I'll start by checking the repo"));
     // What a sub-agent said is left out, and a file is named from the folder.
     let deeds: Vec<&Event> = told
@@ -80,6 +122,14 @@ async fn codex_s_turn_is_told_in_the_same_words() {
     let (told, ended, started) = ran(Agent::Codex, None, "Add double").await;
     assert_eq!(ended.unwrap(), "01a20424-89de-7df1-89b6-12b022e12a8a");
     assert!(started.starts_with("exec --json") && started.contains("workspace-write"));
+    assert!(
+        started.contains(r#"features.network_proxy.domains={"example.com"="allow"}"#),
+        "{started}"
+    );
+    assert!(
+        started.contains(r#"writable_roots=["/the/chat's cache"]"#),
+        "{started}"
+    );
     assert!(said(&told[0]).starts_with("I’ll inspect the existing calculator"));
     let deeds: Vec<&Event> = told
         .iter()
@@ -118,16 +168,9 @@ async fn a_program_that_ends_badly_is_a_failed_turn() {
     }
     let folder = std::env::temp_dir();
     let never = std::future::pending();
-    let missing = turn(
-        "no-such-program",
-        Agent::Claude,
-        &folder,
-        None,
-        "",
-        never,
-        |_| {},
-    )
-    .await;
+    let (_answer, mut answers) = mpsc::unbounded_channel();
+    let missing = of("no-such-program", Agent::Claude, &folder, "");
+    let missing = turn(missing, never, &mut answers, |_| {}).await;
     assert!(
         missing
             .unwrap_err()
@@ -148,20 +191,61 @@ async fn a_stopped_turn_ends_its_program_and_what_it_was_running() {
         stop.take();
     };
     let stopped = async { drop(stopped.await) };
-    let ended = turn(
-        PROGRAM,
-        Agent::Claude,
-        &folder,
-        None,
-        "Be slow",
-        stopped,
-        tell,
-    )
-    .await;
+    let (_answer, mut answers) = mpsc::unbounded_channel();
+    let slow = of(PROGRAM, Agent::Claude, &folder, "Be slow");
+    let ended = turn(slow, stopped, &mut answers, tell).await;
     assert_eq!(ended.unwrap_err(), "Stopped");
     assert_eq!(told.len(), 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
     // The program wrote this when it was interrupted, after ending its command.
     assert!(folder.join("cleaned-up").exists());
     std::fs::remove_dir_all(&folder).ok();
+}
+
+#[tokio::test]
+async fn a_host_claude_code_asks_about_is_answered_and_nothing_else_is_allowed() {
+    for (allowed, answer) in [
+        (true, r#""behavior":"allow""#),
+        (false, r#""behavior":"deny""#),
+    ] {
+        let folder = folder(&format!("asks-{allowed}"), Agent::Claude);
+        let (answer_it, mut answers) = mpsc::unbounded_channel();
+        let mut told = Vec::new();
+        // Answered as soon as it asks, under the id it asked with.
+        let tell = |event| {
+            if let Event::Wants { ask: Some(ask), .. } = &event {
+                answer_it.send((ask.clone(), allowed)).unwrap();
+            }
+            told.push(event);
+        };
+        let asks = of(PROGRAM, Agent::Claude, &folder, "This needs the network");
+        let ended = turn(asks, std::future::pending(), &mut answers, tell).await;
+        assert_eq!(ended.unwrap(), "asked");
+        let wanted = Event::Wants {
+            host: "registry.npmjs.org".into(),
+            ask: Some("ask-2".into()),
+        };
+        assert_eq!(told, [wanted]);
+        let answers = std::fs::read_to_string(folder.join("answers")).unwrap();
+        let (first, second) = answers.trim().split_once('\n').unwrap();
+        assert!(
+            first.contains(r#""request_id":"ask-1""#) && first.contains(r#""behavior":"deny""#)
+        );
+        assert!(
+            second.contains(r#""request_id":"ask-2""#) && second.contains(answer),
+            "{second}"
+        );
+        std::fs::remove_dir_all(&folder).ok();
+    }
+}
+
+#[tokio::test]
+async fn a_host_codex_s_sandbox_refuses_is_told_the_same_way() {
+    let (told, ended, _) = ran(Agent::Codex, None, "This needs the network").await;
+    assert_eq!(ended.unwrap(), "refused");
+    let wanted = Event::Wants {
+        host: "registry.npmjs.org".into(),
+        ask: None,
+    };
+    assert_eq!(told, [wanted]);
 }

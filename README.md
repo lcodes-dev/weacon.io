@@ -52,7 +52,7 @@ Copy `target/release/weacon-core` to the machine, on macOS, Linux, or WSL on Win
 
 Signing in to an agent is done from Weacon's "Machines" page.
 
-"New chat" then has Claude Code or Codex work on a project there: in a copy of its repository in the core's folder, on your sign-in, with commands kept inside the agent's own sandbox. The machine needs `git`. What the agent changed shows in the chat line by line, and "Commit and open pull request" pushes it to a branch of its own and opens a draft pull request.
+"New chat" then has Claude Code or Codex work on a project there: in a copy of its repository in the core's folder, on your sign-in, with commands kept inside the agent's own sandbox, where they reach only the network hosts you allow for that chat. The machine needs `git`. What the agent changed shows in the chat line by line, and "Commit and open pull request" pushes it to a branch of its own and opens a draft pull request.
 
 ## Docs
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET asking = NULL, asking_host = NULL\n             WHERE id = ? AND asking = ? AND asking_host = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3c1131f84813d5e77fd60fbe48084ca719bfe0c688922e817e8122d1f60c3a92"
+}

@@ -4,8 +4,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use core_link::{Agent, Event, FromCore, Repository};
-use tokio::sync::Notify;
+use core_link::{Event, FromCore, Repository, Turn};
+use tokio::sync::{Notify, mpsc};
 
 use crate::home;
 use crate::link::Shared;
@@ -15,8 +15,15 @@ use crate::link::Shared;
 pub struct Chat {
     /// How many events its file holds.
     told: u64,
-    /// Told to stop its turn, while one is running.
-    turn: Option<Arc<Notify>>,
+    /// Its turn, while one is running.
+    turn: Option<Running>,
+}
+
+struct Running {
+    /// Told to stop the turn.
+    stop: Arc<Notify>,
+    /// Takes whether a host the agent asked about is allowed, by the id it asked under.
+    answers: mpsc::UnboundedSender<(String, bool)>,
 }
 
 /// The chat's folder. Its name comes from the server, so it may only be an id.
@@ -63,15 +70,16 @@ fn tell(work: &Shared, chat: &str, event: Event) {
 }
 
 /// Runs a chat's turn, or tells again what the server hasn't heard of the one it asks about.
-pub fn turn(
-    work: &Shared,
-    chat: String,
-    agent: Agent,
-    session: Option<String>,
-    prompt: String,
-    repository: Repository,
-    heard: u64,
-) {
+pub fn turn(work: &Shared, turn: Turn) {
+    let Turn {
+        chat,
+        agent,
+        session,
+        prompt,
+        repository,
+        heard,
+        hosts,
+    } = turn;
     let Some(folder) = folder(&chat) else { return };
     let file = std::fs::read_to_string(folder.join("events.jsonl")).unwrap_or_default();
     let lines = file.lines();
@@ -103,8 +111,12 @@ pub fn turn(
         return;
     }
     let stop = Arc::new(Notify::new());
+    let (answer, mut answers) = mpsc::unbounded_channel();
     if let Some(chat) = work.lock().unwrap().chats.get_mut(&chat) {
-        chat.turn = Some(stop.clone());
+        chat.turn = Some(Running {
+            stop: stop.clone(),
+            answers: answer,
+        });
     }
     tokio::spawn({
         let work = work.clone();
@@ -116,9 +128,18 @@ pub fn turn(
             let ended = match fetched {
                 Ok(()) => {
                     let tell = |event| tell(&work, &chat, event);
-                    let (session, stop) = (session.as_deref(), stop.notified());
-                    let (program, copy) = (agent.program(), chat_copy::folder(&folder));
-                    agent_run::turn(program, agent, &copy, session, &prompt, stop, tell).await
+                    let cache = chat_copy::cache(&folder);
+                    std::fs::create_dir_all(&cache).ok();
+                    let asked = agent_run::Turn {
+                        program: agent.program(),
+                        agent,
+                        folder: &chat_copy::folder(&folder),
+                        session: session.as_deref(),
+                        prompt: &prompt,
+                        hosts: &hosts,
+                        cache: &cache,
+                    };
+                    agent_run::turn(asked, stop.notified(), &mut answers, tell).await
                 }
                 Err(why) => Err(format!("The repository couldn't be fetched: {why}")),
             };
@@ -145,10 +166,22 @@ pub fn turn(
 /// Ends a chat's turn, and its program with it. The turn itself then tells that it was stopped.
 pub fn stop(work: &Shared, chat: &str) {
     if let Some(Chat {
-        turn: Some(stop), ..
+        turn: Some(running),
+        ..
     }) = work.lock().unwrap().chats.get(chat)
     {
-        stop.notify_one();
+        running.stop.notify_one();
+    }
+}
+
+/// Hands the chat's running turn whether a host its agent asked about is allowed.
+pub fn answer(work: &Shared, chat: &str, ask: String, allowed: bool) {
+    if let Some(Chat {
+        turn: Some(running),
+        ..
+    }) = work.lock().unwrap().chats.get(chat)
+    {
+        running.answers.send((ask, allowed)).ok();
     }
 }
 
