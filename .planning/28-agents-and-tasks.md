@@ -1,6 +1,6 @@
 # Plan 28: a chat's agent reads and writes tasks
 
-**Status: planned**
+**Status: done** (2026-11-24)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -59,10 +59,29 @@ The same address can later serve other programs a person uses, as the prototype'
 
 ## Steps
 
-- [ ] Find what Claude Code loads of a person's own when started with no settings in place of `--safe-mode`, and stop if it is more than Weacon can leave out
-- [ ] Try both programs against a tool server reached over HTTPS, and fall back to the core passing calls on if one can't
-- [ ] Server: the tools and the turn's token, with their tests
-- [ ] `core-link`, the core and `agent-run`: a turn carries the token, and each program is started with the tool server
-- [ ] Web app: the line in a chat, and the chat on a task
-- [ ] Docs: `docs/architecture.md`
-- [ ] Checked by hand with both agents on ContentWrite: a chat from a task reads it, ticks a check, and makes a task of something it found
+- [x] Find what Claude Code loads of a person's own when started with no settings in place of `--safe-mode`, and stop if it is more than Weacon can leave out
+- [x] Try both programs against a tool server reached over HTTPS, and fall back to the core passing calls on if one can't
+- [x] Server: the tools and the turn's token, with their tests
+- [x] `core-link`, the core and `agent-run`: a turn carries the token, and each program is started with the tool server
+- [x] Web app: the line in a chat, and the chat on a task
+- [x] Docs: `docs/architecture.md`
+- [x] Checked by hand with both agents on ContentWrite: a chat from a task reads it, ticks a check, and makes a task of something it found
+
+## Outcome
+
+Built as planned, with these differences:
+
+- **A turn's token is kept as it is, not as a hash.** The server sends a running turn again to a core that connects, and has to send the same token. It is replaced when the next turn starts and opens nothing once its turn has ended.
+- **The token reaches each program in its environment,** as `WEACON_TOOLS`, and is in no command line: Claude Code fills it into the header itself, and Codex is given the variable's name.
+- **The server sends the tools' address with the turn,** from the address people open it at.
+- **A check is ticked by sending the task's whole list of checks,** each with whether it is done. There is no tool for one check.
+- **Calls to the tools aren't shown in a chat;** what they wrote is, as a line the server adds.
+
+What the first two steps found, on 24 November:
+
+- **Claude Code started with no settings in place of `--safe-mode`** loaded nothing of a repository's own: no instructions, skills, commands, agents, hook or tool server. In the person's default folder, which has skills and instructions of their own, it loaded none of those either. Its built-in skills and commands are there in both ways of starting.
+- **Both programs called a stand-in tool server over HTTP** with the token, so the core needs no mode of its own.
+
+- **Tests:** 58 on the server, one of them new: an agent's tools, with and without the token, during and after its turn. In `agent-run`, each program is started with the tool server and gets the token in its environment.
+- **Checked by hand through Weacon** on ContentWrite, with the real programs. Claude Code, started from CON-5, read the task, wrote the file, ticked both checks, set the task to done and made CON-6, which says which chat it came from. Codex, started from CON-6, read the task and a page of the docs, added a check keeping the others, and set it to doing. Each chat shows a line for what was made or changed.
+- **Not checked:** a person's own commands and agents with Claude Code, since this machine has none; a server reached over HTTPS and not through the dev proxy.

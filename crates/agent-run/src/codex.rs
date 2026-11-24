@@ -3,15 +3,17 @@
 use core_link::{Deed, Event};
 use serde_json::{Value, json};
 
-use crate::{Ended, did, said, text, wanted};
+use crate::{Ended, TOKEN, did, said, text, wanted};
 
-pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
+pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> Vec<String> {
     let allowed: Vec<String> = hosts
         .iter()
         .map(|host| format!("{}=\"allow\"", json!(host)))
         .collect();
     let hosts = format!("features.network_proxy.domains={{{}}}", allowed.join(","));
     let cache = format!("sandbox_workspace_write.writable_roots=[{}]", json!(cache));
+    let tools = format!("mcp_servers.weacon.url={}", json!(tools));
+    let token = format!("mcp_servers.weacon.bearer_token_env_var={}", json!(TOKEN));
     let mut args = vec!["exec"];
     if let Some(session) = session {
         args.extend(["resume", session]);
@@ -32,6 +34,13 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
         // It follows the repository's AGENTS.md by itself, and this file where there is none.
         "--config",
         r#"project_doc_fallback_filenames=["CLAUDE.md"]"#,
+        "--config",
+        &tools,
+        "--config",
+        &token,
+        // Nobody can be asked in a chat, so our tools are called without asking.
+        "--config",
+        r#"mcp_servers.weacon.default_tools_approval_mode="approve""#,
         "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",

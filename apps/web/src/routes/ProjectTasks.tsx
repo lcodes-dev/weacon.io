@@ -184,6 +184,7 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
   const error = change.error ?? remove.error
   const pages = docs.data?.pages ?? []
   const theirs = chats.data?.filter((chat) => chat.task_id === task.id) ?? []
+  const from = chats.data?.find((chat) => chat.id === task.chat_id)
   const select = "rounded-md border border-fld bg-bg px-2 py-1"
 
   return (
@@ -221,6 +222,14 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
       </form>
       <p className="text-ink2">
         Asked by {task.asker ?? "someone who left"} on {new Date(task.created_at * 1000).toLocaleDateString()}
+        {from && (
+          <>
+            , in the chat{" "}
+            <Link to={`/chats/${from.id}`} className="underline">
+              {from.title}
+            </Link>
+          </>
+        )}
       </p>
       <label className="flex flex-col gap-1">
         <span className="lbl">Owner</span>

@@ -12,7 +12,7 @@ export function NewChat({ team }: { team: Team }) {
   const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines") })
   const [params] = useSearchParams()
   const [chosen, setChosen] = useState<{ project?: string; branch?: string; agent?: Agent; machine?: string }>({ project: params.get("project") ?? undefined })
-  // Unset means the task the chat is for, as it reads now.
+  // Unset means what a chat for a task starts with.
   const [typed, setText] = useState<string>()
   const tasks = useTasks(team, params.get("task") ? chosen.project : undefined)
   const task = tasks.data?.find((task) => task.id === params.get("task"))
@@ -25,12 +25,9 @@ export function NewChat({ team }: { team: Team }) {
   const agent = chosen.agent ?? (["claude", "codex"] as const).find((agent) => machines.data?.some((machine) => ready(machine, agent))) ?? "claude"
   const able = machines.data?.filter((machine) => ready(machine, agent)) ?? []
   const machine = able.find((machine) => machine.id === chosen.machine) ?? able.find((machine) => machine.connected) ?? able[0]
-  const brief = task && [
-    `${project?.key}-${task.number} ${task.title}`,
-    task.text,
-    task.checks.length > 0 && `Done when:\n${task.checks.map((check) => `- ${check.text}`).join("\n")}`,
-  ]
-  const text = typed ?? brief?.filter(Boolean).join("\n\n") ?? ""
+  // The agent reads the task itself, so it has the text, the checks and the pages as they are then.
+  const brief = task && `Do the task ${project?.key}-${task.number}, "${task.title}". Read it first with your task tool, and tick each of its checks once it is met.`
+  const text = typed ?? brief ?? ""
 
   const start = useMutation({
     mutationFn: () =>

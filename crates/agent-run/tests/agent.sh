@@ -10,6 +10,7 @@ esac
 # What it was started with, for the test to read.
 echo "$*" > started
 echo "$npm_config_cache" > cache
+echo "$WEACON_TOOLS" > token
 case "$prompt" in
   *"fail"*) echo "not signed in" >&2; exit 1 ;;
 esac

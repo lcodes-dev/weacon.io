@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, p.team_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo,\n                  c.hosts AS \"hosts: Json<Vec<String>>\"\n           FROM chats c JOIN projects p ON p.id = c.project_id\n           WHERE c.machine_id IS ? AND c.running = 1",
+  "query": "SELECT c.id, p.team_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo,\n                  c.hosts AS \"hosts: Json<Vec<String>>\", c.tools_token\n           FROM chats c JOIN projects p ON p.id = c.project_id\n           WHERE c.machine_id IS ? AND c.running = 1",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,17 @@
             "name": "hosts"
           }
         }
+      },
+      {
+        "name": "tools_token",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "tools_token"
+          }
+        }
       }
     ],
     "parameters": {
@@ -115,8 +126,9 @@
       true,
       false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "03efc71a2d6887532a17f9ccf22f2b9e47771775a548695c574c06170d8d218e"
+  "hash": "fc89eef4949879dca47202f81a114e6977d7103bf4809ab50e17bac4905dadb4"
 }

@@ -78,3 +78,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **An open task's title and text don't follow a teammate's change** until the task is opened again; its other fields do. *(plan 27)*
 - **In a narrow window the task's panel leaves the list little room.** The panel could take the whole page there. *(seen checking plan 27)*
 - **A project's key is unique only by the request's check,** so two saved at the same instant could share one. *(plan 27)*
+- **A turn's token for the tools is kept as it is,** like a session's and a machine's. *(plan 28)*
+- **An agent that changes a task with nothing to change still leaves a line in its chat.** *(plan 28)*
+- **Claude Code says it has a memory folder of its own for a chat's copy,** empty at the start. Nothing of the person's is in it, but what it writes there stays on the machine. *(seen checking plan 28)*

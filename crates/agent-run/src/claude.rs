@@ -3,7 +3,7 @@
 use core_link::{Deed, Event};
 use serde_json::{Value, json};
 
-use crate::{Ended, did, said, text, wanted};
+use crate::{Ended, TOKEN, did, said, text, wanted};
 
 /// What makes it follow the repository's instructions, which it would otherwise leave out
 /// with the person's own setup. A repository's settings and hooks stay out.
@@ -11,7 +11,7 @@ const INSTRUCTIONS: &str = "This repository's own instructions are in CLAUDE.md 
     or in AGENTS.md where there is no CLAUDE.md. Read that file before anything else, with \
     the files it names, and follow them. Where there is neither, go on without.";
 
-pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
+pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> Vec<String> {
     // Its own sandbox for commands, with nothing let out of it.
     let sandbox = json!({"sandbox": {
         "enabled": true,
@@ -21,21 +21,32 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
         "filesystem": {"allowWrite": [cache]},
     }});
     let sandbox = sandbox.to_string();
+    // It puts the token in itself, from its environment.
+    let bearer = format!("Bearer ${{{TOKEN}}}");
+    let tools = json!({"mcpServers": {"weacon": {
+        "type": "http", "url": tools, "headers": {"Authorization": bearer},
+    }}});
+    let tools = tools.to_string();
     let mut args = vec![
         "--print",
         "--output-format",
         "stream-json",
         "--verbose",
-        "--safe-mode",
+        // None of the person's or the repository's own setup is loaded, and no tools but ours.
+        "--setting-sources",
+        "",
         "--strict-mcp-config",
+        "--mcp-config",
+        &tools,
         "--permission-mode",
         "acceptEdits",
         // What would ask a person is refused, and the agent is told.
         "--permission-prompts",
         "none",
-        // Every command is allowed, since every command is in the sandbox.
+        // Every command is allowed, since every command is in the sandbox, and so are our tools.
         "--allowedTools",
         "Bash",
+        "mcp__weacon",
         "--settings",
         &sandbox,
         "--append-system-prompt",
@@ -73,6 +84,12 @@ pub fn read(
                             .as_str()
                             .or(input["notebook_path"].as_str());
                         did(Deed::Edit, &path.into(), folder)
+                    }
+                    // What our tools write, the server says in the chat itself; looking a tool up says nothing.
+                    (Some("tool_use"), Some(name))
+                        if name.starts_with("mcp__weacon__") || name == "ToolSearch" =>
+                    {
+                        None
                     }
                     (Some("tool_use"), Some(name)) => did(Deed::Other, &name.into(), ""),
                     _ => None,

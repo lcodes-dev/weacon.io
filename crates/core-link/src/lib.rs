@@ -126,6 +126,15 @@ pub struct Turn {
     /// The hosts the agent's commands may reach.
     #[serde(default)]
     pub hosts: Vec<String>,
+    pub tools: Tools,
+}
+
+/// Where a turn's agent reaches the server's tools for its chat's project, and what opens
+/// them for this turn alone.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Tools {
+    pub url: String,
+    pub token: String,
 }
 
 /// Where a chat's folder gets its files the first time, and where its work is pushed.

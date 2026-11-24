@@ -2650,7 +2650,11 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
         "type": "turn", "chat": id, "agent": "claude", "session": null, "prompt": text,
         "repository": repository, "heard": 0, "hosts": [],
     });
-    assert_eq!(heard(&mut laptop).await.unwrap(), turn);
+    let mut sent = heard(&mut laptop).await.unwrap();
+    let tools = sent.as_object_mut().unwrap().remove("tools").unwrap();
+    assert_eq!(sent, turn);
+    assert_eq!(tools["url"], "http://weacon.test/api/tools");
+    assert_eq!(tools["token"].as_str().unwrap().len(), 64);
 
     // What the machine tells is kept in its order: one that comes early or twice is left out.
     let event = |number: u64, event: Value| json!({"type": "event", "chat": id, "number": number, "event": event});
@@ -3060,7 +3064,7 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
             "id": made["id"], "number": 1, "title": "Returns link", "text": "On **mobile**",
             "checks": [{"text": "A link in the footer", "done": false}], "status": "todo",
             "owner_id": null, "owner": null, "asker_id": his, "asker": "Marco",
-            "created_at": created_at, "docs": [page],
+            "created_at": created_at, "chat_id": null, "docs": [page],
         }])
     );
     let returns = format!("{tasks}/{}", made["id"].as_str().unwrap());
@@ -3199,4 +3203,162 @@ async fn a_chat_is_for_a_task_of_its_project() {
         (&left["task_id"], &left["task"]),
         (&Value::Null, &Value::Null)
     );
+}
+
+/// What the server's tools answer a request that comes with `token`.
+async fn tool(state: &AppState, token: &str, request: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/tools")
+        .header(CONTENT_TYPE, "application/json")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::from(request.to_string()))
+        .unwrap();
+    let response = router(state.clone()).oneshot(request).await.unwrap();
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs() {
+    let (state, mut ada) = project_with_docs().await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let page = &docs["pages"][1];
+    let tasks = ada.project("/tasks");
+    let checks = json!([{"text": "A link in the footer", "done": false}]);
+    let returns = json!({"title": "Returns link", "text": "On mobile", "checks": checks, "docs": [page["id"]]});
+    let (_, task) = ada.post(&tasks, returns).await;
+    let start = json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Do it", "task_id": task["id"]});
+    let (_, chat) = ada.post(&ada.project("/chats"), start).await;
+    let chat = chat["id"].as_str().unwrap();
+    let path = ada.team(&format!("/chats/{chat}"));
+    let turn = heard(&mut laptop).await.unwrap();
+    let token = turn["tools"]["token"].as_str().unwrap();
+
+    // The program says hello, asks what there is, and lets us know things; nothing without the token.
+    let ask = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    let hello = ask(1, "initialize", json!({"protocolVersion": "2025-06-18"}));
+    assert_eq!(
+        tool(&state, "another", hello.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, answer) = tool(&state, token, hello).await;
+    assert_eq!(answer["result"]["protocolVersion"], "2025-06-18");
+    let known = json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+    assert_eq!(tool(&state, token, known).await.0, StatusCode::ACCEPTED);
+    let (_, answer) = tool(&state, token, ask(2, "tools/list", Value::Null)).await;
+    let names: Vec<&str> = answer["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["tasks", "task", "new_task", "change_task", "doc"]);
+    let (_, answer) = tool(&state, token, ask(3, "server/discover", Value::Null)).await;
+    assert_eq!(
+        (&answer["id"], &answer["error"]["code"]),
+        (&json!(3), &json!(-32601))
+    );
+
+    // Each tool answers in words, or says why not.
+    let call = async |name: &str, given: Value| {
+        let (_, answer) = tool(
+            &state,
+            token,
+            ask(4, "tools/call", json!({"name": name, "arguments": given})),
+        )
+        .await;
+        let text = answer["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        (answer["result"]["isError"] == true, text)
+    };
+    let (_, read) = call("task", json!({})).await;
+    assert!(
+        read.starts_with("SF-1 Returns link\nStatus: To do · Owner: nobody\n\nOn mobile"),
+        "{read}"
+    );
+    assert!(
+        read.contains("1. [ ] A link in the footer")
+            && read.contains(page["title"].as_str().unwrap()),
+        "{read}"
+    );
+    assert_eq!(
+        call("task", json!({"name": "SF-9"})).await,
+        (true, "This project has no task SF-9".into())
+    );
+    let ticked =
+        json!({"status": "doing", "checks": [{"text": "A link in the footer", "done": true}]});
+    assert_eq!(
+        call("change_task", ticked).await,
+        (false, "Changed SF-1.".into())
+    );
+    assert!(call("change_task", json!({"status": "review"})).await.0);
+    let found = json!({"title": "Fix the flaky test", "checks": ["It passes 20 times"]});
+    assert_eq!(call("new_task", found).await, (false, "Made SF-2.".into()));
+    assert!(call("new_task", json!({"title": " "})).await.0);
+    assert_eq!(
+        call("tasks", json!({})).await.1,
+        "SF-1 · Doing · Returns link · nobody\nSF-2 · To do · Fix the flaky test · nobody"
+    );
+    let (failed, read) = call("doc", json!({"title": " buy "})).await;
+    assert!(!failed && read.starts_with("# Buy\n\n"), "{read}");
+    let (failed, read) = call("doc", json!({"title": "Nothing"})).await;
+    assert!(failed && read.contains("Buy; "), "{read}");
+
+    // What the agent wrote is there at once, for the chat's owner, and the chat says so.
+    let (_, listed) = ada.get(&tasks).await;
+    assert_eq!(
+        (&listed[0]["status"], &listed[0]["checks"][0]["done"]),
+        (&json!("doing"), &json!(true))
+    );
+    let made = &listed[1];
+    assert_eq!(
+        (&made["asker"], &made["chat_id"], &made["checks"][0]["text"]),
+        (&json!("Ada"), &json!(chat), &json!("It passes 20 times"))
+    );
+    let (_, shown) = ada.get(&path).await;
+    let told = json!([
+        {"kind": "task", "task_id": task["id"], "name": "SF-1 Returns link", "made": false},
+        {"kind": "task", "task_id": made["id"], "name": "SF-2 Fix the flaky test", "made": true},
+    ]);
+    let events: Vec<Value> = shown["events"].as_array().unwrap()[1..]
+        .iter()
+        .cloned()
+        .map(|mut event| {
+            event.as_object_mut().unwrap().remove("id");
+            event
+        })
+        .collect();
+    assert_eq!(json!(events), told);
+
+    // The token ends with its turn, and the next turn has another.
+    let done = json!({"kind": "done", "session": "s-1", "changed": [], "diff": ""});
+    said(
+        &mut laptop,
+        json!({"type": "event", "chat": chat, "number": 1, "event": done}),
+    )
+    .await;
+    self::chat(&mut ada, &path, false).await;
+    let list = ask(5, "tools/list", Value::Null);
+    assert_eq!(
+        tool(&state, token, list.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    ada.post(&format!("{path}/messages"), json!({"text": "And more"}))
+        .await;
+    let next = heard(&mut laptop).await.unwrap();
+    let next = next["tools"]["token"].as_str().unwrap();
+    assert_ne!(next, token);
+    assert_eq!(
+        tool(&state, token, list.clone()).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(tool(&state, next, list).await.0, StatusCode::OK);
 }

@@ -3,7 +3,7 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use core_link::{Agent, Event, Repository, ToCore};
+use core_link::{Agent, Event, Repository, ToCore, Tools};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -279,6 +279,10 @@ async fn tell(state: &AppState, machine: &str, chat: Running) {
         prompt: chat.asked,
         heard: chat.heard as u64,
         hosts: chat.hosts.0,
+        tools: Tools {
+            url: format!("{}/api/tools", state.url),
+            token: chat.tools_token.unwrap_or_default(),
+        },
     });
     state.cores.send(machine, message);
 }

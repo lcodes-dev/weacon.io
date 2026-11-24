@@ -105,6 +105,7 @@ fn run(work: &Shared, folder: PathBuf, turn: Turn) {
         prompt,
         repository,
         hosts,
+        tools,
         ..
     } = turn;
     let stop = Arc::new(Notify::new());
@@ -128,6 +129,7 @@ fn run(work: &Shared, folder: PathBuf, turn: Turn) {
                     prompt: &prompt,
                     hosts: &hosts,
                     cache: &cache,
+                    tools: &tools,
                 };
                 let tell = |event| tell(&work, &folder, &chat, event);
                 agent_run::turn(asked, stop.notified(), tell).await

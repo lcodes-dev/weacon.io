@@ -3,12 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use agent_run::{Turn, turn};
-use core_link::{Agent, Deed, Event};
+use core_link::{Agent, Deed, Event, Tools};
 
 const PROGRAM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/agent.sh");
 
 fn of<'a>(program: &'a str, agent: Agent, folder: &'a Path, prompt: &'a str) -> Turn<'a> {
+    static TOOLS: std::sync::LazyLock<Tools> = std::sync::LazyLock::new(|| Tools {
+        url: "https://weacon.example/api/tools".into(),
+        token: "the-turn's-token".into(),
+    });
     Turn {
+        tools: &TOOLS,
         program,
         agent,
         folder,
@@ -50,6 +55,9 @@ async fn ran(
         started.is_empty() || cache == "/the/chat's cache/npm\n",
         "{cache}"
     );
+    // The token for the server's tools is in the program's environment, not in how it is started.
+    assert!(started.is_empty() || read("token") == "the-turn's-token\n");
+    assert!(!started.contains("the-turn's-token"), "{started}");
     std::fs::remove_dir_all(&folder).ok();
     (told, ended, started)
 }
@@ -71,6 +79,16 @@ async fn claude_code_s_turn_is_told_in_common_words() {
     let (told, ended, started) = ran(Agent::Claude, None, "Add double").await;
     assert_eq!(ended.unwrap(), "6519d1c4-62a2-4f52-b380-8edfefe39125");
     assert!(started.contains("--permission-prompts none") && !started.contains("--resume"));
+    // Nothing of the person's or the repository's setup, and the server's tools alone.
+    assert!(
+        started.contains("--setting-sources  --strict-mcp-config --mcp-config"),
+        "{started}"
+    );
+    let tools = r#""weacon":{"headers":{"Authorization":"Bearer ${WEACON_TOOLS}"},"type":"http","url":"https://weacon.example/api/tools"}"#;
+    assert!(
+        started.contains(tools) && started.contains("--allowedTools Bash mcp__weacon"),
+        "{started}"
+    );
     // Its sandbox is told the hosts that are exact names, and no other.
     assert!(
         started.contains(r#""allowedDomains":["example.com"]"#),
@@ -133,6 +151,13 @@ async fn codex_s_turn_is_told_in_the_same_words() {
     );
     let fallback = r#"project_doc_fallback_filenames=["CLAUDE.md"]"#;
     assert!(started.contains(fallback), "{started}");
+    for tools in [
+        r#"mcp_servers.weacon.url="https://weacon.example/api/tools""#,
+        r#"mcp_servers.weacon.bearer_token_env_var="WEACON_TOOLS""#,
+        r#"mcp_servers.weacon.default_tools_approval_mode="approve""#,
+    ] {
+        assert!(started.contains(tools), "{started}");
+    }
     assert!(said(&told[0]).starts_with("I’ll inspect the existing calculator"));
     let deeds: Vec<&Event> = told
         .iter()

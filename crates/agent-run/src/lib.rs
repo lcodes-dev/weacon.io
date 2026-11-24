@@ -9,12 +9,15 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use core_link::{Agent, Deed, Event};
+use core_link::{Agent, Deed, Event, Tools};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 /// The environment variables an agent's program gets: enough to be found and signed in.
+/// Where each program finds the token for the server's tools, so that it is in no command line.
+const TOKEN: &str = "WEACON_TOOLS";
+
 pub const KEPT: [&str; 5] = ["PATH", "HOME", "USER", "CODEX_HOME", "CLAUDE_CONFIG_DIR"];
 
 /// The tools that download packages, each by the setting that says where it keeps them and
@@ -49,6 +52,8 @@ pub struct Turn<'a> {
     pub hosts: &'a [String],
     /// For what commands download.
     pub cache: &'a Path,
+    /// The server's tools for the chat, which the agent's program calls itself.
+    pub tools: &'a Tools,
 }
 
 /// How a line that ends the turn says it ended: well, or with why not.
@@ -70,6 +75,7 @@ pub async fn turn(
         prompt,
         hosts,
         cache,
+        tools,
     } = turn;
     // The sandboxes and the programs know a folder by its real path, which a link in it would hide.
     let real = |folder: &Path| std::fs::canonicalize(folder).unwrap_or(folder.to_owned());
@@ -77,8 +83,8 @@ pub async fn turn(
     let hosts = hosts.iter().map(String::as_str);
     let hosts: Vec<&str> = hosts.filter(|name| core_link::host(name)).collect();
     let args = match agent {
-        Agent::Claude => claude::args(session, &hosts, &cache.to_string_lossy()),
-        Agent::Codex => codex::args(session, &hosts, &cache.to_string_lossy()),
+        Agent::Claude => claude::args(session, &hosts, &cache.to_string_lossy(), &tools.url),
+        Agent::Codex => codex::args(session, &hosts, &cache.to_string_lossy(), &tools.url),
     };
     let child = Command::new(program)
         .args(args)
@@ -86,6 +92,7 @@ pub async fn turn(
         .env_clear()
         .envs(std::env::vars().filter(|(name, _)| KEPT.contains(&name.as_str())))
         .envs(CACHES.map(|(setting, tool)| (setting, cache.join(tool))))
+        .env(TOKEN, &tools.token)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

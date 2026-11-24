@@ -95,6 +95,8 @@ export type Task = {
   asker_id: string | null
   asker: string | null
   created_at: number
+  /** The chat whose agent made it, if one did. */
+  chat_id: string | null
   /** The pages of the project's docs it touches. */
   docs: string[]
 }
@@ -109,6 +111,8 @@ export type ChatEvent = { id: string } & (
   /** A command wanted a host the chat doesn't allow, and was refused. */
   | { kind: "wants"; host: string }
   | { kind: "allowed"; host: string }
+  /** The agent made a task or changed one, which `name` calls as SF-12 Returns link. */
+  | { kind: "task"; task_id: string; name: string; made: boolean }
 )
 
 /** A chat as its page shows it. Only the person it is `mine` for writes in it. */

@@ -35,7 +35,7 @@ async fn project(
 }
 
 /// The fields as they are kept, or why they can't be.
-async fn checked(
+pub async fn checked(
     state: &AppState,
     team_id: &str,
     mut fields: TaskFields,
@@ -69,7 +69,7 @@ pub async fn create(
     if fields.title.is_none() {
         return Err(refused("A task needs a title"));
     }
-    let id = db::create_task(&state.pool, &project_id, &user.id, &fields).await?;
+    let id = db::create_task(&state.pool, &project_id, &user.id, None, &fields).await?;
     Ok(Json(json!({"id": id})))
 }
 

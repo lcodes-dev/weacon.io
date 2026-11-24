@@ -11,6 +11,7 @@ mod pages;
 mod projects;
 mod tasks;
 mod teams;
+mod tools;
 mod web;
 mod writer;
 
@@ -145,6 +146,7 @@ pub fn router(state: AppState) -> Router {
             "/teams/{id}/projects/{project_id}/tasks/{task_id}",
             put(tasks::change).delete(tasks::delete),
         )
+        .route("/tools", post(tools::call))
         .route("/teams/{id}/chats", get(chats::list))
         .route(
             "/teams/{id}/projects/{project_id}/chats",

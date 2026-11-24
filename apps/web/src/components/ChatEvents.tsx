@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { FileTextIcon, PencilIcon, TerminalIcon, WrenchIcon } from "lucide-react"
 import Markdown from "markdown-to-jsx"
 import type { ReactNode } from "react"
+import { Link } from "react-router"
 import { api, type ChatEvent, type OpenChat } from "../api"
 import { safeUrl } from "./DocPages"
 
@@ -15,7 +16,7 @@ export function useChatChange<T = void>(path: string, change: (input: T) => Prom
 
 /** What was asked in a chat and what its agent said and did, oldest first. */
 export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
-  const { events, hosts, mine, machine, running, user } = chat
+  const { events, hosts, mine, machine, running, user, project_id } = chat
   // The chat's files as its last finished turn left them, which is what the diff is of.
   const done = events.filter((event) => event.kind === "done").at(-1)
   const diff = useQuery({
@@ -32,7 +33,7 @@ export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
     <>
       {events.map((event) => (
         <div key={event.id} className="contents">
-          <Event event={event} user={user} diff={event === done ? diff.data?.diff : undefined} />
+          <Event event={event} user={user} project={project_id} diff={event === done ? diff.data?.diff : undefined} />
           {event.kind === "wants" && allowable(event) && (
             <div className="flex flex-wrap items-center gap-2">
               <button type="button" className="btn" disabled={allow.isPending} onClick={() => allow.mutate(event.host)}>
@@ -48,7 +49,7 @@ export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
   )
 }
 
-function Event({ event, user, diff }: { event: ChatEvent; user: string; diff?: string }) {
+function Event({ event, user, project, diff }: { event: ChatEvent; user: string; project: string; diff?: string }) {
   switch (event.kind) {
     case "asked":
       return (
@@ -99,6 +100,15 @@ function Event({ event, user, diff }: { event: ChatEvent; user: string; diff?: s
       return (
         <p className="lbl normal-case">
           <code className="font-mono">{event.host}</code> is allowed in this chat
+        </p>
+      )
+    case "task":
+      return (
+        <p className="lbl normal-case">
+          {event.made ? "Made the task" : "Changed the task"}{" "}
+          <Link className="underline" to={`/projects/${project}/tasks?task=${event.task_id}`}>
+            {event.name}
+          </Link>
         </p>
       )
     case "done":

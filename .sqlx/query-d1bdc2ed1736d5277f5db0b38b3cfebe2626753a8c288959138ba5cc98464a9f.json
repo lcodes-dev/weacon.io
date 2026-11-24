@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT t.id, t.number, t.title, t.text, t.checks AS \"checks: Json<Vec<Check>>\", t.status,\n                  t.owner_id, o.name AS \"owner?\", t.asker_id, a.name AS \"asker?\", t.created_at,\n                  (SELECT json_group_array(d.doc_id) FROM task_docs d WHERE d.task_id = t.id)\n                      AS \"docs!: Json<Vec<String>>\"\n           FROM projects p JOIN tasks t ON t.project_id = p.id\n                LEFT JOIN users o ON o.id = t.owner_id LEFT JOIN users a ON a.id = t.asker_id\n           WHERE p.id = ? AND p.team_id = ? ORDER BY t.status, t.position",
+  "query": "SELECT t.id, t.number, t.title, t.text, t.checks AS \"checks: Json<Vec<Check>>\", t.status,\n                  t.owner_id, o.name AS \"owner?\", t.asker_id, a.name AS \"asker?\", t.created_at, t.chat_id,\n                  (SELECT json_group_array(d.doc_id) FROM task_docs d WHERE d.task_id = t.id)\n                      AS \"docs!: Json<Vec<String>>\"\n           FROM projects p JOIN tasks t ON t.project_id = p.id\n                LEFT JOIN users o ON o.id = t.owner_id LEFT JOIN users a ON a.id = t.asker_id\n           WHERE p.id = ? AND p.team_id = ? ORDER BY t.status, t.position",
   "describe": {
     "columns": [
       {
@@ -125,8 +125,19 @@
         }
       },
       {
-        "name": "docs!: Json<Vec<String>>",
+        "name": "chat_id",
         "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "name": "docs!: Json<Vec<String>>",
+        "ordinal": 12,
         "type_info": "Text",
         "origin": "Expression"
       }
@@ -146,8 +157,9 @@
       true,
       true,
       false,
+      true,
       true
     ]
   },
-  "hash": "3a0b20675b7f5a0b967291c485c5099ff42614edc6a398d5b7789b44a670e04f"
+  "hash": "d1bdc2ed1736d5277f5db0b38b3cfebe2626753a8c288959138ba5cc98464a9f"
 }

@@ -2171,8 +2171,8 @@ pub async fn start_chat(
     let title = asked.lines().next().unwrap_or_default();
     let title: String = title.chars().take(60).collect();
     sqlx::query!(
-        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
+        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, tools_token, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(32))), unixepoch())",
         id,
         project_id,
         user_id,
@@ -2216,7 +2216,8 @@ async fn add_chat_event(
 pub async fn ask_chat(pool: &SqlitePool, id: &str, asked: &str) -> sqlx::Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let started = sqlx::query!(
-        "UPDATE chats SET running = 1, asked = ? WHERE id = ? AND running = 0",
+        "UPDATE chats SET running = 1, asked = ?, tools_token = lower(hex(randomblob(32)))
+         WHERE id = ? AND running = 0",
         asked,
         id
     )
@@ -2367,6 +2368,7 @@ pub struct Running {
     pub heard: i64,
     pub repo: Option<String>,
     pub hosts: Json<Vec<String>>,
+    pub tools_token: Option<String>,
 }
 
 /// The chats whose turn is running on a machine, or on none any more when `machine_id` is `None`.
@@ -2377,7 +2379,7 @@ pub async fn running_chats(
     sqlx::query_as!(
         Running,
         r#"SELECT c.id, p.team_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo,
-                  c.hosts AS "hosts: Json<Vec<String>>"
+                  c.hosts AS "hosts: Json<Vec<String>>", c.tools_token
            FROM chats c JOIN projects p ON p.id = c.project_id
            WHERE c.machine_id IS ? AND c.running = 1"#,
         machine_id
@@ -2424,6 +2426,8 @@ pub struct Task {
     pub asker_id: Option<String>,
     pub asker: Option<String>,
     pub created_at: i64,
+    /// The chat whose agent made it, if one did.
+    pub chat_id: Option<String>,
     /// The pages of the project's docs it touches.
     pub docs: Json<Vec<String>>,
 }
@@ -2449,7 +2453,7 @@ pub async fn tasks(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::
     sqlx::query_as!(
         Task,
         r#"SELECT t.id, t.number, t.title, t.text, t.checks AS "checks: Json<Vec<Check>>", t.status,
-                  t.owner_id, o.name AS "owner?", t.asker_id, a.name AS "asker?", t.created_at,
+                  t.owner_id, o.name AS "owner?", t.asker_id, a.name AS "asker?", t.created_at, t.chat_id,
                   (SELECT json_group_array(d.doc_id) FROM task_docs d WHERE d.task_id = t.id)
                       AS "docs!: Json<Vec<String>>"
            FROM projects p JOIN tasks t ON t.project_id = p.id
@@ -2462,11 +2466,12 @@ pub async fn tasks(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::
     .await
 }
 
-/// The new task's id, at the top of To do.
+/// The new task's id, at the top of To do. `chat_id` is the chat whose agent makes it, for its owner.
 pub async fn create_task(
     pool: &SqlitePool,
     project_id: &str,
     user_id: &str,
+    chat_id: Option<&str>,
     fields: &TaskFields,
 ) -> sqlx::Result<String> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -2482,10 +2487,10 @@ pub async fn create_task(
     let none = Json(Vec::new());
     let checks = fields.checks.as_ref().unwrap_or(&none);
     sqlx::query!(
-        "INSERT INTO tasks (id, project_id, number, title, text, checks, status, position, owner_id, asker_id, created_at)
+        "INSERT INTO tasks (id, project_id, number, title, text, checks, status, position, owner_id, asker_id, chat_id, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'todo',
                  (SELECT COALESCE(MIN(position), 0) - 1 FROM tasks WHERE project_id = ?2 AND status = 'todo'),
-                 ?7, ?8, unixepoch())",
+                 ?7, ?8, ?9, unixepoch())",
         id,
         project_id,
         number,
@@ -2493,7 +2498,8 @@ pub async fn create_task(
         text,
         checks,
         owner,
-        user_id
+        user_id,
+        chat_id
     )
     .execute(&mut *tx)
     .await?;
@@ -2588,4 +2594,40 @@ pub async fn delete_task(pool: &SqlitePool, project_id: &str, task_id: &str) -> 
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// A chat whose agent is using the server's tools.
+pub struct ToolChat {
+    pub id: String,
+    pub team_id: String,
+    pub project_id: String,
+    /// The project's key.
+    pub key: String,
+    /// Whose chat it is, and so who its agent writes for.
+    pub user_id: String,
+    pub task_id: Option<String>,
+}
+
+/// The chat a running turn's token is of.
+pub async fn tool_chat(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<ToolChat>> {
+    sqlx::query_as!(
+        ToolChat,
+        "SELECT c.id, p.team_id, c.project_id, p.key, c.user_id, c.task_id
+         FROM chats c JOIN projects p ON p.id = c.project_id
+         WHERE c.tools_token = ? AND c.running = 1",
+        token
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Adds to a chat something the server did in it.
+pub async fn note_chat(
+    pool: &SqlitePool,
+    chat_id: &str,
+    body: &serde_json::Value,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    add_chat_event(&mut tx, chat_id, body).await?;
+    tx.commit().await
 }
