@@ -36,7 +36,24 @@ async fn server() -> AppState {
         anthropic_api: "http://127.0.0.1:1".into(),
         cores: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
+        embed: by_words,
     }
+}
+
+/// Stands in for the model that embeds docs: texts that share words come out alike.
+fn by_words(texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    let embedding = |text: &String| {
+        let mut embedding = vec![0.0; 64];
+        for word in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+            let place = word
+                .bytes()
+                .fold(7usize, |sum, byte| sum * 31 + byte as usize)
+                % 64;
+            embedding[place] += if word.len() > 3 { 1.0 } else { 0.0 };
+        }
+        embedding
+    };
+    Ok(texts.iter().map(embedding).collect())
 }
 
 impl Client {
@@ -3258,7 +3275,17 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["tasks", "task", "new_task", "change_task", "doc"]);
+    assert_eq!(
+        names,
+        [
+            "tasks",
+            "task",
+            "new_task",
+            "change_task",
+            "doc",
+            "search_docs"
+        ]
+    );
     let (_, answer) = tool(&state, token, ask(3, "server/discover", Value::Null)).await;
     assert_eq!(
         (&answer["id"], &answer["error"]["code"]),
@@ -3309,6 +3336,11 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
     );
     let (failed, read) = call("doc", json!({"title": " buy "})).await;
     assert!(!failed && read.starts_with("# Buy\n\n"), "{read}");
+    let (failed, read) = call("search_docs", json!({"about": "buying"})).await;
+    assert!(
+        !failed && read.starts_with("# ") && read.contains(" (written from src/"),
+        "{read}"
+    );
     let (failed, read) = call("doc", json!({"title": "Nothing"})).await;
     assert!(failed && read.contains("Buy; "), "{read}");
 
@@ -3361,4 +3393,77 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(tool(&state, next, list).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_task_is_offered_the_pages_of_the_docs_that_are_about_it() {
+    let (_, mut ada) = project_with_docs().await;
+    let pages = ada.project("/docs/pages");
+    let mut written = Vec::new();
+    for (title, text) in [
+        (
+            "Refunds",
+            "## Money back\n\nA customer gets a refund within fourteen days of paying.",
+        ),
+        (
+            "Shipping",
+            "## Parcels\n\nA parcel leaves the warehouse the next working day.",
+        ),
+    ] {
+        let (_, page) = ada
+            .post(&pages, json!({"section": "works", "title": "New page"}))
+            .await;
+        let id = page["id"].as_str().unwrap().to_owned();
+        let (_, docs) = ada.get(&ada.project("/docs")).await;
+        let made = docs["pages"].as_array().unwrap().iter();
+        let version =
+            made.clone().find(|page| page["id"] == id.as_str()).unwrap()["version"].clone();
+        let saved = json!({"title": title, "markdown": text, "version": version});
+        assert_eq!(
+            ada.put(&format!("{pages}/{id}"), saved).await,
+            StatusCode::NO_CONTENT
+        );
+        written.push(id);
+    }
+    let (refunds, shipping) = (&written[0], &written[1]);
+    let tasks = ada.project("/tasks");
+    let asked =
+        json!({"title": "A customer wants a refund", "text": "They paid fourteen days ago."});
+    let (_, task) = ada.post(&tasks, asked).await;
+    let task = format!("{tasks}/{}", task["id"].as_str().unwrap());
+    let offered = format!("{task}/docs");
+
+    // Up to three pages, the nearest first, and none the task has already.
+    let (status, pages) = ada.get(&offered).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (&pages[0], pages.as_array().unwrap().len()),
+        (&json!(refunds), 3)
+    );
+    ada.put(&task, json!({"docs": [refunds]})).await;
+    let (_, pages) = ada.get(&offered).await;
+    assert!(
+        !pages.as_array().unwrap().contains(&json!(refunds)),
+        "{pages}"
+    );
+
+    // A page is found by its text as it is now.
+    ada.put(&task, json!({"title": "A parcel is late", "text": "It left the warehouse a week ago.", "docs": []}))
+        .await;
+    assert_eq!(ada.get(&offered).await.1[0], json!(shipping));
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let made = docs["pages"].as_array().unwrap().iter();
+    let version = made
+        .clone()
+        .find(|page| page["id"] == shipping.as_str())
+        .unwrap()["version"]
+        .clone();
+    let moved = json!({"title": "Gift cards", "markdown": "A gift card is a code worth money.", "version": version});
+    ada.put(&format!("{}/{shipping}", ada.project("/docs/pages")), moved)
+        .await;
+    assert_ne!(ada.get(&offered).await.1[0], json!(shipping));
+
+    let mut eve = Client::new(&ada.state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    assert_eq!(eve.get(&offered).await.0, StatusCode::NOT_FOUND);
 }

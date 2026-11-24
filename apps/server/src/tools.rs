@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::db::{self, Task, TaskFields, ToolChat};
-use crate::{ApiError, AppState, not_found, tasks};
+use crate::{ApiError, AppState, not_found, search, tasks};
 
 const STATUSES: [(&str, &str); 3] = [("todo", "To do"), ("doing", "Doing"), ("done", "Done")];
 
@@ -53,6 +53,12 @@ fn tools() -> Value {
             "Reads a page of this project's docs by its title.",
             json!({"title": text}),
             &["title"]
+        ),
+        tool(
+            "search_docs",
+            "Finds what this project's docs say about something: the parts of its pages nearest in meaning, each with the files its page was written from.",
+            json!({"about": text}),
+            &["about"]
         ),
     ])
 }
@@ -161,7 +167,8 @@ async fn tool(
             let task = named(&tasks, chat, &given["name"])?;
             let docs = db::docs(pool, &chat.project_id).await?;
             let pages = docs.iter().filter(|doc| task.docs.contains(&doc.id));
-            let pages: Vec<&str> = pages.map(|doc| doc.title.as_str()).collect();
+            let pages = pages.map(|doc| format!("{}{}", doc.title, written_from(&doc.files)));
+            let pages: Vec<String> = pages.collect();
             let checks = task.checks.iter().enumerate().map(|(place, check)| {
                 format!(
                     "{}. [{}] {}",
@@ -233,6 +240,21 @@ async fn tool(
             note(&task.id, format!("{} {title}", called(task)), false).await?;
             Ok(format!("Changed {}.", called(task)))
         }
+        "search_docs" => {
+            let about = given["about"].as_str().unwrap_or_default();
+            let parts = search::search(state, &chat.project_id, about).await?;
+            let shown = parts.iter().take(5).map(|part| {
+                // A part's first line is its page's title.
+                let text = part.text.split_once('\n').map_or("", |(_, text)| text);
+                format!(
+                    "# {}{}\n\n{}",
+                    part.title,
+                    written_from(&part.files),
+                    text.trim()
+                )
+            });
+            Ok(shown.collect::<Vec<_>>().join("\n\n---\n\n"))
+        }
         "doc" => {
             let docs = db::docs(pool, &chat.project_id).await?;
             let title = given["title"].as_str().unwrap_or_default();
@@ -251,6 +273,15 @@ async fn tool(
             }
         }
         _ => Err(refused("There is no such tool")),
+    }
+}
+
+/// The files a page was written from, which is where the code it describes is; `files` is their JSON list.
+fn written_from(files: &str) -> String {
+    let files: Vec<String> = serde_json::from_str(files).unwrap_or_default();
+    match files.is_empty() {
+        true => String::new(),
+        false => format!(" (written from {})", files.join(", ")),
     }
 }
 

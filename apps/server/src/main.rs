@@ -34,6 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         anthropic_api: "https://api.anthropic.com".into(),
         cores: Default::default(),
         files,
+        embed: doc_search::embed,
     };
     db::fail_interrupted_docs(&state.pool).await?;
     tokio::spawn(map::worker(state.clone()));

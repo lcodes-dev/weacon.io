@@ -11,6 +11,7 @@ unsafe_code = "forbid"
 axum = { version = "0.8.9", features = ["ws"] }
 code-map = { path = "../../crates/code-map" }
 core-link = { path = "../../crates/core-link" }
+doc-search = { path = "../../crates/doc-search" }
 flate2 = "1.1.11"
 jsonwebtoken = { version = "12.0.0", features = ["aws_lc_rs"] }
 lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }

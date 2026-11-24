@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO doc_parts (doc_id, position, text, embedding) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "0db4e9ff5cdb982be5953e9609da67ffe431cefe1daecc768b2e34bdd3ded2b3"
+}

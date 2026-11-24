@@ -1,6 +1,6 @@
 # Plan 29: the docs and the code a task is about
 
-**Status: planned**
+**Status: done** (2026-11-24)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -77,10 +77,36 @@ The owner asked that another way to embed, such as a vendor's API, can take this
 
 ## Steps
 
-- [ ] Try both models on the docs of a real project with a list of questions and the pages a person would expect, and choose
-- [ ] `doc-search`: parts, embeddings and ranking, with its tests
-- [ ] Server: parts kept up with the pages, and the search
-- [ ] Server and web app: pages offered for a task, and their files
-- [ ] The agent's `search_docs`, and the pages and files in `task`
-- [ ] Docs: `docs/architecture.md`
-- [ ] Checked by hand on ContentWrite, once it has docs: a task is offered the right pages, and an agent started from it opens the right files first
+- [x] Try both models on the docs of a real project with a list of questions and the pages a person would expect, and choose
+- [x] `doc-search`: parts, embeddings and ranking, with its tests
+- [x] Server: parts kept up with the pages, and the search
+- [x] Server and web app: pages offered for a task, and their files
+- [x] The agent's `search_docs`, and the pages and files in `task`
+- [x] Docs: `docs/architecture.md`
+- [x] Checked by hand on ContentWrite, once it has docs: a task is offered the right pages, and an agent started from it opens the right files first
+
+## Outcome
+
+**The trial, on 24 November.** ContentWrite's 15 pages were cut into 71 parts, and 20 questions worded as tasks were asked, each with the pages a person would expect. Counted is how often the best part was of such a page, and how often one of the best three pages was.
+
+| Model | First | In three | Embedding the 71 parts |
+| --- | --- | --- | --- |
+| `potion-base-8M`, static, about 30 MB | 19 of 20 | 20 of 20 | under a millisecond |
+| `potion-retrieval-32M`, static, about 130 MB | 15 of 20 | 19 of 20 | a millisecond |
+| `bge-small-en-v1.5`, a transformer | 18 of 20 | 19 of 20 | 31 seconds, its first start included |
+| `all-MiniLM-L6-v2`, a transformer | 16 of 20 | 20 of 20 | 2.5 seconds |
+
+The smallest static model did best, so it is the one: a quarter of the size the plan expected, and no native library. Twenty questions on one project is little to go on; the model is one function to change.
+
+Built as planned, with these differences:
+
+- **A page's parts are made when the project is next searched,** not when the page is saved: its row says which version and which model its parts are of. Nothing was added to the many places that save a page, and no work runs in the background.
+- **Exact words are found by the crate itself,** in the parts it already has in hand, in place of SQLite's full-text search: a name from the question is looked for in each part's text. No second index to keep.
+- **The model's file is in the machine's Hugging Face folder,** where the crate that loads it keeps it and `HF_HOME` points, not in a folder beside the database.
+- **The files under a task's pages are listed, not linked:** the code map has no address for a file yet.
+- **Tests in the server stand in for the model** with one that makes texts sharing words alike, so they need no download; the crate's own tests use the real model.
+- **Not tested:** parts of another model being made again, since the model is a constant; the same statement that finds a changed page finds those.
+
+- **Tests:** 3 in `doc-search`; 59 on the server, one of them new, and the agent's tools' test grown by `search_docs`.
+- **Checked by hand on ContentWrite** with the real model: four tasks were each offered three pages, the right one first for three of them and second for "Add a colleague to my workspace"; the first search took 0.4 seconds, model and all 15 pages included, and later ones 5 milliseconds. Claude Code, in a chat for "Customer was charged twice", used `search_docs` and named the billing files to look at first. The panel lists the files of a task's pages.
+- **Not checked:** Codex with `search_docs`; a server that has to fetch the model, since the trial had fetched it on this machine already.

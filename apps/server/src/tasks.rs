@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, Task, TaskFields, User};
 use crate::teams::{membership, owned, refused};
-use crate::{ApiError, AppState, not_found};
+use crate::{ApiError, AppState, not_found, search};
 
 type Place = Path<(String, String, String)>;
 
@@ -117,6 +117,25 @@ pub async fn order(
     }
     db::order_tasks(&state.pool, &project_id, &order.status, &order.tasks).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Up to three pages of the docs that the task's title and text are about, and that it
+/// doesn't touch yet, for a person to pick from.
+pub async fn docs(
+    State(state): State<AppState>,
+    user: User,
+    Path(place): Place,
+) -> Result<Json<Vec<String>>, ApiError> {
+    let task = found(&state, &user, &place).await?;
+    let question = format!("{}\n{}", task.title, task.text);
+    let mut pages: Vec<String> = Vec::new();
+    for part in search::search(&state, &place.1, &question).await? {
+        if !task.docs.contains(&part.doc_id) && !pages.contains(&part.doc_id) {
+            pages.push(part.doc_id);
+        }
+    }
+    pages.truncate(3);
+    Ok(Json(pages))
 }
 
 /// Only who asked for a task, or the team's owner, deletes it.

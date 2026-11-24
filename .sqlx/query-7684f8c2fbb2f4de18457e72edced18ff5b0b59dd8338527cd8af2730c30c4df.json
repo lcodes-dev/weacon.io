@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM doc_parts WHERE doc_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7684f8c2fbb2f4de18457e72edced18ff5b0b59dd8338527cd8af2730c30c4df"
+}

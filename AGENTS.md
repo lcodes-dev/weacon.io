@@ -26,6 +26,7 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | `cargo test -p weacon-core` | Runs the core's test of the agents' programs |
 | `cargo test -p agent-run` | Runs the agents' turns against a stand-in that prints what the real programs printed |
 | `cargo test -p chat-copy` | Runs a chat's copy of a repository against one made in a temporary folder |
+| `cargo test -p doc-search` | Runs the docs search against a few made-up pages, with the real model, which the first run fetches |
 | `cargo test -p code-map` | Runs the code map's tests: a small made-up repository per language |
 | `cargo run -p code-map --example map -- <folder>` | Prints which file uses which in a folder on this computer; `--example tree -- <file>` prints how a file is parsed and read |
 

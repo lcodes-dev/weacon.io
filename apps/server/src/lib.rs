@@ -9,6 +9,7 @@ pub mod mail;
 pub mod map;
 mod pages;
 mod projects;
+pub mod search;
 mod tasks;
 mod teams;
 mod tools;
@@ -45,6 +46,8 @@ pub struct AppState {
     pub cores: Arc<machines::Cores>,
     /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
+    /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
+    pub embed: search::Embed,
 }
 
 /// Seconds since 1970.
@@ -145,6 +148,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/teams/{id}/projects/{project_id}/tasks/{task_id}",
             put(tasks::change).delete(tasks::delete),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/tasks/{task_id}/docs",
+            get(tasks::docs),
         )
         .route("/tools", post(tools::call))
         .route("/teams/{id}/chats", get(chats::list))

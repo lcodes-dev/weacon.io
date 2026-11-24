@@ -1,0 +1,57 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, title, markdown, version AS \"version!\" FROM (\n               SELECT d.id, d.title, d.markdown, d.parts_version, d.parts_model, d.position,\n                      (SELECT MAX(v.id) FROM doc_versions v WHERE v.doc_id = d.id) AS version\n               FROM docs d WHERE d.project_id = ?)\n           WHERE parts_version IS NOT version OR parts_model IS NOT ? ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "markdown",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "markdown"
+          }
+        }
+      },
+      {
+        "name": "version!",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "d4b2bacbf8478d670a1f8d0a23094a36aa970b8ca3e4ece43f9f46f4dd754c1b"
+}

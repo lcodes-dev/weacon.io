@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE docs SET parts_version = ?, parts_model = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b991573d0ab85f4d849f1d0d3a04e2a0ee6ac5f0591d8c57e97e0825f1b0a5e2"
+}

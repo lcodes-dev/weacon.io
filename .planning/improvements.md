@@ -81,3 +81,8 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A turn's token for the tools is kept as it is,** like a session's and a machine's. *(plan 28)*
 - **An agent that changes a task with nothing to change still leaves a line in its chat.** *(plan 28)*
 - **Claude Code says it has a memory folder of its own for a chat's copy,** empty at the start. Nothing of the person's is in it, but what it writes there stays on the machine. *(seen checking plan 28)*
+- **The files under a task's pages aren't links.** The code map could open at a file named in its address. *(plan 29)*
+- **A task is always offered three pages,** however far they are from it. A page too unlike could be left out. *(plan 29)*
+- **The docs search was tried on one project's docs and twenty questions.** A second project, and one not in English, would say more. *(plan 29)*
+- **The first search after a start loads the model while a request waits,** and on a server that has to fetch it, for as long as 30 MB take. *(plan 29)*
+

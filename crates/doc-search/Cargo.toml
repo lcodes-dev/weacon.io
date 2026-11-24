@@ -1,0 +1,11 @@
+[package]
+name = "doc-search"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+model2vec-rs = "0.5.1"

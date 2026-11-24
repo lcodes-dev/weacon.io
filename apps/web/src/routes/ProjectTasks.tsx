@@ -169,6 +169,11 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
   const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
   const docs = useQuery({ queryKey: ["docs", project.id], queryFn: () => api<Docs>("GET", `/teams/${team.id}/projects/${project.id}/docs`) })
   const chats = useQuery({ queryKey: ["chats", team.id], queryFn: () => api<Chat[]>("GET", `/teams/${team.id}/chats`) })
+  // The pages its title and text are about, which the server finds by meaning.
+  const offered = useQuery({
+    queryKey: ["task-docs", task.id, task.title, task.text, task.docs],
+    queryFn: () => api<string[]>("GET", `${path}/docs`),
+  })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["tasks", project.id] })
   const change = useMutation({
     mutationFn: (fields: Partial<Pick<Task, "title" | "text" | "checks" | "owner_id" | "docs">>) => api("PUT", path, fields),
@@ -185,6 +190,7 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
   const pages = docs.data?.pages ?? []
   const theirs = chats.data?.filter((chat) => chat.task_id === task.id) ?? []
   const from = chats.data?.find((chat) => chat.id === task.chat_id)
+  const written = [...new Set(pages.filter((page) => task.docs.includes(page.id)).flatMap((page) => page.files))]
   const select = "rounded-md border border-fld bg-bg px-2 py-1"
 
   return (
@@ -299,6 +305,26 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
         </select>
       )}
       {docs.data && pages.length === 0 && <p className="text-ink2">{project.name} has no docs yet.</p>}
+      {offered.data?.flatMap((id) => {
+        const page = pages.find((page) => page.id === id)
+        if (!page) return []
+        return (
+          <button key={id} type="button" className="btn btn-sm self-start" onClick={() => change.mutate({ docs: [...task.docs, id] })}>
+            Add {page.title}
+          </button>
+        )
+      })}
+      {offered.error && <p className="text-ink2">{offered.error.message}</p>}
+      {written.length > 0 && (
+        <>
+          <h3 className="lbl pt-2">Those pages were written from</h3>
+          {written.map((file) => (
+            <code key={file} className="shrink-0 truncate font-mono text-[12px] text-ink2">
+              {file}
+            </code>
+          ))}
+        </>
+      )}
 
       <h3 className="lbl pt-2">Chats</h3>
       {theirs.length === 0 && <p className="text-ink2">None yet</p>}

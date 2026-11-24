@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.doc_id, d.title, d.files, p.text, p.embedding\n         FROM docs d JOIN doc_parts p ON p.doc_id = d.id\n         WHERE d.project_id = ? ORDER BY d.position, p.position",
+  "describe": {
+    "columns": [
+      {
+        "name": "doc_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "doc_parts",
+            "name": "doc_id"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "files",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "docs",
+            "name": "files"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "doc_parts",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "embedding",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": {
+          "Table": {
+            "table": "doc_parts",
+            "name": "embedding"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "88d27375dda8a045fef76c52461f45d9579cb7080014e806746c5f421370f6e6"
+}
