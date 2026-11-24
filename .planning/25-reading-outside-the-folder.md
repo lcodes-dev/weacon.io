@@ -1,6 +1,6 @@
 # Plan 25: nothing read outside a chat's folder
 
-**Status: planned**
+**Status: dropped** (2026-11-24). The owner chose to leave reading as each vendor's program has it, for both agents, over the code a limit would need. What was found is kept below
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -71,8 +71,33 @@ In `crates/agent-run/tests/`, with the stand-in: Claude Code is started with the
 
 ## Steps
 
-- [ ] Find the list under which git and the package tools work in Codex with the home folder denied, and stop if there is none
+- [x] Find the list under which git and the package tools work in Codex with the home folder denied, and stop if there is none
 - [ ] `agent-run`: Claude Code's switch
 - [ ] `agent-run`: Codex's profile in place of its sandbox flags
 - [ ] Docs: `docs/architecture.md`
 - [ ] Checked by hand with both agents on ContentWrite: a key, a token and another project can't be read; a package still installs; a refused host is still named
+
+## What building it found, on 24 November
+
+**Claude Code is done and works.** With the switch on, checked through Weacon on ContentWrite: a command was refused `~/.ssh`, `~/.npmrc`, the home folder and the external disk; git, Node and PHP ran; and after its registry was allowed, `npm install` installed the project's packages.
+
+Two things were needed beside the switch, for both agents:
+
+- **A folder on the `PATH` that isn't there, inside the closed home, stops every program from being looked for.** `npm` then failed to start a package's script with "spawn EPERM". Each program is now started without such folders on its `PATH`.
+- **The folders of the home's programs are opened again by name:** each `PATH` folder in the home, and where one is a `bin`, the `lib`, `libexec` and `share` beside it. Not the folder above a `bin`, as first proposed: for `~/Library/pnpm` that would have been all of `~/Library`.
+
+**Codex can't close the home and keep the tools installed in it.** Its rules open or close a path for everything, reading a folder's own entry included. A program in the home is found by looking at each folder on the way to it, the home folder itself among them, so with the home closed Node from a version manager failed with "operation not permitted, lstat" on the home folder. Claude Code's sandbox lets that look through; Codex's has no rule that would.
+
+Tried with only the programs outside the home on Codex's `PATH`: Node, npm, PHP, Composer, Python and git worked, with the home closed. Cargo and Go, which are installed in the home, were not found, and Ruby was the system's old one.
+
+Another thing seen: Codex doesn't report a command at all when its sandbox refused it a read, so such a command doesn't show in the chat; the agent's words say what happened.
+
+The owner chooses for Codex between: the home closed and only programs outside it; the home open but for a list of the places secrets are kept; or reading left as it is, with only Claude Code closed.
+
+## Dropped, on 24 November
+
+Given the choice for Codex, the owner asked to take the limit out for both agents: less code to keep, and one rule for both. Claude Code's switch, which worked, went with it, and so did the two fixes it needed. Nothing of this plan is in the code.
+
+What stays true, and is said in the docs since plan 23: a command in a chat can read any file its person can, and can send it to a host the chat allows. So each host allowed in a chat is somewhere the person's files could go.
+
+Should a limit be wanted later, this page has what it takes: for Claude Code one setting and two small fixes; for Codex a choice between closing the home and losing the tools installed in it, and a list of the places secrets are kept.
