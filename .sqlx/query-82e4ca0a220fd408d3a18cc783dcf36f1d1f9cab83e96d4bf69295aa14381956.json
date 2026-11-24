@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET running = 0 WHERE id = ? AND running = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "82e4ca0a220fd408d3a18cc783dcf36f1d1f9cab83e96d4bf69295aa14381956"
+}

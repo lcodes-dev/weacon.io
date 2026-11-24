@@ -90,11 +90,9 @@ pub enum Event {
     Failed {
         why: String,
     },
-    /// A command wanted a host the chat doesn't allow. With `ask`, the agent's program is
-    /// waiting to be answered under that id; without, the command was refused.
+    /// A command wanted a host the chat doesn't allow, and was refused.
     Wants {
         host: String,
-        ask: Option<String>,
     },
 }
 
@@ -182,12 +180,6 @@ pub enum ToCore {
     },
     /// Run a chat's turn in its folder, or go on telling of the one that is running.
     Turn(Turn),
-    /// Whether the host an agent asked about under `ask` may be reached.
-    Answer {
-        chat: String,
-        ask: String,
-        allowed: bool,
-    },
     /// End a chat's turn.
     Stop { chat: String },
     /// Commit what a chat's folder holds changed and push it to the branch `to`, also when

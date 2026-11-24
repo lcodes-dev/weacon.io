@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard,\n                  p.repo, c.hosts AS \"hosts: Json<Vec<String>>\"\n         FROM chats c JOIN projects p ON p.id = c.project_id\n         WHERE c.machine_id IS ? AND c.running = 1",
+  "query": "SELECT c.id, p.team_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo,\n                  c.hosts AS \"hosts: Json<Vec<String>>\"\n           FROM chats c JOIN projects p ON p.id = c.project_id\n           WHERE c.machine_id IS ? AND c.running = 1",
   "describe": {
     "columns": [
       {
@@ -26,19 +26,8 @@
         }
       },
       {
-        "name": "machine_id",
-        "ordinal": 2,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "chats",
-            "name": "machine_id"
-          }
-        }
-      },
-      {
         "name": "agent",
-        "ordinal": 3,
+        "ordinal": 2,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +38,7 @@
       },
       {
         "name": "branch",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +49,7 @@
       },
       {
         "name": "asked",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +60,7 @@
       },
       {
         "name": "session",
-        "ordinal": 6,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +71,7 @@
       },
       {
         "name": "heard",
-        "ordinal": 7,
+        "ordinal": 6,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -93,7 +82,7 @@
       },
       {
         "name": "repo",
-        "ordinal": 8,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +93,7 @@
       },
       {
         "name": "hosts: Json<Vec<String>>",
-        "ordinal": 9,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -120,7 +109,6 @@
     "nullable": [
       false,
       false,
-      true,
       false,
       false,
       false,
@@ -130,5 +118,5 @@
       false
     ]
   },
-  "hash": "d6840a146ee89ca0ce235cc4e4f588252613f7d371ae668f1041864cd9898546"
+  "hash": "03efc71a2d6887532a17f9ccf22f2b9e47771775a548695c574c06170d8d218e"
 }

@@ -107,10 +107,7 @@ function Chats({ team, user }: { team: Team; user: User }) {
       <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">{title}</h2>
       {chats.map((chat) => (
         <Link key={chat.id} to={`/chats/${chat.id}`} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-hov">
-          <span
-            title={chat.asking ? "Waiting for an answer" : undefined}
-            className={`size-2 shrink-0 rounded-full ${chat.asking ? "bg-acc" : chat.running ? "animate-pulse bg-ok" : "bg-fld"}`}
-          />
+          <span className={`size-2 shrink-0 rounded-full ${chat.running ? "animate-pulse bg-ok" : "bg-fld"}`} />
           <span className="flex min-w-0 flex-col">
             <span className="truncate">{chat.title}</span>
             <span className="truncate text-[12px] text-ink2">

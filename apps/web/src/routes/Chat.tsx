@@ -1,60 +1,24 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { FileTextIcon, PencilIcon, TerminalIcon, WrenchIcon } from "lucide-react"
-import Markdown from "markdown-to-jsx"
-import { useEffect, useRef, useState, type ReactNode } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useEffect, useRef, useState } from "react"
 import { useParams } from "react-router"
-import { agents, api, type ChatEvent, type OpenChat, type Team } from "../api"
-import { safeUrl } from "../components/DocPages"
+import { agents, api, type OpenChat, type Team } from "../api"
+import { ChatEvents, useChatChange } from "../components/ChatEvents"
 
-const icons = { read: FileTextIcon, edit: PencilIcon, command: TerminalIcon, other: WrenchIcon }
+type Part = { chat: OpenChat; path: string }
 
 /** The page at `/chats/{id}`: what was asked, what the agent said and did, and a box to ask for more. */
 export function ChatPage({ team }: { team: Team }) {
-  const { id } = useParams()
+  const path = `/teams/${team.id}/chats/${useParams().id}`
   const queryClient = useQueryClient()
-  const key = ["chat", team.id, id]
   const chat = useQuery({
-    queryKey: key,
+    queryKey: ["chat", path],
     // Only what came after the last event this page has is asked for.
     queryFn: async () => {
-      const had = queryClient.getQueryData<OpenChat>(key)?.events ?? []
-      const after = had.at(-1)?.id ?? ""
-      const now = await api<OpenChat>("GET", `/teams/${team.id}/chats/${id}?after=${after}`)
+      const had = queryClient.getQueryData<OpenChat>(["chat", path])?.events ?? []
+      const now = await api<OpenChat>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
       return { ...now, events: [...had, ...now.events] }
     },
     refetchInterval: (query) => (query.state.data?.running ? 1000 : 5000),
-  })
-  const [text, setText] = useState("")
-  const refresh = () => queryClient.invalidateQueries({ queryKey: key })
-  const say = useMutation({
-    mutationFn: () => api("POST", `/teams/${team.id}/chats/${id}/messages`, { text }),
-    onSuccess: () => {
-      setText("")
-      return refresh()
-    },
-  })
-  const stop = useMutation({ mutationFn: () => api("POST", `/teams/${team.id}/chats/${id}/stop`), onSuccess: refresh })
-  const [message, setMessage] = useState<string>()
-  const push = useMutation({
-    mutationFn: (text: string) => api("POST", `/teams/${team.id}/chats/${id}/push`, { text }),
-    onSuccess: refresh,
-  })
-  const answer = useMutation({
-    mutationFn: (answer: { host: string; allowed: boolean; ask: string | null }) =>
-      api("POST", `/teams/${team.id}/chats/${id}/hosts`, answer),
-    onSuccess: refresh,
-  })
-  const forget = useMutation({
-    mutationFn: (host: string) => api("DELETE", `/teams/${team.id}/chats/${id}/hosts/${host}`),
-    onSuccess: refresh,
-  })
-  // The chat's files as its last finished turn left them, which is what the diff is of.
-  const done = chat.data?.events.filter((event) => event.kind === "done").at(-1)
-  const changed = done?.kind === "done" && done.changed.length > 0
-  const diff = useQuery({
-    queryKey: ["chat-diff", team.id, id, done?.id],
-    queryFn: () => api<{ diff: string }>("GET", `/teams/${team.id}/chats/${id}/diff`),
-    enabled: changed,
   })
 
   // The newest event stays in view as the agent works.
@@ -66,230 +30,127 @@ export function ChatPage({ team }: { team: Team }) {
 
   if (chat.error) return <p className="page text-ink2">{chat.error.message}</p>
   if (!chat.data) return null
-  const { title, project, branch, agent, machine, connected, running, mine, user, events, pull_number, pull_url } = chat.data
-  const { hosts, asking } = chat.data
-  const error = say.error ?? stop.error ?? push.error ?? answer.error ?? forget.error
-  // Only the newest time a host was wanted can be answered.
-  const wanted = new Map(events.flatMap((event) => (event.kind === "wants" ? [[event.host, event.id]] : [])))
+  const { machine, connected, running, mine, events } = chat.data
+  const changed = events.some((event) => event.kind === "done" && event.changed.length > 0)
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
-      <header className="flex flex-col gap-1 border-b border-line py-4">
-        <h1 className="text-[17px] font-semibold">{title}</h1>
-        <span className="lbl flex items-center gap-2">
-          {project} · {branch} · {agents[agent].name} ·
-          <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
-          {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
-          {!mine && ` · ${user}'s chat`}
-          {pull_url && (
-            <>
-              ·
-              <a className="underline" href={pull_url} target="_blank" rel="noreferrer">
-                Pull request #{pull_number}
-              </a>
-            </>
-          )}
-        </span>
-        {hosts.length > 0 && (
-          <span className="lbl flex flex-wrap items-center gap-2">
-            Commands may reach
-            {hosts.map((host) => (
-              <span key={host} className="flex items-center gap-1 rounded border border-line px-1.5 font-mono normal-case">
-                {host}
-                {mine && (
-                  <button type="button" aria-label={`Stop allowing ${host}`} onClick={() => forget.mutate(host)}>
-                    ×
-                  </button>
-                )}
-              </span>
-            ))}
-          </span>
-        )}
-      </header>
+      <Header chat={chat.data} path={path} />
       <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
-        {events.map((event) => (
-          <div key={event.id} className="contents">
-            <Event event={event} user={user} diff={event === done ? diff.data?.diff : undefined} />
-            {event.kind === "wants" &&
-              mine &&
-              machine &&
-              !hosts.includes(event.host) &&
-              wanted.get(event.host) === event.id &&
-              // The agent's program is waiting for the answer, or was refused and has ended its turn.
-              (event.ask && event.ask === asking ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <button type="button" className="btn btn-primary" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: true, ask: event.ask })}>
-                    Allow in this chat
-                  </button>
-                  <button type="button" className="btn" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: false, ask: event.ask })}>
-                    Deny
-                  </button>
-                  <span className="lbl normal-case">Commands in this chat can then send data to this host.</span>
-                </div>
-              ) : (
-                !running && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" className="btn" disabled={answer.isPending} onClick={() => answer.mutate({ host: event.host, allowed: true, ask: null })}>
-                      Allow and try again
-                    </button>
-                    <span className="lbl normal-case">Commands in this chat can then send data to this host.</span>
-                  </div>
-                )
-              ))}
-          </div>
-        ))}
-        {running && <p className="animate-pulse text-ink2">{asking ? "Waiting for an answer…" : connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
+        <ChatEvents chat={chat.data} path={path} />
+        {running && <p className="animate-pulse text-ink2">{connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
         <div ref={end} />
       </div>
-      {error && <p className="text-acc">{error.message}</p>}
-      {mine && machine && changed && !running && (
-        <form
-          className="flex items-center gap-2 border-t border-line pt-4"
-          onSubmit={(event) => {
-            event.preventDefault()
-            push.mutate(message ?? title)
-          }}
-        >
-          <input
-            aria-label="Commit message"
-            className="min-w-0 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
-            value={message ?? title}
-            onChange={(event) => setMessage(event.target.value)}
-          />
-          <button className="btn" disabled={push.isPending || !(message ?? title).trim()}>
-            {push.isPending ? "Pushing…" : pull_url ? "Commit and push" : "Commit and open pull request"}
-          </button>
-        </form>
-      )}
-      {mine && machine && (
-        <form
-          className="flex items-end gap-2 border-t border-line py-4"
-          onSubmit={(event) => {
-            event.preventDefault()
-            say.mutate()
-          }}
-        >
-          <textarea
-            aria-label={`Ask ${agents[agent].name}`}
-            className="max-h-48 min-h-11 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
-            placeholder={`Ask ${agents[agent].name}`}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter sends, and Shift with it makes a new line.
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault()
-                if (!running && text.trim()) say.mutate()
-              }
-            }}
-          />
-          {running ? (
-            <button type="button" className="btn" disabled={stop.isPending} onClick={() => stop.mutate()}>
-              Stop
-            </button>
-          ) : (
-            <button className="btn btn-primary" disabled={!text.trim() || say.isPending}>
-              Send
-            </button>
-          )}
-        </form>
-      )}
+      {mine && machine && changed && !running && <Push chat={chat.data} path={path} />}
+      {mine && machine && <Ask chat={chat.data} path={path} />}
     </div>
   )
 }
 
-/** One file's part of a diff, without git's own lines above the first changed place. */
-function lines(diff: string, path: string) {
-  const file = diff.split(/^diff --git /m).find((file) => file.split("\n", 1)[0].endsWith(` b/${path}`))
-  const all = file?.split("\n").slice(1, -1) ?? []
-  const first = all.findIndex((line) => line.startsWith("@@"))
-  // A file that isn't text has no changed place, only a line saying so.
-  return first < 0 ? all.slice(-1) : all.slice(first)
+/** What the chat is, where it runs, and the hosts its commands may reach. */
+function Header({ chat, path }: Part) {
+  const { title, project, branch, agent, machine, connected, mine, user, hosts, pull_number, pull_url } = chat
+  const forget = useChatChange(path, (host: string) => api("DELETE", `${path}/hosts/${host}`))
+  return (
+    <header className="flex flex-col gap-1 border-b border-line py-4">
+      <h1 className="text-[17px] font-semibold">{title}</h1>
+      <span className="lbl flex items-center gap-2">
+        {project} · {branch} · {agents[agent].name} ·
+        <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
+        {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
+        {!mine && ` · ${user}'s chat`}
+        {pull_url && (
+          <>
+            ·
+            <a className="underline" href={pull_url} target="_blank" rel="noreferrer">
+              Pull request #{pull_number}
+            </a>
+          </>
+        )}
+      </span>
+      {hosts.length > 0 && (
+        <span className="lbl flex flex-wrap items-center gap-2">
+          Commands may reach
+          {hosts.map((host) => (
+            <span key={host} className="flex items-center gap-1 rounded border border-line px-1.5 font-mono normal-case">
+              {host}
+              {mine && (
+                <button type="button" aria-label={`Stop allowing ${host}`} onClick={() => forget.mutate(host)}>
+                  ×
+                </button>
+              )}
+            </span>
+          ))}
+        </span>
+      )}
+    </header>
+  )
 }
 
-function Event({ event, user, diff }: { event: ChatEvent; user: string; diff?: string }) {
-  if (event.kind === "asked")
-    return (
-      <div className="flex flex-col gap-1 self-end rounded-lg bg-sur px-3 py-2">
-        <span className="lbl">{user}</span>
-        <p className="whitespace-pre-wrap">{event.text}</p>
-      </div>
-    )
-  if (event.kind === "said")
-    return (
-      <div className="prose">
-        {/* An image on another host would be fetched on sight, so it is shown as a link. */}
-        <Markdown
-          options={{
-            disableParsingRawHTML: true,
-            forceBlock: true,
-            sanitizer: safeUrl,
-            overrides: {
-              img: ({ src, alt }: { src?: string; alt?: string }) => <a href={src}>{alt || src}</a>,
-              // An agent links to files in its folder, which aren't pages here.
-              a: ({ href, children }: { href?: string; children?: ReactNode }) =>
-                /^(https?|mailto):/.test(href ?? "") ? <a href={href}>{children}</a> : <>{children}</>,
-            },
-          }}
-        >
-          {event.text}
-        </Markdown>
-      </div>
-    )
-  if (event.kind === "did") {
-    const Icon = icons[event.deed]
-    return (
-      <div className="flex items-center gap-2 text-ink2">
-        <Icon className="size-3.5 shrink-0" aria-label={event.deed} />
-        <code className="truncate font-mono text-[12px]">{event.what}</code>
-      </div>
-    )
-  }
-  if (event.kind === "failed") return <p className="text-acc">{event.why}</p>
-  if (event.kind === "wants")
-    return (
-      <p className="text-ink2">
-        A command wants to reach <code className="font-mono text-[12px]">{event.host}</code>
-      </p>
-    )
-  if (event.kind === "answered")
-    return (
-      <p className="lbl normal-case">
-        <code className="font-mono">{event.host}</code> {event.allowed ? "is allowed in this chat" : "was refused"}
-      </p>
-    )
-  if (!event.changed.length) return <p className="lbl">Done · no file changed</p>
+/** Commits what the chat changed and pushes it, which opens the chat's pull request the first time. */
+function Push({ chat, path }: Part) {
+  const [message, setMessage] = useState(chat.title)
+  const push = useChatChange(path, () => api("POST", `${path}/push`, { text: message }))
   return (
-    <div className="flex flex-col gap-1 rounded-lg border border-line p-3">
-      <span className="lbl">
-        {event.changed.length} {event.changed.length === 1 ? "file" : "files"} changed on the machine
-      </span>
-      {event.changed.map((file) => {
-        const counts = (
-          <>
-            <span className="mr-auto truncate">{file.path}</span>
-            <span className="text-ok">+{file.added}</span>
-            <span className="text-acc">−{file.removed}</span>
-          </>
-        )
-        // Only the newest turn's files open: the diff is of the chat as it is now.
-        if (!diff) return <div key={file.path} className="flex gap-3 font-mono text-[12px]">{counts}</div>
-        return (
-          <details key={file.path} className="font-mono text-[12px]">
-            <summary className="flex cursor-pointer gap-3">{counts}</summary>
-            <pre className="mt-1 overflow-auto rounded-md border border-line py-1 leading-[1.6]">
-              {lines(diff, file.path).map((line, at) => (
-                <div
-                  key={at}
-                  className={`px-2 ${line[0] === "+" ? "bg-ok/10 text-ok" : line[0] === "-" ? "bg-acc/10 text-acc" : line[0] === "@" ? "text-ink2" : ""}`}
-                >
-                  {line || " "}
-                </div>
-              ))}
-            </pre>
-          </details>
-        )
-      })}
-      {diff === "" && <span className="lbl">The changes are too long to show here.</span>}
-    </div>
+    <form
+      className="flex flex-wrap items-center gap-2 border-t border-line pt-4"
+      onSubmit={(event) => {
+        event.preventDefault()
+        push.mutate()
+      }}
+    >
+      {push.error && <p className="w-full text-acc">{push.error.message}</p>}
+      <input
+        aria-label="Commit message"
+        className="min-w-0 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
+        value={message}
+        onChange={(event) => setMessage(event.target.value)}
+      />
+      <button className="btn" disabled={push.isPending || !message.trim()}>
+        {push.isPending ? "Pushing…" : chat.pull_url ? "Commit and push" : "Commit and open pull request"}
+      </button>
+    </form>
+  )
+}
+
+/** The box to ask the agent for more, which stops it while it works. */
+function Ask({ chat, path }: Part) {
+  const [text, setText] = useState("")
+  const say = useChatChange(path, () => api("POST", `${path}/messages`, { text }).then(() => setText("")))
+  const stop = useChatChange(path, () => api("POST", `${path}/stop`))
+  const error = say.error ?? stop.error
+  const name = agents[chat.agent].name
+  return (
+    <form
+      className="flex flex-wrap items-end gap-2 border-t border-line py-4"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (!chat.running && text.trim()) say.mutate()
+      }}
+    >
+      {error && <p className="w-full text-acc">{error.message}</p>}
+      <textarea
+        aria-label={`Ask ${name}`}
+        className="max-h-48 min-h-11 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
+        placeholder={`Ask ${name}`}
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+        onKeyDown={(event) => {
+          // Enter sends, and Shift with it makes a new line.
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault()
+            event.currentTarget.form?.requestSubmit()
+          }
+        }}
+      />
+      {chat.running ? (
+        <button type="button" className="btn" disabled={stop.isPending} onClick={() => stop.mutate()}>
+          Stop
+        </button>
+      ) : (
+        <button className="btn btn-primary" disabled={!text.trim() || say.isPending}>
+          Send
+        </button>
+      )}
+    </form>
   )
 }

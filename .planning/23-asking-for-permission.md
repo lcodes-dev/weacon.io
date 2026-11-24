@@ -85,6 +85,10 @@ Built as planned, on the recommended answers, with these differences:
 - **Checked by hand** on the dev server with a real core on ContentWrite. Claude Code asked about `example.com` and waited, the chat showed the buttons and the sidebar its mark, and after "Allow in this chat" the command went on; three more hosts asked for in one turn were each answered. Codex was refused `example.com`, the chat showed "Allow and try again", and its next turn got `200`. `git ls-remote` from GitHub worked in Claude Code's sandbox.
 - **Not checked by hand:** "Deny" and taking a host off in the browser, which the tests cover.
 
+## Changed by plan 24, on 24 November
+
+Claude Code no longer asks while its command waits. Started with nobody to ask, it refuses a host and names it as Codex does, so both agents now work the one way described above for Codex, and the answer's message, the waiting chat, "Deny" and the sidebar's mark are gone.
+
 ## A cache for each chat, added on 24 November
 
 The plan's last step first failed for a reason that isn't the network: with its registry allowed, `npm install` failed in both sandboxes, because npm keeps its cache in `~/.npm` and a command writes only in the chat's folder. The owner chose a folder of the chat's own over folders allowed by name.

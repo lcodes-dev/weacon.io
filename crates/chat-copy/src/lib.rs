@@ -57,8 +57,7 @@ async fn git(chat: &Path, args: &[&str], token: Option<&str>) -> Result<String, 
 /// Makes the chat's copy of its repository, at the branch's newest commit, unless it is there.
 pub async fn fetch(chat: &Path, repository: &Repository) -> Result<(), String> {
     let copy = folder(chat);
-    // A copy made before git's folder moved out keeps its own.
-    if chat.join("git").exists() || copy.join(".git").is_dir() {
+    if chat.join("git").exists() {
         return Ok(());
     }
     let made = tokio::fs::create_dir_all(&copy).await;
@@ -140,9 +139,6 @@ pub async fn push(
     message: &str,
     author: (&str, &str),
 ) -> Result<String, String> {
-    if !chat.join("git").exists() {
-        return Err("This chat was started before chats could be pushed".into());
-    }
     git(chat, &["add", "--all"], None).await?;
     if git(chat, &["diff", "--cached", "--quiet", "HEAD"], None)
         .await

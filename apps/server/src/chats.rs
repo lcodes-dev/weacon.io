@@ -7,7 +7,7 @@ use core_link::{Agent, Event, Repository, ToCore};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::db::{self, Chat, Turn, User};
+use crate::db::{self, Chat, Running, User};
 use crate::teams::{membership, refused};
 use crate::{ApiError, AppState, github, not_found};
 
@@ -17,7 +17,7 @@ pub async fn list(
     Path(team_id): Path<String>,
 ) -> Result<Json<Vec<Chat>>, ApiError> {
     membership(&user, &team_id)?;
-    Ok(Json(db::chats(&state.pool, &team_id).await?))
+    Ok(Json(db::chats(&state.pool, &team_id, None).await?))
 }
 
 #[derive(Deserialize)]
@@ -68,7 +68,7 @@ pub async fn start(
         text,
     );
     let id = id.await?;
-    run(&state, &id).await;
+    run(&state, &start.machine_id, &id);
     Ok(Json(json!({"id": id})))
 }
 
@@ -86,9 +86,7 @@ pub async fn show(
     Path((team_id, id)): Path<(String, String)>,
     Query(After { after }): Query<After>,
 ) -> Result<Json<Value>, ApiError> {
-    membership(&user, &team_id)?;
-    let chat = db::chat(&state.pool, &team_id, &id).await?;
-    let chat = chat.ok_or_else(not_found)?;
+    let chat = read(&state, &user, &team_id, &id).await?;
     let events = db::chat_events(&state.pool, &id, &after).await?;
     let events: Vec<Value> = events
         .iter()
@@ -105,16 +103,45 @@ pub async fn show(
     Ok(Json(shown))
 }
 
+/// The chat, for a member of its team.
+async fn read(state: &AppState, user: &User, team_id: &str, id: &str) -> Result<Chat, ApiError> {
+    membership(user, team_id)?;
+    let chat = db::chats(&state.pool, team_id, Some(id)).await?.pop();
+    chat.ok_or_else(not_found)
+}
+
 /// The chat, for the one person who may write in it.
 async fn own(state: &AppState, user: &User, team_id: &str, id: &str) -> Result<Chat, ApiError> {
-    membership(user, team_id)?;
-    let chat = db::chat(&state.pool, team_id, id).await?;
-    let chat = chat.ok_or_else(not_found)?;
+    let chat = read(state, user, team_id, id).await?;
     if chat.user_id != user.id {
         let message = "Only the person who started a chat writes in it";
         return Err(ApiError(StatusCode::FORBIDDEN, message.into()));
     }
     Ok(chat)
+}
+
+/// The chat's machine, where its folder and its agent are.
+fn machine(chat: &Chat) -> Result<&str, ApiError> {
+    let gone = || refused("This chat's machine was removed, and its folder with it");
+    chat.machine_id.as_deref().ok_or_else(gone)
+}
+
+/// The chat's machine, for what can't wait until it is back.
+fn connected<'a>(state: &AppState, chat: &'a Chat) -> Result<&'a str, ApiError> {
+    let machine = machine(chat)?;
+    if !state.cores.connected(machine) {
+        let name = chat.machine.as_deref().unwrap_or_default();
+        return Err(refused(format!(
+            "{name} is away, and the chat's folder and agent are on it"
+        )));
+    }
+    Ok(machine)
+}
+
+/// Why nothing new can be asked of a chat whose turn is running.
+fn busy() -> ApiError {
+    let message = "The agent is still working. Stop it, or wait for it to finish";
+    ApiError(StatusCode::CONFLICT, message.into())
 }
 
 #[derive(Deserialize)]
@@ -130,20 +157,15 @@ pub async fn say(
     Json(message): Json<Message>,
 ) -> Result<StatusCode, ApiError> {
     let chat = own(&state, &user, &team_id, &id).await?;
-    if chat.machine_id.is_none() {
-        return Err(refused(
-            "This chat's machine was removed, and its folder with it",
-        ));
-    }
+    let machine = machine(&chat)?;
     let text = message.text.trim();
     if text.is_empty() {
         return Err(refused("Write what the agent should do"));
     }
     if !db::ask_chat(&state.pool, &id, text).await? {
-        let message = "The agent is still working. Stop it, or wait for it to finish";
-        return Err(ApiError(StatusCode::CONFLICT, message.into()));
+        return Err(busy());
     }
-    run(&state, &id).await;
+    run(&state, machine, &id);
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -154,68 +176,37 @@ pub async fn stop(
     Path((team_id, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let chat = own(&state, &user, &team_id, &id).await?;
-    let machine = chat.machine_id.filter(|_| chat.running);
-    let stopped =
-        machine.is_some_and(|machine| state.cores.send(&machine, ToCore::Stop { chat: id }));
-    if !stopped && chat.running {
-        return Err(refused(
-            "The machine is away, so its agent can't be stopped from here",
-        ));
+    if chat.running {
+        let machine = connected(&state, &chat)?;
+        state.cores.send(machine, ToCore::Stop { chat: id });
     }
     Ok(StatusCode::ACCEPTED)
 }
 
 #[derive(Deserialize)]
-pub struct Answer {
+pub struct Host {
     host: String,
-    allowed: bool,
-    /// The id the agent's program asked under, when it is waiting for the answer.
-    ask: Option<String>,
 }
 
-/// The owner's answer about a host the chat's commands wanted. An allowed host joins the
-/// chat's hosts. A program that waits is answered; one that was refused is told in a next
-/// turn to try again.
-pub async fn answer(
+/// Lets the chat's commands reach a host that one of them was refused, and tells the agent
+/// in a next turn to try again.
+pub async fn allow_host(
     State(state): State<AppState>,
     user: User,
     Path((team_id, id)): Path<(String, String)>,
-    Json(answer): Json<Answer>,
+    Json(Host { host }): Json<Host>,
 ) -> Result<StatusCode, ApiError> {
     let chat = own(&state, &user, &team_id, &id).await?;
-    let Answer { host, allowed, ask } = answer;
+    let machine = machine(&chat)?;
     if !core_link::host(&host) {
         return Err(refused(
             "A host is an exact name, such as registry.npmjs.org",
         ));
     }
-    let Some(machine) = &chat.machine_id else {
-        return Err(refused(
-            "This chat's machine was removed, and its folder with it",
-        ));
-    };
-    match ask {
-        Some(ask) => {
-            if !state.cores.connected(machine) {
-                return Err(refused(
-                    "The machine is away, so its agent can't be answered from here",
-                ));
-            }
-            if !db::answer_chat(&state.pool, &id, Some(&ask), &host, allowed).await? {
-                return Err(refused("The agent isn't waiting for that any more"));
-            }
-            let chat = id.clone();
-            let answer = ToCore::Answer { chat, ask, allowed };
-            state.cores.send(machine, answer);
-        }
-        None if allowed => {
-            db::answer_chat(&state.pool, &id, None, &host, true).await?;
-            let again = format!("{host} can be reached now. Try again what needed it.");
-            if db::ask_chat(&state.pool, &id, &again).await? {
-                run(&state, &id).await;
-            }
-        }
-        None => return Err(refused("No agent is waiting to be refused")),
+    db::allow_chat_host(&state.pool, &id, &host).await?;
+    let again = format!("{host} can be reached now. Try again what needed it.");
+    if db::ask_chat(&state.pool, &id, &again).await? {
+        run(&state, machine, &id);
     }
     Ok(StatusCode::ACCEPTED)
 }
@@ -231,64 +222,65 @@ pub async fn forget_host(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Tells a chat's machine to run its turn, if it is connected. One that is away is told when it connects.
-async fn run(state: &AppState, id: &str) {
-    if let Ok(Some(turn)) = db::running_turn(&state.pool, id).await {
-        tell(state, turn).await;
-    }
+/// Tells a chat's machine to run the turn that was just asked for. A machine that is away
+/// is told when it connects. Done on the side, so that a browser that goes away in the
+/// middle of its request doesn't leave a turn that nobody was told of.
+fn run(state: &AppState, machine: &str, id: &str) {
+    let (state, machine, id) = (state.clone(), machine.to_owned(), id.to_owned());
+    tokio::spawn(async move {
+        let running = db::running_chats(&state.pool, Some(&machine)).await;
+        let mut running = running.unwrap_or_default().into_iter();
+        if let Some(chat) = running.find(|chat| chat.id == id) {
+            tell(&state, &machine, chat).await;
+        }
+    });
 }
 
 /// Tells a machine that just connected of the turns it should be running: those it never
 /// heard of start, and those it was running say what the server missed.
 pub async fn resume(state: &AppState, machine: &str) {
-    let turns = db::running_turns(&state.pool, Some(machine)).await;
-    for turn in turns.unwrap_or_default() {
-        tell(state, turn).await;
+    let running = db::running_chats(&state.pool, Some(machine)).await;
+    for chat in running.unwrap_or_default() {
+        tell(state, machine, chat).await;
     }
 }
 
 /// Ends the turns whose machine was removed, which nothing else would end.
 pub async fn orphaned(state: &AppState) {
-    let turns = db::running_turns(&state.pool, None).await;
-    for turn in turns.unwrap_or_default() {
-        let failed = db::fail_chat(&state.pool, &turn.id, "The machine was removed").await;
+    let running = db::running_chats(&state.pool, None).await;
+    for chat in running.unwrap_or_default() {
+        let failed = db::fail_chat(&state.pool, &chat.id, "The machine was removed").await;
         failed.ok();
     }
 }
 
-async fn tell(state: &AppState, turn: Turn) {
-    let (Some(machine), Some(repo), Some(agent)) =
-        (&turn.machine_id, &turn.repo, Agent::named(&turn.agent))
-    else {
-        let failed = db::fail_chat(
-            &state.pool,
-            &turn.id,
-            "The project has no repository any more",
-        );
-        return failed.await.unwrap_or_default();
-    };
+async fn tell(state: &AppState, machine: &str, chat: Running) {
     if !state.cores.connected(machine) {
         return;
     }
     // The machine fetches with a token for this repository alone, which GitHub ends after an hour.
-    let token = github::token(state, &turn.team_id, Some(repo), github::reading());
-    let token = match token.await {
-        Ok(token) => token,
+    let token = async {
+        let no_repository = || refused("The project has no repository any more");
+        let repo = chat.repo.as_deref().ok_or_else(no_repository)?;
+        let agent = Agent::named(&chat.agent).ok_or_else(not_found)?;
+        let token = github::token(state, &chat.team_id, Some(repo), github::reading()).await?;
+        Ok((repo, agent, token))
+    };
+    let (repo, agent, token) = match token.await {
+        Ok(found) => found,
         Err(ApiError(_, why)) => {
-            return db::fail_chat(&state.pool, &turn.id, &why)
-                .await
-                .unwrap_or_default();
+            let failed = db::fail_chat(&state.pool, &chat.id, &why).await;
+            return failed.unwrap_or_default();
         }
     };
-    let repository = repository(repo, turn.branch, token);
     let message = ToCore::Turn(core_link::Turn {
-        chat: turn.id,
+        repository: repository(repo, chat.branch, token),
+        chat: chat.id,
         agent,
-        session: turn.session,
-        prompt: turn.asked,
-        repository,
-        heard: turn.heard as u64,
-        hosts: turn.hosts.0,
+        session: chat.session,
+        prompt: chat.asked,
+        heard: chat.heard as u64,
+        hosts: chat.hosts.0,
     });
     state.cores.send(machine, message);
 }
@@ -342,19 +334,10 @@ pub async fn push(
         return Err(refused("Write what the commit should be called"));
     }
     if chat.running {
-        let message = "The agent is still working. Stop it, or wait for it to finish";
-        return Err(ApiError(StatusCode::CONFLICT, message.into()));
+        return Err(busy());
     }
-    let (Some(machine), Some(name)) = (&chat.machine_id, &chat.machine) else {
-        return Err(refused(
-            "This chat's machine was removed, and its folder with it",
-        ));
-    };
-    if !state.cores.connected(machine) {
-        return Err(refused(format!(
-            "{name} is away, and the chat's files are on it"
-        )));
-    }
+    let machine = connected(&state, &chat)?;
+    let name = chat.machine.as_deref().unwrap_or_default();
     let projects = db::projects(&state.pool, &team_id).await?;
     let project = projects
         .iter()

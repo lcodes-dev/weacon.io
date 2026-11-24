@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use agent_run::{Turn, turn};
 use core_link::{Agent, Deed, Event};
-use tokio::sync::mpsc;
 
 const PROGRAM: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/agent.sh");
 
@@ -43,8 +42,7 @@ async fn ran(
         hosts: &hosts,
         ..of(PROGRAM, agent, &folder, prompt)
     };
-    let (_answer, mut answers) = mpsc::unbounded_channel();
-    let ended = turn(asked, never, &mut answers, tell).await;
+    let ended = turn(asked, never, tell).await;
     let read = |file: &str| std::fs::read_to_string(folder.join(file)).unwrap_or_default();
     // A tool that downloads packages is told to keep them in the chat's cache.
     let (started, cache) = (read("started"), read("cache"));
@@ -72,7 +70,7 @@ fn said(event: &Event) -> &str {
 async fn claude_code_s_turn_is_told_in_common_words() {
     let (told, ended, started) = ran(Agent::Claude, None, "Add double").await;
     assert_eq!(ended.unwrap(), "6519d1c4-62a2-4f52-b380-8edfefe39125");
-    assert!(started.contains("--permission-prompts host") && !started.contains("--resume"));
+    assert!(started.contains("--permission-prompts none") && !started.contains("--resume"));
     // Its sandbox is told the hosts that are exact names, and no other.
     assert!(
         started.contains(r#""allowedDomains":["example.com"]"#),
@@ -168,9 +166,8 @@ async fn a_program_that_ends_badly_is_a_failed_turn() {
     }
     let folder = std::env::temp_dir();
     let never = std::future::pending();
-    let (_answer, mut answers) = mpsc::unbounded_channel();
     let missing = of("no-such-program", Agent::Claude, &folder, "");
-    let missing = turn(missing, never, &mut answers, |_| {}).await;
+    let missing = turn(missing, never, |_| {}).await;
     assert!(
         missing
             .unwrap_err()
@@ -191,9 +188,8 @@ async fn a_stopped_turn_ends_its_program_and_what_it_was_running() {
         stop.take();
     };
     let stopped = async { drop(stopped.await) };
-    let (_answer, mut answers) = mpsc::unbounded_channel();
     let slow = of(PROGRAM, Agent::Claude, &folder, "Be slow");
-    let ended = turn(slow, stopped, &mut answers, tell).await;
+    let ended = turn(slow, stopped, tell).await;
     assert_eq!(ended.unwrap_err(), "Stopped");
     assert_eq!(told.len(), 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
@@ -203,49 +199,11 @@ async fn a_stopped_turn_ends_its_program_and_what_it_was_running() {
 }
 
 #[tokio::test]
-async fn a_host_claude_code_asks_about_is_answered_and_nothing_else_is_allowed() {
-    for (allowed, answer) in [
-        (true, r#""behavior":"allow""#),
-        (false, r#""behavior":"deny""#),
-    ] {
-        let folder = folder(&format!("asks-{allowed}"), Agent::Claude);
-        let (answer_it, mut answers) = mpsc::unbounded_channel();
-        let mut told = Vec::new();
-        // Answered as soon as it asks, under the id it asked with.
-        let tell = |event| {
-            if let Event::Wants { ask: Some(ask), .. } = &event {
-                answer_it.send((ask.clone(), allowed)).unwrap();
-            }
-            told.push(event);
-        };
-        let asks = of(PROGRAM, Agent::Claude, &folder, "This needs the network");
-        let ended = turn(asks, std::future::pending(), &mut answers, tell).await;
-        assert_eq!(ended.unwrap(), "asked");
-        let wanted = Event::Wants {
-            host: "registry.npmjs.org".into(),
-            ask: Some("ask-2".into()),
-        };
-        assert_eq!(told, [wanted]);
-        let answers = std::fs::read_to_string(folder.join("answers")).unwrap();
-        let (first, second) = answers.trim().split_once('\n').unwrap();
-        assert!(
-            first.contains(r#""request_id":"ask-1""#) && first.contains(r#""behavior":"deny""#)
-        );
-        assert!(
-            second.contains(r#""request_id":"ask-2""#) && second.contains(answer),
-            "{second}"
-        );
-        std::fs::remove_dir_all(&folder).ok();
+async fn a_host_either_sandbox_refuses_is_told_the_same_way() {
+    for agent in Agent::ALL {
+        let (told, ended, _) = ran(agent, None, "This needs the network").await;
+        assert_eq!(ended.unwrap(), "refused");
+        let host = "registry.npmjs.org".to_owned();
+        assert_eq!(told, [Event::Wants { host }]);
     }
-}
-
-#[tokio::test]
-async fn a_host_codex_s_sandbox_refuses_is_told_the_same_way() {
-    let (told, ended, _) = ran(Agent::Codex, None, "This needs the network").await;
-    assert_eq!(ended.unwrap(), "refused");
-    let wanted = Event::Wants {
-        host: "registry.npmjs.org".into(),
-        ask: None,
-    };
-    assert_eq!(told, [wanted]);
 }

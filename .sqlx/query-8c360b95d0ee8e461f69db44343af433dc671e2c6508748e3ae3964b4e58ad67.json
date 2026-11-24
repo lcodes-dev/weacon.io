@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url, c.hosts AS \"hosts: Json<Vec<String>>\", c.asking,\n                  c.asking_host\n           FROM chats c JOIN projects p ON p.id = c.project_id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id\n           WHERE c.id = ? AND p.team_id = ?",
+  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url, c.hosts AS \"hosts: Json<Vec<String>>\"\n           FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id\n           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2) ORDER BY c.id DESC",
   "describe": {
     "columns": [
       {
@@ -156,28 +156,6 @@
             "name": "hosts"
           }
         }
-      },
-      {
-        "name": "asking",
-        "ordinal": 14,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "chats",
-            "name": "asking"
-          }
-        }
-      },
-      {
-        "name": "asking_host",
-        "ordinal": 15,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "chats",
-            "name": "asking_host"
-          }
-        }
       }
     ],
     "parameters": {
@@ -197,10 +175,8 @@
       true,
       true,
       true,
-      false,
-      true,
-      true
+      false
     ]
   },
-  "hash": "499c2fe11e3c226bffbb67db08f0bf82bb2a295e081cee6c73e6e880ccc36e92"
+  "hash": "8c360b95d0ee8e461f69db44343af433dc671e2c6508748e3ae3964b4e58ad67"
 }

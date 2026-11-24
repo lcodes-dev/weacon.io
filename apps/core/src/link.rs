@@ -31,8 +31,8 @@ const SLOW: Duration = Duration::from_secs(20);
 pub struct Work {
     /// The way to the server, while there is one.
     pub out: Option<mpsc::UnboundedSender<FromCore>>,
-    /// The chats that have had a turn since the core started.
-    pub chats: HashMap<String, chats::Chat>,
+    /// The chats whose turn is running, each with what stops it.
+    pub chats: HashMap<String, Arc<Notify>>,
     /// The asks an agent is answering now.
     answering: HashSet<String>,
     /// The answers the server hasn't said it has.
@@ -268,7 +268,6 @@ fn asked(work: &Shared, message: ToCore) {
             }
         }
         ToCore::Turn(turn) => chats::turn(work, turn),
-        ToCore::Answer { chat, ask, allowed } => chats::answer(work, &chat, ask, allowed),
         ToCore::Stop { chat } => chats::stop(work, &chat),
         // Taken care of where the connection is held.
         ToCore::Replaced => {}

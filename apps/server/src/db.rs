@@ -2125,42 +2125,22 @@ pub struct Chat {
     pub pull_url: Option<String>,
     /// The hosts its commands may reach.
     pub hosts: Json<Vec<String>>,
-    /// The id under which its agent waits to hear whether it may reach `asking_host`.
-    pub asking: Option<String>,
-    pub asking_host: Option<String>,
 }
 
-/// A team's chats, newest first.
-pub async fn chats(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Chat>> {
+/// A team's chats, newest first, or only the one with `id`.
+pub async fn chats(pool: &SqlitePool, team_id: &str, id: Option<&str>) -> sqlx::Result<Vec<Chat>> {
     sqlx::query_as!(
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
                   p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
-                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.asking,
-                  c.asking_host
+                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>"
            FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id
-           WHERE p.team_id = ? ORDER BY c.id DESC"#,
-        team_id
+           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2) ORDER BY c.id DESC"#,
+        team_id,
+        id
     )
     .fetch_all(pool)
-    .await
-}
-
-pub async fn chat(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Option<Chat>> {
-    sqlx::query_as!(
-        Chat,
-        r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
-                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
-                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.asking,
-                  c.asking_host
-           FROM chats c JOIN projects p ON p.id = c.project_id JOIN users u ON u.id = c.user_id
-           LEFT JOIN machines m ON m.id = c.machine_id
-           WHERE c.id = ? AND p.team_id = ?"#,
-        id,
-        team_id
-    )
-    .fetch_optional(pool)
     .await
 }
 
@@ -2259,26 +2239,16 @@ pub async fn hear_chat(
         Event::Failed { .. } => (false, None, None),
         Event::Said { .. } | Event::Did { .. } | Event::Wants { .. } => (true, None, None),
     };
-    // A host the agent's program is waiting to hear about, which the turn's end forgets.
-    let (asking, host) = match event {
-        Event::Wants { host, ask } => (ask.as_deref(), Some(host)),
-        _ => (None, None),
-    };
-    let host = host.filter(|_| asking.is_some());
     let mut body = serde_json::json!(event);
     body.as_object_mut().map(|body| body.remove("diff"));
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let next = sqlx::query!(
-        "UPDATE chats SET heard = heard + 1, running = ?1, session = COALESCE(?2, session),
-                diff = COALESCE(?3, diff),
-                asking = CASE WHEN ?1 THEN COALESCE(?4, asking) END,
-                asking_host = CASE WHEN ?1 THEN COALESCE(?5, asking_host) END
-         WHERE id = ?6 AND machine_id = ?7 AND heard = ?8 - 1",
+        "UPDATE chats SET heard = heard + 1, running = ?, session = COALESCE(?, session),
+                diff = COALESCE(?, diff)
+         WHERE id = ? AND machine_id = ? AND heard = ? - 1",
         running,
         session,
         diff,
-        asking,
-        host,
         id,
         machine_id,
         number
@@ -2296,8 +2266,7 @@ pub async fn hear_chat(
 pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let ended = sqlx::query!(
-        "UPDATE chats SET running = 0, asking = NULL, asking_host = NULL
-         WHERE id = ? AND running = 1",
+        "UPDATE chats SET running = 0 WHERE id = ? AND running = 1",
         id
     )
     .execute(&mut *tx)
@@ -2314,47 +2283,22 @@ pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<(
     Ok(())
 }
 
-/// Takes the owner's answer about a host: one that is allowed joins the chat's hosts. With
-/// `ask`, the answer is to what the agent's program asks under that id, and false is
-/// returned, with nothing done, when it isn't waiting for it any more.
-pub async fn answer_chat(
-    pool: &SqlitePool,
-    id: &str,
-    ask: Option<&str>,
-    host: &str,
-    allowed: bool,
-) -> sqlx::Result<bool> {
+/// Puts a host among those a chat's commands may reach, and says so in the chat.
+pub async fn allow_chat_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    if let Some(ask) = ask {
-        let waiting = sqlx::query!(
-            "UPDATE chats SET asking = NULL, asking_host = NULL
-             WHERE id = ? AND asking = ? AND asking_host = ?",
-            id,
-            ask,
-            host
-        )
-        .execute(&mut *tx)
-        .await?;
-        if waiting.rows_affected() == 0 {
-            return Ok(false);
-        }
-    }
-    if allowed {
-        sqlx::query!(
-            "UPDATE chats SET hosts = (
-                 SELECT json_group_array(value)
-                 FROM (SELECT value FROM json_each(chats.hosts) UNION SELECT ?))
-             WHERE id = ?",
-            host,
-            id
-        )
-        .execute(&mut *tx)
-        .await?;
-    }
-    let answered = serde_json::json!({"kind": "answered", "host": host, "allowed": allowed});
-    add_chat_event(&mut tx, id, &answered).await?;
-    tx.commit().await?;
-    Ok(true)
+    sqlx::query!(
+        "UPDATE chats SET hosts = (
+             SELECT json_group_array(value)
+             FROM (SELECT value FROM json_each(chats.hosts) UNION SELECT ?))
+         WHERE id = ?",
+        host,
+        id
+    )
+    .execute(&mut *tx)
+    .await?;
+    let allowed = serde_json::json!({"kind": "allowed", "host": host});
+    add_chat_event(&mut tx, id, &allowed).await?;
+    tx.commit().await
 }
 
 /// Takes a host off those a chat's commands may reach.
@@ -2400,11 +2344,10 @@ pub async fn set_chat_pull(
     Ok(())
 }
 
-/// What a machine needs to run a chat's turn, or to go on telling of it.
-pub struct Turn {
+/// A chat whose turn is running, with what its machine needs to run it or to go on telling of it.
+pub struct Running {
     pub id: String,
     pub team_id: String,
-    pub machine_id: Option<String>,
     pub agent: String,
     pub branch: String,
     pub asked: String,
@@ -2414,30 +2357,20 @@ pub struct Turn {
     pub hosts: Json<Vec<String>>,
 }
 
-/// The turns running on a machine, or on none any more when `machine_id` is `None`.
-pub async fn running_turns(pool: &SqlitePool, machine_id: Option<&str>) -> sqlx::Result<Vec<Turn>> {
+/// The chats whose turn is running on a machine, or on none any more when `machine_id` is `None`.
+pub async fn running_chats(
+    pool: &SqlitePool,
+    machine_id: Option<&str>,
+) -> sqlx::Result<Vec<Running>> {
     sqlx::query_as!(
-        Turn,
-        r#"SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard,
-                  p.repo, c.hosts AS "hosts: Json<Vec<String>>"
-         FROM chats c JOIN projects p ON p.id = c.project_id
-         WHERE c.machine_id IS ? AND c.running = 1"#,
+        Running,
+        r#"SELECT c.id, p.team_id, c.agent, c.branch, c.asked, c.session, c.heard, p.repo,
+                  c.hosts AS "hosts: Json<Vec<String>>"
+           FROM chats c JOIN projects p ON p.id = c.project_id
+           WHERE c.machine_id IS ? AND c.running = 1"#,
         machine_id
     )
     .fetch_all(pool)
-    .await
-}
-
-pub async fn running_turn(pool: &SqlitePool, id: &str) -> sqlx::Result<Option<Turn>> {
-    sqlx::query_as!(
-        Turn,
-        r#"SELECT c.id, p.team_id, c.machine_id, c.agent, c.branch, c.asked, c.session, c.heard,
-                  p.repo, c.hosts AS "hosts: Json<Vec<String>>"
-         FROM chats c JOIN projects p ON p.id = c.project_id
-         WHERE c.id = ? AND c.running = 1"#,
-        id
-    )
-    .fetch_optional(pool)
     .await
 }
 
