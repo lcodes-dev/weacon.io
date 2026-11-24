@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO tasks (id, project_id, number, title, text, checks, status, position, owner_id, asker_id, created_at)\n         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'todo',\n                 (SELECT COALESCE(MIN(position), 0) - 1 FROM tasks WHERE project_id = ?2 AND status = 'todo'),\n                 ?7, ?8, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "64b55f4bbedfd94cb4666c4f9c16b5900faef23590d1cde5a17f4a4474547394"
+}

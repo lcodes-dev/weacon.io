@@ -1,0 +1,153 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT t.id, t.number, t.title, t.text, t.checks AS \"checks: Json<Vec<Check>>\", t.status,\n                  t.owner_id, o.name AS \"owner?\", t.asker_id, a.name AS \"asker?\", t.created_at,\n                  (SELECT json_group_array(d.doc_id) FROM task_docs d WHERE d.task_id = t.id)\n                      AS \"docs!: Json<Vec<String>>\"\n           FROM projects p JOIN tasks t ON t.project_id = p.id\n                LEFT JOIN users o ON o.id = t.owner_id LEFT JOIN users a ON a.id = t.asker_id\n           WHERE p.id = ? AND p.team_id = ? ORDER BY t.status, t.position",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "number",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "name": "title",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "checks: Json<Vec<Check>>",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "checks"
+          }
+        }
+      },
+      {
+        "name": "status",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "name": "owner_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "owner_id"
+          }
+        }
+      },
+      {
+        "name": "owner?",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "asker_id",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "asker_id"
+          }
+        }
+      },
+      {
+        "name": "asker?",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "tasks",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "docs!: Json<Vec<String>>",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "3a0b20675b7f5a0b967291c485c5099ff42614edc6a398d5b7789b44a670e04f"
+}

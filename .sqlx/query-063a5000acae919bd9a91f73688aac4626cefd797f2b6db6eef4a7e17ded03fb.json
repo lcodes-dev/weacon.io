@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tasks SET title = COALESCE(?, title), text = COALESCE(?, text), checks = COALESCE(?, checks),\n                owner_id = CASE WHEN ? THEN ? ELSE owner_id END\n         WHERE id = ? AND project_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "063a5000acae919bd9a91f73688aac4626cefd797f2b6db6eef4a7e17ded03fb"
+}

@@ -9,6 +9,7 @@ pub mod mail;
 pub mod map;
 mod pages;
 mod projects;
+mod tasks;
 mod teams;
 mod web;
 mod writer;
@@ -136,6 +137,14 @@ pub fn router(state: AppState) -> Router {
             delete(docs::end_share),
         )
         .route("/shares/{token}", get(docs::shared))
+        .route(
+            "/teams/{id}/projects/{project_id}/tasks",
+            get(tasks::list).post(tasks::create).put(tasks::order),
+        )
+        .route(
+            "/teams/{id}/projects/{project_id}/tasks/{task_id}",
+            put(tasks::change).delete(tasks::delete),
+        )
         .route("/teams/{id}/chats", get(chats::list))
         .route(
             "/teams/{id}/projects/{project_id}/chats",

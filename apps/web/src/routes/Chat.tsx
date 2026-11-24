@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useRef, useState } from "react"
-import { useParams } from "react-router"
+import { Link, useParams } from "react-router"
 import { agents, api, type OpenChat, type Team } from "../api"
 import { ChatEvents, useChatChange } from "../components/ChatEvents"
 
@@ -48,7 +48,7 @@ export function ChatPage({ team }: { team: Team }) {
 
 /** What the chat is, where it runs, and the hosts its commands may reach. */
 function Header({ chat, path }: Part) {
-  const { title, project, branch, agent, machine, connected, mine, user, hosts, pull_number, pull_url } = chat
+  const { title, project, branch, agent, machine, connected, mine, user, hosts, pull_number, pull_url, task } = chat
   const forget = useChatChange(path, (host: string) => api("DELETE", `${path}/hosts/${host}`))
   return (
     <header className="flex flex-col gap-1 border-b border-line py-4">
@@ -58,6 +58,14 @@ function Header({ chat, path }: Part) {
         <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
         {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
         {!mine && ` · ${user}'s chat`}
+        {task && (
+          <>
+            ·
+            <Link className="underline" to={`/projects/${chat.project_id}/tasks?task=${chat.task_id}`}>
+              {task}
+            </Link>
+          </>
+        )}
         {pull_url && (
           <>
             ·

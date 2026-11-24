@@ -817,31 +817,39 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
     let (mut ada, mut marco) = ada_and_marco(&state).await;
 
     let (status, project) = marco
-        .post(&ada.team("/projects"), json!({"name": " Storefront "}))
+        .post(
+            &ada.team("/projects"),
+            json!({"name": " Storefront ", "key": "sf"}),
+        )
         .await;
     assert_eq!(status, StatusCode::OK);
     ada.project_id = project["id"].as_str().unwrap().to_owned();
     assert_eq!(
         marco
-            .post(&ada.team("/projects"), json!({"name": " "}))
+            .post(&ada.team("/projects"), json!({"name": " ", "key": "SF"}))
             .await
             .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
-    let renamed = json!({"name": "Shop"});
+    let renamed = json!({"name": "Shop", "key": "SH"});
     assert_eq!(
-        marco.put(&ada.project(""), renamed.clone()).await,
+        marco.put(&ada.project(""), renamed).await,
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        marco.put(&ada.team("/projects/none"), renamed).await,
+        marco
+            .put(
+                &ada.team("/projects/none"),
+                json!({"name": "Shop", "key": "NO"})
+            )
+            .await,
         StatusCode::NOT_FOUND
     );
     let (_, projects) = ada.get(&ada.team("/projects")).await;
     assert_eq!(
         projects,
-        json!([{"id": ada.project_id, "name": "Shop", "repo": null, "branches": []}])
+        json!([{"id": ada.project_id, "name": "Shop", "key": "SH", "repo": null, "branches": []}])
     );
 
     assert_eq!(marco.delete(&ada.project("")).await, StatusCode::FORBIDDEN);
@@ -870,12 +878,15 @@ async fn projects_edited_at_the_same_time_are_all_saved() {
     let mut renames = Vec::new();
     for name in ["One", "Two", "Three", "Four"] {
         let (_, project) = ada
-            .post(&ada.team("/projects"), json!({"name": name}))
+            .post(
+                &ada.team("/projects"),
+                json!({"name": name, "key": name[..3]}),
+            )
             .await;
         let path = ada.team(&format!("/projects/{}", project["id"].as_str().unwrap()));
         let mut client = Client::new(&state);
         client.cookie = ada.cookie.clone();
-        let renamed = json!({"name": format!("{name} again"), "branches": []});
+        let renamed = json!({"name": format!("{name} again"), "key": name[..3], "branches": []});
         renames.push(tokio::spawn(
             async move { client.put(&path, renamed).await },
         ));
@@ -897,7 +908,7 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
 
     let nothing = json!({"app": null, "account": null, "repos": []});
     assert_eq!(marco.get(&ada.team("/github")).await.1, nothing);
-    let with_repo = json!({"name": "Storefront", "repo": "northwind/storefront"});
+    let with_repo = json!({"name": "Storefront", "key": "SF", "repo": "northwind/storefront"});
     assert_eq!(
         marco
             .post(&ada.team("/projects"), with_repo.clone())
@@ -936,12 +947,12 @@ async fn the_team_owner_registers_a_github_app_and_projects_pick_its_repositorie
         ada.get(&ada.team("/projects")).await.1[0]["repo"],
         "northwind/storefront"
     );
-    let elsewhere = json!({"name": "Storefront", "repo": "someone/else"});
+    let elsewhere = json!({"name": "Storefront", "key": "SF", "repo": "someone/else"});
     assert_eq!(
         marco.put(&ada.project(""), elsewhere).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    let without = json!({"name": "Storefront"});
+    let without = json!({"name": "Storefront", "key": "SF"});
     assert_eq!(
         marco.put(&ada.project(""), without).await,
         StatusCode::NO_CONTENT
@@ -959,7 +970,7 @@ async fn forgetting_the_github_app_keeps_the_projects() {
     let (mut ada, mut marco) = ada_and_marco(&state).await;
     ada.post(&ada.team("/github"), json!({"code": "good-code"}))
         .await;
-    let with_repo = json!({"name": "Storefront", "repo": "northwind/docs"});
+    let with_repo = json!({"name": "Storefront", "key": "SF", "repo": "northwind/docs"});
     ada.post(&ada.team("/projects"), with_repo).await;
 
     assert_eq!(
@@ -1011,8 +1022,7 @@ async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
     ada.post(&ada.team("/github"), json!({"code": "good-code"}))
         .await;
     repo.push("main", "c1", files);
-    let project =
-        json!({"name": "Storefront", "repo": "northwind/storefront", "branches": ["main"]});
+    let project = json!({"name": "Storefront", "key": "SF", "repo": "northwind/storefront", "branches": ["main"]});
     let (status, project) = ada.post(&ada.team("/projects"), project).await;
     assert_eq!(status, StatusCode::OK);
     ada.project_id = project["id"].as_str().unwrap().to_owned();
@@ -1312,7 +1322,7 @@ async fn each_tracked_branch_has_its_own_map() {
         &[("src/price.ts", PRICE_TS), ("src/app.ts", APP_TS)],
     );
     let mut project = json!({
-        "name": "Storefront", "repo": "northwind/storefront", "branches": ["main", "dev", "gone"],
+        "name": "Storefront", "key": "SF", "repo": "northwind/storefront", "branches": ["main", "dev", "gone"],
     });
     ada.put(&ada.project(""), project.clone()).await;
     map::round(&state).await;
@@ -1505,7 +1515,7 @@ async fn let_the_run_go_on(prompts: &Mutex<Vec<String>>) {
 #[tokio::test]
 async fn changing_the_repository_keeps_the_pages_and_stops_a_run_under_way() {
     let (mut ada, prompts) = docs_with_a_run_held_up().await;
-    let project = json!({"name": "Storefront", "repo": "northwind/docs"});
+    let project = json!({"name": "Storefront", "key": "SF", "repo": "northwind/docs"});
     assert_eq!(
         ada.put(&ada.project(""), project).await,
         StatusCode::NO_CONTENT
@@ -1578,8 +1588,11 @@ async fn a_shared_link_shows_a_copy_of_the_user_docs_to_anyone() {
     assert_eq!(shared["title"], "Storefront");
     let page = json!([{"title": "Buy", "markdown": "A page, citing `src/price.ts:1`."}]);
     assert_eq!(shared["pages"], page);
-    ada.put(&ada.project(""), json!({"name": "Shop", "branches": []}))
-        .await;
+    ada.put(
+        &ada.project(""),
+        json!({"name": "Shop", "key": "SF", "branches": []}),
+    )
+    .await;
     assert_eq!(anyone.get(&public).await.1, shared);
 
     let link = format!("{shares}/{token}");
@@ -2958,5 +2971,232 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     assert_eq!(
         ada.get(&path).await.1["hosts"],
         json!(["registry.npmjs.org"])
+    );
+}
+
+#[tokio::test]
+async fn a_project_s_key_is_its_own_in_its_team() {
+    let state = server().await;
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let projects = ada.team("/projects");
+    let named = |name: &str, key: &str| json!({"name": name, "key": key});
+    let (_, shop) = ada.post(&projects, named("Storefront", "sf")).await;
+    ada.project_id = shop["id"].as_str().unwrap().to_owned();
+    for refused in ["S", "SHOPPE", "S-F", "SF"] {
+        let (status, _) = ada.post(&projects, named("Another", refused)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    }
+    ada.post(&projects, named("Another", "AN")).await;
+
+    // A project keeps its own key, takes a free one and not another's.
+    for (key, status) in [
+        ("SF", StatusCode::NO_CONTENT),
+        ("AN", StatusCode::UNPROCESSABLE_ENTITY),
+        ("shop1", StatusCode::NO_CONTENT),
+    ] {
+        let renamed = named("Storefront", key);
+        assert_eq!(ada.put(&ada.project(""), renamed).await, status, "{key}");
+    }
+    let (_, listed) = ada.get(&projects).await;
+    assert_eq!(listed[1]["key"], "SHOP1");
+}
+
+/// The titles of a project's tasks of one status, in their order.
+async fn titles(client: &mut Client, tasks: &str, status: &str) -> Vec<String> {
+    let (_, listed) = client.get(tasks).await;
+    let of_status = listed.as_array().unwrap().iter();
+    of_status
+        .filter(|task| task["status"] == status)
+        .map(|task| task["title"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
+    let (state, mut ada) = project_with_docs().await;
+    let mut marco = Client::new(&state);
+    let invite = ada.invite("marco@example.com").await;
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    marco
+        .post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+    let mut eve = Client::new(&state);
+    eve.sign_in("eve@example.com", Some("Eve")).await;
+    let (_, team) = ada.get(&ada.team("")).await;
+    let his = team["members"][1]["id"].clone();
+    let (_, hers) = eve.get(&eve.team("")).await;
+    let hers = hers["members"][0]["id"].clone();
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let page = docs["pages"][1]["id"].clone();
+    let (_, other) = ada
+        .post(&ada.team("/projects"), json!({"name": "Blog", "key": "BL"}))
+        .await;
+    let elsewhere = ada.team(&format!(
+        "/projects/{}/tasks",
+        other["id"].as_str().unwrap()
+    ));
+    let tasks = ada.project("/tasks");
+
+    // A task needs a title, and its owner is of the team.
+    for refused in [
+        json!({"text": "No title"}),
+        json!({"title": " "}),
+        json!({"title": "Returns", "owner_id": hers}),
+    ] {
+        let (status, _) = marco.post(&tasks, refused).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let checks =
+        json!([{"text": "A link in the footer", "done": false}, {"text": " ", "done": false}]);
+    let returns = json!({"title": " Returns link ", "text": "On **mobile**", "checks": checks, "docs": [page, "none"]});
+    let (status, made) = marco.post(&tasks, returns).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, listed) = ada.get(&tasks).await;
+    let created_at = listed[0]["created_at"].clone();
+    assert_eq!(
+        listed,
+        json!([{
+            "id": made["id"], "number": 1, "title": "Returns link", "text": "On **mobile**",
+            "checks": [{"text": "A link in the footer", "done": false}], "status": "todo",
+            "owner_id": null, "owner": null, "asker_id": his, "asker": "Marco",
+            "created_at": created_at, "docs": [page],
+        }])
+    );
+    let returns = format!("{tasks}/{}", made["id"].as_str().unwrap());
+
+    // Each project counts its own, a new task goes on top, and a number isn't given twice.
+    let (_, gone) = ada.post(&tasks, json!({"title": "Gone"})).await;
+    let gone = format!("{tasks}/{}", gone["id"].as_str().unwrap());
+    assert_eq!(ada.delete(&gone).await, StatusCode::NO_CONTENT);
+    ada.post(&tasks, json!({"title": "Size guide"})).await;
+    let (_, blog) = ada.post(&elsewhere, json!({"title": "A first post"})).await;
+    let (_, listed) = ada.get(&tasks).await;
+    assert_eq!(
+        (&listed[0]["title"], &listed[0]["number"]),
+        (&json!("Size guide"), &json!(3))
+    );
+    assert_eq!(ada.get(&elsewhere).await.1[0]["number"], 1);
+
+    // Only what is sent changes.
+    let ticked = json!({"checks": [{"text": "A link in the footer", "done": true}]});
+    assert_eq!(ada.put(&returns, ticked).await, StatusCode::NO_CONTENT);
+    let given = json!({"owner_id": his, "docs": []});
+    assert_eq!(ada.put(&returns, given).await, StatusCode::NO_CONTENT);
+    let (_, listed) = ada.get(&tasks).await;
+    let changed = &listed[1];
+    assert_eq!(
+        (
+            &changed["title"],
+            &changed["checks"][0]["done"],
+            &changed["owner"],
+            &changed["docs"]
+        ),
+        (
+            &json!("Returns link"),
+            &json!(true),
+            &json!("Marco"),
+            &json!([])
+        )
+    );
+    ada.put(&returns, json!({"owner_id": null, "docs": [page]}))
+        .await;
+    assert_eq!(ada.get(&tasks).await.1[1]["owner"], Value::Null);
+    for refused in [json!({"title": ""}), json!({"owner_id": hers})] {
+        let status = ada.put(&returns, refused).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    // A deleted page leaves the task without it.
+    let page = ada.project(&format!("/docs/pages/{}", page.as_str().unwrap()));
+    ada.delete(&page).await;
+    assert_eq!(ada.get(&tasks).await.1[1]["docs"], json!([]));
+
+    // A status is given its tasks in their order; another project's task stays where it is.
+    for title in ["Wishlist", "Gift wrap"] {
+        ada.post(&tasks, json!({"title": title})).await;
+    }
+    let (_, listed) = ada.get(&tasks).await;
+    let id = |title: &str| {
+        let found = listed.as_array().unwrap().iter();
+        let found = found.clone().find(|task| task["title"] == title).unwrap();
+        found["id"].clone()
+    };
+    assert_eq!(
+        titles(&mut ada, &tasks, "todo").await,
+        ["Gift wrap", "Wishlist", "Size guide", "Returns link"]
+    );
+    let doing = json!({"status": "doing", "tasks": [id("Size guide"), blog["id"], id("Gift wrap"), id("Wishlist")]});
+    assert_eq!(marco.put(&tasks, doing).await, StatusCode::NO_CONTENT);
+    assert_eq!(titles(&mut ada, &tasks, "todo").await, ["Returns link"]);
+    assert_eq!(
+        titles(&mut ada, &tasks, "doing").await,
+        ["Size guide", "Gift wrap", "Wishlist"]
+    );
+    assert_eq!(ada.get(&elsewhere).await.1[0]["status"], "todo");
+    let again = json!({"status": "doing", "tasks": [id("Wishlist"), id("Size guide")]});
+    marco.put(&tasks, again).await;
+    assert_eq!(
+        titles(&mut ada, &tasks, "doing").await[..2],
+        ["Wishlist", "Size guide"]
+    );
+    let review = json!({"status": "review", "tasks": []});
+    assert_eq!(
+        ada.put(&tasks, review).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    // A task is its project's and its team's.
+    let misplaced = format!("{elsewhere}/{}", made["id"].as_str().unwrap());
+    assert_eq!(
+        ada.put(&misplaced, json!({"title": "Moved"})).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(eve.get(&tasks).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        eve.put(&returns, json!({"title": "Hers"})).await,
+        StatusCode::NOT_FOUND
+    );
+
+    // Only who asked for a task, or the team's owner, deletes it.
+    let hers = format!("{tasks}/{}", id("Wishlist").as_str().unwrap());
+    assert_eq!(marco.delete(&hers).await, StatusCode::FORBIDDEN);
+    assert_eq!(marco.delete(&returns).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.delete(&hers).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.delete(&hers).await, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_chat_is_for_a_task_of_its_project() {
+    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let (_, other) = ada
+        .post(&ada.team("/projects"), json!({"name": "Blog", "key": "BL"}))
+        .await;
+    let elsewhere = ada.team(&format!(
+        "/projects/{}/tasks",
+        other["id"].as_str().unwrap()
+    ));
+    let (_, foreign) = ada.post(&elsewhere, json!({"title": "A first post"})).await;
+    let tasks = ada.project("/tasks");
+    let (_, task) = ada.post(&tasks, json!({"title": "Returns link"})).await;
+
+    let start = |task: &Value| json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Add it", "task_id": task});
+    let chats = ada.project("/chats");
+    let (status, _) = ada.post(&chats, start(&foreign["id"])).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, started) = ada.post(&chats, start(&task["id"])).await;
+    let path = ada.team(&format!("/chats/{}", started["id"].as_str().unwrap()));
+    assert_eq!(ada.get(&path).await.1["task_id"], task["id"]);
+    let (_, listed) = ada.get(&ada.team("/chats")).await;
+    assert_eq!(listed[0]["task"], "SF-1 Returns link");
+
+    let task = format!("{tasks}/{}", task["id"].as_str().unwrap());
+    assert_eq!(ada.delete(&task).await, StatusCode::NO_CONTENT);
+    let (_, left) = ada.get(&path).await;
+    assert_eq!(
+        (&left["task_id"], &left["task"]),
+        (&Value::Null, &Value::Null)
     );
 }

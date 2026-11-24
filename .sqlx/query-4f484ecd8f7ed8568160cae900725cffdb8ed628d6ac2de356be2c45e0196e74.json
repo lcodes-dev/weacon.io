@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE projects SET tasks_made = tasks_made + 1 WHERE id = ? RETURNING tasks_made",
+  "describe": {
+    "columns": [
+      {
+        "name": "tasks_made",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "tasks_made"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4f484ecd8f7ed8568160cae900725cffdb8ed628d6ac2de356be2c45e0196e74"
+}

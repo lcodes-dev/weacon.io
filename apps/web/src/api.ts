@@ -10,7 +10,8 @@ export type User = {
 
 export type Team = { id: string; name: string; role: "owner" | "member" }
 
-export type Project = { id: string; name: string; repo: string | null; branches: Branch[] }
+/** `key` is what the project's tasks are named by, as `SF` in SF-12. */
+export type Project = { id: string; name: string; key: string; repo: string | null; branches: Branch[] }
 
 /** A tracked branch. Its map is behind while `commit_sha` differs from `head_sha`. */
 export type Branch = { name: string; head_sha: string | null; commit_sha: string | null; error: string | null }
@@ -69,6 +70,33 @@ export type Chat = {
   pull_url: string | null
   /** The hosts the chat's commands may reach. */
   hosts: string[]
+  /** The task it is for, if any, and what that is called, as `SF-12 Returns link`. */
+  task_id: string | null
+  task: string | null
+}
+
+export const statuses = { todo: "To do", doing: "Doing", done: "Done" } as const
+
+export type Status = keyof typeof statuses
+
+/** Something a project needs done. It is named by its project's key and its number, as SF-12. */
+export type Task = {
+  id: string
+  number: number
+  title: string
+  /** Markdown. */
+  text: string
+  /** What it is done when. */
+  checks: { text: string; done: boolean }[]
+  status: Status
+  owner_id: string | null
+  owner: string | null
+  /** Who asked for it; null once that person's account is gone. */
+  asker_id: string | null
+  asker: string | null
+  created_at: number
+  /** The pages of the project's docs it touches. */
+  docs: string[]
 }
 
 /** What was written and done in a chat. A file's lines are counted against the commit the chat started from. */

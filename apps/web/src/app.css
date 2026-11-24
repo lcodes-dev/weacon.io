@@ -278,6 +278,20 @@ body {
     transform: translate(var(--drag-x, 0), var(--drag-y, 0));
   }
 
+  [data-slot="board-card"] {
+    @apply flex cursor-grab flex-col gap-0.5 rounded-lg border border-line bg-bg px-3 py-2 select-none aria-[current]:border-ink;
+    touch-action: none;
+  }
+
+  [data-slot="board-card"][data-grabbed] {
+    @apply border-pri;
+  }
+
+  /* Where a dragged card would land, while its copy follows the pointer. */
+  [data-slot="board-card"][data-dragging] {
+    @apply opacity-40;
+  }
+
   [data-slot="sortable-handle"] {
     touch-action: none;
   }

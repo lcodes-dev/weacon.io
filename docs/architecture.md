@@ -116,7 +116,7 @@ Build the web app, then the server: `vite build`, then `cargo build --release`, 
 - **Teams.** Registering gives a person a team of their own, named after them. The word is always "team", never "workspace". A team has one owner, the person who created it, who renames it, invites people and removes them. A member can leave; the owner can't, so everyone always has a team.
 - **Invites.** The team's owner invites an email address. The mail holds a link, the server's address plus `/invite/` and a random token saved with the invite. The link works once, for 7 days, and only for an account with the invited address. The owner can invite several addresses at once, revoke an invite, or resend it; resending is inviting the same address again, which replaces the token and starts the 7 days over.
 - **Several teams.** The server doesn't pick a person's team: the session lists their teams, and every team route names its team in the path. The web app remembers which team is open in the browser's local storage. A team the person isn't in answers 404.
-- **Projects.** A team holds several projects. A project is a name and, optionally, a GitHub repository stored as `owner/name`. Any member creates and edits projects; only the team's owner deletes one. Nothing else belongs to a project yet.
+- **Projects.** A team holds several projects. A project is a name, a key and, optionally, a GitHub repository stored as `owner/name`. The key is two to five capital letters or digits that no other project of the team has; its tasks are named by it. Any member creates and edits projects; only the team's owner deletes one. Nothing else belongs to a project yet.
 - **Sessions.** Signing in sets an `HttpOnly` cookie holding a random token that names a row in `sessions`. A session lasts a year from its last use: `GET /api/session`, which the web app asks on every load, starts the year again and sets the cookie anew, at most once a day. The cookie is marked `Secure` when `WEACON_URL` is an `https` address.
 - **Addresses.** `mail::is_address` decides what an email address is, for sign-in and for invites.
 
@@ -212,6 +212,19 @@ A chat is a person's conversation with Claude Code or Codex about a project. The
 - **Stop.** The server sends `stop` and the core interrupts the program as Ctrl-C would, which has each program end the command it is running before itself, and kills it after five seconds if it hasn't gone. It needs the machine connected. Removing a machine ends the turns that were running on it, and its chats can still be read.
 - **The web app** lists the team's chats in the sidebar, the person's own first. A chat's page asks for the events after the last one it has, every second while a turn runs and every five otherwise. What an agent says is rendered as Markdown, with an image shown as a link and a link to a file of the copy as plain text. A host a command was refused shows with the button that allows it. The files of the newest finished turn open to their changed lines, and below them the owner has the commit message and the button that pushes.
 
+## Tasks
+
+A task is something a project needs done. `tasks.rs` holds the requests, and the web app's page is `routes/ProjectTasks.tsx`.
+
+- **What it is.** A title, a Markdown text, a list of checks that say when it is done, the pages of the project's docs it touches, a status, an owner and who asked for it. The checks are JSON on the task's row; the pages are rows of `task_docs`, so a deleted page leaves a task without it, and a page that isn't the project's is left out when a task's pages are saved.
+- **Its name** is the project's key and the task's number, as `SF-12`. The row keeps only the number, so a project whose key changes renames its tasks. Numbers count per project from 1 by `projects.tasks_made`, which only grows, so a deleted task's number isn't given again.
+- **Who may what.** Every member of the project's team reads its tasks, makes one and changes any. Only who asked for a task, or the team's owner, deletes it.
+- **A change carries only what it changes,** so two people who change different things of a task both keep theirs, and of two who change the same thing the later wins. A task has no version.
+- **Status** is `todo`, `doing` or `done`, and only a person sets it: no chat or pull request moves a task.
+- **Order.** Tasks are ordered by hand inside a status, by `position`, the smallest first. A new one goes above the others of `todo`. A status is given its tasks as a list, in their order, as the pages of the docs are, and the server numbers them from 0 in one transaction; that is also how a task changes status.
+- **Chats.** A chat can be for a task of its own project: `chats.task_id`, set when the chat starts and emptied when the task is deleted. A chat is given with its task's name, as `SF-12 Returns link`. The new chat page, opened from a task, fills in its name, title, text and checks as the first message, which the person can change; the agent gets that message and nothing else of the task. A task is tied to its pull requests through its chats, here in the database, and never by a name written in a branch or a title, so changing a project's key loses nothing.
+- **The web app** shows a project's tasks at `/projects/{id}/tasks` as a list or, with `?view=board`, as a board of one column per status, and the task named by `?task=` in a panel beside either. "New task" makes one called "New task" and opens it there, as a new page of the docs is made. A card is dragged to another place or column, or picked up with Space, moved with the arrows and dropped with Space. `components/Board.tsx` is a small primitive of ours on UI SDK's behavior for moving between lists. A dropped card stays where it was put while the server is told. The page asks again every five seconds, which is how a teammate's change shows.
+
 ## Mail
 
 `mail.rs` has one way to send: `mail::send(pool, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
@@ -245,8 +258,8 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/teams/{id}/invites` | the team's owner | Invites the `emails` and mails each its link. No mail goes out if one address is wrong or already a member |
 | `DELETE /api/teams/{id}/invites/{invite_id}` | the team's owner | Revokes an invite |
 | `DELETE /api/teams/{id}/members/{user_id}` | the team's owner, or that member | Removes a member, or leaves. Refused for the owner |
-| `GET`, `POST /api/teams/{id}/projects` | a member | Lists the team's projects with their tracked branches, or creates one from `name`, an optional `repo` and the `branches` to track |
-| `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name, repository and tracked branches; leaving `repo` out removes it |
+| `GET`, `POST /api/teams/{id}/projects` | a member | Lists the team's projects with their tracked branches, or creates one from `name`, `key`, an optional `repo` and the `branches` to track |
+| `PUT /api/teams/{id}/projects/{project_id}` | a member | Saves the name, key, repository and tracked branches; leaving `repo` out removes it |
 | `DELETE /api/teams/{id}/projects/{project_id}` | the team's owner | Deletes the project |
 | `GET /api/teams/{id}/projects/{project_id}/map?branch=` | a member | A branch's map: its commit, every file with its symbols, and which file uses which |
 | `GET`, `POST /api/teams/{id}/projects/{project_id}/docs` | a member | The project's docs, its proposals and where a run stands; or starts a run from the `branch` given, which writes pages on a project without any and proposals otherwise |
@@ -268,8 +281,11 @@ Errors are `{"error": "..."}` with a status code.
 | `POST /api/machines` | anyone with a code | Trades `{"code", "name", "os"}` for `{"token"}` |
 | `DELETE /api/machines/{id}` | its owner | Ends the machine and cuts its core off |
 | `GET /api/machines/connect` | a machine's token | The core's WebSocket |
+| `GET`, `POST`, `PUT /api/teams/{id}/projects/{project_id}/tasks` | member | The project's tasks, each status in its order; or makes one from `title` and optionally `text`, `checks`, `docs` and `owner_id`, at the top of To do; or, with `{"status", "tasks"}`, puts the tasks named in a status, in that order |
+| `PUT /api/teams/{id}/projects/{project_id}/tasks/{task_id}` | member | Changes what it is sent of `title`, `text`, `checks`, `docs` and `owner_id`, where `null` is nobody, and leaves the rest |
+| `DELETE /api/teams/{id}/projects/{project_id}/tasks/{task_id}` | who asked for it, or the team's owner | Deletes the task |
 | `GET /api/teams/{id}/chats` | member | The team's chats, newest first |
-| `POST /api/teams/{id}/projects/{project_id}/chats` | member | `{"agent", "machine_id", "branch", "text"}`: starts a chat on one of the person's own machines with its first message |
+| `POST /api/teams/{id}/projects/{project_id}/chats` | member | `{"agent", "machine_id", "branch", "text"}`, and optionally `task_id`, a task of the project the chat is for: starts a chat on one of the person's own machines with its first message |
 | `GET /api/teams/{id}/chats/{chat_id}` | member | The chat, whether it is `mine` and its machine `connected`, and its `events`, or with `?after={event id}` those after one |
 | `POST /api/teams/{id}/chats/{chat_id}/messages` | the chat's owner | `{"text"}`: the next turn; 409 while one runs |
 | `POST /api/teams/{id}/chats/{chat_id}/stop` | the chat's owner | Ends the running turn, if the machine is connected |
@@ -295,6 +311,6 @@ Errors are `{"error": "..."}` with a status code.
 
 ## What exists today
 
-A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks, and docs generated from it. A person pairs machines of their own, and chats there with Claude Code or Codex about a project; a chat's changes can be read line by line and pushed as a pull request. Tasks, direct messages and groups are still headings in the sidebar.
+A fresh server opens on "Set up Weacon". After that people register and sign in with emailed codes, each account has its own team, the owner can set up SMTP, and a team's owner can rename it, invite people by email and set up the team's GitHub App, and members make projects, with or without a repository. A project with a repository has a code map of each branch it tracks, and docs generated from it. A person pairs machines of their own, and chats there with Claude Code or Codex about a project; a chat's changes can be read line by line and pushed as a pull request. A project has tasks, on a list and a board, each with its checks, the docs it touches and the chats started from it. Tasks, direct messages and groups are still headings in the sidebar.
 
 Not built yet, each waiting for the first feature that needs it: the WebSocket.

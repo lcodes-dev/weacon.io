@@ -8,6 +8,7 @@ import { Machines } from "../routes/Machines"
 import { MailSettings } from "../routes/MailSettings"
 import { NewChat } from "../routes/NewChat"
 import { ProjectPage } from "../routes/Project"
+import { TasksPage } from "../routes/ProjectTasks"
 import { TeamSettings } from "../routes/TeamSettings"
 
 // The docs page is the largest, so it is fetched when first opened.
@@ -61,6 +62,7 @@ export function Shell({ user }: { user: User }) {
               </Suspense>
             }
           />
+          <Route path="/projects/:id/tasks" element={<TasksPage team={team} user={user} />} />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
           <Route path="/chats/new" element={<NewChat team={team} />} />
           <Route path="/chats/:id" element={<ChatPage team={team} />} />

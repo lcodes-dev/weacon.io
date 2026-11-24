@@ -54,6 +54,8 @@ Signing in to an agent is done from Weacon's "Machines" page.
 
 "New chat" then has Claude Code or Codex work on a project there: in a copy of its repository in the core's folder, on your sign-in, with commands kept inside the agent's own sandbox, where they reach only the network hosts you allow for that chat. The machine needs `git`. What the agent changed shows in the chat line by line, and "Commit and open pull request" pushes it to a branch of its own and opens a draft pull request.
 
+A project's "Tasks" page keeps what it needs done, as a list or a board: each task has an owner, a status, checks that say when it is done and the docs it touches, and "New chat for this task" starts an agent on it.
+
 ## Docs
 
 - [Architecture](docs/architecture.md)

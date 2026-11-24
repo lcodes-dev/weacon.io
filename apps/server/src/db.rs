@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::types::Json;
 
+use crate::chats::Start;
 use crate::mail::Smtp;
 use crate::writer::Writer;
 use code_map::{Reading, Symbol};
@@ -108,6 +109,8 @@ pub struct Invite {
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// What its tasks are named by, as `SF` in SF-12.
+    pub key: String,
     /// `owner/name` on GitHub.
     pub repo: Option<String>,
     pub branches: Vec<Branch>,
@@ -518,7 +521,7 @@ pub async fn accept_invite(
 
 pub async fn projects(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Project>> {
     let projects = sqlx::query!(
-        "SELECT id, name, repo FROM projects WHERE team_id = ? ORDER BY name",
+        "SELECT id, name, key, repo FROM projects WHERE team_id = ? ORDER BY name",
         team_id
     )
     .fetch_all(pool)
@@ -538,6 +541,7 @@ pub async fn projects(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Proj
             .collect(),
         id: project.id,
         name: project.name,
+        key: project.key,
         repo: project.repo,
     });
     Ok(projects.collect())
@@ -547,6 +551,7 @@ pub async fn create_project(
     pool: &SqlitePool,
     team_id: &str,
     name: &str,
+    key: &str,
     repo: Option<&str>,
     branches: &[String],
     now: i64,
@@ -554,10 +559,11 @@ pub async fn create_project(
     let mut tx = pool.begin().await?;
     let id = new_id();
     sqlx::query!(
-        "INSERT INTO projects (id, team_id, name, repo, created_at) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO projects (id, team_id, name, key, repo, created_at) VALUES (?, ?, ?, ?, ?, ?)",
         id,
         team_id,
         name,
+        key,
         repo,
         now
     )
@@ -574,6 +580,7 @@ pub async fn update_project(
     team_id: &str,
     project_id: &str,
     name: &str,
+    key: &str,
     repo: Option<&str>,
     branches: &[String],
 ) -> sqlx::Result<Option<bool>> {
@@ -590,8 +597,9 @@ pub async fn update_project(
         return Ok(None);
     };
     sqlx::query!(
-        "UPDATE projects SET name = ?, repo = ? WHERE id = ?",
+        "UPDATE projects SET name = ?, key = ?, repo = ? WHERE id = ?",
         name,
+        key,
         repo,
         project_id
     )
@@ -2125,6 +2133,9 @@ pub struct Chat {
     pub pull_url: Option<String>,
     /// The hosts its commands may reach.
     pub hosts: Json<Vec<String>>,
+    /// The task it is for, if any, and what that is called, as `SF-12 Returns link`.
+    pub task_id: Option<String>,
+    pub task: Option<String>,
 }
 
 /// A team's chats, newest first, or only the one with `id`.
@@ -2133,9 +2144,10 @@ pub async fn chats(pool: &SqlitePool, team_id: &str, id: Option<&str>) -> sqlx::
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
                   p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
-                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>"
+                  c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.task_id,
+                  p.key || '-' || t.number || ' ' || t.title AS "task?: String"
            FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id
-           LEFT JOIN machines m ON m.id = c.machine_id
+           LEFT JOIN machines m ON m.id = c.machine_id LEFT JOIN tasks t ON t.id = c.task_id
            WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2) ORDER BY c.id DESC"#,
         team_id,
         id
@@ -2149,27 +2161,27 @@ pub async fn start_chat(
     pool: &SqlitePool,
     project_id: &str,
     user_id: &str,
-    machine_id: &str,
     agent: &str,
-    branch: &str,
-    asked: &str,
+    start: &Start,
 ) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     let id = new_id();
+    let asked = start.text.trim();
     // A chat is called by how it began.
     let title = asked.lines().next().unwrap_or_default();
     let title: String = title.chars().take(60).collect();
     sqlx::query!(
-        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
+        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())",
         id,
         project_id,
         user_id,
-        machine_id,
+        start.machine_id,
         agent,
-        branch,
+        start.branch,
         title,
-        asked
+        asked,
+        start.task_id
     )
     .execute(&mut *tx)
     .await?;
@@ -2388,4 +2400,192 @@ pub async fn chat_events(
     )
     .fetch_all(pool)
     .await
+}
+
+/// What a task is done when.
+#[derive(Serialize, Deserialize)]
+pub struct Check {
+    pub text: String,
+    pub done: bool,
+}
+
+#[derive(Serialize)]
+pub struct Task {
+    pub id: String,
+    pub number: i64,
+    pub title: String,
+    pub text: String,
+    pub checks: Json<Vec<Check>>,
+    pub status: String,
+    /// Who does it, if anybody.
+    pub owner_id: Option<String>,
+    pub owner: Option<String>,
+    /// Who asked for it.
+    pub asker_id: Option<String>,
+    pub asker: Option<String>,
+    pub created_at: i64,
+    /// The pages of the project's docs it touches.
+    pub docs: Json<Vec<String>>,
+}
+
+/// What a task is made from or changed to: only what is given changes.
+#[derive(Deserialize)]
+pub struct TaskFields {
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub checks: Option<Json<Vec<Check>>>,
+    /// Given as `null`, nobody owns it.
+    #[serde(default, deserialize_with = "given")]
+    pub owner_id: Option<Option<String>>,
+    pub docs: Option<Vec<String>>,
+}
+
+fn given<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::deserialize(from).map(Some)
+}
+
+/// A project's tasks, each status in its order.
+pub async fn tasks(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<Vec<Task>> {
+    sqlx::query_as!(
+        Task,
+        r#"SELECT t.id, t.number, t.title, t.text, t.checks AS "checks: Json<Vec<Check>>", t.status,
+                  t.owner_id, o.name AS "owner?", t.asker_id, a.name AS "asker?", t.created_at,
+                  (SELECT json_group_array(d.doc_id) FROM task_docs d WHERE d.task_id = t.id)
+                      AS "docs!: Json<Vec<String>>"
+           FROM projects p JOIN tasks t ON t.project_id = p.id
+                LEFT JOIN users o ON o.id = t.owner_id LEFT JOIN users a ON a.id = t.asker_id
+           WHERE p.id = ? AND p.team_id = ? ORDER BY t.status, t.position"#,
+        project_id,
+        team_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// The new task's id, at the top of To do.
+pub async fn create_task(
+    pool: &SqlitePool,
+    project_id: &str,
+    user_id: &str,
+    fields: &TaskFields,
+) -> sqlx::Result<String> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let id = new_id();
+    let number = sqlx::query_scalar!(
+        "UPDATE projects SET tasks_made = tasks_made + 1 WHERE id = ? RETURNING tasks_made",
+        project_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    let owner = fields.owner_id.as_ref().and_then(Option::as_ref);
+    let text = fields.text.as_deref().unwrap_or_default();
+    let none = Json(Vec::new());
+    let checks = fields.checks.as_ref().unwrap_or(&none);
+    sqlx::query!(
+        "INSERT INTO tasks (id, project_id, number, title, text, checks, status, position, owner_id, asker_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'todo',
+                 (SELECT COALESCE(MIN(position), 0) - 1 FROM tasks WHERE project_id = ?2 AND status = 'todo'),
+                 ?7, ?8, unixepoch())",
+        id,
+        project_id,
+        number,
+        fields.title,
+        text,
+        checks,
+        owner,
+        user_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if let Some(docs) = &fields.docs {
+        set_task_docs(&mut tx, project_id, &id, docs).await?;
+    }
+    tx.commit().await?;
+    Ok(id)
+}
+
+pub async fn change_task(
+    pool: &SqlitePool,
+    project_id: &str,
+    task_id: &str,
+    fields: &TaskFields,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let (owned, owner) = (fields.owner_id.is_some(), fields.owner_id.as_ref());
+    let owner = owner.and_then(Option::as_ref);
+    sqlx::query!(
+        "UPDATE tasks SET title = COALESCE(?, title), text = COALESCE(?, text), checks = COALESCE(?, checks),
+                owner_id = CASE WHEN ? THEN ? ELSE owner_id END
+         WHERE id = ? AND project_id = ?",
+        fields.title,
+        fields.text,
+        fields.checks,
+        owned,
+        owner,
+        task_id,
+        project_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    if let Some(docs) = &fields.docs {
+        set_task_docs(&mut tx, project_id, task_id, docs).await?;
+    }
+    tx.commit().await
+}
+
+/// Makes those of `docs` that are pages of the project the pages a task touches.
+async fn set_task_docs(
+    tx: &mut sqlx::SqliteConnection,
+    project_id: &str,
+    task_id: &str,
+    docs: &[String],
+) -> sqlx::Result<()> {
+    sqlx::query!("DELETE FROM task_docs WHERE task_id = ?", task_id)
+        .execute(&mut *tx)
+        .await?;
+    let docs = Json(docs);
+    sqlx::query!(
+        "INSERT INTO task_docs (task_id, doc_id)
+         SELECT ?, id FROM docs WHERE project_id = ? AND id IN (SELECT value FROM json_each(?))",
+        task_id,
+        project_id,
+        docs
+    )
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+/// Puts the project's tasks named in `order` in `status`, in that order.
+pub async fn order_tasks(
+    pool: &SqlitePool,
+    project_id: &str,
+    status: &str,
+    order: &[String],
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    for (position, id) in order.iter().enumerate() {
+        let position = position as i64;
+        sqlx::query!(
+            "UPDATE tasks SET status = ?, position = ? WHERE id = ? AND project_id = ?",
+            status,
+            position,
+            id,
+            project_id
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+pub async fn delete_task(pool: &SqlitePool, project_id: &str, task_id: &str) -> sqlx::Result<()> {
+    sqlx::query!(
+        "DELETE FROM tasks WHERE id = ? AND project_id = ?",
+        task_id,
+        project_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }

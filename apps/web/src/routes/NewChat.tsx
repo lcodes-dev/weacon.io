@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
-import { Link, useNavigate } from "react-router"
+import { Link, useNavigate, useSearchParams } from "react-router"
 import { agents, api, type Agent, type Machine, type Project, type Team } from "../api"
+import { useTasks } from "./ProjectTasks"
 
 /** The page at `/chats/new`: what to ask, of which agent, on which project and machine. */
 export function NewChat({ team }: { team: Team }) {
@@ -9,8 +10,12 @@ export function NewChat({ team }: { team: Team }) {
   const navigate = useNavigate()
   const projects = useQuery({ queryKey: ["projects", team.id], queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`) })
   const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines") })
-  const [chosen, setChosen] = useState<{ project?: string; branch?: string; agent?: Agent; machine?: string }>({})
-  const [text, setText] = useState("")
+  const [params] = useSearchParams()
+  const [chosen, setChosen] = useState<{ project?: string; branch?: string; agent?: Agent; machine?: string }>({ project: params.get("project") ?? undefined })
+  // Unset means the task the chat is for, as it reads now.
+  const [typed, setText] = useState<string>()
+  const tasks = useTasks(team, params.get("task") ? chosen.project : undefined)
+  const task = tasks.data?.find((task) => task.id === params.get("task"))
 
   // An agent works in a copy of the repository, so a project without one has nothing to work on.
   const mapped = projects.data?.filter((project) => project.branches.length) ?? []
@@ -20,6 +25,12 @@ export function NewChat({ team }: { team: Team }) {
   const agent = chosen.agent ?? (["claude", "codex"] as const).find((agent) => machines.data?.some((machine) => ready(machine, agent))) ?? "claude"
   const able = machines.data?.filter((machine) => ready(machine, agent)) ?? []
   const machine = able.find((machine) => machine.id === chosen.machine) ?? able.find((machine) => machine.connected) ?? able[0]
+  const brief = task && [
+    `${project?.key}-${task.number} ${task.title}`,
+    task.text,
+    task.checks.length > 0 && `Done when:\n${task.checks.map((check) => `- ${check.text}`).join("\n")}`,
+  ]
+  const text = typed ?? brief?.filter(Boolean).join("\n\n") ?? ""
 
   const start = useMutation({
     mutationFn: () =>
@@ -28,6 +39,7 @@ export function NewChat({ team }: { team: Team }) {
         machine_id: machine?.id,
         branch: branch?.name,
         text,
+        task_id: task?.id,
       }),
     onSuccess: ({ id }) => {
       queryClient.invalidateQueries({ queryKey: ["chats", team.id] })
@@ -44,7 +56,7 @@ export function NewChat({ team }: { team: Team }) {
         start.mutate()
       }}
     >
-      <h1>New chat</h1>
+      <h1>New chat{task && ` for ${project?.key}-${task.number}`}</h1>
       <p className="text-ink2">
         The agent works in a copy of the project's repository on your machine, on your own sign-in. It changes files there and nowhere else, and
         your team can read the chat.
@@ -58,7 +70,7 @@ export function NewChat({ team }: { team: Team }) {
       <div className="flex flex-wrap gap-3">
         <label className="flex flex-col gap-1">
           <span className="lbl">Project</span>
-          <select className={select} value={project?.id ?? ""} onChange={(event) => setChosen({ ...chosen, project: event.target.value, branch: undefined })}>
+          <select className={select} value={project?.id ?? ""} disabled={!!task} onChange={(event) => setChosen({ ...chosen, project: event.target.value, branch: undefined })}>
             {mapped.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}

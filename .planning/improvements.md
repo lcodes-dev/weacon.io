@@ -74,3 +74,7 @@ Things noticed while working that could be better and that nobody has asked for.
 - **An agent's words can name the chat's cache by its whole path on the machine,** which only the folder of its files is cleaned of. *(seen checking plan 24)*
 - **A sign-in of Weacon's own for each agent, in a folder of the core's,** as the project's spec has for each workspace, would leave the person's settings out by itself. Today each program is told flag by flag to ignore them, and Codex can't be run the way that lets it ask, because that way has no such flag. *(seen reviewing plans 21 to 25)*
 - **The core takes a chat's hosts from the server as they come.** The spec has a machine keep limits of its own, so that a server gone wrong can't widen what a machine allows. *(seen reviewing plans 21 to 25)*
+- **A task's text isn't rendered as Markdown** in its panel, where it is typed. *(plan 27)*
+- **An open task's title and text don't follow a teammate's change** until the task is opened again; its other fields do. *(plan 27)*
+- **In a narrow window the task's panel leaves the list little room.** The panel could take the whole page there. *(seen checking plan 27)*
+- **A project's key is unique only by the request's check,** so two saved at the same instant could share one. *(plan 27)*

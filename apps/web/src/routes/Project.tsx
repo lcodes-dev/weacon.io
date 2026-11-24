@@ -30,10 +30,19 @@ function waiting(branch: Project["branches"][number]) {
   return !branch.error && (!branch.commit_sha || branch.commit_sha !== branch.head_sha)
 }
 
+/** A key for a project of this name: its words' first letters, or the first two of its only word. */
+function suggested(name: string) {
+  const words = name.toUpperCase().match(/[A-Z0-9]+/g) ?? []
+  return words.length > 1 ? words.map((word) => word[0]).join("").slice(0, 5) : (words[0] ?? "").slice(0, 2)
+}
+
 function Form({ team, project }: { team: Team; project?: Project }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [name, setName] = useState(project?.name ?? "")
+  // Unset means the one suggested from the name.
+  const [typedKey, setKey] = useState(project?.key)
+  const key = typedKey ?? suggested(name)
   const [repo, setRepo] = useState(project?.repo ?? "")
   // Unset means the repository's default branch.
   const [chosen, setChosen] = useState(project?.repo ? project.branches.map((branch) => branch.name) : undefined)
@@ -49,7 +58,7 @@ function Form({ team, project }: { team: Team; project?: Project }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      const fields = { name, repo: repo || undefined, branches }
+      const fields = { name, key, repo: repo || undefined, branches }
       if (!project) return api<Project>("POST", path, fields)
       await api("PUT", `${path}/${project.id}`, fields)
     },
@@ -84,11 +93,27 @@ function Form({ team, project }: { team: Team; project?: Project }) {
             Docs
           </Link>
         )}
+        {project && (
+          <Link to={`/projects/${project.id}/tasks`} className="text-[13px] font-normal underline">
+            Tasks
+          </Link>
+        )}
       </h1>
       <Field>
         <FieldLabel>Name</FieldLabel>
         <Input value={name} onChange={(event) => setName(event.target.value)} required />
       </Field>
+      <Field>
+        <FieldLabel>Key</FieldLabel>
+        <Input
+          value={key}
+          onChange={(event) => setKey(event.target.value.toUpperCase())}
+          required
+          pattern="[A-Za-z0-9]{2,5}"
+          className="w-24 font-mono"
+        />
+      </Field>
+      <p className="text-ink2">Two to five letters or digits. The project's tasks are named by it, as {key || "SF"}-12.</p>
       <Field>
         <FieldLabel>Repository</FieldLabel>
         <FieldControl

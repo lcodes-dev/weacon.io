@@ -23,9 +23,11 @@ pub async fn list(
 #[derive(Deserialize)]
 pub struct Start {
     agent: String,
-    machine_id: String,
-    branch: String,
-    text: String,
+    pub machine_id: String,
+    pub branch: String,
+    pub text: String,
+    /// The task of the project the chat is for, if any.
+    pub task_id: Option<String>,
 }
 
 /// Starts a chat with its first message, on one of the person's own machines.
@@ -54,20 +56,16 @@ pub async fn start(
         return Err(refused("A chat runs on a machine of your own"));
     }
     let agent = Agent::named(&start.agent).ok_or_else(|| refused("Pick Claude Code or Codex"))?;
-    let text = start.text.trim();
-    if text.is_empty() {
+    if start.text.trim().is_empty() {
         return Err(refused("Write what the agent should do"));
     }
-    let id = db::start_chat(
-        &state.pool,
-        &project_id,
-        &user.id,
-        &start.machine_id,
-        agent.program(),
-        &start.branch,
-        text,
-    );
-    let id = id.await?;
+    if let Some(task) = &start.task_id {
+        let tasks = db::tasks(&state.pool, &team_id, &project_id).await?;
+        if !tasks.iter().any(|found| &found.id == task) {
+            return Err(refused("A chat is for a task of its own project"));
+        }
+    }
+    let id = db::start_chat(&state.pool, &project_id, &user.id, agent.program(), &start).await?;
     run(&state, &start.machine_id, &id);
     Ok(Json(json!({"id": id})))
 }

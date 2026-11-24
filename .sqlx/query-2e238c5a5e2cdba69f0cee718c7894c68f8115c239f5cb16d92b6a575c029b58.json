@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO task_docs (task_id, doc_id)\n         SELECT ?, id FROM docs WHERE project_id = ? AND id IN (SELECT value FROM json_each(?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2e238c5a5e2cdba69f0cee718c7894c68f8115c239f5cb16d92b6a575c029b58"
+}

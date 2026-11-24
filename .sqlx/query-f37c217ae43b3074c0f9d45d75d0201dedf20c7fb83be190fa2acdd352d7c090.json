@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, repo FROM projects WHERE team_id = ? ORDER BY name",
+  "query": "SELECT id, name, key, repo FROM projects WHERE team_id = ? ORDER BY name",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "repo",
+        "name": "key",
         "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "key"
+          }
+        }
+      },
+      {
+        "name": "repo",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -43,8 +54,9 @@
     "nullable": [
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "256b9ba0a2763c4f71913c5db1ab07c90e6ac750bf7d12eeaad896928ff0a0f3"
+  "hash": "f37c217ae43b3074c0f9d45d75d0201dedf20c7fb83be190fa2acdd352d7c090"
 }
