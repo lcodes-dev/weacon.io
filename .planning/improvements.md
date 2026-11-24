@@ -72,3 +72,5 @@ Things noticed while working that could be better and that nobody has asked for.
 - **Every chat downloads its packages anew,** since its cache starts empty. A cache for each project on a machine would be shared by its chats. *(plan 23)*
 - **A host a command wanted several times is told several times** in one turn. The chat could show it once. *(seen checking plan 24)*
 - **An agent's words can name the chat's cache by its whole path on the machine,** which only the folder of its files is cleaned of. *(seen checking plan 24)*
+- **A sign-in of Weacon's own for each agent, in a folder of the core's,** as the project's spec has for each workspace, would leave the person's settings out by itself. Today each program is told flag by flag to ignore them, and Codex can't be run the way that lets it ask, because that way has no such flag. *(seen reviewing plans 21 to 25)*
+- **The core takes a chat's hosts from the server as they come.** The spec has a machine keep limits of its own, so that a server gone wrong can't widen what a machine allows. *(seen reviewing plans 21 to 25)*

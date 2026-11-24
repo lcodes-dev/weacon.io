@@ -80,6 +80,9 @@ async fn claude_code_s_turn_is_told_in_common_words() {
         started.contains(r#""allowWrite":["/the/chat's cache"]"#),
         "{started}"
     );
+    // It is told of the repository's instructions, which it would otherwise leave out.
+    let told_of = "--append-system-prompt This repository's own instructions are in CLAUDE.md";
+    assert!(started.contains(told_of), "{started}");
     assert!(said(&told[0]).starts_with("I'll start by checking the repo"));
     // What a sub-agent said is left out, and a file is named from the folder.
     let deeds: Vec<&Event> = told
@@ -128,6 +131,8 @@ async fn codex_s_turn_is_told_in_the_same_words() {
         started.contains(r#"writable_roots=["/the/chat's cache"]"#),
         "{started}"
     );
+    let fallback = r#"project_doc_fallback_filenames=["CLAUDE.md"]"#;
+    assert!(started.contains(fallback), "{started}");
     assert!(said(&told[0]).starts_with("I’ll inspect the existing calculator"));
     let deeds: Vec<&Event> = told
         .iter()

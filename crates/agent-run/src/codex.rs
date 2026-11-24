@@ -29,6 +29,9 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
         &hosts,
         "--config",
         &cache,
+        // It follows the repository's AGENTS.md by itself, and this file where there is none.
+        "--config",
+        r#"project_doc_fallback_filenames=["CLAUDE.md"]"#,
         "--ignore-user-config",
         "--ignore-rules",
         "--skip-git-repo-check",

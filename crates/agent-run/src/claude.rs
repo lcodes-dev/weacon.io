@@ -5,6 +5,12 @@ use serde_json::{Value, json};
 
 use crate::{Ended, did, said, text, wanted};
 
+/// What makes it follow the repository's instructions, which it would otherwise leave out
+/// with the person's own setup. A repository's settings and hooks stay out.
+const INSTRUCTIONS: &str = "This repository's own instructions are in CLAUDE.md at its root, \
+    or in AGENTS.md where there is no CLAUDE.md. Read that file before anything else, with \
+    the files it names, and follow them. Where there is neither, go on without.";
+
 pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
     // Its own sandbox for commands, with nothing let out of it.
     let sandbox = json!({"sandbox": {
@@ -32,6 +38,8 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str) -> Vec<String> {
         "Bash",
         "--settings",
         &sandbox,
+        "--append-system-prompt",
+        INSTRUCTIONS,
     ];
     if let Some(session) = session {
         args.extend(["--resume", session]);
