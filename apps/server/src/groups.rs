@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::chats::After;
+use crate::chats::{self, After};
 use crate::db::{self, Group, User};
 use crate::teams::{membership, refused};
 use crate::{ApiError, AppState, not_found};
@@ -90,8 +90,10 @@ pub async fn show(
     let group = found(&state, &user, &team_id, &id).await?;
     let messages = db::group_messages(&state.pool, &id, &after.after).await?;
     db::read_group(&state.pool, &id, &user.id).await?;
+    let working = db::group_working(&state.pool, &id).await?;
     let mut group = json!(group);
     group["messages"] = json!(messages);
+    group["working"] = json!(working);
     Ok(Json(group))
 }
 
@@ -150,17 +152,26 @@ pub struct Message {
     text: String,
 }
 
+/// Writes a message, and has each agent it tags answer: the writer's own. What it gives
+/// back is why a tagged agent doesn't run, for each that doesn't.
 pub async fn write(
     State(state): State<AppState>,
     user: User,
     Path((team_id, id)): Path<(String, String)>,
     Json(message): Json<Message>,
-) -> Result<StatusCode, ApiError> {
-    found(&state, &user, &team_id, &id).await?;
+) -> Result<Json<Value>, ApiError> {
+    let group = found(&state, &user, &team_id, &id).await?;
     let text = message.text.trim();
     if text.is_empty() {
         return Err(refused("Write something"));
     }
     db::write_group(&state.pool, &id, &user.id, text).await?;
-    Ok(StatusCode::NO_CONTENT)
+    let mut refusals = Vec::new();
+    for agent in chats::tagged(text) {
+        match chats::called(&state, &user, &team_id, &group, agent).await {
+            Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, why)) => refusals.push(why),
+            other => other?,
+        }
+    }
+    Ok(Json(json!({"refused": refusals})))
 }

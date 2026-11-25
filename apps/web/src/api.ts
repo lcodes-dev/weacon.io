@@ -73,6 +73,8 @@ export type Chat = {
   /** The task it is for, if any, and what that is called, as `SF-12 Returns link`. */
   task_id: string | null
   task: string | null
+  /** The group its agent answers in, when its owner called it there. */
+  group_id: string | null
 }
 
 /** Some members of a team and what they write to each other. One without a name is called by its other members'. */
@@ -86,9 +88,21 @@ export type Group = {
   unread: boolean
 }
 
-export type GroupMessage = { id: string; user_id: string | null; user: string | null; text: string; created_at: number }
+/** What a member wrote, or what the agent of the person in `user` answered when they called it there. */
+export type GroupMessage = {
+  id: string
+  user_id: string | null
+  user: string | null
+  text: string
+  created_at: number
+  /** For an agent's answer: which agent, the chat it worked in, and the machine. */
+  agent: Agent | null
+  chat_id: string | null
+  machine: string | null
+}
 
-export type OpenGroup = Group & { messages: GroupMessage[] }
+/** `working` is whose agents are answering now, each as the person and the agent. */
+export type OpenGroup = Group & { messages: GroupMessage[]; working: [string, Agent][] }
 
 /** What a group is called: its name, or the names of the others in it. */
 export function groupName(group: Group, me: string) {

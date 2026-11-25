@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT u.name, c.agent FROM chats c JOIN users u ON u.id = c.user_id\n         WHERE c.group_id = ? AND c.running = 1 ORDER BY c.id",
+  "describe": {
+    "columns": [
+      {
+        "name": "name",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "agent",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "agent"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4805b632cf50d83166e8137334e3d8996d4042008b85f2a5feaf080351fbc215"
+}

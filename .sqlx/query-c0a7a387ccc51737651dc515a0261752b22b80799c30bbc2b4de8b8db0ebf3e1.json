@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO group_messages (id, group_id, user_id, agent, chat_id, text, created_at)\n         SELECT ?, group_id, user_id, agent, id, ?, unixepoch() FROM chats\n         WHERE id = ? AND group_id IS NOT NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "c0a7a387ccc51737651dc515a0261752b22b80799c30bbc2b4de8b8db0ebf3e1"
+}

@@ -3,7 +3,7 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { api, groupName, type OpenGroup, type Project, type Team, type TeamDetails, type User } from "../api"
+import { agents, api, groupName, type OpenGroup, type Project, type Team, type TeamDetails, type User } from "../api"
 import { Said } from "../components/ChatEvents"
 
 type Part = { group: OpenGroup; path: string; team: Team }
@@ -32,7 +32,7 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
 
   if (group.error) return <p className="page text-ink2">{group.error.message}</p>
   if (!group.data) return null
-  const { members, project, project_id, messages } = group.data
+  const { members, project, project_id, messages, working } = group.data
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
       <header className="flex flex-col gap-1 border-b border-line py-4">
@@ -54,12 +54,27 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         {messages.length === 0 && <p className="text-ink2">Nothing written yet.</p>}
         {messages.map((message) => (
           <div key={message.id} className="flex flex-col gap-0.5">
-            <span className="lbl normal-case">
-              <span className="font-semibold text-ink">{message.user ?? "Someone who left"}</span>{" "}
+            <span className="lbl flex flex-wrap items-center gap-2 normal-case">
+              <span className="font-semibold text-ink">
+                {message.user ?? "Someone who left"}
+                {message.agent && `'s ${agents[message.agent].name}`}
+              </span>
+              {message.machine && `on ${message.machine} ·`}
               {new Date(message.created_at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+              {message.chat_id && (
+                <Link className="underline" to={`/chats/${message.chat_id}`}>
+                  Open its chat
+                </Link>
+              )}
             </span>
-            <Said text={message.text} />
+            {/* A call to an agent stands out. */}
+            <Said text={message.text.replace(/(^|\s)(@(?:claude|codex))\b/gi, "$1**$2**")} />
           </div>
+        ))}
+        {working.map(([person, agent]) => (
+          <p key={person + agent} className="animate-pulse text-ink2">
+            {person}'s {agents[agent].name} is working…
+          </p>
         ))}
         <div ref={end} />
       </div>
@@ -140,9 +155,16 @@ function Settings({ group, path, team }: Part) {
   )
 }
 
-function Write({ path, team }: Part) {
+function Write({ group, path, team }: Part) {
   const [text, setText] = useState("")
-  const write = useGroupChange({ path, team }, () => api("POST", `${path}/messages`, { text }).then(() => setText("")))
+  // Why an agent the message called doesn't run, if one doesn't.
+  const [refused, setRefused] = useState<string[]>([])
+  const write = useGroupChange({ path, team }, () =>
+    api<{ refused: string[] }>("POST", `${path}/messages`, { text }).then((answer) => {
+      setText("")
+      setRefused(answer.refused)
+    }),
+  )
   return (
     <form
       className="flex flex-wrap items-end gap-2 border-t border-line py-4"
@@ -152,6 +174,11 @@ function Write({ path, team }: Part) {
       }}
     >
       {write.error && <p className="w-full text-acc">{write.error.message}</p>}
+      {refused.map((why) => (
+        <p key={why} className="w-full text-acc">
+          {why}
+        </p>
+      ))}
       <textarea
         aria-label="Write to the group"
         className="max-h-48 min-h-11 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
@@ -169,6 +196,9 @@ function Write({ path, team }: Part) {
       <button className="btn btn-primary" disabled={!text.trim() || write.isPending}>
         Send
       </button>
+      <p className="lbl w-full normal-case">
+        {group.project_id ? "Write @claude or @codex to have your own agent answer here." : "Give the group a project to call your agent here."}
+      </p>
     </form>
   )
 }

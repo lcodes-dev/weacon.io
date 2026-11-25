@@ -2141,21 +2141,33 @@ pub struct Chat {
     /// The task it is for, if any, and what that is called, as `SF-12 Returns link`.
     pub task_id: Option<String>,
     pub task: Option<String>,
+    /// The group its agent answers in, when its owner called it there.
+    pub group_id: Option<String>,
 }
 
-/// A team's chats, newest first, or only the one with `id`.
-pub async fn chats(pool: &SqlitePool, team_id: &str, id: Option<&str>) -> sqlx::Result<Vec<Chat>> {
+/// The chats of a team that a member may read, newest first, or only the one with `id`. A
+/// chat of a group is read by that group's members alone.
+pub async fn chats(
+    pool: &SqlitePool,
+    team_id: &str,
+    user_id: &str,
+    id: Option<&str>,
+) -> sqlx::Result<Vec<Chat>> {
     sqlx::query_as!(
         Chat,
         r#"SELECT c.id, c.title, c.agent, c.branch, c.running AS "running: bool", c.project_id,
                   p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS "machine?",
                   c.pull_number, c.pull_url, c.hosts AS "hosts: Json<Vec<String>>", c.task_id,
-                  p.key || '-' || t.number || ' ' || t.title AS "task?: String"
+                  p.key || '-' || t.number || ' ' || t.title AS "task?: String", c.group_id
            FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id
            LEFT JOIN machines m ON m.id = c.machine_id LEFT JOIN tasks t ON t.id = c.task_id
-           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2) ORDER BY c.id DESC"#,
+           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2)
+             AND (c.group_id IS NULL OR EXISTS (
+                 SELECT 1 FROM group_members g WHERE g.group_id = c.group_id AND g.user_id = ?3))
+           ORDER BY c.id DESC"#,
         team_id,
-        id
+        id,
+        user_id
     )
     .fetch_all(pool)
     .await
@@ -2176,8 +2188,8 @@ pub async fn start_chat(
     let title = asked.lines().next().unwrap_or_default();
     let title: String = title.chars().take(60).collect();
     sqlx::query!(
-        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, tools_token, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(32))), unixepoch())",
+        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, group_id, tools_token, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(32))), unixepoch())",
         id,
         project_id,
         user_id,
@@ -2186,7 +2198,8 @@ pub async fn start_chat(
         start.branch,
         title,
         asked,
-        start.task_id
+        start.task_id,
+        start.group_id
     )
     .execute(&mut *tx)
     .await?;
@@ -2275,8 +2288,50 @@ pub async fn hear_chat(
     .await?;
     if next.rows_affected() == 1 {
         add_chat_event(&mut tx, id, &body).await?;
+        match event {
+            Event::Done { .. } => answer_group(&mut tx, id, None).await?,
+            Event::Failed { why } => answer_group(&mut tx, id, Some(why)).await?,
+            _ => {}
+        }
         tx.commit().await?;
     }
+    Ok(())
+}
+
+/// Posts the end of a turn in the chat's group, if it has one: the agent's last words of the
+/// turn, or why it failed.
+async fn answer_group(
+    tx: &mut sqlx::SqliteConnection,
+    chat_id: &str,
+    failed: Option<&str>,
+) -> sqlx::Result<()> {
+    let said = sqlx::query_scalar!(
+        r#"SELECT json_extract(body, '$.text') AS "text?: String" FROM chat_events
+           WHERE chat_id = ?1 AND json_extract(body, '$.kind') = 'said' AND id > (
+               SELECT MAX(id) FROM chat_events
+               WHERE chat_id = ?1 AND json_extract(body, '$.kind') = 'asked')
+           ORDER BY id DESC LIMIT 1"#,
+        chat_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let text = match failed {
+        Some(why) => format!("It couldn't answer: {why}"),
+        None => said
+            .flatten()
+            .unwrap_or("Done, with nothing to say.".into()),
+    };
+    let message = new_id();
+    sqlx::query!(
+        "INSERT INTO group_messages (id, group_id, user_id, agent, chat_id, text, created_at)
+         SELECT ?, group_id, user_id, agent, id, ?, unixepoch() FROM chats
+         WHERE id = ? AND group_id IS NOT NULL",
+        message,
+        text,
+        chat_id
+    )
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 
@@ -2296,6 +2351,7 @@ pub async fn fail_chat(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<(
             &serde_json::json!({"kind": "failed", "why": why}),
         )
         .await?;
+        answer_group(&mut tx, id, Some(why)).await?;
         tx.commit().await?;
     }
     Ok(())
@@ -2879,6 +2935,10 @@ pub struct GroupMessage {
     pub user: Option<String>,
     pub text: String,
     pub created_at: i64,
+    /// For an agent's answer: which agent, for the person above, and the chat and machine it worked in.
+    pub agent: Option<String>,
+    pub chat_id: Option<String>,
+    pub machine: Option<String>,
 }
 
 /// A group's messages after the one with id `after`, oldest first.
@@ -2889,8 +2949,10 @@ pub async fn group_messages(
 ) -> sqlx::Result<Vec<GroupMessage>> {
     sqlx::query_as!(
         GroupMessage,
-        r#"SELECT m.id, m.user_id, u.name AS "user?", m.text, m.created_at
+        r#"SELECT m.id, m.user_id, u.name AS "user?", m.text, m.created_at, m.agent, m.chat_id,
+                  n.name AS "machine?"
            FROM group_messages m LEFT JOIN users u ON u.id = m.user_id
+                LEFT JOIN chats c ON c.id = m.chat_id LEFT JOIN machines n ON n.id = c.machine_id
            WHERE m.group_id = ? AND m.id > ? ORDER BY m.id"#,
         id,
         after
@@ -2912,13 +2974,13 @@ pub async fn read_group(pool: &SqlitePool, id: &str, user_id: &str) -> sqlx::Res
     Ok(())
 }
 
-/// Adds a member's message to a group, which that member has then read.
+/// Adds a member's message to a group, which that member has then read, and gives its id.
 pub async fn write_group(
     pool: &SqlitePool,
     id: &str,
     user_id: &str,
     text: &str,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     let message = new_id();
     sqlx::query!(
@@ -2938,5 +3000,50 @@ pub async fn write_group(
     )
     .execute(&mut *tx)
     .await?;
-    tx.commit().await
+    tx.commit().await?;
+    Ok(message)
+}
+
+/// A person's chat with an agent in a group, on a machine that is still theirs.
+pub struct GroupChat {
+    pub id: String,
+    pub running: bool,
+    pub machine_id: String,
+}
+
+pub async fn group_chat(
+    pool: &SqlitePool,
+    group_id: &str,
+    user_id: &str,
+    agent: &str,
+) -> sqlx::Result<Option<GroupChat>> {
+    sqlx::query_as!(
+        GroupChat,
+        r#"SELECT id, running AS "running: bool", machine_id AS "machine_id!" FROM chats
+           WHERE group_id = ? AND user_id = ? AND agent = ? AND machine_id IS NOT NULL
+           ORDER BY id DESC LIMIT 1"#,
+        group_id,
+        user_id,
+        agent
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Whose agents are working in a group now, each as the person and the agent.
+pub async fn group_working(
+    pool: &SqlitePool,
+    group_id: &str,
+) -> sqlx::Result<Vec<(String, String)>> {
+    let working = sqlx::query!(
+        "SELECT u.name, c.agent FROM chats c JOIN users u ON u.id = c.user_id
+         WHERE c.group_id = ? AND c.running = 1 ORDER BY c.id",
+        group_id
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(working
+        .into_iter()
+        .map(|chat| (chat.name, chat.agent))
+        .collect())
 }

@@ -41,7 +41,7 @@ export function ChatPage({ team }: { team: Team }) {
         <div ref={end} />
       </div>
       {mine && machine && changed && !running && <Push chat={chat.data} path={path} />}
-      {mine && machine && <Ask chat={chat.data} path={path} />}
+      {mine && machine && !chat.data.group_id && <Ask chat={chat.data} path={path} />}
     </div>
   )
 }
@@ -76,6 +76,14 @@ function Header({ chat, path, team }: Part & { team: Team }) {
         <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
         {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
         {!mine && ` · ${user}'s chat`}
+        {chat.group_id && (
+          <>
+            ·
+            <Link className="underline" to={`/groups/${chat.group_id}`}>
+              Called in its group, and written to there
+            </Link>
+          </>
+        )}
         {task && (
           <>
             ·

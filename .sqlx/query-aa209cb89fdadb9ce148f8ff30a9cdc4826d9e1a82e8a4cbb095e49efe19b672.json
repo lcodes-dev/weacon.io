@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url, c.hosts AS \"hosts: Json<Vec<String>>\", c.task_id,\n                  p.key || '-' || t.number || ' ' || t.title AS \"task?: String\"\n           FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id LEFT JOIN tasks t ON t.id = c.task_id\n           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2) ORDER BY c.id DESC",
+  "query": "SELECT c.id, c.title, c.agent, c.branch, c.running AS \"running: bool\", c.project_id,\n                  p.name AS project, c.user_id, u.name AS user, c.machine_id, m.name AS \"machine?\",\n                  c.pull_number, c.pull_url, c.hosts AS \"hosts: Json<Vec<String>>\", c.task_id,\n                  p.key || '-' || t.number || ' ' || t.title AS \"task?: String\", c.group_id\n           FROM projects p JOIN chats c ON c.project_id = p.id JOIN users u ON u.id = c.user_id\n           LEFT JOIN machines m ON m.id = c.machine_id LEFT JOIN tasks t ON t.id = c.task_id\n           WHERE p.team_id = ?1 AND (?2 IS NULL OR c.id = ?2)\n             AND (c.group_id IS NULL OR EXISTS (\n                 SELECT 1 FROM group_members g WHERE g.group_id = c.group_id AND g.user_id = ?3))\n           ORDER BY c.id DESC",
   "describe": {
     "columns": [
       {
@@ -173,10 +173,21 @@
         "ordinal": 15,
         "type_info": "Text",
         "origin": "Expression"
+      },
+      {
+        "name": "group_id",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "group_id"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 3
     },
     "nullable": [
       false,
@@ -194,8 +205,9 @@
       true,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "4195dc1429258770eece1e99de67bb1ef49f3bd122e13cddf79988891a39dc15"
+  "hash": "aa209cb89fdadb9ce148f8ff30a9cdc4826d9e1a82e8a4cbb095e49efe19b672"
 }

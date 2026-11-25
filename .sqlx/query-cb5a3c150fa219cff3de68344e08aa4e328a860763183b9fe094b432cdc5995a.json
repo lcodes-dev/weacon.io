@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT json_extract(body, '$.text') AS \"text?: String\" FROM chat_events\n           WHERE chat_id = ?1 AND json_extract(body, '$.kind') = 'said' AND id > (\n               SELECT MAX(id) FROM chat_events\n               WHERE chat_id = ?1 AND json_extract(body, '$.kind') = 'asked')\n           ORDER BY id DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "text?: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cb5a3c150fa219cff3de68344e08aa4e328a860763183b9fe094b432cdc5995a"
+}

@@ -56,7 +56,7 @@ Signing in to an agent is done from Weacon's "Machines" page.
 
 A project's "Tasks" page keeps what it needs done, as a list or a board: each task has an owner, a status, checks that say when it is done and the docs it touches, and "New chat for this task" starts an agent on it. The agent reads the task and the project's docs itself, ticks the task's checks, and can make a task of what it finds. A task is offered the pages of the docs it is about, found by meaning with a small model that runs on the server.
 
-"New group" starts a conversation between people of the team, two or several, which only they read.
+"New group" starts a conversation between people of the team, two or several, which only they read. Writing `@claude` or `@codex` there has your own agent answer in front of the others, on your machine and sign-in.
 
 ## Docs
 

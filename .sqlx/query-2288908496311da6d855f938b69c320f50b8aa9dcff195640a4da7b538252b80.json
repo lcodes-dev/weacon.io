@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT m.id, m.user_id, u.name AS \"user?\", m.text, m.created_at\n           FROM group_messages m LEFT JOIN users u ON u.id = m.user_id\n           WHERE m.group_id = ? AND m.id > ? ORDER BY m.id",
+  "query": "SELECT m.id, m.user_id, u.name AS \"user?\", m.text, m.created_at, m.agent, m.chat_id,\n                  n.name AS \"machine?\"\n           FROM group_messages m LEFT JOIN users u ON u.id = m.user_id\n                LEFT JOIN chats c ON c.id = m.chat_id LEFT JOIN machines n ON n.id = c.machine_id\n           WHERE m.group_id = ? AND m.id > ? ORDER BY m.id",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,39 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "name": "agent",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_messages",
+            "name": "agent"
+          }
+        }
+      },
+      {
+        "name": "chat_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_messages",
+            "name": "chat_id"
+          }
+        }
+      },
+      {
+        "name": "machine?",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "machines",
+            "name": "name"
+          }
+        }
       }
     ],
     "parameters": {
@@ -67,8 +100,11 @@
       true,
       true,
       false,
-      false
+      false,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "76fa0ba2cb924b5ed27b181aff4b51bfb0e2665c46d5f0a200401f598a3c0d85"
+  "hash": "2288908496311da6d855f938b69c320f50b8aa9dcff195640a4da7b538252b80"
 }

@@ -1,6 +1,6 @@
 # Plan 32: calling your agent in a group
 
-**Status: planned**
+**Status: done** (2026-11-25)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -70,9 +70,23 @@ That the real agents answer in a group is checked by hand.
 
 ## Steps
 
-- [ ] Server: tags, the chat of a group, and what the agent is told, with their tests
-- [ ] Server: a turn's end posted to the group, and who reads such a chat, with their tests
-- [ ] Web app: the answer and the working line in a group, and what can be called there
-- [ ] Web app: the group on a chat's page
-- [ ] Docs: `docs/architecture.md`
-- [ ] Checked by hand with both agents: a tag in a group answers there, a second one goes on from the first, and a task made by the agent says where it came from
+- [x] Server: tags, the chat of a group, and what the agent is told, with their tests
+- [x] Server: a turn's end posted to the group, and who reads such a chat, with their tests
+- [x] Web app: the answer and the working line in a group, and what can be called there
+- [x] Web app: the group on a chat's page
+- [x] Docs: `docs/architecture.md`
+- [x] Checked by hand with both agents: a tag in a group answers there, a second one goes on from the first, and a task made by the agent says where it came from
+
+## Outcome
+
+Built as planned, with these differences:
+
+- **Why a tag isn't followed is told to who wrote it,** in the answer to their message, and shown above the box until they write again. It isn't kept in the group.
+- **Such a chat goes with its group** when the last member leaves, so that it never becomes readable by the whole team.
+- **An agent called for the first time in a long group is told its last fifty messages.**
+- **The chat is called after its group,** `In the group "Flaky tests"`, which is the first line of what the agent is told.
+- **What can be called there** is one line under the box; a missing machine or sign-in is said when a tag is tried.
+
+- **Tests:** 62 on the server, one of them new, which covers the plan's list.
+- **Checked by hand through Weacon** in the dev team's group of Ada and Marco, about ContentWrite, with the real programs on this machine. Ada's `@claude` answered in the group from the repository, knowing what Marco had written; a second `@claude` went on from the first and summed up both its answer and Marco's reply; `@codex` made the task Marco had asked for, CON-13, and said so in the group. The group showed whose agent was working, each answer named the agent and the machine with a link to its chat, and the chat's page names its group and has no box.
+- **Not checked by hand:** a second person calling an agent of their own, since only this machine runs a core; a tag that can't be followed, in the browser. The test covers both.
