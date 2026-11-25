@@ -1,0 +1,80 @@
+# Plan 34: an agent proposes a change to the docs
+
+**Status: planned**
+
+<!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
+
+Goal: an agent that finds a page of the docs wrong, or that changed the code a page describes, proposes the page's new text, and a person accepts it from the diff. The prototype shows it on a page: "Proposed by Claude Code in “Returns link on mobile”, from the code it changed". It needs plans 15, 28 and 33.
+
+## The rule
+
+Plan 15's rule holds: **anything an agent writes in the docs is a proposal, and changes nothing until a person accepts it.** Today only the docs' writer makes proposals, in a run or a request. This plan lets the agents make them too, with one more tool.
+
+## The tool
+
+`propose_doc`, beside the six tools an agent has, for a chat's agent and for `@weacon` alike.
+
+| It takes | What it is |
+| --- | --- |
+| `title` | The page to change, by its title as the `doc` tool reads it. A title no page has makes a new page |
+| `markdown` | The page's whole new text |
+| `reason` | Why, in a sentence |
+| `section` | For a new page only: "How it works" or "How it's built". Left out, the second |
+
+- **The agent sends the whole page,** read first with the `doc` tool, since a diff is made from two whole texts. What it dropped by mistake shows in the diff as removed.
+- **A changed page keeps the files it was written from.** A new page has none until the writer's first check, as a page a person made.
+- **Refused:** a text the same as the page's, an empty one, one over a page's size limit, and a title that can't be a page's.
+- **It can't remove a page.**
+
+## What a person sees
+
+- **On the docs page** the proposal is in the list with the writer's, and opens as the same diff with the same accepting by block. Over it, who proposed it: "Proposed by Ada's Claude Code in “Returns link on mobile”", with a link to the chat, or "Proposed by Weacon for Ada".
+- **In the agent's chat** a line says what it proposed, with a link to the docs, as for a task it made.
+- **In a group** the agent's own answer says so.
+
+## What is kept
+
+A migration adds to `proposals` who proposed: the agent, the person it works for, and the chat if there is one. A proposal of the docs' writer has none of the three.
+
+- **A docs run drops only the writer's own unanswered proposals,** where today it drops all of them. An agent's proposal stays until a person answers it.
+- **A deleted chat leaves its proposals,** without the link.
+- **Accepting works as today:** the page's new version is the agent's, or the person's who took only some of its changes. A proposal written against an older version of its page shows the warning plan 15 has.
+
+## Where the code goes
+
+| Where | What |
+| --- | --- |
+| A migration | Who proposed, on `proposals` |
+| `apps/server/src/tools.rs` | The tool, and what it refuses |
+| `apps/server/src/db.rs` | Saving an agent's proposal; a run's delete narrowed to the writer's |
+| `apps/web/src/components/DocProposal.tsx`, `ChatEvents.tsx` | Who proposed it; the line in the chat |
+| `docs/architecture.md` | The tool, and proposals by agents |
+
+Nothing changes in the core or in `agent-run`: the tool is listed with the others.
+
+## Not in this plan
+
+- An agent proposing without being asked at the end of every turn. The tool's description says when to use it; whether it does is the agent's.
+- The writer's notes on a person's words, for an agent's proposal. The check after a person's edit still runs.
+- Proposing to remove or rename a page.
+- Telling the team about a new proposal outside the docs page.
+
+## Tests
+
+In `apps/server/tests/api.rs`:
+
+- A chat's agent proposes a change to a page: the docs list it with who proposed it and the chat, the chat has its line, and accepting it makes the page's new version.
+- A title no page has proposes a new page, in the section given.
+- `@weacon` proposes for who tagged it, with no chat.
+- A docs run afterwards drops the writer's proposals and keeps the agent's.
+- The same text, an empty text and an empty title are refused, and say why to the agent.
+
+That the real agents propose something worth accepting is checked by hand.
+
+## Steps
+
+- [ ] Server: who proposed on `proposals`, and a run that drops only the writer's, with its test
+- [ ] Server: the tool, for a chat's agent and for `@weacon`, with their tests
+- [ ] Web app: who proposed it on the docs page, and the line in the chat
+- [ ] Docs: `docs/architecture.md`
+- [ ] Checked by hand on ContentWrite: a chat's agent changes code and proposes the page's change; `@weacon` proposes a correction in a group; both accepted from the diff
