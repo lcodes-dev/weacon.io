@@ -1,6 +1,6 @@
 # Plan 36: checks on every push
 
-**Status: planned**
+**Status: in progress**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -51,6 +51,6 @@ The tests have only run on macOS. The first run on Linux will say whether any of
 
 ## Steps
 
-- [ ] `scripts/check.sh`, passing on this machine
+- [x] `scripts/check.sh`, passing on this machine
 - [ ] The workflow, and its first green run on GitHub, with whatever Linux needed fixed
-- [ ] `AGENTS.md` and `README.md`
+- [x] `AGENTS.md` and `README.md`

@@ -21,6 +21,7 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | --- | --- |
 | `scripts/dev.sh` | Installs the pinned tools and the web app's packages, then runs the server on `http://localhost:8080` and the web app, with hot reload, on `http://localhost:5173` |
 | `scripts/prepare-queries.sh` | Writes `.sqlx/`, which the build checks every query against; run it after changing a query or a migration |
+| `scripts/check.sh` | Checks what GitHub checks on every push: the format, the web app's build, the lints and every test |
 | `npm --prefix apps/web run build` | Type-checks and builds the web app into `apps/web/dist/` |
 | `cargo test -p weacon-server` | Runs the server's tests in `apps/server/tests/`; build the web app first |
 | `cargo test -p weacon-core` | Runs the core's test of the agents' programs |

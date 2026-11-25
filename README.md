@@ -14,6 +14,8 @@ The first run installs the tools and the web app's packages. Then open http://lo
 
 The first person to register owns the server. Until the owner saves SMTP settings in the web app, every mail is printed to the server's log, so the 6-digit sign-in codes are in the terminal where `scripts/dev.sh` runs.
 
+`scripts/check.sh` checks a change as GitHub does on every push: the format, the web app's build, the lints and the tests.
+
 ## Build a release
 
 ```bash
