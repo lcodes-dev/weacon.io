@@ -69,10 +69,13 @@ async fn answer(
     caller: &Caller,
     asked: String,
 ) -> Result<String, String> {
+    // The same tools, as Anthropic names their parts.
     let tools = tools::tools();
-    let tools: Vec<Value> = tools.as_array().into_iter().flatten().map(|tool| {
-        json!({"name": tool["name"], "description": tool["description"], "input_schema": tool["inputSchema"]})
-    }).collect();
+    let tool = |tool: &Value| {
+        let (name, does, takes) = (&tool["name"], &tool["description"], &tool["inputSchema"]);
+        json!({"name": name, "description": does, "input_schema": takes})
+    };
+    let tools: Vec<Value> = tools.as_array().into_iter().flatten().map(tool).collect();
     let mut messages = vec![json!({"role": "user", "content": asked})];
     for _ in 0..ROUNDS {
         let body = json!({
@@ -80,7 +83,14 @@ async fn answer(
         });
         let answer = writer::anthropic(state, key, &body).await?;
         match answer["stop_reason"].as_str() {
-            Some("end_turn") => return Ok(writer::text(&answer)),
+            Some("end_turn") => {
+                let text = writer::text(&answer);
+                return Ok(if text.trim().is_empty() {
+                    "It had nothing to say.".into()
+                } else {
+                    text
+                });
+            }
             Some("tool_use") => {}
             _ => return Err(writer::stopped(&answer)),
         }

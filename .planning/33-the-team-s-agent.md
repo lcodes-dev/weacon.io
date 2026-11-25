@@ -101,3 +101,5 @@ Built as planned, with these differences:
 - **Tests:** 63 on the server, one of them new, which covers the plan's list; the docs' writer's test now saves the key apart.
 - **Checked by hand** in the dev app: `@weacon` in a group of a team without a key is written, set apart, and says why nothing runs; the key's row in the team's settings saves and removes a made-up key, the API can be chosen for the docs only with one, and the line under a group's box names `@weacon` and what it sends once there is one.
 - **Checked by the owner** with the team's real key: `@weacon` answers in a group.
+
+**Reviewed on 25 November,** in a review the owner asked for. An answer without words now says so in the group instead of posting an empty message; the rest was naming and comments.

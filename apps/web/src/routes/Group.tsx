@@ -3,7 +3,7 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { agents, api, groupName, type OpenGroup, type Project, type Team, type TeamDetails, type User } from "../api"
+import { agents, api, groupName, type GroupMessage, type OpenGroup, type Project, type Team, type TeamDetails, type User } from "../api"
 import { Said } from "../components/ChatEvents"
 
 type Part = { group: OpenGroup; path: string; team: Team }
@@ -55,7 +55,7 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         {messages.map((message) => (
           <div key={message.id} className="flex flex-col gap-0.5">
             <span className="lbl flex flex-wrap items-center gap-2 normal-case">
-              <span className="font-semibold text-ink">{message.agent === "weacon" ? "Weacon" : who(message.user, message.agent)}</span>
+              <span className="font-semibold text-ink">{who(message.user, message.agent)}</span>
               {message.agent === "weacon" && `for ${message.user ?? "someone who left"} ·`}
               {message.machine && `on ${message.machine} ·`}
               {new Date(message.created_at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
@@ -71,7 +71,7 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         ))}
         {working.map(([person, agent]) => (
           <p key={person + agent} className="animate-pulse text-ink2">
-            {agent === "weacon" ? "Weacon" : who(person, agent)} is working…
+            {who(person, agent)} is working…
           </p>
         ))}
         <div ref={end} />
@@ -81,8 +81,9 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
   )
 }
 
-/** A person, or their agent. */
-function who(person: string | null, agent: keyof typeof agents | null) {
+/** A person, their agent, or the team's. */
+function who(person: string | null, agent: GroupMessage["agent"]) {
+  if (agent === "weacon") return "Weacon"
   return (person ?? "Someone who left") + (agent ? `'s ${agents[agent].name}` : "")
 }
 

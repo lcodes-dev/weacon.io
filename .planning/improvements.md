@@ -89,12 +89,12 @@ Things noticed while working that could be better and that nobody has asked for.
 - **The same two people can have several unnamed groups.** "New group" could open the one they have. *(plan 31)*
 - **A message in a group can't be changed or deleted,** and nothing tells a person of one outside Weacon. *(plan 31)*
 - **A group's page asks again every two seconds.** A WebSocket to browsers would show a message at once, and say who is writing. *(plan 31)*
-- **A person can only call their own agent in a group.** The prototype lets one ask for a teammate's, who approves it first; and the team's own agent on the team's key, `@weacon`, isn't built. *(plan 32)*
+- **A person can only call their own agent in a group.** The prototype lets one ask for a teammate's, who approves it first. *(plan 32)*
 - **A group's agent always works from the project's first mapped branch,** on the first machine that has it. Neither can be chosen. *(plan 32)*
 - **Why a tag wasn't followed is shown only to who wrote it,** and is gone after their next message. *(plan 32)*
 - **A group's chats are deleted with the group,** and their folders stay on the machines. *(plan 32)*
-
 - **A call to `@weacon` is lost when the server restarts,** and nothing says so in the group. *(plan 33)*
 - **Nothing limits or counts calls to `@weacon`,** which any member makes on the team's key. *(plan 33)*
 - **`@weacon` has no model of its own:** it uses the docs' while the API writes them, and the cheap default otherwise. *(plan 33)*
 - **The tools `@weacon` used aren't shown in the group,** only its last words. *(plan 33)*
+- **A call to `@weacon` that panics leaves its group "working"** until the server restarts. *(seen reviewing plan 33)*

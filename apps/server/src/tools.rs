@@ -1,6 +1,6 @@
 //! The tools an agent has for its project's tasks and docs. The program of a chat's agent
 //! calls them here while its turn runs, as the Model Context Protocol has it, one JSON-RPC request
-//! in and one answer out.
+//! in and one answer out. For the team's own agent the server runs them itself.
 
 use axum::Json;
 use axum::extract::State;
@@ -15,7 +15,7 @@ use crate::{ApiError, AppState, search, tasks};
 /// What each tool is called, what it does and what it takes.
 pub fn tools() -> Value {
     let text = json!({"type": "string"});
-    let name = json!({"type": "string", "description": "As SF-12. Left out, it is the task your chat is for."});
+    let name = json!({"type": "string", "description": "As SF-12. Left out, it is the task your chat is for, if it is for one."});
     let checks = json!({
         "type": "array",
         "description": "What it is done when: the whole list, each with whether it is done. To tick one, send the list with that one done.",
@@ -72,7 +72,7 @@ pub async fn call(
         .and_then(|value| value.to_str().ok());
     let token = token.and_then(|value| value.strip_prefix("Bearer "));
     let caller = match token {
-        Some(token) => db::tool_chat(&state.pool, token).await.ok().flatten(),
+        Some(token) => db::caller(&state.pool, token).await.ok().flatten(),
         None => None,
     };
     let Some(caller) = caller else {

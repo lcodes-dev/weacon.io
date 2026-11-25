@@ -2709,7 +2709,6 @@ pub async fn delete_task(pool: &SqlitePool, project_id: &str, task_id: &str) -> 
     Ok(())
 }
 
-/// A chat whose agent is using the server's tools.
 /// Whom an agent's tools are run for.
 pub struct Caller {
     /// The chat the agent works in, which the team's own agent has none of.
@@ -2723,8 +2722,8 @@ pub struct Caller {
     pub task_id: Option<String>,
 }
 
-/// The chat a running turn's token is of.
-pub async fn tool_chat(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Caller>> {
+/// Whom the agent of the chat with this running turn's token works for.
+pub async fn caller(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Caller>> {
     sqlx::query_as!(
         Caller,
         r#"SELECT c.id AS "chat_id?", p.team_id, c.project_id, p.key, c.user_id, c.task_id
