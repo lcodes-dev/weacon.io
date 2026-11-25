@@ -1,6 +1,6 @@
-//! Cutting pages and ranking their parts, with the real model, which the first run fetches.
+//! Cutting pages and scoring their parts, with the real model, which the first run fetches.
 
-use doc_search::{embed, parts, rank};
+use doc_search::{embed, parts, score};
 
 const PAGES: [(&str, &str); 4] = [
     (
@@ -42,24 +42,17 @@ fn found(questions: &[&str]) -> Vec<String> {
         .flat_map(|(title, text)| parts(title, text))
         .collect();
     let embedded = embed(&cut).unwrap();
-    let all: Vec<(&str, &[f32])> = cut
-        .iter()
-        .map(String::as_str)
-        .zip(embedded.iter().map(Vec::as_slice))
-        .collect();
     let questions: Vec<String> = questions
         .iter()
         .map(|question| question.to_string())
         .collect();
     let asked = embed(&questions).unwrap();
     let first = questions.iter().zip(&asked).map(|(question, asked)| {
-        let order = rank(question, asked, &all);
-        assert_eq!(order.len(), all.len());
-        cut[order[0]]
-            .lines()
-            .take(2)
-            .collect::<Vec<_>>()
-            .join(" / ")
+        let scored = cut.iter().zip(&embedded);
+        let scored =
+            scored.map(|(text, embedding)| (score(question, asked, text, embedding), text));
+        let (_, best) = scored.max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
+        best.lines().take(2).collect::<Vec<_>>().join(" / ")
     });
     first.collect()
 }

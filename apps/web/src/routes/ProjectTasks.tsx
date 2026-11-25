@@ -149,7 +149,6 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
             name={name(task)}
             path={`${path}/${task.id}`}
             close={to()}
-            onStatus={(status) => order.mutate({ status, tasks: [...lists[status].filter((id) => id !== task.id), task.id] })}
           />
         )}
       </div>
@@ -157,10 +156,10 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
   )
 }
 
-type PanelProps = { team: Team; user: User; project: Project; task: Task; name: string; path: string; close: string; onStatus: (status: Status) => void }
+type PanelProps = { team: Team; user: User; project: Project; task: Task; name: string; path: string; close: string }
 
 /** One task: what it is, changed in place, and the chats that work on it. */
-function Panel({ team, user, project, task, name, path, close, onStatus }: PanelProps) {
+function Panel({ team, user, project, task, name, path, close }: PanelProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [title, setTitle] = useState(task.title)
@@ -176,7 +175,7 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
   })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["tasks", project.id] })
   const change = useMutation({
-    mutationFn: (fields: Partial<Pick<Task, "title" | "text" | "checks" | "owner_id" | "docs">>) => api("PUT", path, fields),
+    mutationFn: (fields: Partial<Pick<Task, "title" | "text" | "checks" | "owner_id" | "docs" | "status">>) => api("PUT", path, fields),
     onSuccess: refresh,
   })
   const remove = useMutation({
@@ -197,7 +196,7 @@ function Panel({ team, user, project, task, name, path, close, onStatus }: Panel
     <aside aria-label={name} className="flex w-[360px] shrink-0 flex-col gap-3 overflow-auto border-l border-line bg-side p-5">
       <div className="flex items-center gap-2">
         <span className="font-mono text-[12px] text-ink3">{name}</span>
-        <select aria-label="Status" className={select} value={task.status} onChange={(event) => onStatus(event.target.value as Status)}>
+        <select aria-label="Status" className={select} value={task.status} onChange={(event) => change.mutate({ status: event.target.value as Status })}>
           {statusKeys.map((status) => (
             <option key={status} value={status}>
               {statuses[status]}

@@ -2442,6 +2442,8 @@ pub struct TaskFields {
     #[serde(default, deserialize_with = "given")]
     pub owner_id: Option<Option<String>>,
     pub docs: Option<Vec<String>>,
+    /// A task goes to the end of a status it is new to. One being made is to do.
+    pub status: Option<String>,
 }
 
 fn given<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<Option<String>>, D::Error> {
@@ -2466,14 +2468,14 @@ pub async fn tasks(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::
     .await
 }
 
-/// The new task's id, at the top of To do. `chat_id` is the chat whose agent makes it, for its owner.
+/// The new task's id and number, at the top of To do. `chat_id` is the chat whose agent makes it, for its owner.
 pub async fn create_task(
     pool: &SqlitePool,
     project_id: &str,
     user_id: &str,
     chat_id: Option<&str>,
     fields: &TaskFields,
-) -> sqlx::Result<String> {
+) -> sqlx::Result<(String, i64)> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let id = new_id();
     let number = sqlx::query_scalar!(
@@ -2507,7 +2509,7 @@ pub async fn create_task(
         set_task_docs(&mut tx, project_id, &id, docs).await?;
     }
     tx.commit().await?;
-    Ok(id)
+    Ok((id, number))
 }
 
 pub async fn change_task(
@@ -2535,6 +2537,18 @@ pub async fn change_task(
     .await?;
     if let Some(docs) = &fields.docs {
         set_task_docs(&mut tx, project_id, task_id, docs).await?;
+    }
+    if let Some(status) = &fields.status {
+        sqlx::query!(
+            "UPDATE tasks SET status = ?1, position = (
+                 SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE project_id = ?2 AND status = ?1)
+             WHERE id = ?3 AND project_id = ?2 AND status != ?1",
+            status,
+            project_id,
+            task_id
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await
 }

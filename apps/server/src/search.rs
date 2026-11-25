@@ -1,5 +1,5 @@
 //! Searching a project's docs by what a text is about. The `doc-search` crate cuts the pages,
-//! embeds and ranks; this keeps each page's parts and brings them up to date when asked.
+//! embeds and scores; this keeps each page's parts and brings them up to date when asked.
 
 use axum::http::StatusCode;
 use doc_search::MODEL;
@@ -37,25 +37,20 @@ pub async fn search(
             .collect();
         db::set_doc_parts(&state.pool, &page.id, &page.version, MODEL, &parts).await?;
     }
-    let mut parts = db::doc_parts(&state.pool, project_id).await?;
+    let parts = db::doc_parts(&state.pool, project_id).await?;
     if parts.is_empty() {
         return Ok(parts);
     }
     let asked = embedded(state, vec![question.to_owned()]).await?.remove(0);
-    let numbers = |part: &DocPart| -> Vec<f32> {
+    let score = |part: DocPart| {
         let (fours, _) = part.embedding.as_chunks::<4>();
-        fours.iter().map(|four| f32::from_le_bytes(*four)).collect()
+        let embedding: Vec<f32> = fours.iter().map(|four| f32::from_le_bytes(*four)).collect();
+        (
+            doc_search::score(question, &asked, &part.text, &embedding),
+            part,
+        )
     };
-    let embeddings: Vec<Vec<f32>> = parts.iter().map(numbers).collect();
-    let ranked: Vec<(&str, &[f32])> = parts
-        .iter()
-        .map(|part| part.text.as_str())
-        .zip(embeddings.iter().map(Vec::as_slice))
-        .collect();
-    let order = doc_search::rank(question, &asked, &ranked);
-    let mut parts: Vec<Option<DocPart>> = parts.drain(..).map(Some).collect();
-    Ok(order
-        .into_iter()
-        .filter_map(|place| parts[place].take())
-        .collect())
+    let mut scored: Vec<(f32, DocPart)> = parts.into_iter().map(score).collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(scored.into_iter().map(|(_, part)| part).collect())
 }

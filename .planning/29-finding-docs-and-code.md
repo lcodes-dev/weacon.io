@@ -110,3 +110,5 @@ Built as planned, with these differences:
 - **Tests:** 3 in `doc-search`; 59 on the server, one of them new, and the agent's tools' test grown by `search_docs`.
 - **Checked by hand on ContentWrite** with the real model: four tasks were each offered three pages, the right one first for three of them and second for "Add a colleague to my workspace"; the first search took 0.4 seconds, model and all 15 pages included, and later ones 5 milliseconds. Claude Code, in a chat for "Customer was charged twice", used `search_docs` and named the billing files to look at first. The panel lists the files of a task's pages.
 - **Not checked:** Codex with `search_docs`; a server that has to fetch the model, since the trial had fetched it on this machine already.
+
+**Simplified on 25 November,** in a review the owner asked for: the crate scores one part against a question and the server sorts its own rows by that, in place of the crate ordering a list the server then had to follow.

@@ -1,6 +1,6 @@
 //! Finds the parts of a project's docs that a piece of text is about, by meaning and by the
 //! names written in it. A page is cut into parts at its headings, each part gets an
-//! embedding, and a question is ranked against them. Where the embeddings come from is
+//! embedding, and each is scored against a question. Where the embeddings come from is
 //! `embed.rs` alone.
 
 mod embed;
@@ -26,20 +26,16 @@ pub fn parts(title: &str, markdown: &str) -> Vec<String> {
     parts
 }
 
-/// The places of `parts` in the order they answer `question`, the best first. A part is its
-/// text and its embedding; `asked` is the question's. A part that holds a name from the
-/// question as it is written, such as a function's or a file's, comes before every part that
-/// is only alike in meaning.
-pub fn rank(question: &str, asked: &[f32], parts: &[(&str, &[f32])]) -> Vec<usize> {
-    let names: Vec<&str> = question.split_whitespace().filter_map(name).collect();
-    let score = |(text, embedding): &(&str, &[f32])| {
-        let named = names.iter().any(|name| text.contains(name));
-        near(asked, embedding) + if named { 2.0 } else { 0.0 }
-    };
-    let scores: Vec<f32> = parts.iter().map(score).collect();
-    let mut order: Vec<usize> = (0..parts.len()).collect();
-    order.sort_by(|a, b| scores[*b].total_cmp(&scores[*a]));
-    order
+/// How well a part answers `question`, the higher the better. `asked` is the question's
+/// embedding and `embedding` the part's. A part that holds a name from the question as it is
+/// written, such as a function's or a file's, scores above every part that is only alike in
+/// meaning.
+pub fn score(question: &str, asked: &[f32], text: &str, embedding: &[f32]) -> f32 {
+    let named = question
+        .split_whitespace()
+        .filter_map(name)
+        .any(|name| text.contains(name));
+    near(asked, embedding) + if named { 2.0 } else { 0.0 }
 }
 
 /// A word that is a name in code and not a word of the language: it has a mark such as `_`,

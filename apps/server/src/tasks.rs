@@ -12,6 +12,8 @@ use crate::{ApiError, AppState, not_found, search};
 
 type Place = Path<(String, String, String)>;
 
+pub const STATUSES: [&str; 3] = ["todo", "doing", "done"];
+
 pub async fn list(
     State(state): State<AppState>,
     user: User,
@@ -35,7 +37,7 @@ async fn project(
 }
 
 /// The fields as they are kept, or why they can't be.
-pub async fn checked(
+async fn checked(
     state: &AppState,
     team_id: &str,
     mut fields: TaskFields,
@@ -48,6 +50,11 @@ pub async fn checked(
     }
     if let Some(checks) = &mut fields.checks {
         checks.retain(|check| !check.text.trim().is_empty());
+    }
+    if let Some(status) = &fields.status
+        && !STATUSES.contains(&status.as_str())
+    {
+        return Err(refused("A task is todo, doing or done"));
     }
     if let Some(Some(owner)) = &fields.owner_id {
         let members = db::members(&state.pool, team_id).await?;
@@ -65,12 +72,25 @@ pub async fn create(
     Json(fields): Json<TaskFields>,
 ) -> Result<Json<Value>, ApiError> {
     project(&state, &user, &team_id, &project_id).await?;
-    let fields = checked(&state, &team_id, fields).await?;
+    let place = (team_id.as_str(), project_id.as_str());
+    let (id, _) = made(&state, place, &user.id, None, fields).await?;
+    Ok(Json(json!({"id": id})))
+}
+
+/// Makes a task in a team's project for a person, from a request of theirs or through the
+/// agent of their chat `chat_id`, and gives its id and number.
+pub async fn made(
+    state: &AppState,
+    (team_id, project_id): (&str, &str),
+    user_id: &str,
+    chat_id: Option<&str>,
+    fields: TaskFields,
+) -> Result<(String, i64), ApiError> {
+    let fields = checked(state, team_id, fields).await?;
     if fields.title.is_none() {
         return Err(refused("A task needs a title"));
     }
-    let id = db::create_task(&state.pool, &project_id, &user.id, None, &fields).await?;
-    Ok(Json(json!({"id": id})))
+    Ok(db::create_task(&state.pool, project_id, user_id, chat_id, &fields).await?)
 }
 
 /// The task at an address, for a member of its team.
@@ -92,9 +112,20 @@ pub async fn change(
     Json(fields): Json<TaskFields>,
 ) -> Result<StatusCode, ApiError> {
     found(&state, &user, &place).await?;
-    let fields = checked(&state, &place.0, fields).await?;
-    db::change_task(&state.pool, &place.1, &place.2, &fields).await?;
+    changed(&state, (&place.0, &place.1), &place.2, fields).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Changes what `fields` gives of a task of a team's project, and gives them as they were kept.
+pub async fn changed(
+    state: &AppState,
+    (team_id, project_id): (&str, &str),
+    task_id: &str,
+    fields: TaskFields,
+) -> Result<TaskFields, ApiError> {
+    let fields = checked(state, team_id, fields).await?;
+    db::change_task(&state.pool, project_id, task_id, &fields).await?;
+    Ok(fields)
 }
 
 #[derive(Deserialize)]
@@ -112,8 +143,8 @@ pub async fn order(
     Json(order): Json<Order>,
 ) -> Result<StatusCode, ApiError> {
     project(&state, &user, &team_id, &project_id).await?;
-    if !["todo", "doing", "done"].contains(&order.status.as_str()) {
-        return Err(refused("A task is to do, doing or done"));
+    if !STATUSES.contains(&order.status.as_str()) {
+        return Err(refused("A task is todo, doing or done"));
     }
     db::order_tasks(&state.pool, &project_id, &order.status, &order.tasks).await?;
     Ok(StatusCode::NO_CONTENT)

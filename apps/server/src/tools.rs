@@ -9,9 +9,8 @@ use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
 use crate::db::{self, Task, TaskFields, ToolChat};
-use crate::{ApiError, AppState, not_found, search, tasks};
-
-const STATUSES: [(&str, &str); 3] = [("todo", "To do"), ("doing", "Doing"), ("done", "Done")];
+use crate::teams::refused;
+use crate::{ApiError, AppState, search, tasks};
 
 /// What each tool is called, what it does and what it takes.
 fn tools() -> Value {
@@ -39,13 +38,13 @@ fn tools() -> Value {
         tool(
             "new_task",
             "Makes a task in this project, asked for by the person whose chat this is.",
-            json!({"title": text, "text": text, "checks": {"type": "array", "items": text, "description": "What it is done when."}}),
+            json!({"title": text, "text": text, "checks": checks}),
             &["title"]
         ),
         tool(
             "change_task",
             "Changes what it is given of a task and leaves the rest.",
-            json!({"name": name, "title": text, "text": text, "status": {"enum": ["todo", "doing", "done"]}, "checks": checks}),
+            json!({"name": name, "title": text, "text": text, "status": {"enum": tasks::STATUSES}, "checks": checks}),
             &[]
         ),
         tool(
@@ -105,10 +104,6 @@ pub async fn call(
     Json(answer).into_response()
 }
 
-fn refused(why: impl Into<String>) -> ApiError {
-    ApiError(StatusCode::UNPROCESSABLE_ENTITY, why.into())
-}
-
 /// The task named in `name`, as SF-12 or 12, or the chat's own.
 fn named<'a>(tasks: &'a [Task], chat: &ToolChat, name: &Value) -> Result<&'a Task, ApiError> {
     let found = match name.as_str() {
@@ -129,11 +124,16 @@ fn named<'a>(tasks: &'a [Task], chat: &ToolChat, name: &Value) -> Result<&'a Tas
     })
 }
 
-fn status(of: &str) -> &str {
-    STATUSES
-        .iter()
-        .find(|(status, _)| *status == of)
-        .map_or(of, |(_, shown)| shown)
+/// What an agent gave for a task, read as a person's request is. An agent gives a task to
+/// nobody and doesn't say which pages it touches.
+fn fields(given: &Value) -> Result<TaskFields, ApiError> {
+    let read = serde_json::from_value::<TaskFields>(given.clone());
+    let fields = read.map_err(|error| refused(format!("That can't be read as a task: {error}")))?;
+    Ok(TaskFields {
+        owner_id: None,
+        docs: None,
+        ..fields
+    })
 }
 
 async fn tool(
@@ -143,32 +143,39 @@ async fn tool(
     given: &Value,
 ) -> Result<String, ApiError> {
     let pool = &state.pool;
-    let tasks = db::tasks(pool, &chat.team_id, &chat.project_id).await?;
-    let called = |task: &Task| format!("{}-{}", chat.key, task.number);
-    // Says in the chat what its agent did to a task.
-    let note = async |id: &str, name: String, made: bool| {
-        let body = json!({"kind": "task", "task_id": id, "name": name, "made": made});
-        db::note_chat(pool, &chat.id, &body).await
+    let place = (chat.team_id.as_str(), chat.project_id.as_str());
+    let tasks = async || db::tasks(pool, place.0, place.1).await;
+    // Says in the chat what its agent did to a task, and answers the agent.
+    let wrote = async |id: &str, number: i64, title: &str, made: bool| {
+        let name = format!("{}-{number}", chat.key);
+        let body =
+            json!({"kind": "task", "task_id": id, "name": format!("{name} {title}"), "made": made});
+        db::note_chat(pool, &chat.id, &body).await?;
+        Ok(format!("{} {name}.", if made { "Made" } else { "Changed" }))
     };
+    let nobody = |owner: &Option<String>| owner.clone().unwrap_or("nobody".into());
     match name {
         "tasks" => {
             let line = |task: &Task| {
-                let owner = task.owner.as_deref().unwrap_or("nobody");
+                let (number, owner) = (task.number, nobody(&task.owner));
                 format!(
-                    "{} · {} · {} · {owner}",
-                    called(task),
-                    status(&task.status),
-                    task.title
+                    "{}-{number} · {} · {} · {owner}",
+                    chat.key, task.status, task.title
                 )
             };
-            Ok(tasks.iter().map(line).collect::<Vec<_>>().join("\n"))
+            Ok(tasks()
+                .await?
+                .iter()
+                .map(line)
+                .collect::<Vec<_>>()
+                .join("\n"))
         }
         "task" => {
+            let tasks = tasks().await?;
             let task = named(&tasks, chat, &given["name"])?;
-            let docs = db::docs(pool, &chat.project_id).await?;
+            let docs = db::docs(pool, place.1).await?;
             let pages = docs.iter().filter(|doc| task.docs.contains(&doc.id));
             let pages = pages.map(|doc| format!("{}{}", doc.title, written_from(&doc.files)));
-            let pages: Vec<String> = pages.collect();
             let checks = task.checks.iter().enumerate().map(|(place, check)| {
                 format!(
                     "{}. [{}] {}",
@@ -178,71 +185,34 @@ async fn tool(
                 )
             });
             Ok(format!(
-                "{} {}\nStatus: {} · Owner: {}\n\n{}\n\nDone when:\n{}\n\nDocs it touches, each read with the doc tool: {}",
-                called(task),
+                "{}-{} {}\nStatus: {} · Owner: {}\n\n{}\n\nDone when:\n{}\n\nDocs it touches, each read with the doc tool: {}",
+                chat.key,
+                task.number,
                 task.title,
-                status(&task.status),
-                task.owner.as_deref().unwrap_or("nobody"),
+                task.status,
+                nobody(&task.owner),
                 task.text,
                 checks.collect::<Vec<_>>().join("\n"),
-                pages.join("; "),
+                pages.collect::<Vec<_>>().join("; "),
             ))
         }
         "new_task" => {
-            let checks = given["checks"].as_array().into_iter().flatten();
-            let checks = checks.filter_map(|check| check.as_str());
-            let checks = checks.map(|text| json!({"text": text, "done": false}));
-            let fields = json!({"title": given["title"], "text": given["text"].as_str(), "checks": checks.collect::<Vec<_>>()});
-            let fields = fields_of(fields)?;
-            let fields = tasks::checked(state, &chat.team_id, fields).await?;
-            if fields.title.is_none() {
-                return Err(refused("A task needs a title"));
-            }
-            let id = db::create_task(
-                pool,
-                &chat.project_id,
-                &chat.user_id,
-                Some(&chat.id),
-                &fields,
-            )
-            .await?;
-            let tasks = db::tasks(pool, &chat.team_id, &chat.project_id).await?;
-            let made = tasks
-                .iter()
-                .find(|task| task.id == id)
-                .ok_or_else(not_found)?;
-            note(&id, format!("{} {}", called(made), made.title), true).await?;
-            Ok(format!("Made {}.", called(made)))
+            let fields = fields(given)?;
+            let title = fields.title.clone().unwrap_or_default();
+            let (id, number) =
+                tasks::made(state, place, &chat.user_id, Some(&chat.id), fields).await?;
+            wrote(&id, number, title.trim(), true).await
         }
         "change_task" => {
+            let tasks = tasks().await?;
             let task = named(&tasks, chat, &given["name"])?;
-            let mut fields = serde_json::Map::new();
-            for field in ["title", "text", "checks"] {
-                if !given[field].is_null() {
-                    fields.insert(field.into(), given[field].clone());
-                }
-            }
-            let fields = tasks::checked(state, &chat.team_id, fields_of(fields.into())?).await?;
-            db::change_task(pool, &chat.project_id, &task.id, &fields).await?;
-            if let Some(to) = given["status"].as_str() {
-                if !STATUSES.iter().any(|(status, _)| *status == to) {
-                    return Err(refused("A task is todo, doing or done"));
-                }
-                // It goes to the end of its new status.
-                let others = tasks
-                    .iter()
-                    .filter(|other| other.status == to && other.id != task.id);
-                let mut order: Vec<String> = others.map(|other| other.id.clone()).collect();
-                order.push(task.id.clone());
-                db::order_tasks(pool, &chat.project_id, to, &order).await?;
-            }
+            let fields = tasks::changed(state, place, &task.id, fields(given)?).await?;
             let title = fields.title.as_ref().unwrap_or(&task.title);
-            note(&task.id, format!("{} {title}", called(task)), false).await?;
-            Ok(format!("Changed {}.", called(task)))
+            wrote(&task.id, task.number, title, false).await
         }
         "search_docs" => {
             let about = given["about"].as_str().unwrap_or_default();
-            let parts = search::search(state, &chat.project_id, about).await?;
+            let parts = search::search(state, place.1, about).await?;
             let shown = parts.iter().take(5).map(|part| {
                 // A part's first line is its page's title.
                 let text = part.text.split_once('\n').map_or("", |(_, text)| text);
@@ -256,11 +226,11 @@ async fn tool(
             Ok(shown.collect::<Vec<_>>().join("\n\n---\n\n"))
         }
         "doc" => {
-            let docs = db::docs(pool, &chat.project_id).await?;
-            let title = given["title"].as_str().unwrap_or_default();
+            let docs = db::docs(pool, place.1).await?;
+            let title = given["title"].as_str().unwrap_or_default().trim();
             match docs
                 .iter()
-                .find(|doc| doc.title.eq_ignore_ascii_case(title.trim()))
+                .find(|doc| doc.title.eq_ignore_ascii_case(title))
             {
                 Some(doc) => Ok(format!("# {}\n\n{}", doc.title, doc.markdown)),
                 None => {
@@ -283,10 +253,4 @@ fn written_from(files: &str) -> String {
         true => String::new(),
         false => format!(" (written from {})", files.join(", ")),
     }
-}
-
-/// What an agent gave for a task, as a person's request gives it.
-fn fields_of(given: Value) -> Result<TaskFields, ApiError> {
-    serde_json::from_value(given)
-        .map_err(|error| refused(format!("That can't be read as a task: {error}")))
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE tasks SET status = ?1, position = (\n                 SELECT COALESCE(MAX(position), -1) + 1 FROM tasks WHERE project_id = ?2 AND status = ?1)\n             WHERE id = ?3 AND project_id = ?2 AND status != ?1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1ca44a31e589518a29b25e0303bf0aab2ae208fa0002694cd957648089f1beee"
+}

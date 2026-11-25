@@ -3123,7 +3123,11 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
     ada.put(&returns, json!({"owner_id": null, "docs": [page]}))
         .await;
     assert_eq!(ada.get(&tasks).await.1[1]["owner"], Value::Null);
-    for refused in [json!({"title": ""}), json!({"owner_id": hers})] {
+    for refused in [
+        json!({"title": ""}),
+        json!({"owner_id": hers}),
+        json!({"status": "review"}),
+    ] {
         let status = ada.put(&returns, refused).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
@@ -3161,6 +3165,15 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
         titles(&mut ada, &tasks, "doing").await[..2],
         ["Wishlist", "Size guide"]
     );
+    // A task whose status is changed goes to the end of its new one, and stays where it is in its own.
+    ada.put(&returns, json!({"status": "doing"})).await;
+    assert_eq!(
+        titles(&mut ada, &tasks, "doing").await,
+        ["Wishlist", "Size guide", "Gift wrap", "Returns link"]
+    );
+    let wishlist = format!("{tasks}/{}", id("Wishlist").as_str().unwrap());
+    ada.put(&wishlist, json!({"status": "doing"})).await;
+    assert_eq!(titles(&mut ada, &tasks, "doing").await[0], "Wishlist");
     let review = json!({"status": "review", "tasks": []});
     assert_eq!(
         ada.put(&tasks, review).await,
@@ -3308,7 +3321,7 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
     };
     let (_, read) = call("task", json!({})).await;
     assert!(
-        read.starts_with("SF-1 Returns link\nStatus: To do · Owner: nobody\n\nOn mobile"),
+        read.starts_with("SF-1 Returns link\nStatus: todo · Owner: nobody\n\nOn mobile"),
         "{read}"
     );
     assert!(
@@ -3327,12 +3340,12 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         (false, "Changed SF-1.".into())
     );
     assert!(call("change_task", json!({"status": "review"})).await.0);
-    let found = json!({"title": "Fix the flaky test", "checks": ["It passes 20 times"]});
+    let found = json!({"title": " Fix the flaky test ", "owner_id": "anybody", "checks": [{"text": "It passes 20 times", "done": false}]});
     assert_eq!(call("new_task", found).await, (false, "Made SF-2.".into()));
     assert!(call("new_task", json!({"title": " "})).await.0);
     assert_eq!(
         call("tasks", json!({})).await.1,
-        "SF-1 · Doing · Returns link · nobody\nSF-2 · To do · Fix the flaky test · nobody"
+        "SF-1 · doing · Returns link · nobody\nSF-2 · todo · Fix the flaky test · nobody"
     );
     let (failed, read) = call("doc", json!({"title": " buy "})).await;
     assert!(!failed && read.starts_with("# Buy\n\n"), "{read}");
