@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM proposals WHERE project_id = ? AND agent IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "6f0690e2be9e8db0ac358d1ffa96a8c5c1feb6883dc66f4c51ec874f2e483cd2"
+}

@@ -3299,6 +3299,7 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
             "new_task",
             "change_task",
             "doc",
+            "propose_doc",
             "search_docs"
         ]
     );
@@ -3409,6 +3410,114 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(tool(&state, next, list).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_person_accepts() {
+    let (state, mut ada) = project_with_docs().await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let start =
+        json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Fix the docs"});
+    let (_, chat) = ada.post(&ada.project("/chats"), start).await;
+    let path = ada.team(&format!("/chats/{}", chat["id"].as_str().unwrap()));
+    let turn = heard(&mut laptop).await.unwrap();
+    let token = turn["tools"]["token"].as_str().unwrap();
+    let propose = async |given: Value| {
+        let params = json!({"name": "propose_doc", "arguments": given});
+        let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
+        let (_, answer) = tool(&state, token, call).await;
+        let result = &answer["result"];
+        (
+            result["isError"].clone(),
+            result["content"][0]["text"].clone(),
+        )
+    };
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let buy = &docs["pages"][1];
+
+    // A proposal needs all three, and something to change.
+    let same = json!({"title": "Buy", "markdown": buy["markdown"], "reason": "None."});
+    assert_eq!(
+        propose(same).await,
+        (json!(true), json!("That is the page's text already"))
+    );
+    let bare = json!({"title": "Buy", "markdown": "Buying, corrected."});
+    assert_eq!(
+        propose(bare).await,
+        (
+            json!(true),
+            json!("A proposal needs the page's title, its text and why")
+        )
+    );
+
+    // A page's title proposes its new text; one no page has proposes a new page.
+    let change = json!({"title": "buy", "markdown": "# Buy\n\nBuying, corrected.", "reason": "The link moved."});
+    let told = "Proposed. \"Buy\" changes when a person of the team accepts it on the docs page.";
+    assert_eq!(propose(change).await, (json!(false), json!(told)));
+    let new = json!({"title": "Refunds", "markdown": "Money back.", "reason": "It was missing.", "section": "works"});
+    assert_eq!(propose(new).await.0, false);
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][1]["markdown"], buy["markdown"]);
+    let proposals = docs["proposals"].as_array().unwrap();
+    let changed = &proposals[0];
+    assert_eq!(
+        (&changed["page"], &changed["base"], &changed["title"]),
+        (&buy["id"], &buy["version"], &json!("Buy"))
+    );
+    assert_eq!(
+        (&changed["markdown"], &changed["reason"], &changed["notes"]),
+        (
+            &json!("Buying, corrected."),
+            &json!("The link moved."),
+            &json!([])
+        )
+    );
+    assert_eq!(
+        (&changed["agent"], &changed["user"], &changed["chat_id"]),
+        (&json!("claude"), &json!("Ada"), &chat["id"])
+    );
+    assert_eq!(
+        (
+            &proposals[1]["page"],
+            &proposals[1]["section"],
+            &proposals[1]["title"]
+        ),
+        (&Value::Null, &json!("works"), &json!("Refunds"))
+    );
+
+    // The chat says what its agent proposed.
+    let events = self::chat(&mut ada, &path, true).await;
+    let events = events["events"].as_array().unwrap();
+    let said = &events[events.len() - 2];
+    assert_eq!(
+        (&said["kind"], &said["title"], &said["new"]),
+        (&json!("proposal"), &json!("Buy"), &json!(false))
+    );
+
+    // A run drops the writer's own proposals of the run before, and never an agent's.
+    written_docs(&mut ada).await;
+    let docs = written_docs(&mut ada).await;
+    let whose: Vec<&Value> = docs["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|proposal| &proposal["agent"])
+        .collect();
+    assert_eq!(json!(whose), json!(["claude", "claude", null, null]));
+
+    // Accepted, it is the page's text.
+    let accept = ada.project(&format!(
+        "/docs/proposals/{}",
+        changed["id"].as_str().unwrap()
+    ));
+    let (status, _) = ada.post(&accept, json!({"version": buy["version"]})).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    assert_eq!(docs["pages"][1]["markdown"], "Buying, corrected.");
+    assert_eq!(docs["proposals"].as_array().unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -3979,6 +4088,9 @@ async fn fake_model() -> (String, Arc<Mutex<Vec<Value>>>) {
                     let last = body["messages"].as_array().unwrap().last().unwrap();
                     let answer = if key == "loop-key" {
                         asks("tasks", json!({}))
+                    } else if last["content"].as_str().is_some_and(|told| told.ends_with("the docs")) {
+                        let page = json!({"title": "Refunds", "markdown": "Money back.", "reason": "Marco said so.", "section": "works"});
+                        asks("propose_doc", page)
                     } else if last["content"].is_string() {
                         asks("new_task", json!({"title": "Fix the price"}))
                     } else {
@@ -4087,7 +4199,7 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         "{told}"
     );
     let tools = first["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     assert_eq!(tools[2]["name"], "new_task");
     assert_eq!(tools[2]["input_schema"]["required"], json!(["title"]));
 
@@ -4115,6 +4227,20 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         "{told}"
     );
     assert!(told.contains("You work for Ada, "));
+
+    // What it proposes for the docs is for who called it, and has no chat.
+    ada.post(&messages, write("@weacon fix the docs")).await;
+    weacon_said(&mut ada, &group).await;
+    let (_, docs) = ada.get(&ada.project("/docs")).await;
+    let proposed = &docs["proposals"][0];
+    assert_eq!(
+        (&proposed["title"], &proposed["section"], &proposed["page"]),
+        (&json!("Refunds"), &json!("works"), &Value::Null)
+    );
+    assert_eq!(
+        (&proposed["agent"], &proposed["user"], &proposed["chat_id"]),
+        (&json!("weacon"), &json!("Ada"), &Value::Null)
+    );
 
     // One call at a time in a group, which shows that it works.
     ada.put(&key, json!({"key": "slow-key"})).await;

@@ -1,6 +1,6 @@
 # Plan 34: an agent proposes a change to the docs
 
-**Status: planned**
+**Status: in progress**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -73,8 +73,21 @@ That the real agents propose something worth accepting is checked by hand.
 
 ## Steps
 
-- [ ] Server: who proposed on `proposals`, and a run that drops only the writer's, with its test
-- [ ] Server: the tool, for a chat's agent and for `@weacon`, with their tests
-- [ ] Web app: who proposed it on the docs page, and the line in the chat
-- [ ] Docs: `docs/architecture.md`
+- [x] Server: who proposed on `proposals`, and a run that drops only the writer's, with its test
+- [x] Server: the tool, for a chat's agent and for `@weacon`, with their tests
+- [x] Web app: who proposed it on the docs page, and the line in the chat
+- [x] Docs: `docs/architecture.md`
 - [ ] Checked by hand on ContentWrite: a chat's agent changes code and proposes the page's change; `@weacon` proposes a correction in a group; both accepted from the diff
+
+## Outcome so far
+
+Built as planned, with these differences:
+
+- **The link to the chat is left out for a group's chat,** which only the group's members read.
+- **The title line the `doc` tool shows over a page is taken off a proposed text.** The first real run sent it back as the page's first heading.
+- **No size limit of its own:** a page has none today either, beyond what a request may carry.
+- **Questions 72 and 73 were built with their defaults:** `@weacon` proposes too, and a run keeps the agents' proposals.
+
+- **Tests:** 64 on the server, one of them new, for a chat's agent; the test of `@weacon` has it propose a page too.
+- **Checked by hand** on ContentWrite with the real Claude Code on this machine: asked to add a section to a page, it read the page and the code, and proposed the change; the chat said so with a link to the docs, and the docs page showed the diff under "Proposed by Ada Dorn's Claude Code · Open its chat". That proposal was then rejected.
+- **Not checked by hand:** `@weacon` proposing in a group, which spends the team's real key, and accepting an agent's proposal in the browser. The tests cover both.

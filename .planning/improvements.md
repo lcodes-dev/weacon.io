@@ -98,3 +98,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **`@weacon` has no model of its own:** it uses the docs' while the API writes them, and the cheap default otherwise. *(plan 33)*
 - **The tools `@weacon` used aren't shown in the group,** only its last words. *(plan 33)*
 - **A call to `@weacon` that panics leaves its group "working"** until the server restarts. *(seen reviewing plan 33)*
+- **An agent's proposals pile up:** a second one for the same page doesn't replace the first, and the list names them alike. *(plan 34)*
+- **An agent's proposal gets none of the writer's notes** on a person's words it changes. *(plan 34)*
+- **An agent's proposal for a new page names no files,** though a chat's agent knows which it read. *(plan 34)*

@@ -1,12 +1,13 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { diffArrays } from "diff"
 import { useState } from "react"
-import { api, type DocsPage, type Proposal } from "../api"
+import { Link } from "react-router"
+import { api, type DocsPage, type Proposal, who } from "../api"
 import { DocNotes } from "./DocNotes"
 
 const blocks = (text: string) => (text.trim() ? text.trim().split(/\n{2,}/) : [])
 
-/** A change the docs writer suggests, shown block by block against the page as it is. `page` is the page it changes, and `path` the project's API path. `onDone` is told what was rejected. */
+/** A change the docs writer or an agent suggests, shown block by block against the page as it is. `page` is the page it changes, and `path` the project's API path. `onDone` is told what was rejected. */
 export function DocProposal(props: { path: string; proposal: Proposal; page?: DocsPage; onDone: (rejected?: Proposal) => void }) {
   const { path, proposal, page } = props
   const queryClient = useQueryClient()
@@ -45,6 +46,20 @@ export function DocProposal(props: { path: string; proposal: Proposal; page?: Do
         </span>
         <h2 className="text-[17px] font-semibold">{proposal.title}</h2>
         {proposal.request && <p className="text-ink2">You asked: {proposal.request}</p>}
+        {proposal.agent && (
+          <p className="text-ink2">
+            Proposed by {who(proposal.user, proposal.agent)}
+            {proposal.agent === "weacon" && ` for ${proposal.user ?? "someone who left"}`}
+            {proposal.chat_id && (
+              <>
+                {" · "}
+                <Link className="underline" to={`/chats/${proposal.chat_id}`}>
+                  Open its chat
+                </Link>
+              </>
+            )}
+          </p>
+        )}
         <p>{proposal.reason}</p>
       </div>
       {page && page.version !== proposal.base && (

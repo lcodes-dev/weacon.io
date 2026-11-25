@@ -3,7 +3,7 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { agents, api, groupName, type GroupMessage, type OpenGroup, type Project, type Team, type TeamDetails, type User } from "../api"
+import { api, groupName, type OpenGroup, type Project, type Team, type TeamDetails, type User, who } from "../api"
 import { Said } from "../components/ChatEvents"
 
 type Part = { group: OpenGroup; path: string; team: Team }
@@ -79,12 +79,6 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
       <Write group={group.data} path={path} team={team} />
     </div>
   )
-}
-
-/** A person, their agent, or the team's. */
-function who(person: string | null, agent: GroupMessage["agent"]) {
-  if (agent === "weacon") return "Weacon"
-  return (person ?? "Someone who left") + (agent ? `'s ${agents[agent].name}` : "")
 }
 
 /** A request that changes the group at `path`, after which it and the sidebar's list are read again. */

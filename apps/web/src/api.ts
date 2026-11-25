@@ -39,6 +39,12 @@ export const agents = {
   codex: { name: "Codex", installer: "curl -fsSL https://chatgpt.com/codex/install.sh | sh" },
 }
 
+/** A person, their agent, or the team's. */
+export function who(person: string | null, agent: keyof typeof agents | "weacon" | null) {
+  if (agent === "weacon") return "Weacon"
+  return (person ?? "Someone who left") + (agent ? `'s ${agents[agent].name}` : "")
+}
+
 /** Your own computer or virtual machine, whose core runs agents for you. */
 export type Machine = {
   id: string
@@ -148,6 +154,7 @@ export type ChatEvent = { id: string } & (
   | { kind: "allowed"; host: string }
   /** The agent made a task or changed one, which `name` calls as SF-12 Returns link. */
   | { kind: "task"; task_id: string; name: string; made: boolean }
+  | { kind: "proposal"; title: string; new: boolean }
 )
 
 /** A chat as its page shows it. Only the person it is `mine` for writes in it. */
@@ -205,6 +212,10 @@ export type Proposal = {
   reason: string
   /** What a person asked for, when the proposal answers a request. */
   request: string | null
+  /** For an agent's: which agent, whom it works for, and its chat if the team may read it. */
+  agent: keyof typeof agents | "weacon" | null
+  user: string | null
+  chat_id: string | null
 }
 
 /** One of the texts a page has had. `author` is null for the docs writer. */

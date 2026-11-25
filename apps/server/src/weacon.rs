@@ -48,6 +48,7 @@ pub async fn called(
         key: project.key.clone(),
         user_id: user.id.clone(),
         task_id: None,
+        agent: NAME.into(),
     };
     let (state, group_id) = (state.clone(), group.id.clone());
     tokio::spawn(async move {

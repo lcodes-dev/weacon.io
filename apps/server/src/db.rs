@@ -1188,7 +1188,7 @@ struct Text<'a> {
     commit: Option<&'a str>,
 }
 
-/// A change the writer suggests.
+/// A change the writer or an agent suggests.
 #[derive(Serialize)]
 pub struct Proposal {
     pub id: String,
@@ -1207,6 +1207,10 @@ pub struct Proposal {
     pub unread: String,
     pub reason: String,
     pub request: Option<String>,
+    /// For an agent's: which agent, whom it works for, and its chat if the team may read it.
+    pub agent: Option<String>,
+    pub user: Option<String>,
+    pub chat_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1302,7 +1306,7 @@ pub async fn fail_interrupted_docs(pool: &SqlitePool) -> sqlx::Result<()> {
 
 /// Ends `run` with what it wrote, and does nothing unless it still holds the project.
 /// `commit` is what it was all written from. `from` is the branch and the left out folders of
-/// a run over the whole project, which drops the proposals nobody answered; a request has none. A project without pages gets
+/// a run over the whole project, which drops the writer's proposals nobody answered; a request has none. A project without pages gets
 /// the pages themselves, and one with pages gets them as proposals.
 pub async fn save_written(
     pool: &SqlitePool,
@@ -1333,9 +1337,13 @@ pub async fn save_written(
         return Ok(());
     }
     if from.is_some() {
-        sqlx::query!("DELETE FROM proposals WHERE project_id = ?", project_id)
-            .execute(&mut *tx)
-            .await?;
+        // An agent's proposal waits for a person.
+        sqlx::query!(
+            "DELETE FROM proposals WHERE project_id = ? AND agent IS NULL",
+            project_id
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     let pages = sqlx::query_scalar!("SELECT COUNT(*) FROM docs WHERE project_id = ?", project_id)
         .fetch_one(&mut *tx)
@@ -1375,13 +1383,58 @@ pub async fn save_written(
 pub async fn proposals(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<Proposal>> {
     sqlx::query_as!(
         Proposal,
-        r#"SELECT id, doc_id AS page, base, section, title, markdown, notes AS "notes?",
-                  unread, reason, request
-           FROM proposals WHERE project_id = ? ORDER BY id"#,
+        r#"SELECT p.id, p.doc_id AS page, p.base, p.section, p.title, p.markdown,
+                  p.notes AS "notes?", p.unread, p.reason, p.request, p.agent, u.name AS "user?",
+                  c.id AS "chat_id?"
+           FROM proposals p
+           LEFT JOIN users u ON u.id = p.user_id
+           LEFT JOIN chats c ON c.id = p.chat_id AND c.group_id IS NULL
+           WHERE p.project_id = ? ORDER BY p.id"#,
         project_id
     )
     .fetch_all(pool)
     .await
+}
+
+/// Keeps what an agent proposes for the docs of its project: a new text for the page `doc`, or
+/// a new page in `section`.
+pub async fn propose(
+    pool: &SqlitePool,
+    caller: &Caller,
+    doc: Option<&Doc>,
+    section: &str,
+    title: &str,
+    markdown: &str,
+    reason: &str,
+) -> sqlx::Result<()> {
+    let id = new_id();
+    let (doc_id, base) = doc.map(|doc| (&doc.id, &doc.version)).unzip();
+    // A changed page keeps what it was written from; a new one has nothing yet.
+    let files = doc.map_or("[]", |doc| &doc.files);
+    let unread = doc.map_or("[]", |doc| &doc.unread);
+    let commit = doc.and_then(|doc| doc.commit.as_ref());
+    sqlx::query!(
+        "INSERT INTO proposals (id, project_id, doc_id, base, section, title, markdown, files,
+                                unread, commit_sha, notes, reason, agent, user_id, chat_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, unixepoch())",
+        id,
+        caller.project_id,
+        doc_id,
+        base,
+        section,
+        title,
+        markdown,
+        files,
+        unread,
+        commit,
+        reason,
+        caller.agent,
+        caller.user_id,
+        caller.chat_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Does what a proposal suggests and deletes it. `seen` is the version of its page that the
@@ -2720,13 +2773,15 @@ pub struct Caller {
     /// Who the agent works for.
     pub user_id: String,
     pub task_id: Option<String>,
+    /// Which agent: a program's name, or the team's own.
+    pub agent: String,
 }
 
 /// Whom the agent of the chat with this running turn's token works for.
 pub async fn caller(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Caller>> {
     sqlx::query_as!(
         Caller,
-        r#"SELECT c.id AS "chat_id?", p.team_id, c.project_id, p.key, c.user_id, c.task_id
+        r#"SELECT c.id AS "chat_id?", p.team_id, c.project_id, p.key, c.user_id, c.task_id, c.agent
            FROM chats c JOIN projects p ON p.id = c.project_id
            WHERE c.tools_token = ? AND c.running = 1"#,
         token

@@ -1,4 +1,4 @@
-//! The tools an agent has for its project's tasks and docs. The program of a chat's agent
+//! The tools an agent has for its project's tasks and docs, which it reads and proposes changes to. The program of a chat's agent
 //! calls them here while its turn runs, as the Model Context Protocol has it, one JSON-RPC request
 //! in and one answer out. For the team's own agent the server runs them itself.
 
@@ -52,6 +52,17 @@ pub fn tools() -> Value {
             "Reads a page of this project's docs by its title.",
             json!({"title": text}),
             &["title"]
+        ),
+        tool(
+            "propose_doc",
+            "Proposes a new text for a page of this project's docs, or a new page, when a page is wrong or you changed the code it describes. Nothing changes until a person of the team accepts it. Read the page with the doc tool first, and give its whole new text.",
+            json!({
+                "title": {"type": "string", "description": "The page's title. One that no page has makes a new page."},
+                "markdown": {"type": "string", "description": "The page's whole text, in Markdown."},
+                "reason": {"type": "string", "description": "Why, in a sentence."},
+                "section": {"enum": ["works", "built"], "description": "For a new page: how the product works for its users, or how it is built. Left out, built."},
+            }),
+            &["title", "markdown", "reason"]
         ),
         tool(
             "search_docs",
@@ -249,6 +260,42 @@ pub async fn tool(
                     )))
                 }
             }
+        }
+        "propose_doc" => {
+            let said = |name: &str| given[name].as_str().unwrap_or_default().trim();
+            let (title, markdown, reason) = (said("title"), said("markdown"), said("reason"));
+            if title.is_empty() || markdown.is_empty() || reason.is_empty() {
+                return Err(refused(
+                    "A proposal needs the page's title, its text and why",
+                ));
+            }
+            let docs = db::docs(pool, place.1).await?;
+            let page = docs
+                .iter()
+                .find(|doc| doc.title.eq_ignore_ascii_case(title));
+            // The doc tool shows a page under its title, which isn't part of its text.
+            let headed = markdown.split_once('\n').filter(|(first, _)| {
+                let first = first.strip_prefix("# ").unwrap_or_default().trim();
+                first.eq_ignore_ascii_case(title)
+            });
+            let markdown = headed.map_or(markdown, |(_, text)| text.trim());
+            if page.is_some_and(|page| page.markdown.trim() == markdown) {
+                return Err(refused("That is the page's text already"));
+            }
+            let section = match (page, said("section")) {
+                (Some(page), _) => &page.section,
+                (None, "works") => "works",
+                (None, _) => "built",
+            };
+            let title = page.map_or(title, |page| &page.title);
+            db::propose(pool, caller, page, section, title, markdown, reason).await?;
+            if let Some(chat) = &caller.chat_id {
+                let body = json!({"kind": "proposal", "title": title, "new": page.is_none()});
+                db::note_chat(pool, chat, &body).await?;
+            }
+            Ok(format!(
+                "Proposed. \"{title}\" changes when a person of the team accepts it on the docs page."
+            ))
         }
         _ => Err(refused("There is no such tool")),
     }

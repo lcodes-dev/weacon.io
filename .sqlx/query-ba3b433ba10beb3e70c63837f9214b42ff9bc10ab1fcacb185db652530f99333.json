@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, doc_id AS page, base, section, title, markdown, notes AS \"notes?\",\n                  unread, reason, request\n           FROM proposals WHERE project_id = ? ORDER BY id",
+  "query": "SELECT p.id, p.doc_id AS page, p.base, p.section, p.title, p.markdown,\n                  p.notes AS \"notes?\", p.unread, p.reason, p.request, p.agent, u.name AS \"user?\",\n                  c.id AS \"chat_id?\"\n           FROM proposals p\n           LEFT JOIN users u ON u.id = p.user_id\n           LEFT JOIN chats c ON c.id = p.chat_id AND c.group_id IS NULL\n           WHERE p.project_id = ? ORDER BY p.id",
   "describe": {
     "columns": [
       {
@@ -112,6 +112,39 @@
             "name": "request"
           }
         }
+      },
+      {
+        "name": "agent",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "proposals",
+            "name": "agent"
+          }
+        }
+      },
+      {
+        "name": "user?",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "chat_id?",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -127,8 +160,11 @@
       false,
       false,
       false,
+      true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "f5cad45704e102172f141007f2d66475771ecc8efb3ab7655d9308b959ca7c79"
+  "hash": "ba3b433ba10beb3e70c63837f9214b42ff9bc10ab1fcacb185db652530f99333"
 }

@@ -116,6 +116,15 @@ function Event({ event, user, project, diff }: { event: ChatEvent; user: string;
           </Link>
         </p>
       )
+    case "proposal":
+      return (
+        <p className="lbl normal-case">
+          {event.new ? "Proposed the new page" : "Proposed a change to"} “{event.title}” in the{" "}
+          <Link className="underline" to={`/projects/${project}/docs`}>
+            docs
+          </Link>
+        </p>
+      )
     case "done":
       return <Changed files={event.changed} diff={diff} />
   }
