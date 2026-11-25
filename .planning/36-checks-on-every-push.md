@@ -1,6 +1,6 @@
 # Plan 36: checks on every push
 
-**Status: in progress**
+**Status: done** (2026-11-25)
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -52,5 +52,14 @@ The tests have only run on macOS. The first run on Linux will say whether any of
 ## Steps
 
 - [x] `scripts/check.sh`, passing on this machine
-- [ ] The workflow, and its first green run on GitHub, with whatever Linux needed fixed
+- [x] The workflow, and its first green run on GitHub, with whatever Linux needed fixed
 - [x] `AGENTS.md` and `README.md`
+
+## Outcome
+
+Built as planned, with one fix for Linux:
+
+- **`mise.toml` names `rustfmt` and `clippy`** beside the Rust version, since mise installs Rust on GitHub without them. No test needed a change.
+- **`sqlx-cli` is left out on GitHub** by mise's own setting for tools to ignore, in the workflow.
+- **The first green run took under three minutes** from an empty cache, with the same 96 tests passing as on macOS.
+- **Questions 75 and 76 were built with their defaults:** Linux only, and a check that reports without gating `main`.
