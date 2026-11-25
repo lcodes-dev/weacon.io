@@ -1,4 +1,4 @@
 [tools]
 node = "26.13.1"
-rust = "1.100.0"
+rust = { version = "1.100.0", components = "clippy,rustfmt" }
 "cargo:sqlx-cli" = { version = "0.9.1", default-features = false, features = "sqlite,rustls" }
