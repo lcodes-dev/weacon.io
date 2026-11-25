@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT writer_key AS \"key!\", CASE WHEN writer = 'claude_api' THEN writer_model END AS model\n           FROM teams WHERE id = ? AND writer_key IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "key!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "teams",
+            "name": "writer_key"
+          }
+        }
+      },
+      {
+        "name": "model",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "b9e3ed13c33e1188cdc8fa4c18d8ac2a3425375078d88635e8f999cc803ba03e"
+}

@@ -4,13 +4,14 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use core_link::Agent;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::chats::{self, After};
 use crate::db::{self, Group, User};
 use crate::teams::{membership, refused};
-use crate::{ApiError, AppState, not_found};
+use crate::{ApiError, AppState, not_found, weacon};
 
 pub async fn list(
     State(state): State<AppState>,
@@ -88,9 +89,13 @@ pub async fn show(
     Query(after): Query<After>,
 ) -> Result<Json<Value>, ApiError> {
     let group = found(&state, &user, &team_id, &id).await?;
+    // Asked first, so that an answer is never missed between the two.
+    let mut working = db::group_working(&state.pool, &id).await?;
+    if state.weacon.lock().unwrap().contains(&id) {
+        working.push((String::new(), weacon::NAME.into()));
+    }
     let messages = db::group_messages(&state.pool, &id, &after.after).await?;
     db::read_group(&state.pool, &id, &user.id).await?;
-    let working = db::group_working(&state.pool, &id).await?;
     let mut group = json!(group);
     group["messages"] = json!(messages);
     group["working"] = json!(working);
@@ -152,8 +157,8 @@ pub struct Message {
     text: String,
 }
 
-/// Writes a message, and has each agent it tags answer: the writer's own. What it gives
-/// back is why a tagged agent doesn't run, for each that doesn't.
+/// Writes a message, and has each agent it tags answer: the writer's own, and the team's.
+/// What it gives back is why a tagged agent doesn't run, for each that doesn't.
 pub async fn write(
     State(state): State<AppState>,
     user: User,
@@ -167,8 +172,14 @@ pub async fn write(
     }
     db::write_group(&state.pool, &id, &user.id, text).await?;
     let mut refused = Vec::new();
-    for agent in chats::tagged(text) {
-        refused.extend(chats::called(&state, &user, &team_id, &group, agent).await?);
+    for agent in Agent::ALL {
+        if chats::tags(text, agent.program()) {
+            refused.extend(chats::called(&state, &user, &team_id, &group, agent).await?);
+        }
     }
+    if chats::tags(text, weacon::NAME) {
+        refused.extend(weacon::called(&state, &user, &team_id, &group).await?);
+    }
+    refused.dedup();
     Ok(Json(json!({"refused": refused})))
 }

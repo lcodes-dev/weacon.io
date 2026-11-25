@@ -4,6 +4,7 @@ import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { api, type Team, type TeamDetails, type User } from "../api"
 import { GithubSection } from "../components/GithubSection"
+import { KeySection } from "../components/KeySection"
 import { WriterSection } from "../components/WriterSection"
 
 export function TeamSettings({ team, user }: { team: Team; user: User }) {
@@ -124,8 +125,9 @@ export function TeamSettings({ team, user }: { team: Team; user: User }) {
       {invite.isSuccess && <p className="text-ok">Sent. An invite works for 7 days.</p>}
       {error && <p className="text-acc">{error.message}</p>}
       {owner && <GithubSection team={team} />}
+      {owner && details.data && <KeySection team={team} saved={details.data.has_key} />}
       {owner && details.data && (
-        <WriterSection key={details.data.writer?.kind} team={team} saved={details.data.writer} />
+        <WriterSection key={`${details.data.writer?.kind} ${details.data.has_key}`} team={team} saved={details.data.writer} hasKey={details.data.has_key} />
       )}
     </div>
   )

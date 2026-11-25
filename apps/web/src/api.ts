@@ -95,14 +95,14 @@ export type GroupMessage = {
   user: string | null
   text: string
   created_at: number
-  /** For an agent's answer: which agent, the chat it worked in, and the machine. */
-  agent: Agent | null
+  /** For an agent's answer: which agent, the chat it worked in, and the machine. The team's own agent has neither. */
+  agent: Agent | "weacon" | null
   chat_id: string | null
   machine: string | null
 }
 
 /** `working` is whose agents are answering now, each as the person and the agent. */
-export type OpenGroup = Group & { messages: GroupMessage[]; working: [string, Agent][] }
+export type OpenGroup = Group & { messages: GroupMessage[]; working: [string, Agent | "weacon"][] }
 
 /** What a group is called: its name, or the names of the others in it. */
 export function groupName(group: Group, me: string) {
@@ -153,7 +153,7 @@ export type ChatEvent = { id: string } & (
 /** A chat as its page shows it. Only the person it is `mine` for writes in it. */
 export type OpenChat = Chat & { mine: boolean; connected: boolean; events: ChatEvent[] }
 
-export type Writer = { kind: "claude_api" | "claude_code" | "codex"; model: string | null; has_key: boolean }
+export type Writer = { kind: "claude_api" | "claude_code" | "codex"; model: string | null }
 
 /** A project's generated docs, and the run that writes them. */
 export type Docs = {
@@ -219,6 +219,8 @@ export type Shared = { title: string; created_at: number; pages: { title: string
 export type TeamDetails = {
   name: string
   writer: Writer | null
+  /** Whether the team has an API key, which pays for `@weacon` and can write its docs. */
+  has_key: boolean
   members: { id: string; name: string; email: string; role: "owner" | "member" }[]
   invites: { id: string; email: string; expires_at: number }[]
 }

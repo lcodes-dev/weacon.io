@@ -8,15 +8,14 @@ import { api, type Team, type Writer } from "../api"
 const defaults = { claude_api: "claude-haiku-5-5", claude_code: "claude-haiku-5-5", codex: "gpt-5.6-luna" }
 
 /** Who writes the team's docs, in team settings. */
-export function WriterSection({ team, saved }: { team: Team; saved: Writer | null }) {
+export function WriterSection({ team, saved, hasKey }: { team: Team; saved: Writer | null; hasKey: boolean }) {
   const queryClient = useQueryClient()
-  const [kind, setKind] = useState<Writer["kind"]>(saved?.kind ?? "claude_api")
-  const [key, setKey] = useState("")
+  const [kind, setKind] = useState<Writer["kind"]>(saved?.kind ?? (hasKey ? "claude_api" : "claude_code"))
   const [model, setModel] = useState(saved?.model ?? "")
   const path = `/teams/${team.id}/writer`
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["team", team.id] })
   const save = useMutation({
-    mutationFn: () => api("PUT", path, { kind, key: key || undefined, model: model || undefined }),
+    mutationFn: () => api("PUT", path, { kind, model: model || undefined }),
     onSuccess: refresh,
   })
   const forget = useMutation({ mutationFn: () => api("DELETE", path), onSuccess: refresh })
@@ -37,7 +36,9 @@ export function WriterSection({ team, saved }: { team: Team; saved: Writer | nul
       <Field className="self-stretch">
         <FieldLabel>Writer</FieldLabel>
         <FieldControl render={<select />} value={kind} onChange={(event) => setKind(event.target.value as Writer["kind"])}>
-          <option value="claude_api">Claude, on the server, with the team's API key</option>
+          <option value="claude_api" disabled={!hasKey}>
+            Claude, on the server, with the team's API key
+          </option>
           <option value="claude_code">Claude Code, on a machine of whoever starts a run</option>
           <option value="codex">Codex, on a machine of whoever starts a run</option>
         </FieldControl>
@@ -47,17 +48,6 @@ export function WriterSection({ team, saved }: { team: Team; saved: Writer | nul
           A run, a request or a page's check then uses a machine of the person who causes it, on their own subscription. Each member pairs their own
           under <Link to="/settings/machines" className="underline">Machines</Link>.
         </p>
-      )}
-      {kind === "claude_api" && (
-        <Field className="self-stretch">
-          <FieldLabel>Anthropic API key</FieldLabel>
-          <Input
-            type="password"
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            placeholder={saved?.has_key ? "Unchanged" : ""}
-          />
-        </Field>
       )}
       <Field className="self-stretch">
         <FieldLabel>Model, or empty for the cheap default</FieldLabel>

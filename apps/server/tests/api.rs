@@ -35,6 +35,7 @@ async fn server() -> AppState {
         map_wake: Arc::default(),
         anthropic_api: "http://127.0.0.1:1".into(),
         cores: Arc::default(),
+        weacon: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
     }
@@ -1379,6 +1380,13 @@ async fn each_tracked_branch_has_its_own_map() {
     );
 }
 
+/// Saves the team's API key and has the API write its docs.
+async fn api_writer(ada: &mut Client, key: &str) {
+    ada.put(&ada.team("/key"), json!({"key": key})).await;
+    ada.put(&ada.team("/writer"), json!({"kind": "claude_api"}))
+        .await;
+}
+
 /// Starts an Anthropic API that plans one "works" and one "built" page, and keeps the prompts it got.
 async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
     let prompts = Arc::new(Mutex::new(Vec::new()));
@@ -1496,8 +1504,7 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
         mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
     let (address, prompts) = fake_anthropic().await;
     ada.state.anthropic_api = address;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     assert_eq!(
         written_docs(&mut ada).await["pages"]
             .as_array()
@@ -1507,8 +1514,7 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
     );
     prompts.lock().unwrap().clear();
 
-    let writer = json!({"kind": "claude_api", "key": "slow-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "slow-key").await;
     let start = json!({"branch": "main"});
     assert_eq!(
         ada.post(&ada.project("/docs"), start).await.0,
@@ -1573,8 +1579,7 @@ async fn a_shared_link_shows_a_copy_of_the_user_docs_to_anyone() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     written_docs(&mut ada).await;
     let mut eve = Client::new(&state);
     eve.sign_in("eve@example.com", Some("Eve")).await;
@@ -1622,8 +1627,7 @@ async fn a_shared_link_shows_a_copy_of_the_user_docs_to_anyone() {
 async fn deleting_a_project_ends_its_shared_links() {
     let (state, mut ada, _) = mapped_project(&[("src/app.ts", APP_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     written_docs(&mut ada).await;
     let (_, share) = ada.post(&ada.project("/shares"), Value::Null).await;
     let public = format!("/api/shares/{}", share["token"].as_str().unwrap());
@@ -1639,8 +1643,7 @@ async fn project_with_docs() -> (AppState, Client) {
     let (state, mut ada, _) =
         mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     written_docs(&mut ada).await;
     (state, ada)
 }
@@ -1843,8 +1846,7 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     let (state, mut ada, repo) =
         mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["proposals"], json!([]));
     let buy = &docs["pages"][1];
@@ -2045,8 +2047,7 @@ async fn a_person_s_edit_is_checked_against_the_code() {
 async fn a_page_written_before_any_run_is_checked_against_a_mapped_branch() {
     let (_, mut ada, _) = mapped_project(&[("src/app.ts", APP_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "good-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "good-key").await;
     let new = json!({"section": "works", "title": "Returns"});
     let (_, added) = ada.post(&ada.project("/docs/pages"), new).await;
     let page = ada.project(&format!("/docs/pages/{}", added["id"].as_str().unwrap()));
@@ -2063,8 +2064,7 @@ async fn a_page_written_before_any_run_is_checked_against_a_mapped_branch() {
 async fn a_plan_that_can_t_be_read_fails_the_run() {
     let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
     ada.state.anthropic_api = fake_anthropic().await.0;
-    let writer = json!({"kind": "claude_api", "key": "odd-key"});
-    ada.put(&ada.team("/writer"), writer).await;
+    api_writer(&mut ada, "odd-key").await;
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["state"], "failed");
     let message = docs["message"].as_str().unwrap();
@@ -2072,15 +2072,17 @@ async fn a_plan_that_can_t_be_read_fails_the_run() {
 }
 
 #[tokio::test]
-async fn the_team_owner_chooses_the_docs_writer() {
+async fn the_team_owner_saves_its_api_key_and_chooses_the_docs_writer() {
     let state = server().await;
     let (mut ada, mut marco) = ada_and_marco(&state).await;
-    let with_key = json!({"kind": "claude_api", "key": "good-key"});
+    let (key, writer) = (ada.team("/key"), ada.team("/writer"));
+    let api = json!({"kind": "claude_api"});
 
     assert_eq!(
-        marco.put(&ada.team("/writer"), with_key.clone()).await,
+        marco.put(&key, json!({"key": "good-key"})).await,
         StatusCode::FORBIDDEN
     );
+    assert_eq!(marco.put(&writer, api.clone()).await, StatusCode::FORBIDDEN);
     // Marco owns team 2, and may have its docs written on the machines of whoever starts a run.
     assert_eq!(
         marco
@@ -2088,37 +2090,46 @@ async fn the_team_owner_chooses_the_docs_writer() {
             .await,
         StatusCode::NO_CONTENT
     );
+    // The API writes the docs only once the team has a key, which is never read back.
     assert_eq!(
-        ada.put(&ada.team("/writer"), json!({"kind": "claude_api"}))
-            .await,
+        ada.put(&writer, api.clone()).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     assert_eq!(
-        ada.put(&ada.team("/writer"), with_key).await,
+        ada.put(&key, json!({"key": " "})).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        ada.put(&key, json!({"key": "good-key"})).await,
         StatusCode::NO_CONTENT
     );
-    // Saving again without a key keeps the saved one, and the key is never read back.
     let model = json!({"kind": "claude_api", "model": "claude-sonnet-5-5"});
+    assert_eq!(ada.put(&writer, model).await, StatusCode::NO_CONTENT);
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(
-        ada.put(&ada.team("/writer"), model).await,
-        StatusCode::NO_CONTENT
-    );
-    assert_eq!(
-        ada.get(&ada.team("")).await.1["writer"],
-        json!({"kind": "claude_api", "model": "claude-sonnet-5-5", "has_key": true})
+        (&team["writer"], &team["has_key"]),
+        (
+            &json!({"kind": "claude_api", "model": "claude-sonnet-5-5"}),
+            &json!(true)
+        )
     );
 
+    // The key stays while the docs are written with it, and when they are written elsewhere.
+    assert_eq!(ada.delete(&key).await, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
-        ada.put(&ada.team("/writer"), json!({"kind": "codex"}))
-            .await,
+        ada.put(&writer, json!({"kind": "codex"})).await,
         StatusCode::NO_CONTENT
     );
-    assert_eq!(ada.get(&ada.team("")).await.1["writer"]["has_key"], false);
+    assert_eq!(ada.get(&ada.team("")).await.1["has_key"], true);
+    assert_eq!(ada.delete(&writer).await, StatusCode::NO_CONTENT);
+    let (_, team) = ada.get(&ada.team("")).await;
     assert_eq!(
-        ada.delete(&ada.team("/writer")).await,
-        StatusCode::NO_CONTENT
+        (&team["writer"], &team["has_key"]),
+        (&Value::Null, &json!(true))
     );
-    assert_eq!(ada.get(&ada.team("")).await.1["writer"], Value::Null);
+    assert_eq!(marco.delete(&key).await, StatusCode::FORBIDDEN);
+    assert_eq!(ada.delete(&key).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.get(&ada.team("")).await.1["has_key"], false);
 }
 
 #[tokio::test]
@@ -2139,11 +2150,7 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
         ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    ada.put(
-        &ada.team("/writer"),
-        json!({"kind": "claude_api", "key": "good-key"}),
-    )
-    .await;
+    api_writer(&mut ada, "good-key").await;
     let other = json!({"branch": "other"});
     assert_eq!(
         ada.post(&ada.project("/docs"), other).await.0,
@@ -2195,11 +2202,7 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     // Writing again replaces the pages; a failed run keeps them.
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
-    ada.put(
-        &ada.team("/writer"),
-        json!({"kind": "claude_api", "key": "bad-key"}),
-    )
-    .await;
+    api_writer(&mut ada, "bad-key").await;
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["state"], "failed");
     assert_eq!(
@@ -3943,4 +3946,201 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
         .post(&format!("{path}/messages"), write("Directly"))
         .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Starts an Anthropic API for the team's own agent, and keeps what it was sent. It asks for
+/// a task to be made, then says what it was told of that; with the key `loop-key` it asks for
+/// the tasks for ever, and with `slow-key` it waits until "continue" is among what it keeps.
+async fn fake_model() -> (String, Arc<Mutex<Vec<Value>>>) {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let api = Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                async |State(sent): State<Arc<Mutex<Vec<Value>>>>,
+                       headers: HeaderMap,
+                       Json(body): Json<Value>| {
+                    let key = headers["x-api-key"].to_str().unwrap();
+                    if key == "bad-key" {
+                        let error = json!({"error": {"message": "invalid x-api-key"}});
+                        return (StatusCode::UNAUTHORIZED, Json(error));
+                    }
+                    while key == "slow-key" && !sent.lock().unwrap().contains(&json!("continue")) {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                    sent.lock().unwrap().push(body.clone());
+                    let asks = |name: &str, input: Value| json!({
+                        "stop_reason": "tool_use",
+                        "content": [
+                            {"type": "text", "text": "Let me see."},
+                            {"type": "tool_use", "id": "call-1", "name": name, "input": input},
+                        ],
+                    });
+                    let last = body["messages"].as_array().unwrap().last().unwrap();
+                    let answer = if key == "loop-key" {
+                        asks("tasks", json!({}))
+                    } else if last["content"].is_string() {
+                        asks("new_task", json!({"title": "Fix the price"}))
+                    } else {
+                        let heard = last["content"][0]["content"].as_str().unwrap();
+                        json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": format!("I heard: {heard}")}]})
+                    };
+                    (StatusCode::OK, Json(answer))
+                },
+            ),
+        )
+        .with_state(sent.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, api).await.unwrap() });
+    (address, sent)
+}
+
+/// The group's last message once the team's agent has stopped working there.
+async fn weacon_said(client: &mut Client, group: &str) -> Value {
+    for _ in 0..500 {
+        let (_, shown) = client.get(group).await;
+        if shown["working"] == json!([]) {
+            return shown["messages"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .clone();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the team's agent never answered");
+}
+
+#[tokio::test]
+async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
+    let mut state = server().await;
+    let (address, sent) = fake_model().await;
+    state.anthropic_api = address;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    let project = json!({"name": "Storefront", "key": "SF"});
+    let (_, project) = ada.post(&ada.team("/projects"), project).await;
+    ada.project_id = project["id"].as_str().unwrap().to_owned();
+    let (_, team) = ada.get(&ada.team("")).await;
+    let members = team["members"].as_array().unwrap();
+    let his = &members
+        .iter()
+        .find(|member| member["name"] == "Marco")
+        .unwrap()["id"];
+    let groups = ada.team("/groups");
+    let write = |text: &str| json!({"text": text});
+    let key = ada.team("/key");
+
+    // A tag is written either way, and says why nothing runs: no project, then no key.
+    let (_, bare) = ada.post(&groups, json!({"members": [his]})).await;
+    let bare = format!("{groups}/{}/messages", bare["id"].as_str().unwrap());
+    assert_eq!(
+        ada.post(&bare, write("@weacon @claude?")).await.1,
+        json!({"refused": ["This group has no project for an agent to work on"]})
+    );
+    let about = json!({"members": [his], "name": "Prices", "project_id": ada.project_id});
+    let (_, group) = ada.post(&groups, about).await;
+    let group = format!("{groups}/{}", group["id"].as_str().unwrap());
+    let messages = format!("{group}/messages");
+    let (_, answer) = ada
+        .post(&messages, write("The price is wrong, @Weacon"))
+        .await;
+    assert_eq!(
+        answer,
+        json!({"refused": ["This team has no API key for @weacon. Its owner saves one in Team settings"]})
+    );
+
+    // With a key it is told what the group said and whom it works for, and given the tools.
+    ada.put(&key, json!({"key": "good-key"})).await;
+    assert_eq!(
+        marco
+            .post(&messages, write("@weacon make a task of it"))
+            .await
+            .1,
+        json!({"refused": []})
+    );
+    let answer = weacon_said(&mut ada, &group).await;
+    assert_eq!(
+        (
+            &answer["user"],
+            &answer["agent"],
+            &answer["chat_id"],
+            &answer["text"]
+        ),
+        (
+            &json!("Marco"),
+            &json!("weacon"),
+            &Value::Null,
+            &json!("I heard: Made SF-1.")
+        )
+    );
+    let first = sent.lock().unwrap()[0].clone();
+    assert_eq!(first["model"], "claude-haiku-5-5");
+    let told = first["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        told.starts_with("In the group \"Prices\"\n\nYou work for Marco, "),
+        "{told}"
+    );
+    assert!(
+        told.ends_with("Ada: The price is wrong, @Weacon\n\nMarco: @weacon make a task of it"),
+        "{told}"
+    );
+    let tools = first["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 6);
+    assert_eq!(tools[2]["name"], "new_task");
+    assert_eq!(tools[2]["input_schema"]["required"], json!(["title"]));
+
+    // A tool it asks for is run for the group's project and for who called it, and it is told the result.
+    let second = sent.lock().unwrap()[1].clone();
+    assert_eq!(second["messages"][1]["content"][1]["name"], "new_task");
+    assert_eq!(
+        second["messages"][2]["content"],
+        json!([{"type": "tool_result", "tool_use_id": "call-1", "content": "Made SF-1.", "is_error": false}])
+    );
+    let (_, tasks) = ada.get(&ada.project("/tasks")).await;
+    assert_eq!(
+        (&tasks[0]["title"], &tasks[0]["asker"], &tasks[0]["chat_id"]),
+        (&json!("Fix the price"), &json!("Marco"), &Value::Null)
+    );
+
+    // The next call is told its own answer too, as the team's agent's.
+    sent.lock().unwrap().clear();
+    ada.post(&messages, write("@weacon thanks")).await;
+    weacon_said(&mut ada, &group).await;
+    let told = sent.lock().unwrap()[0]["messages"][0]["content"].clone();
+    let told = told.as_str().unwrap();
+    assert!(
+        told.contains("\n\nWeacon, the team's agent: I heard: Made SF-1.\n\nAda: @weacon thanks"),
+        "{told}"
+    );
+    assert!(told.contains("You work for Ada, "));
+
+    // One call at a time in a group, which shows that it works.
+    ada.put(&key, json!({"key": "slow-key"})).await;
+    ada.post(&messages, write("@weacon slowly")).await;
+    assert_eq!(
+        marco.get(&group).await.1["working"],
+        json!([["", "weacon"]])
+    );
+    assert_eq!(
+        marco.post(&messages, write("@weacon and me?")).await.1,
+        json!({"refused": ["Weacon is still working on the last call here"]})
+    );
+    sent.lock().unwrap().push(json!("continue"));
+    weacon_said(&mut ada, &group).await;
+
+    // A call that fails posts why: a key refused, and tools asked for without end.
+    ada.put(&key, json!({"key": "bad-key"})).await;
+    ada.post(&messages, write("@weacon again")).await;
+    assert_eq!(
+        weacon_said(&mut ada, &group).await["text"],
+        "It couldn't answer: Anthropic refused (401 Unauthorized): invalid x-api-key"
+    );
+    ada.put(&key, json!({"key": "loop-key"})).await;
+    ada.post(&messages, write("@weacon once more")).await;
+    assert_eq!(
+        weacon_said(&mut ada, &group).await["text"],
+        "It couldn't answer: It asked for its tools more than 10 times"
+    );
 }

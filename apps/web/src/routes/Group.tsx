@@ -55,10 +55,8 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         {messages.map((message) => (
           <div key={message.id} className="flex flex-col gap-0.5">
             <span className="lbl flex flex-wrap items-center gap-2 normal-case">
-              <span className="font-semibold text-ink">
-                {message.user ?? "Someone who left"}
-                {message.agent && `'s ${agents[message.agent].name}`}
-              </span>
+              <span className="font-semibold text-ink">{message.agent === "weacon" ? "Weacon" : who(message.user, message.agent)}</span>
+              {message.agent === "weacon" && `for ${message.user ?? "someone who left"} ·`}
               {message.machine && `on ${message.machine} ·`}
               {new Date(message.created_at * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
               {message.chat_id && (
@@ -68,12 +66,12 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
               )}
             </span>
             {/* A call to an agent stands out. */}
-            <Said text={message.text.replace(/(^|\s)(@(?:claude|codex))\b/gi, "$1**$2**")} />
+            <Said text={message.text.replace(/(^|\s)(@(?:claude|codex|weacon))\b/gi, "$1**$2**")} />
           </div>
         ))}
         {working.map(([person, agent]) => (
           <p key={person + agent} className="animate-pulse text-ink2">
-            {person}'s {agents[agent].name} is working…
+            {agent === "weacon" ? "Weacon" : who(person, agent)} is working…
           </p>
         ))}
         <div ref={end} />
@@ -81,6 +79,11 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
       <Write group={group.data} path={path} team={team} />
     </div>
   )
+}
+
+/** A person, or their agent. */
+function who(person: string | null, agent: keyof typeof agents | null) {
+  return (person ?? "Someone who left") + (agent ? `'s ${agents[agent].name}` : "")
 }
 
 /** A request that changes the group at `path`, after which it and the sidebar's list are read again. */
@@ -157,6 +160,7 @@ function Settings({ group, path, team }: Part) {
 
 function Write({ group, path, team }: Part) {
   const [text, setText] = useState("")
+  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
   // Why an agent the message called doesn't run, if one doesn't.
   const [refused, setRefused] = useState<string[]>([])
   const write = useGroupChange({ path, team }, () =>
@@ -197,7 +201,8 @@ function Write({ group, path, team }: Part) {
         Send
       </button>
       <p className="lbl w-full normal-case">
-        {group.project_id ? "Write @claude or @codex to have your own agent answer here." : "Give the group a project to call your agent here."}
+        {group.project_id ? "Write @claude or @codex to have your own agent answer here." : "Give the group a project to call an agent here."}
+        {group.project_id && details.data?.has_key && " @weacon calls the team's, which sends this group's last messages to Anthropic."}
       </p>
     </form>
   )

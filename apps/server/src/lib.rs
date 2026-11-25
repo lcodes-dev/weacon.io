@@ -14,11 +14,13 @@ pub mod search;
 mod tasks;
 mod teams;
 mod tools;
+mod weacon;
 mod web;
 mod writer;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
@@ -45,6 +47,8 @@ pub struct AppState {
     pub anthropic_api: String,
     /// The cores of people's machines that are connected now.
     pub cores: Arc<machines::Cores>,
+    /// The groups the team's own agent is answering in now.
+    pub weacon: Arc<Mutex<HashSet<String>>>,
     /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
     /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
@@ -195,6 +199,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/teams/{id}/writer",
             put(writer::save).delete(writer::forget),
+        )
+        .route(
+            "/teams/{id}/key",
+            put(writer::save_key).delete(writer::forget_key),
         )
         .route("/teams/{id}/github/branches", get(github::repo_branches))
         .route(

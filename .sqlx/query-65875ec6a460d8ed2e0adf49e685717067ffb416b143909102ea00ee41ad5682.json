@@ -1,10 +1,10 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT c.id, p.team_id, c.project_id, p.key, c.user_id, c.task_id\n         FROM chats c JOIN projects p ON p.id = c.project_id\n         WHERE c.tools_token = ? AND c.running = 1",
+  "query": "SELECT c.id AS \"chat_id?\", p.team_id, c.project_id, p.key, c.user_id, c.task_id\n           FROM chats c JOIN projects p ON p.id = c.project_id\n           WHERE c.tools_token = ? AND c.running = 1",
   "describe": {
     "columns": [
       {
-        "name": "id",
+        "name": "chat_id?",
         "ordinal": 0,
         "type_info": "Text",
         "origin": {
@@ -82,5 +82,5 @@
       true
     ]
   },
-  "hash": "1e14b689ee38d6e12445696a1c7e873a3bd27d52ac640f3ba4e6f33e0d4a933e"
+  "hash": "65875ec6a460d8ed2e0adf49e685717067ffb416b143909102ea00ee41ad5682"
 }

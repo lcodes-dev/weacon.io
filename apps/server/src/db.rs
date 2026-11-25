@@ -1065,6 +1065,29 @@ pub async fn writer(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Option<Wri
     .await
 }
 
+/// The team's API key, and the model chosen for it, which is the docs' while the API writes them.
+pub async fn api_key(
+    pool: &SqlitePool,
+    team_id: &str,
+) -> sqlx::Result<Option<(String, Option<String>)>> {
+    let saved = sqlx::query!(
+        r#"SELECT writer_key AS "key!", CASE WHEN writer = 'claude_api' THEN writer_model END AS model
+           FROM teams WHERE id = ? AND writer_key IS NOT NULL"#,
+        team_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(saved.map(|saved| (saved.key, saved.model)))
+}
+
+/// `None` forgets the team's API key.
+pub async fn save_api_key(pool: &SqlitePool, team_id: &str, key: Option<&str>) -> sqlx::Result<()> {
+    sqlx::query!("UPDATE teams SET writer_key = ? WHERE id = ?", key, team_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// `None` forgets the team's writer.
 pub async fn save_writer(
     pool: &SqlitePool,
@@ -1072,9 +1095,8 @@ pub async fn save_writer(
     writer: Option<&Writer>,
 ) -> sqlx::Result<()> {
     sqlx::query!(
-        "UPDATE teams SET writer = ?, writer_key = ?, writer_model = ? WHERE id = ?",
+        "UPDATE teams SET writer = ?, writer_model = ? WHERE id = ?",
         writer.map(|writer| writer.kind),
-        writer.and_then(|writer| writer.key.as_ref()),
         writer.and_then(|writer| writer.model.as_ref()),
         team_id
     )
@@ -2688,24 +2710,26 @@ pub async fn delete_task(pool: &SqlitePool, project_id: &str, task_id: &str) -> 
 }
 
 /// A chat whose agent is using the server's tools.
-pub struct ToolChat {
-    pub id: String,
+/// Whom an agent's tools are run for.
+pub struct Caller {
+    /// The chat the agent works in, which the team's own agent has none of.
+    pub chat_id: Option<String>,
     pub team_id: String,
     pub project_id: String,
     /// The project's key.
     pub key: String,
-    /// Whose chat it is, and so who its agent writes for.
+    /// Who the agent works for.
     pub user_id: String,
     pub task_id: Option<String>,
 }
 
 /// The chat a running turn's token is of.
-pub async fn tool_chat(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<ToolChat>> {
+pub async fn tool_chat(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Caller>> {
     sqlx::query_as!(
-        ToolChat,
-        "SELECT c.id, p.team_id, c.project_id, p.key, c.user_id, c.task_id
-         FROM chats c JOIN projects p ON p.id = c.project_id
-         WHERE c.tools_token = ? AND c.running = 1",
+        Caller,
+        r#"SELECT c.id AS "chat_id?", p.team_id, c.project_id, p.key, c.user_id, c.task_id
+           FROM chats c JOIN projects p ON p.id = c.project_id
+           WHERE c.tools_token = ? AND c.running = 1"#,
         token
     )
     .fetch_optional(pool)
@@ -2975,6 +2999,27 @@ pub async fn group_messages(
     )
     .fetch_all(pool)
     .await
+}
+
+/// Posts in a group what the team's own agent answered `user_id`.
+pub async fn answer_as_weacon(
+    pool: &SqlitePool,
+    id: &str,
+    user_id: &str,
+    text: &str,
+) -> sqlx::Result<()> {
+    let message = new_id();
+    sqlx::query!(
+        "INSERT INTO group_messages (id, group_id, user_id, agent, text, created_at)
+         VALUES (?, ?, ?, 'weacon', ?, unixepoch())",
+        message,
+        id,
+        user_id,
+        text
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Notes that a member has read a group up to its newest message.
