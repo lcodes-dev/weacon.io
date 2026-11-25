@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, running AS \"running: bool\", machine_id AS \"machine_id!\" FROM chats\n           WHERE group_id = ? AND user_id = ? AND agent = ? AND machine_id IS NOT NULL\n           ORDER BY id DESC LIMIT 1",
+  "query": "SELECT id, machine_id AS \"machine_id!\", told FROM chats\n           WHERE group_id = ? AND user_id = ? AND agent = ? AND machine_id IS NOT NULL\n           ORDER BY id DESC LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -15,24 +15,24 @@
         }
       },
       {
-        "name": "running: bool",
-        "ordinal": 1,
-        "type_info": "Integer",
-        "origin": {
-          "Table": {
-            "table": "chats",
-            "name": "running"
-          }
-        }
-      },
-      {
         "name": "machine_id!",
-        "ordinal": 2,
+        "ordinal": 1,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "chats",
             "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "told",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "chats",
+            "name": "told"
           }
         }
       }
@@ -42,9 +42,9 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       true
     ]
   },
-  "hash": "58d77f8b4580cddfa993bef8dc9f0d8be2dd43fceb381bbfbdefeb178dad4a4f"
+  "hash": "c4d6c011c417fdb09df7f57b991df59d261a27098ad2a05b128a49ffd2511070"
 }

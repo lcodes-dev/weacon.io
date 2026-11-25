@@ -5,7 +5,6 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::types::Json;
 
-use crate::chats::Start;
 use crate::mail::Smtp;
 use crate::writer::Writer;
 use code_map::{Reading, Symbol};
@@ -2173,33 +2172,42 @@ pub async fn chats(
     .await
 }
 
+/// A chat to start: whose it is, where its agent works, and what it is asked first.
+pub struct NewChat<'a> {
+    pub project_id: &'a str,
+    pub user_id: &'a str,
+    pub machine_id: &'a str,
+    pub agent: &'a str,
+    pub branch: &'a str,
+    pub asked: &'a str,
+    pub task_id: Option<&'a str>,
+    /// The group its agent answers in, and the newest message there it is told.
+    pub group: Option<(&'a str, &'a str)>,
+}
+
 /// What the person wrote is the chat's first event, and its first turn is running.
-pub async fn start_chat(
-    pool: &SqlitePool,
-    project_id: &str,
-    user_id: &str,
-    agent: &str,
-    start: &Start,
-) -> sqlx::Result<String> {
+pub async fn start_chat(pool: &SqlitePool, chat: &NewChat<'_>) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     let id = new_id();
-    let asked = start.text.trim();
+    let asked = chat.asked.trim();
+    let (group_id, told) = chat.group.unzip();
     // A chat is called by how it began.
     let title = asked.lines().next().unwrap_or_default();
     let title: String = title.chars().take(60).collect();
     sqlx::query!(
-        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, group_id, tools_token, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(32))), unixepoch())",
+        "INSERT INTO chats (id, project_id, user_id, machine_id, agent, branch, title, asked, task_id, group_id, told, tools_token, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, lower(hex(randomblob(32))), unixepoch())",
         id,
-        project_id,
-        user_id,
-        start.machine_id,
-        agent,
-        start.branch,
+        chat.project_id,
+        chat.user_id,
+        chat.machine_id,
+        chat.agent,
+        chat.branch,
         title,
         asked,
-        start.task_id,
-        start.group_id
+        chat.task_id,
+        group_id,
+        told
     )
     .execute(&mut *tx)
     .await?;
@@ -2231,12 +2239,20 @@ async fn add_chat_event(
 }
 
 /// Starts a chat's next turn with what its owner wrote. False while a turn is running.
-pub async fn ask_chat(pool: &SqlitePool, id: &str, asked: &str) -> sqlx::Result<bool> {
+/// `told` is the newest message of its group that this tells its agent, for a group's chat.
+pub async fn ask_chat(
+    pool: &SqlitePool,
+    id: &str,
+    asked: &str,
+    told: Option<&str>,
+) -> sqlx::Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let started = sqlx::query!(
-        "UPDATE chats SET running = 1, asked = ?, tools_token = lower(hex(randomblob(32)))
+        "UPDATE chats SET running = 1, asked = ?, told = COALESCE(?, told),
+                tools_token = lower(hex(randomblob(32)))
          WHERE id = ? AND running = 0",
         asked,
+        told,
         id
     )
     .execute(&mut *tx)
@@ -3007,8 +3023,9 @@ pub async fn write_group(
 /// A person's chat with an agent in a group, on a machine that is still theirs.
 pub struct GroupChat {
     pub id: String,
-    pub running: bool,
     pub machine_id: String,
+    /// The newest message of the group its agent was told.
+    pub told: Option<String>,
 }
 
 pub async fn group_chat(
@@ -3019,7 +3036,7 @@ pub async fn group_chat(
 ) -> sqlx::Result<Option<GroupChat>> {
     sqlx::query_as!(
         GroupChat,
-        r#"SELECT id, running AS "running: bool", machine_id AS "machine_id!" FROM chats
+        r#"SELECT id, machine_id AS "machine_id!", told FROM chats
            WHERE group_id = ? AND user_id = ? AND agent = ? AND machine_id IS NOT NULL
            ORDER BY id DESC LIMIT 1"#,
         group_id,

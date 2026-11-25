@@ -24,6 +24,14 @@ impl Agent {
         }
     }
 
+    /// What people call it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Agent::Claude => "Claude Code",
+            Agent::Codex => "Codex",
+        }
+    }
+
     pub fn named(name: &str) -> Option<Agent> {
         Agent::ALL.into_iter().find(|agent| agent.program() == name)
     }

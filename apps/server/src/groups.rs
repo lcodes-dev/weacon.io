@@ -166,12 +166,9 @@ pub async fn write(
         return Err(refused("Write something"));
     }
     db::write_group(&state.pool, &id, &user.id, text).await?;
-    let mut refusals = Vec::new();
+    let mut refused = Vec::new();
     for agent in chats::tagged(text) {
-        match chats::called(&state, &user, &team_id, &group, agent).await {
-            Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, why)) => refusals.push(why),
-            other => other?,
-        }
+        refused.extend(chats::called(&state, &user, &team_id, &group, agent).await?);
     }
-    Ok(Json(json!({"refused": refusals})))
+    Ok(Json(json!({"refused": refused})))
 }

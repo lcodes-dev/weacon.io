@@ -3885,7 +3885,8 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
     );
     assert_eq!(shown["working"], json!([]));
 
-    // The next tag is that chat's next turn, with only what was written since, without its own answer.
+    // The next tag is that chat's next turn, with what was written since it was last told, the tag
+    // that wasn't followed too, and without its own answer.
     marco.post(&messages, write("Thanks")).await;
     ada.post(&messages, write("@claude fix it")).await;
     let turn = heard(&mut laptop).await.unwrap();
@@ -3894,7 +3895,9 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
         (&json!(chat), &json!("s-1"))
     );
     assert!(
-        texts(&turn).ends_with("posted in the group.\n\nMarco: Thanks\n\nAda: @claude fix it"),
+        texts(&turn).ends_with(
+            "posted in the group.\n\nAda: @claude hurry\n\nMarco: Thanks\n\nAda: @claude fix it"
+        ),
         "{}",
         texts(&turn)
     );

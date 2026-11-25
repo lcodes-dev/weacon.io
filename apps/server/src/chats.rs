@@ -7,7 +7,7 @@ use core_link::{Agent, Event, Repository, ToCore, Tools};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::db::{self, Chat, Group, GroupMessage, Running, User};
+use crate::db::{self, Chat, Group, GroupMessage, NewChat, Running, User};
 use crate::teams::{membership, refused};
 use crate::{ApiError, AppState, github, not_found};
 
@@ -25,14 +25,11 @@ pub async fn list(
 #[derive(Deserialize)]
 pub struct Start {
     agent: String,
-    pub machine_id: String,
-    pub branch: String,
-    pub text: String,
+    machine_id: String,
+    branch: String,
+    text: String,
     /// The task of the project the chat is for, if any.
-    pub task_id: Option<String>,
-    /// The group its agent answers in, which only a call in that group sets.
-    #[serde(skip)]
-    pub group_id: Option<String>,
+    task_id: Option<String>,
 }
 
 /// Starts a chat with its first message, on one of the person's own machines.
@@ -70,7 +67,17 @@ pub async fn start(
             return Err(refused("A chat is for a task of its own project"));
         }
     }
-    let id = db::start_chat(&state.pool, &project_id, &user.id, agent.program(), &start).await?;
+    let chat = NewChat {
+        project_id: &project_id,
+        user_id: &user.id,
+        machine_id: &start.machine_id,
+        agent: agent.program(),
+        branch: &start.branch,
+        asked: &start.text,
+        task_id: start.task_id.as_deref(),
+        group: None,
+    };
+    let id = db::start_chat(&state.pool, &chat).await?;
     run(&state, &start.machine_id, &id);
     Ok(Json(json!({"id": id})))
 }
@@ -191,42 +198,23 @@ pub fn tagged(text: &str) -> Vec<Agent> {
     Agent::ALL.into_iter().filter(called).collect()
 }
 
-fn agent_name(program: &str) -> &'static str {
-    match program {
-        "codex" => "Codex",
-        _ => "Claude Code",
-    }
-}
-
-/// What a person's agent is told when they call it in a group: what was written there since
-/// they last called it, each message with who wrote it, and whom it works for. Its own
+/// What a person's agent is told when they call it in a group: what was `written` there
+/// since it was last told, each message with who wrote it, and whom it works for. Its own
 /// answers, in the chat `own`, it knows already.
-fn told(
-    group: &Group,
-    user: &User,
-    agent: Agent,
-    own: Option<&str>,
-    written: &[GroupMessage],
-) -> String {
+fn told(group: &Group, user: &User, own: Option<&str>, written: &[GroupMessage]) -> String {
     let others = group.members.iter().filter(|member| member.id != user.id);
     let others: Vec<&str> = others.map(|member| member.name.as_str()).collect();
     let title = match &group.name {
         Some(name) => format!("In the group \"{name}\""),
         None => format!("In a group with {}", others.join(", ")),
     };
-    let calls = |message: &GroupMessage| {
-        let theirs = message.agent.is_none() && message.user_id.as_deref() == Some(&user.id);
-        theirs && tagged(&message.text).contains(&agent)
-    };
-    let earlier = &written[..written.len().saturating_sub(1)];
-    let since = earlier.iter().rposition(calls).map_or(0, |last| last + 1);
-    let since = written[since..]
+    let news = written
         .iter()
         .filter(|message| own.is_none() || message.chat_id.as_deref() != own);
-    let lines = since.map(|message| {
+    let lines = news.map(|message| {
         let person = message.user.as_deref().unwrap_or("Someone who left");
-        match &message.agent {
-            Some(agent) => format!("{person}'s {}: {}", agent_name(agent), message.text),
+        match message.agent.as_deref().and_then(Agent::named) {
+            Some(agent) => format!("{person}'s {}: {}", agent.name(), message.text),
             None => format!("{person}: {}", message.text),
         }
     });
@@ -244,59 +232,67 @@ fn told(
 }
 
 /// Has the agent of who just wrote in a group answer there: the first time it starts that
-/// person's chat with it for the group, later that chat's next turn. Says why when nothing runs.
+/// person's chat with it for the group, later that chat's next turn. Gives why when nothing runs.
 pub async fn called(
     state: &AppState,
     user: &User,
     team_id: &str,
     group: &Group,
     agent: Agent,
-) -> Result<(), ApiError> {
-    let name = agent_name(agent.program());
-    let no_project = || refused("This group has no project for an agent to work on");
-    let project_id = group.project_id.as_deref().ok_or_else(no_project)?;
-    let written = db::group_messages(&state.pool, &group.id, "").await?;
-    let chat = db::group_chat(&state.pool, &group.id, &user.id, agent.program()).await?;
+) -> Result<Option<String>, ApiError> {
+    let (name, program) = (agent.name(), agent.program());
+    let Some(project_id) = group.project_id.as_deref() else {
+        return Ok(Some(
+            "This group has no project for an agent to work on".into(),
+        ));
+    };
+    let chat = db::group_chat(&state.pool, &group.id, &user.id, program).await?;
+    let heard = chat.as_ref().and_then(|chat| chat.told.as_deref());
+    let written = db::group_messages(&state.pool, &group.id, heard.unwrap_or_default()).await?;
+    let Some(newest) = written.last().map(|message| message.id.as_str()) else {
+        return Ok(None);
+    };
     let own = chat.as_ref().map(|chat| chat.id.as_str());
-    let text = told(group, user, agent, own, &written);
-    if let Some(chat) = chat {
-        if !db::ask_chat(&state.pool, &chat.id, &text).await? {
+    let asked = told(group, user, own, &written);
+    if let Some(chat) = &chat {
+        if !db::ask_chat(&state.pool, &chat.id, &asked, Some(newest)).await? {
             let working = format!("Your {name} is still working on what you last asked it here");
-            return Err(refused(working));
+            return Ok(Some(working));
         }
         run(state, &chat.machine_id, &chat.id);
-        return Ok(());
+        return Ok(None);
     }
     let projects = db::projects(&state.pool, team_id).await?;
     let project = projects.iter().find(|project| project.id == project_id);
-    let branches = project.into_iter().flat_map(|project| &project.branches);
-    let mapped = branches
-        .into_iter()
-        .find(|branch| branch.commit_sha.is_some());
-    let branch = mapped.ok_or_else(|| refused("The group's project has no mapped branch yet"))?;
+    let mut branches = project.into_iter().flat_map(|project| &project.branches);
+    let Some(branch) = branches.find(|branch| branch.commit_sha.is_some()) else {
+        return Ok(Some("The group's project has no mapped branch yet".into()));
+    };
     let machines = db::machines(&state.pool, &user.id).await?;
     let ready = |machine: &&db::Machine| {
         let agents: Vec<Value> = serde_json::from_str(&machine.agents).unwrap_or_default();
-        let signed_in =
-            |found: &Value| found["agent"] == agent.program() && found["ready"] == "signed_in";
+        let signed_in = |found: &Value| found["agent"] == program && found["ready"] == "signed_in";
         agents.iter().any(signed_in)
     };
     let mut ready: Vec<&db::Machine> = machines.iter().filter(ready).collect();
     // One that is connected before one that is away, where the turn would wait.
     ready.sort_by_key(|machine| !state.cores.connected(&machine.id));
-    let none = || refused(format!("None of your machines has {name} signed in"));
-    let machine = ready.first().ok_or_else(none)?;
-    let start = Start {
-        agent: agent.program().into(),
-        machine_id: machine.id.clone(),
-        branch: branch.name.clone(),
-        text,
-        task_id: None,
-        group_id: Some(group.id.clone()),
+    let Some(machine) = ready.first() else {
+        return Ok(Some(format!("None of your machines has {name} signed in")));
     };
-    let id = db::start_chat(&state.pool, project_id, &user.id, agent.program(), &start).await?;
+    let chat = NewChat {
+        project_id,
+        user_id: &user.id,
+        machine_id: &machine.id,
+        agent: program,
+        branch: &branch.name,
+        asked: &asked,
+        task_id: None,
+        group: Some((&group.id, newest)),
+    };
+    let id = db::start_chat(&state.pool, &chat).await?;
     run(state, &machine.id, &id);
-    Ok(())
+    Ok(None)
 }
 
 /// The chat's next turn.
@@ -315,7 +311,7 @@ pub async fn say(
     if text.is_empty() {
         return Err(refused("Write what the agent should do"));
     }
-    if !db::ask_chat(&state.pool, &id, text).await? {
+    if !db::ask_chat(&state.pool, &id, text, None).await? {
         return Err(busy());
     }
     run(&state, machine, &id);
@@ -358,7 +354,7 @@ pub async fn allow_host(
     }
     db::allow_chat_host(&state.pool, &id, &host).await?;
     let again = format!("{host} can be reached now. Try again what needed it.");
-    if db::ask_chat(&state.pool, &id, &again).await? {
+    if db::ask_chat(&state.pool, &id, &again, None).await? {
         run(&state, machine, &id);
     }
     Ok(StatusCode::ACCEPTED)

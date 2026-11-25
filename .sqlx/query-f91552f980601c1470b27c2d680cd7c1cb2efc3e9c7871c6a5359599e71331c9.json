@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE chats SET running = 1, asked = ?, told = COALESCE(?, told),\n                tools_token = lower(hex(randomblob(32)))\n         WHERE id = ? AND running = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "f91552f980601c1470b27c2d680cd7c1cb2efc3e9c7871c6a5359599e71331c9"
+}
