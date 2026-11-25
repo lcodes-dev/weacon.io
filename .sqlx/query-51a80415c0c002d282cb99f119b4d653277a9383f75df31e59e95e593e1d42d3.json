@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE group_members SET read = (SELECT MAX(id) FROM group_messages WHERE group_id = ?1)\n         WHERE group_id = ?1 AND user_id = ?2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "51a80415c0c002d282cb99f119b4d653277a9383f75df31e59e95e593e1d42d3"
+}

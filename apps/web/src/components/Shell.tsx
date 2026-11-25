@@ -2,19 +2,19 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
 import { lazy, Suspense, useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { agents, api, type Chat, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { agents, api, groupName, type Chat, type Group, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
 import { ChatPage } from "../routes/Chat"
+import { GroupPage } from "../routes/Group"
 import { Machines } from "../routes/Machines"
 import { MailSettings } from "../routes/MailSettings"
 import { NewChat } from "../routes/NewChat"
+import { NewGroup } from "../routes/NewGroup"
 import { ProjectPage } from "../routes/Project"
 import { TasksPage } from "../routes/ProjectTasks"
 import { TeamSettings } from "../routes/TeamSettings"
 
 // The docs page is the largest, so it is fetched when first opened.
 const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
-
-const sections = ["Direct", "Groups"]
 
 export function Shell({ user }: { user: User }) {
   const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
@@ -40,12 +40,8 @@ export function Shell({ user }: { user: User }) {
           <a className="rounded-md px-2 py-1.5 hover:bg-hov">Docs</a>
         </nav>
         <Projects team={team} />
+        <Groups team={team} user={user} />
         <Chats team={team} user={user} />
-        {sections.map((section) => (
-          <h2 key={section} className="px-2 pt-2 font-mono text-[10px] tracking-wider text-ink3 uppercase">
-            {section}
-          </h2>
-        ))}
         <YourMachines />
         <div className="mt-auto flex flex-col gap-2">
           {user.is_owner && <OwnerMail />}
@@ -64,6 +60,8 @@ export function Shell({ user }: { user: User }) {
           />
           <Route path="/projects/:id/tasks" element={<TasksPage team={team} user={user} />} />
           <Route path="/projects/:id" element={<ProjectPage team={team} />} />
+          <Route path="/groups/new" element={<NewGroup team={team} user={user} />} />
+          <Route path="/groups/:id" element={<GroupPage team={team} user={user} />} />
           <Route path="/chats/new" element={<NewChat team={team} />} />
           <Route path="/chats/:id" element={<ChatPage team={team} />} />
           <Route path="/settings/team" element={<TeamSettings key={team.id} team={team} user={user} />} />
@@ -92,6 +90,29 @@ function Projects({ team }: { team: Team }) {
       ))}
       <Link to="/projects/new" className="rounded-md px-2 py-1.5 text-ink2 hover:bg-hov">
         New project
+      </Link>
+    </nav>
+  )
+}
+
+/** The groups you are in, the one written in last first, each with a dot while it has something unread. */
+function Groups({ team, user }: { team: Team; user: User }) {
+  const groups = useQuery({
+    queryKey: ["groups", team.id],
+    queryFn: () => api<Group[]>("GET", `/teams/${team.id}/groups`),
+    refetchInterval: 5000,
+  })
+  return (
+    <nav className="flex flex-col">
+      <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">Groups</h2>
+      {groups.data?.map((group) => (
+        <Link key={group.id} to={`/groups/${group.id}`} className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-hov">
+          <span className={`size-2 shrink-0 rounded-full ${group.unread ? "bg-pri" : "bg-transparent"}`} aria-label={group.unread ? "Unread" : undefined} />
+          <span className={`truncate ${group.unread ? "font-semibold" : ""}`}>{groupName(group, user.id)}</span>
+        </Link>
+      ))}
+      <Link to="/groups/new" className="rounded-md px-2 py-1.5 text-ink2 hover:bg-hov">
+        New group
       </Link>
     </nav>
   )

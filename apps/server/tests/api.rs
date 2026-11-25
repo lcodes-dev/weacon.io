@@ -3480,3 +3480,270 @@ async fn a_task_is_offered_the_pages_of_the_docs_that_are_about_it() {
     eve.sign_in("eve@example.com", Some("Eve")).await;
     assert_eq!(eve.get(&offered).await.0, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn a_chat_is_deleted_once_its_machine_has_removed_its_folder() {
+    let (state, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut marco = Client::new(&state);
+    let invite = ada.invite("marco@example.com").await;
+    marco.sign_in("marco@example.com", Some("Marco")).await;
+    marco
+        .post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    let tasks = ada.project("/tasks");
+    let (_, task) = ada.post(&tasks, json!({"title": "Returns link"})).await;
+
+    // A chat whose turn has ended, as its page's address.
+    let ended = async |ada: &mut Client, laptop: &mut Socket| {
+        let start = json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Do it", "task_id": task["id"]});
+        let (_, started) = ada.post(&ada.project("/chats"), start).await;
+        let id = started["id"].as_str().unwrap().to_owned();
+        let path = ada.team(&format!("/chats/{id}"));
+        heard(laptop).await.unwrap();
+        assert_eq!(ada.delete(&path).await, StatusCode::CONFLICT);
+        let done = json!({"kind": "done", "session": "s-1", "changed": [], "diff": ""});
+        said(
+            laptop,
+            json!({"type": "event", "chat": id, "number": 1, "event": done}),
+        )
+        .await;
+        chat(ada, &path, false).await;
+        (id, path)
+    };
+    let (id, path) = ended(&mut ada, &mut laptop).await;
+    assert_eq!(marco.delete(&path).await, StatusCode::FORBIDDEN);
+
+    // The machine is asked to remove the folder, and the chat goes only once it has.
+    let forgot = async |laptop: &mut Socket, answer: Value| {
+        let asked = heard(laptop).await.unwrap();
+        said(
+            laptop,
+            json!({"type": "answer", "id": asked["id"], "answer": answer}),
+        )
+        .await;
+        assert_eq!(heard(laptop).await.unwrap()["type"], "taken");
+        asked
+    };
+    let (status, _) = tokio::join!(
+        ada.delete(&path),
+        forgot(&mut laptop, json!({"Err": "The disk is locked"}))
+    );
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(ada.get(&path).await.0, StatusCode::OK);
+    let (status, asked) = tokio::join!(ada.delete(&path), forgot(&mut laptop, json!({"Ok": ""})));
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        asked,
+        json!({"type": "forget", "id": asked["id"], "chat": id})
+    );
+    assert_eq!(ada.get(&path).await.0, StatusCode::NOT_FOUND);
+    // The task it was for stays.
+    assert_eq!(ada.get(&tasks).await.1[0]["title"], "Returns link");
+
+    // A machine that is away can't be asked; one that was removed has no folder to reach.
+    let (_, path) = ended(&mut ada, &mut laptop).await;
+    drop(laptop);
+    machines(&mut ada, false, None).await;
+    assert_eq!(ada.delete(&path).await, StatusCode::UNPROCESSABLE_ENTITY);
+    let removed = format!("/api/machines/{}", machine.as_str().unwrap());
+    ada.delete(&removed).await;
+    assert_eq!(ada.delete(&path).await, StatusCode::NO_CONTENT);
+    assert_eq!(ada.get(&ada.team("/chats")).await.1, json!([]));
+}
+
+#[tokio::test]
+async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read() {
+    let state = server().await;
+    let (mut ada, mut marco) = ada_and_marco(&state).await;
+    let mut lena = Client::new(&state);
+    let invite = ada.invite("lena@example.com").await;
+    lena.sign_in("lena@example.com", Some("Lena")).await;
+    lena.post(&format!("/api/invites/{invite}/accept"), Value::Null)
+        .await;
+    let mut zoe = Client::new(&state);
+    zoe.sign_in("zoe@example.com", Some("Zoe")).await;
+    let (_, team) = ada.get(&ada.team("")).await;
+    let id = |name: &str| {
+        let members = team["members"].as_array().unwrap().iter();
+        members
+            .clone()
+            .find(|member| member["name"] == name)
+            .unwrap()["id"]
+            .clone()
+    };
+    let (_, zoes) = zoe.get(&zoe.team("")).await;
+    let outsider = zoes["members"][0]["id"].clone();
+    let (_, shop) = ada
+        .post(
+            &ada.team("/projects"),
+            json!({"name": "Storefront", "key": "SF"}),
+        )
+        .await;
+    let (_, hers) = zoe
+        .post(&zoe.team("/projects"), json!({"name": "Hers", "key": "HE"}))
+        .await;
+    let groups = ada.team("/groups");
+
+    // A group's members are of its team, and so is its project.
+    for refused in [
+        json!({"members": [outsider]}),
+        json!({"members": [id("Marco")], "project_id": hers["id"]}),
+    ] {
+        let (status, _) = ada.post(&groups, refused).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+    let (status, direct) = ada
+        .post(&groups, json!({"members": [id("Marco")], "name": " "}))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let wrap = json!({"members": [id("Marco"), id("Lena")], "name": " Gift wrap ", "project_id": shop["id"]});
+    let (_, wrap) = ada.post(&groups, wrap).await;
+    let path = |group: &Value| format!("{groups}/{}", group["id"].as_str().unwrap());
+    let (direct, wrap) = (path(&direct), path(&wrap));
+    let (_, listed) = marco.get(&groups).await;
+    let people = |names: &[&str]| {
+        json!(
+            names
+                .iter()
+                .map(|name| json!({"id": id(name), "name": name}))
+                .collect::<Vec<_>>()
+        )
+    };
+    assert_eq!(
+        listed,
+        json!([
+            {"id": listed[0]["id"], "name": "Gift wrap", "project_id": shop["id"], "project": "Storefront",
+             "members": people(&["Ada", "Lena", "Marco"]), "unread": false},
+            {"id": listed[1]["id"], "name": null, "project_id": null, "project": null,
+             "members": people(&["Ada", "Marco"]), "unread": false},
+        ])
+    );
+
+    // What one writes the others read, in order, and a group is unread until its page is asked for.
+    let write = |text: &str| json!({"text": text});
+    let (status, _) = ada.post(&format!("{direct}/messages"), write(" ")).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    ada.post(
+        &format!("{direct}/messages"),
+        write(" Any idea why e2e is flaky? "),
+    )
+    .await;
+    let unread = async |client: &mut Client| {
+        let (_, listed) = client.get(&groups).await;
+        let named = |group: &Value| {
+            (
+                group["name"].as_str().unwrap_or("direct").to_owned(),
+                group["unread"] == true,
+            )
+        };
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(named)
+            .collect::<Vec<_>>()
+    };
+    // The one written in last comes first.
+    assert_eq!(
+        unread(&mut marco).await,
+        [("direct".to_owned(), true), ("Gift wrap".to_owned(), false)]
+    );
+    assert_eq!(unread(&mut ada).await[0], ("direct".to_owned(), false));
+    let (_, shown) = marco.get(&direct).await;
+    let first = &shown["messages"][0];
+    assert_eq!(
+        (&first["user"], &first["user_id"], &first["text"]),
+        (
+            &json!("Ada"),
+            &id("Ada"),
+            &json!("Any idea why e2e is flaky?")
+        )
+    );
+    assert_eq!(unread(&mut marco).await[0], ("direct".to_owned(), false));
+    marco
+        .post(
+            &format!("{direct}/messages"),
+            write("A fixed wait, I think"),
+        )
+        .await;
+    let after = format!("{direct}?after={}", first["id"].as_str().unwrap());
+    let (_, later) = ada.get(&after).await;
+    let texts: Vec<&str> = later["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["A fixed wait, I think"]);
+
+    // Someone of the team who isn't in a group neither reads it, writes in it nor sees it.
+    assert_eq!(lena.get(&direct).await.0, StatusCode::NOT_FOUND);
+    let (status, _) = lena
+        .post(&format!("{direct}/messages"), write("Hello"))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(unread(&mut lena).await, [("Gift wrap".to_owned(), false)]);
+    assert_eq!(zoe.get(&groups).await.0, StatusCode::NOT_FOUND);
+
+    // Someone added reads what came before; a group is renamed, and given a project once.
+    let joining = json!({"user_id": id("Lena")});
+    assert_eq!(
+        marco.post(&format!("{direct}/members"), joining).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        lena.get(&direct).await.1["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let (status, _) = marco
+        .post(&format!("{direct}/members"), json!({"user_id": outsider}))
+        .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let named = json!({"name": "Flaky tests", "project_id": shop["id"]});
+    assert_eq!(lena.put(&direct, named).await, StatusCode::NO_CONTENT);
+    let (_, blog) = ada
+        .post(&ada.team("/projects"), json!({"name": "Blog", "key": "BL"}))
+        .await;
+    let moved = json!({"name": "Flaky tests", "project_id": blog["id"]});
+    assert_eq!(
+        lena.put(&direct, moved).await,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (_, shown) = ada.get(&direct).await;
+    assert_eq!(
+        (&shown["name"], &shown["project"]),
+        (&json!("Flaky tests"), &json!("Storefront"))
+    );
+
+    // Who leaves reads nothing more, and who is removed from the team leaves its groups.
+    assert_eq!(
+        lena.delete(&format!("{direct}/members/me")).await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(lena.get(&direct).await.0, StatusCode::NOT_FOUND);
+    let removed = ada.team(&format!("/members/{}", id("Marco").as_str().unwrap()));
+    assert_eq!(ada.delete(&removed).await, StatusCode::NO_CONTENT);
+    let (_, shown) = ada.get(&direct).await;
+    assert_eq!(shown["members"], people(&["Ada"]));
+    // What they wrote stays, under their name.
+    assert_eq!(shown["messages"][1]["user"], "Marco");
+
+    // A group nobody is in any more is gone.
+    ada.delete(&format!("{direct}/members/me")).await;
+    ada.delete(&format!("{wrap}/members/me")).await;
+    assert_eq!(unread(&mut ada).await, []);
+    assert_eq!(unread(&mut lena).await, [("Gift wrap".to_owned(), false)]);
+    lena.delete(&format!("{wrap}/members/me")).await;
+    let left: i64 = sqlx::query_scalar!("SELECT COUNT(*) FROM groups")
+        .fetch_one(&state.pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}

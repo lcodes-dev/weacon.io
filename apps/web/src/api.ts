@@ -75,6 +75,27 @@ export type Chat = {
   task: string | null
 }
 
+/** Some members of a team and what they write to each other. One without a name is called by its other members'. */
+export type Group = {
+  id: string
+  name: string | null
+  project_id: string | null
+  project: string | null
+  members: { id: string; name: string }[]
+  /** Whether it has a message you haven't read. */
+  unread: boolean
+}
+
+export type GroupMessage = { id: string; user_id: string | null; user: string | null; text: string; created_at: number }
+
+export type OpenGroup = Group & { messages: GroupMessage[] }
+
+/** What a group is called: its name, or the names of the others in it. */
+export function groupName(group: Group, me: string) {
+  const others = group.members.filter((member) => member.id !== me).map((member) => member.name)
+  return group.name ?? (others.join(", ") || "Only you")
+}
+
 export const statuses = { todo: "To do", doing: "Doing", done: "Done" } as const
 
 export type Status = keyof typeof statuses

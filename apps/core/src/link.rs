@@ -243,6 +243,7 @@ fn asked(work: &Shared, message: ToCore) {
         } => answer(work, id, async move {
             chats::push(&chat, repository, &to, &message, (&name, &mail)).await
         }),
+        ToCore::Forget { id, chat } => answer(work, id, async move { chats::forget(&chat) }),
         ToCore::Taken { id } => {
             work.lock().unwrap().answers.remove(&id);
         }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM group_members WHERE user_id = ?1 AND group_id IN (\n             SELECT id FROM groups WHERE team_id = ?2 AND (?3 IS NULL OR id = ?3))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "fd1b5d9128b81792384ae632df4243d40766aa24b8566f85dd5cc3a94d61af71"
+}

@@ -55,7 +55,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A core doesn't say which version it is.** It could, so that the machines page shows it and says when a core is older than the server expects. *(noted in plan 19)*
 - **A removed machine's background service starts again every few seconds for good,** each time stopping with "not paired". Being removed could also undo `install`. *(seen checking plan 19 on Linux)*
 - **`install` says the service only runs while logged in when lingering was already on** and the system refused to turn it on again. It could look first. *(seen checking plan 19 on Linux)*
-- **A chat can't be deleted,** and its folder stays on the machine for good. Deleting one should remove both. *(plan 21)*
 - **A command of an agent can read any file its person can,** and since plan 23 can send it to a host its chat allows. Plan 25 tried a limit and was dropped for the code it needs: Claude Code has one setting for it that worked; Codex can't close the home and keep the tools installed in it. Its page has the findings. *(plans 21, 23 and 25)*
 - **An agent's program outlives a core that is killed,** until it next prints. The core could end its turns when it is told to stop. *(seen checking plan 21)*
 - **A command Codex ran is shown as Codex quoted it for its shell,** so `\n` reads `\\n`. *(seen checking plan 21)*
@@ -85,4 +84,9 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A task is always offered three pages,** however far they are from it. A page too unlike could be left out. *(plan 29)*
 - **The docs search was tried on one project's docs and twenty questions.** A second project, and one not in English, would say more. *(plan 29)*
 - **The first search after a start loads the model while a request waits,** and on a server that has to fetch it, for as long as 30 MB take. *(plan 29)*
+- **Deleting a chat asks nothing first,** though what it changed and never pushed is lost. It could say so when there is such work. *(plan 30)*
+- **A chat whose machine was removed leaves its folder on that machine,** should its core ever run again. *(plan 30)*
+- **The same two people can have several unnamed groups.** "New group" could open the one they have. *(plan 31)*
+- **A message in a group can't be changed or deleted,** and nothing tells a person of one outside Weacon. *(plan 31)*
+- **A group's page asks again every two seconds.** A WebSocket to browsers would show a message at once, and say who is writing. *(plan 31)*
 

@@ -1,6 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useRef, useState } from "react"
-import { Link, useParams } from "react-router"
+import { Link, useNavigate, useParams } from "react-router"
 import { agents, api, type OpenChat, type Team } from "../api"
 import { ChatEvents, useChatChange } from "../components/ChatEvents"
 
@@ -34,7 +34,7 @@ export function ChatPage({ team }: { team: Team }) {
   const changed = events.some((event) => event.kind === "done" && event.changed.length > 0)
   return (
     <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
-      <Header chat={chat.data} path={path} />
+      <Header chat={chat.data} path={path} team={team} />
       <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
         <ChatEvents chat={chat.data} path={path} />
         {running && <p className="animate-pulse text-ink2">{connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
@@ -47,12 +47,30 @@ export function ChatPage({ team }: { team: Team }) {
 }
 
 /** What the chat is, where it runs, and the hosts its commands may reach. */
-function Header({ chat, path }: Part) {
-  const { title, project, branch, agent, machine, connected, mine, user, hosts, pull_number, pull_url, task } = chat
+function Header({ chat, path, team }: Part & { team: Team }) {
+  const { title, project, branch, agent, machine, connected, mine, running, user, hosts, pull_number, pull_url, task } = chat
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const forget = useChatChange(path, (host: string) => api("DELETE", `${path}/hosts/${host}`))
+  // Its folder on the machine goes with it, and what it changed there and never pushed.
+  const remove = useMutation({
+    mutationFn: () => api("DELETE", path),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["chats", team.id] })
+      navigate("/")
+    },
+  })
   return (
     <header className="flex flex-col gap-1 border-b border-line py-4">
-      <h1 className="text-[17px] font-semibold">{title}</h1>
+      <div className="flex items-start gap-3">
+        <h1 className="flex-1 text-[17px] font-semibold">{title}</h1>
+        {mine && !running && (
+          <button type="button" className="btn btn-sm" disabled={remove.isPending} onClick={() => remove.mutate()}>
+            Delete chat
+          </button>
+        )}
+      </div>
+      {remove.error && <p className="text-acc">{remove.error.message}</p>}
       <span className="lbl flex items-center gap-2">
         {project} · {branch} · {agents[agent].name} ·
         <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />

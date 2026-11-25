@@ -1,0 +1,76 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", name, project_id, project, members AS \"members!: Json<Vec<GroupMember>>\",\n                  (last IS NOT NULL AND last IS NOT read) AS \"unread!: bool\"\n           FROM (SELECT g.id, g.name, g.project_id, p.name AS project, mine.read,\n                        (SELECT MAX(m.id) FROM group_messages m WHERE m.group_id = g.id) AS last,\n                        (SELECT json_group_array(json_object('id', id, 'name', name)) FROM (\n                             SELECT u.id, u.name FROM group_members m JOIN users u ON u.id = m.user_id\n                             WHERE m.group_id = g.id ORDER BY u.name)) AS members\n                 FROM group_members mine JOIN groups g ON g.id = mine.group_id\n                      LEFT JOIN projects p ON p.id = g.project_id\n                 WHERE mine.user_id = ? AND g.team_id = ?)\n           ORDER BY COALESCE(last, id) DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "project_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "groups",
+            "name": "project_id"
+          }
+        }
+      },
+      {
+        "name": "project",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "projects",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "members!: Json<Vec<GroupMember>>",
+        "ordinal": 4,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "unread!: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "15802c915bff1fc53819deffdf9e921acd13388e9c5e10bc1f4e8d558bf88853"
+}

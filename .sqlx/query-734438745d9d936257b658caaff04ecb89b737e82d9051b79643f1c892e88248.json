@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE groups SET name = ?, project_id = COALESCE(project_id, ?) WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "734438745d9d936257b658caaff04ecb89b737e82d9051b79643f1c892e88248"
+}

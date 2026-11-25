@@ -4,6 +4,7 @@ mod config;
 pub mod db;
 mod docs;
 mod github;
+mod groups;
 mod machines;
 pub mod mail;
 pub mod map;
@@ -154,12 +155,29 @@ pub fn router(state: AppState) -> Router {
             get(tasks::docs),
         )
         .route("/tools", post(tools::call))
+        .route("/teams/{id}/groups", get(groups::list).post(groups::create))
+        .route(
+            "/teams/{id}/groups/{group_id}",
+            get(groups::show).put(groups::change),
+        )
+        .route("/teams/{id}/groups/{group_id}/members", post(groups::add))
+        .route(
+            "/teams/{id}/groups/{group_id}/members/me",
+            delete(groups::leave),
+        )
+        .route(
+            "/teams/{id}/groups/{group_id}/messages",
+            post(groups::write),
+        )
         .route("/teams/{id}/chats", get(chats::list))
         .route(
             "/teams/{id}/projects/{project_id}/chats",
             post(chats::start),
         )
-        .route("/teams/{id}/chats/{chat_id}", get(chats::show))
+        .route(
+            "/teams/{id}/chats/{chat_id}",
+            get(chats::show).delete(chats::delete),
+        )
         .route("/teams/{id}/chats/{chat_id}/messages", post(chats::say))
         .route("/teams/{id}/chats/{chat_id}/stop", post(chats::stop))
         .route("/teams/{id}/chats/{chat_id}/diff", get(chats::diff))

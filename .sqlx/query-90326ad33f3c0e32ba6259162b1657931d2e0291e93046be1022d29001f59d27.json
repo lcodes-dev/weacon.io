@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO groups (id, team_id, name, project_id, created_at) VALUES (?, ?, ?, ?, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "90326ad33f3c0e32ba6259162b1657931d2e0291e93046be1022d29001f59d27"
+}

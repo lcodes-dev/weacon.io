@@ -160,6 +160,17 @@ pub fn stop(work: &Shared, chat: &str) {
     }
 }
 
+/// Removes a deleted chat's folder, which may be gone already.
+pub fn forget(chat: &str) -> Result<String, String> {
+    let folder = folder(chat).ok_or("This isn't a chat's folder")?;
+    match std::fs::remove_dir_all(folder) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("The chat's folder couldn't be removed: {error}"))
+        }
+        _ => Ok(String::new()),
+    }
+}
+
 /// Commits and pushes what a chat's folder holds changed, and returns the commit.
 pub async fn push(
     chat: &str,

@@ -74,7 +74,7 @@ pub async fn start(
 pub struct After {
     /// The last event the web app has, or nothing for all of them.
     #[serde(default)]
-    after: String,
+    pub after: String,
 }
 
 /// A chat and what happened in it after an event. Every member of the team may read it.
@@ -145,6 +145,32 @@ fn busy() -> ApiError {
 #[derive(Deserialize)]
 pub struct Message {
     text: String,
+}
+
+/// Deletes a chat, once its machine has removed its folder. A chat whose machine was removed
+/// has none that can be reached.
+pub async fn delete(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let chat = own(&state, &user, &team_id, &id).await?;
+    if chat.running {
+        return Err(busy());
+    }
+    if chat.machine_id.is_some() {
+        let machine = connected(&state, &chat)?;
+        let name = chat.machine.as_deref().unwrap_or_default();
+        let slow = format!("{name} took too long to remove the chat's folder");
+        let asked = |id| ToCore::Forget {
+            id,
+            chat: chat.id.clone(),
+        };
+        let forgotten = crate::machines::answered(&state, (machine, name), &slow, asked).await;
+        forgotten.map_err(refused)?;
+    }
+    db::delete_chat(&state.pool, &chat.id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The chat's next turn.

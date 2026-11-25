@@ -49,6 +49,30 @@ export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
   )
 }
 
+/** Markdown someone or an agent wrote, with nothing in it fetched from another host or run. */
+export function Said({ text }: { text: string }) {
+  return (
+    <div className="prose">
+      {/* An image on another host would be fetched on sight, so it is shown as a link. */}
+      <Markdown
+        options={{
+          disableParsingRawHTML: true,
+          forceBlock: true,
+          sanitizer: safeUrl,
+          overrides: {
+            img: ({ src, alt }: { src?: string; alt?: string }) => <a href={src}>{alt || src}</a>,
+            // An agent links to files in its folder, which aren't pages here.
+            a: ({ href, children }: { href?: string; children?: ReactNode }) =>
+              /^(https?|mailto):/.test(href ?? "") ? <a href={href}>{children}</a> : <>{children}</>,
+          },
+        }}
+      >
+        {text}
+      </Markdown>
+    </div>
+  )
+}
+
 function Event({ event, user, project, diff }: { event: ChatEvent; user: string; project: string; diff?: string }) {
   switch (event.kind) {
     case "asked":
@@ -59,26 +83,7 @@ function Event({ event, user, project, diff }: { event: ChatEvent; user: string;
         </div>
       )
     case "said":
-      return (
-        <div className="prose">
-          {/* An image on another host would be fetched on sight, so it is shown as a link. */}
-          <Markdown
-            options={{
-              disableParsingRawHTML: true,
-              forceBlock: true,
-              sanitizer: safeUrl,
-              overrides: {
-                img: ({ src, alt }: { src?: string; alt?: string }) => <a href={src}>{alt || src}</a>,
-                // An agent links to files in its folder, which aren't pages here.
-                a: ({ href, children }: { href?: string; children?: ReactNode }) =>
-                  /^(https?|mailto):/.test(href ?? "") ? <a href={href}>{children}</a> : <>{children}</>,
-              },
-            }}
-          >
-            {event.text}
-          </Markdown>
-        </div>
-      )
+      return <Said text={event.text} />
     case "did": {
       const Icon = icons[event.deed]
       return (

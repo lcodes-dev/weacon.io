@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM groups WHERE team_id = ?\n         AND NOT EXISTS (SELECT 1 FROM group_members m WHERE m.group_id = groups.id)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "7c9f0bb33f933e5e45b1e40112f706c8ba2ff79b3e4ed9b4173c227c6669ca95"
+}
