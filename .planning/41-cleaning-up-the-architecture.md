@@ -18,21 +18,21 @@ Goal: now that every feature is built, the code reads like a well-kept Laravel a
 
 ```
 apps/server/src/
-  main.rs       reads the settings, opens the database, starts the queue, the schedule and the server
-  lib.rs        AppState
-  routes.rs     every route and its handler, in one table
-  error.rs      ApiError and its kinds: not found, invalid, forbidden, conflict
-  auth.rs       who is asking: a signed-in user, the server's owner, a team's member or owner
-  http/         the handlers, one file per resource, thin: check, call, answer
-  db/           every query, one file per area, as sqlx checks them at build time
-  jobs/         the queue and one file per job
-  …             what the server talks to: github, anthropic, mail, cores, live, search, secrets
+  main.rs       reads the settings, opens the database, resumes the queue, starts the schedule and the server
+  lib.rs        the areas and AppState
+  routes.rs     every route and its handler; auth::team_member guards the team's routes
+  error.rs      ApiError and its kinds
+  auth.rs       who is asking: a signed-in user, the server's owner, a team's member
+  db.rs         opening the pool and making ids
+  jobs.rs       the queue
+  live.rs       the socket that tells browsers what changed
+  accounts/ settings/ projects/ docs/ chats/ machines/ groups/ tasks/
+                one folder per area: db.rs its queries, http.rs its handlers, mod.rs and further files the rest
 ```
 
-- **The queue** (`jobs/`) is a table, `jobs`, in the same database: a job is a row holding its kind and its fields as JSON and, while it runs, when it started. `jobs::dispatch` saves the row and runs it at once in a task of its own, with the state that dispatched it. A job runs once: an error or a panic runs its `failed` step, and the row goes. At startup a row that had started is failed with "The server restarted", and one that hadn't is run. A job with a unique key, such as the map's round, is dispatched only while no other with that key waits or runs.
-- **No retries.** Every job here either may have done part of its work before it failed (a task made, a page proposed) or is run again anyway (the map's round, every minute). Retrying would need each job to be safe to run twice, which none needs today.
-- **Jobs:** `MapBranches` (every minute and when a project's branches change), `WriteDocs`, `AnswerDocsRequest`, `CheckPage`, `AnswerAsWeacon` and `StartTurn`. The five ways above become this one.
-- **One database, not two.** A second SQLite file for the queue was considered. In the same file nothing has to be kept in step between two files, there is one pool, one set of migrations and one backup. Jobs here are a few a minute, so they don't slow the rest down. A second file can come back if that changes.
+- **The queue** (`jobs.rs`) works like Rails' Active Job. A job is a row of `jobs` holding its kind and fields as JSON, its attempts, when it runs next and its last error. `jobs::perform_later` saves the row and runs it at once in a task of its own. A failure that may pass (a 5xx) is retried after `attempts⁴ + 2` seconds, up to three attempts; one that won't (a 4xx) or a panic is discarded; then the job's `failed` step runs and the row goes. At startup a row that was running counts as a failed attempt. Every step is logged with the job's name and id.
+- **Jobs:** `MapBranches` and `AnswerAsWeacon` are tried once: the round comes again every minute, and a call may already have made a task. `WriteDocs`, `AnswerDocsRequest`, `CheckPage` and `StartTurn` are tried three times.
+- **One database, not two.** A second SQLite file for the queue was considered. In the same file there is one pool, one set of migrations and one backup. Jobs here are a few a minute, so they don't slow the rest down. A second file can come back if that changes.
 - **`weacon_calls` goes:** a call is its job, whose unique key is its group, so "working" is whether that job is there.
 
 ## Steps
@@ -63,3 +63,14 @@ apps/server/src/
 - [x] `docs/architecture.md`, `AGENTS.md` and the README match the code
 - [x] `scripts/check.sh` passes
 - [x] A pull request for Lorenzo's review
+
+### Cycle 3: Lorenzo's review of the pull request, 26 November
+
+- [x] Every comment goes, but for a dozen on what the code can't show (a sandbox's reason, a security header, GitHub's clock rule)
+- [x] The server in one folder per area, with `db.rs`, `http.rs` and `mod.rs`, in place of a file per thing: 69 files become 43
+- [x] The queue as Active Job: `perform_later`, `perform`, retries with a polynomial wait, discards on a 4xx, a log line for each step
+- [x] Membership checked once, by a middleware on the team's routes, in place of a line in 27 handlers
+- [x] Formatted to 110 columns with the widest heuristics, and a value's steps joined where they fit one line: about 2,400 lines fewer
+- [x] The web app in one folder per area too, with the small team settings, docs and board files joined into the pages that use them
+- [x] The core's setup and service files joined, and doc-search's embedding into its lib
+
