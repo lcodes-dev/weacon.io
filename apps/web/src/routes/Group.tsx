@@ -18,6 +18,8 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
     queryFn: async () => {
       const had = queryClient.getQueryData<OpenGroup>(["group", path])?.messages ?? []
       const now = await api<OpenGroup>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
+      // Asking marked these read, so the sidebar's list, asked at the same time, may still show them unread.
+      if (now.messages.length) queryClient.invalidateQueries({ queryKey: ["groups", team.id] })
       return { ...now, messages: [...had, ...now.messages] }
     },
   })
