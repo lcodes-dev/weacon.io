@@ -15,8 +15,10 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
 use tower::ServiceExt;
-use weacon_server::jobs::{self, Job, MapBranches};
-use weacon_server::{AppState, db, router, secrets};
+use weacon_server::AppState;
+use weacon_server::jobs::Job;
+use weacon_server::projects::maps::MapBranches;
+use weacon_server::router;
 
 struct Client {
     state: AppState,
@@ -28,7 +30,7 @@ struct Client {
 
 async fn server() -> AppState {
     AppState {
-        pool: db::memory().await,
+        pool: weacon_server::db::memory().await,
         url: "http://weacon.test".into(),
         github_api: "http://127.0.0.1:1".into(),
         anthropic_api: "http://127.0.0.1:1".into(),
@@ -36,13 +38,13 @@ async fn server() -> AppState {
         live: Default::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
-        server_key: secrets::ServerKey::random(),
+        server_key: weacon_server::settings::secrets::ServerKey::random(),
     }
 }
 
 async fn map_branches(state: &AppState) {
     jobs_done(state).await;
-    jobs::dispatch(state, Job::MapBranches(MapBranches))
+    weacon_server::jobs::dispatch(state, Job::MapBranches(MapBranches))
         .await
         .unwrap();
     jobs_done(state).await;
@@ -50,7 +52,11 @@ async fn map_branches(state: &AppState) {
 
 async fn jobs_done(state: &AppState) {
     for _ in 0..500 {
-        if db::jobs::all(&state.pool).await.unwrap().is_empty() {
+        if weacon_server::jobs::all(&state.pool)
+            .await
+            .unwrap()
+            .is_empty()
+        {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -393,7 +399,7 @@ async fn the_owner_saves_and_clears_smtp() {
     without.as_object_mut().unwrap().remove("password");
     owner.put("/api/config/mail", without).await;
     assert_eq!(
-        db::settings::smtp(&state.pool, &state.server_key)
+        weacon_server::settings::db::smtp(&state.pool, &state.server_key)
             .await
             .unwrap()
             .unwrap()
@@ -424,9 +430,11 @@ async fn the_owner_saves_and_clears_smtp() {
 async fn secrets_are_sealed_with_a_key_outside_the_database() {
     let folder = std::env::temp_dir().join(format!("weacon-key-{:x}", rand::random::<u64>()));
     std::fs::create_dir_all(&folder).unwrap();
-    let pool = db::memory().await;
+    let pool = weacon_server::db::memory().await;
     let key_file = folder.join("weacon.key");
-    let server_key = secrets::load(&pool, &key_file).await.unwrap();
+    let server_key = weacon_server::settings::secrets::load(&pool, &key_file)
+        .await
+        .unwrap();
     let state = AppState {
         pool,
         server_key,
@@ -451,11 +459,12 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
     .await
     .unwrap();
     assert!(!stored.0.contains("smtp-secret") && !stored.1.contains("sk-ant-secret"));
-    let smtp = db::settings::smtp(&state.pool, &state.server_key)
+    let smtp = weacon_server::settings::db::smtp(&state.pool, &state.server_key)
         .await
         .unwrap();
     assert_eq!(smtp.unwrap().password.as_deref(), Some("smtp-secret"));
-    let api_key = db::settings::api_key(&state.pool, &state.server_key, &ada.team_id).await;
+    let api_key =
+        weacon_server::settings::db::api_key(&state.pool, &state.server_key, &ada.team_id).await;
     assert_eq!(api_key.unwrap().unwrap().0, "sk-ant-secret");
 
     sqlx::query("UPDATE teams SET writer_key = ? WHERE id = ?")
@@ -465,22 +474,32 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
         .await
         .unwrap();
     assert!(
-        db::settings::api_key(&state.pool, &state.server_key, &bob.team_id)
+        weacon_server::settings::db::api_key(&state.pool, &state.server_key, &bob.team_id)
             .await
             .is_err()
     );
-    db::settings::save_api_key(&state.pool, &state.server_key, &bob.team_id, None)
+    weacon_server::settings::db::save_api_key(&state.pool, &state.server_key, &bob.team_id, None)
         .await
         .unwrap();
 
-    assert!(secrets::load(&state.pool, &key_file).await.is_ok());
+    assert!(
+        weacon_server::settings::secrets::load(&state.pool, &key_file)
+            .await
+            .is_ok()
+    );
     let missing = folder.join("missing.key");
-    let error = secrets::load(&state.pool, &missing).await.err().unwrap();
+    let error = weacon_server::settings::secrets::load(&state.pool, &missing)
+        .await
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("is missing"), "{error}");
     assert!(!missing.exists());
     let other = folder.join("other.key");
     std::fs::write(&other, rand::random::<[u8; 32]>()).unwrap();
-    let error = secrets::load(&state.pool, &other).await.err().unwrap();
+    let error = weacon_server::settings::secrets::load(&state.pool, &other)
+        .await
+        .err()
+        .unwrap();
     assert!(error.to_string().contains("doesn't open"), "{error}");
     std::fs::remove_dir_all(&folder).unwrap();
 }
@@ -489,7 +508,7 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
 async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
     let folder = std::env::temp_dir().join(format!("weacon-key-{:x}", rand::random::<u64>()));
     std::fs::create_dir_all(&folder).unwrap();
-    let pool = db::memory().await;
+    let pool = weacon_server::db::memory().await;
     sqlx::query(
         "UPDATE config SET smtp_host = '127.0.0.1', smtp_port = 1, smtp_security = 'none',
                            smtp_password = 'smtp-secret', mail_from = 'weacon@example.com'",
@@ -498,7 +517,7 @@ async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
     .await
     .unwrap();
 
-    let key = secrets::load(&pool, &folder.join("weacon.key"))
+    let key = weacon_server::settings::secrets::load(&pool, &folder.join("weacon.key"))
         .await
         .unwrap();
     let stored: String = sqlx::query_scalar("SELECT smtp_password FROM config")
@@ -506,12 +525,18 @@ async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
         .await
         .unwrap();
     assert_ne!(stored, "smtp-secret");
-    let smtp = db::settings::smtp(&pool, &key).await.unwrap().unwrap();
+    let smtp = weacon_server::settings::db::smtp(&pool, &key)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
-    let key = secrets::load(&pool, &folder.join("weacon.key"))
+    let key = weacon_server::settings::secrets::load(&pool, &folder.join("weacon.key"))
         .await
         .unwrap();
-    let smtp = db::settings::smtp(&pool, &key).await.unwrap().unwrap();
+    let smtp = weacon_server::settings::db::smtp(&pool, &key)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
     std::fs::remove_dir_all(&folder).unwrap();
 }
@@ -967,7 +992,7 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
 async fn projects_edited_at_the_same_time_are_all_saved() {
     let file = std::env::temp_dir().join(format!("weacon-test-{}.db", std::process::id()));
     let file = file.to_str().unwrap().to_owned();
-    let pool = db::open(&file).await.unwrap();
+    let pool = weacon_server::db::open(&file).await.unwrap();
     let state = AppState {
         pool,
         ..server().await
@@ -4223,7 +4248,7 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
     let file = file.to_str().unwrap().to_owned();
     let (address, _) = fake_model().await;
     let state = AppState {
-        pool: db::open(&file).await.unwrap(),
+        pool: weacon_server::db::open(&file).await.unwrap(),
         anthropic_api: address,
         ..server().await
     };
@@ -4246,10 +4271,10 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
     assert_eq!(ada.get(&group).await.1["working"], json!([["", "weacon"]]));
 
     let state = AppState {
-        pool: db::open(&file).await.unwrap(),
+        pool: weacon_server::db::open(&file).await.unwrap(),
         ..state
     };
-    jobs::resume(&state).await.unwrap();
+    weacon_server::jobs::resume(&state).await.unwrap();
     let mut marco = marco;
     (ada.state, marco.state) = (state.clone(), state.clone());
     let (_, shown) = marco.get(&group).await;

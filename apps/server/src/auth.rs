@@ -3,9 +3,9 @@ use axum::http::header::{AUTHORIZATION, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName};
 
-use crate::db::users::{Membership, User};
+use crate::accounts::db::{Membership, User};
 use crate::error::{ApiError, Result};
-use crate::{AppState, db, now};
+use crate::{AppState, accounts, now};
 
 const COOKIE_NAME: &str = "weacon_session";
 pub const SESSION_SECONDS: i64 = 365 * 24 * 60 * 60;
@@ -57,7 +57,7 @@ pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Result<Option<U
 }
 
 pub async fn session_user(state: &AppState, token: &str) -> sqlx::Result<Option<User>> {
-    db::users::by_session(&state.pool, token, now() - SESSION_SECONDS).await
+    accounts::db::by_session(&state.pool, token, now() - SESSION_SECONDS).await
 }
 
 pub fn own_page(state: &AppState, headers: &HeaderMap) -> Result<()> {

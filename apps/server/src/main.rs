@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use weacon_server::{AppState, db, jobs, router, secrets};
+use weacon_server::settings::secrets;
+use weacon_server::{AppState, db, jobs, projects, router, settings};
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -21,11 +22,11 @@ async fn main() -> Result<(), Error> {
         PathBuf::from,
     );
     let server_key = secrets::load(&pool, &key_file).await?;
-    match db::settings::smtp(&pool, &server_key).await? {
+    match settings::db::smtp(&pool, &server_key).await? {
         Some(smtp) => info!("mail goes through {}", smtp.host),
         None => info!("mail is printed to this log until the owner saves SMTP settings"),
     }
-    db::maps::forget_other_readers(&pool, weacon_server::MAP_READER).await?;
+    projects::db::forget_other_readers(&pool, weacon_server::MAP_READER).await?;
 
     let state = AppState {
         pool,

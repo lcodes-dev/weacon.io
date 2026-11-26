@@ -1,32 +1,27 @@
-mod anthropic;
-mod auth;
-mod chats;
-mod cores;
+pub mod accounts;
+pub mod anthropic;
+pub mod auth;
+pub mod chats;
 pub mod db;
-mod docs;
-mod error;
-mod github;
-mod group_calls;
-mod http;
+pub mod docs;
+pub mod error;
+pub mod groups;
 pub mod jobs;
-mod live;
-pub mod mail;
-mod maps;
+pub mod live;
+pub mod machines;
+pub mod projects;
 mod routes;
-pub mod search;
-pub mod secrets;
-mod tasks;
-mod tools;
-mod writer;
+pub mod settings;
+pub mod tasks;
+pub mod web;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sqlx::SqlitePool;
-
-pub use maps::READER as MAP_READER;
+pub use projects::maps::READER as MAP_READER;
 pub use routes::router;
+use sqlx::SqlitePool;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -34,11 +29,11 @@ pub struct AppState {
     pub url: String,
     pub github_api: String,
     pub anthropic_api: String,
-    pub cores: Arc<cores::Cores>,
+    pub cores: Arc<machines::Cores>,
     pub live: live::Live,
     pub files: PathBuf,
-    pub embed: search::Embed,
-    pub server_key: secrets::ServerKey,
+    pub embed: docs::search::Embed,
+    pub server_key: settings::secrets::ServerKey,
 }
 
 fn now() -> i64 {

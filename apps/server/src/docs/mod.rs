@@ -1,25 +1,29 @@
+pub mod db;
+pub mod http;
+pub mod jobs;
 pub mod prompts;
+pub mod search;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+use prompts::{BUILT, TAIL, UPDATING, WORKS, WRITING};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::db::docs::{Doc, Written};
-use crate::db::maps::MapFile;
+use crate::docs::db::{Doc, Written};
 use crate::error::{ApiError, Result};
-use crate::live::{self, Topic};
-use crate::writer::Writer;
-use crate::{AppState, db};
-use prompts::{BUILT, TAIL, UPDATING, WORKS, WRITING};
+use crate::live::Topic;
+use crate::projects::db::MapFile;
+use crate::settings::writer::Writer;
+use crate::{AppState, live, projects, settings};
 
 const PAGE_CHARS: usize = 150_000;
 const OUTLINE_CHARS: usize = 400_000;
 const SYMBOLS_PER_FILE: usize = 40;
 
 pub async fn writer(state: &AppState, team_id: &str, user_id: &str) -> Result<Writer> {
-    let writer = db::settings::writer(&state.pool, &state.server_key, team_id).await?;
+    let writer = settings::db::writer(&state.pool, &state.server_key, team_id).await?;
     let mut writer =
         writer.ok_or_else(|| ApiError::invalid("Choose a docs writer in Team settings first"))?;
     writer.asker = user_id.to_owned();
@@ -39,7 +43,7 @@ impl Sources {
         project_id: &str,
         branch: &str,
     ) -> Result<Self> {
-        let sources = db::maps::sources(&state.pool, team_id, project_id, branch).await?;
+        let sources = projects::db::sources(&state.pool, team_id, project_id, branch).await?;
         let (commit, files, texts) =
             sources.ok_or_else(|| ApiError::invalid("This branch isn't mapped"))?;
         let commit = commit.ok_or_else(|| ApiError::invalid("This branch isn't mapped yet"))?;
@@ -171,7 +175,7 @@ pub async fn write_page(
 }
 
 pub async fn progress(state: &AppState, project_id: &str, run: i64, message: &str) -> Result<()> {
-    let held = db::docs::set_state(&state.pool, project_id, run, "running", Some(message)).await?;
+    let held = db::set_state(&state.pool, project_id, run, "running", Some(message)).await?;
     live::project(state, project_id, Topic::Docs).await;
     if !held {
         return Err(ApiError::invalid("The project changed"));
@@ -180,7 +184,7 @@ pub async fn progress(state: &AppState, project_id: &str, run: i64, message: &st
 }
 
 pub async fn fail_run(state: &AppState, project_id: &str, run: i64, why: &str) {
-    let failed = db::docs::set_state(&state.pool, project_id, run, "failed", Some(why));
+    let failed = db::set_state(&state.pool, project_id, run, "failed", Some(why));
     failed.await.ok();
     live::project(state, project_id, Topic::Docs).await;
 }
