@@ -1,6 +1,6 @@
 # Plan 06: the code map
 
-**Status: in progress**
+**Status: done**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -128,7 +128,7 @@ New dependencies: `tree-sitter` and `tree-sitter-tags`; one grammar per language
 - [x] Web app: choosing branches on the project's page
 - [x] Web app: the visual map
 - [x] Docs: `docs/architecture.md`
-- [ ] Checked in the browser, against a real repository of yours: track two branches, push a commit, watch the map follow
+- [x] Checked in the browser, against a real repository of yours: track two branches, push a commit, watch the map follow
 
 ## Outcome
 
@@ -139,7 +139,8 @@ Built as planned, with these differences:
 - A file the map doesn't read is drawn small however long it is; otherwise lock files fill the picture.
 - Creating a project answers with its id only.
 - The picture changed twice in review on 2026-11-17. It was first nested boxes sized by length, then a graph laid out by forces, which rearranged itself on every click. It is now circles packed by folder, zoomable, described above. The boxes and the force layout are removed.
-- Checked against `lorenzocattaneo/contentwrite`: 422 files, 1,760 symbols and 133 links between files, mapped a few seconds after ticking `main`. Two branches, and a push followed by the map, are covered by the tests only.
+- Checked against `lorenzocattaneo/contentwrite`: 422 files, 1,760 symbols and 133 links between files, mapped a few seconds after ticking `main`.
+- Checked again on 2026-11-26 with three branches of `contentwrite`. A new branch was mapped at its own commit six seconds after ticking it. A push to it adding a PHP file that uses `WriteText` showed on the open page 12 seconds later without a reload; the map listed the file, its class and function, and its link to `WriteText.php`, and `main`'s map stayed without it.
 
 ## Left out on purpose
 
