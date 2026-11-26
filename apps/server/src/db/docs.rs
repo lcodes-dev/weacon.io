@@ -242,7 +242,6 @@ pub async fn check_branch(pool: &SqlitePool, project_id: &str) -> sqlx::Result<O
     .await
 }
 
-/// Marks a page as being checked against the code.
 pub async fn start_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
     sqlx::query!("UPDATE docs SET checking = 1 WHERE id = ?", doc_id)
         .execute(pool)
@@ -301,7 +300,6 @@ pub async fn dismiss_note(
     Ok(dismissed.rows_affected() > 0)
 }
 
-/// Adds a page at the end of the project's docs, with its first version.
 pub(super) async fn add_page(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,
@@ -452,7 +450,6 @@ pub async fn delete(
     Ok(deleted.rows_affected() > 0)
 }
 
-/// Puts the project's pages in the order of `ids`.
 pub async fn order(
     pool: &SqlitePool,
     team_id: &str,

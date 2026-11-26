@@ -19,7 +19,6 @@ pub struct Group {
     pub project_id: Option<String>,
     pub project: Option<String>,
     pub members: Json<Vec<GroupMember>>,
-    /// Whether it has a message the person hasn't read.
     pub unread: bool,
 }
 

@@ -48,9 +48,10 @@ async fn git(chat: &Path, args: &[&str], token: Option<&str>) -> Result<String, 
     }
     let output = command.kill_on_drop(true).output().await;
     let output = output.map_err(|error| format!("git could not be started: {error}"))?;
-    match output.status.success() {
-        true => Ok(String::from_utf8_lossy(&output.stdout).into_owned()),
-        false => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
     }
 }
 

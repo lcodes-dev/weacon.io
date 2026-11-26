@@ -113,9 +113,10 @@ async fn a_copy_is_committed_and_pushed_to_a_branch() {
             .to_owned()
     };
     let (name, mail) = (own("user.name"), own("user.email"));
-    let by = match name.is_empty() || mail.is_empty() {
-        true => "Ada Dorn <ada@example.com>".to_owned(),
-        false => format!("{name} <{mail}>"),
+    let by = if name.is_empty() || mail.is_empty() {
+        "Ada Dorn <ada@example.com>".to_owned()
+    } else {
+        format!("{name} <{mail}>")
     };
     assert_eq!(
         git(&origin, &["log", "-1", "--format=%an <%ae>", &first]),

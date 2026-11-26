@@ -4,7 +4,6 @@ use sqlx::types::Json;
 
 use super::new_id;
 
-/// A chat as a list shows it.
 #[derive(Serialize)]
 pub struct Chat {
     pub id: String,
@@ -14,7 +13,6 @@ pub struct Chat {
     pub running: bool,
     pub project_id: String,
     pub project: String,
-    /// Whose it is.
     pub user_id: String,
     pub user: String,
     /// The machine it runs on, unless that was removed.
@@ -388,9 +386,7 @@ pub async fn caller(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Calle
 
 /// Adds to a chat something the server did in it.
 pub async fn note(pool: &SqlitePool, chat_id: &str, body: &serde_json::Value) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
-    add_event(&mut tx, chat_id, body).await?;
-    tx.commit().await
+    add_event(&mut *pool.acquire().await?, chat_id, body).await
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {

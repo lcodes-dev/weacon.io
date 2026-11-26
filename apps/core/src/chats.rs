@@ -113,9 +113,10 @@ fn run(work: &Shared, folder: PathBuf, turn: Turn) {
     work.lock().unwrap().chats.insert(chat.clone(), running);
     let work = work.clone();
     tokio::spawn(async move {
-        let fetched = match safe(&repository) {
-            true => chat_copy::fetch(&folder, &repository).await,
-            false => Err("its address isn't an https one".into()),
+        let fetched = if safe(&repository) {
+            chat_copy::fetch(&folder, &repository).await
+        } else {
+            Err("its address isn't an https one".into())
         };
         let ended = match fetched {
             Ok(()) => {

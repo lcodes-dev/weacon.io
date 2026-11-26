@@ -1,6 +1,6 @@
 # Plan 41: cleaning up the architecture
 
-**Status: in progress**
+**Status: done**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -29,36 +29,37 @@ apps/server/src/
   …             what the server talks to: github, anthropic, mail, cores, live, search, secrets
 ```
 
-- **The queue** (`jobs/`) is a table, `jobs`, in the same database: a job is a row holding its kind and its fields as JSON, how many times it was tried and, while it runs, when it started. `jobs::dispatch` saves the row and runs it at once in a task of its own, with the state that dispatched it. A job that fails is tried again after a pause, up to the number of tries its kind allows; then its `failed` step runs and the row goes. A panic counts as a failure. At startup the rows left are jobs a restart cut short: each counts as a failed try and is tried again or failed. A job with a unique key, such as the map's round, is dispatched only while no other with that key waits or runs.
+- **The queue** (`jobs/`) is a table, `jobs`, in the same database: a job is a row holding its kind and its fields as JSON and, while it runs, when it started. `jobs::dispatch` saves the row and runs it at once in a task of its own, with the state that dispatched it. A job runs once: an error or a panic runs its `failed` step, and the row goes. At startup a row that had started is failed with "The server restarted", and one that hadn't is run. A job with a unique key, such as the map's round, is dispatched only while no other with that key waits or runs.
+- **No retries.** Every job here either may have done part of its work before it failed (a task made, a page proposed) or is run again anyway (the map's round, every minute). Retrying would need each job to be safe to run twice, which none needs today.
 - **Jobs:** `MapBranches` (every minute and when a project's branches change), `WriteDocs`, `AnswerDocsRequest`, `CheckPage`, `AnswerAsWeacon` and `StartTurn`. The five ways above become this one.
-- **One database, not two.** A second SQLite file for the queue was considered. With the queue in the same file, dispatching a job and the change that needs it can share a transaction, nothing has to be kept in step between two files, and there is one backup. Jobs here are a few a minute, so they don't slow the rest down. A second file can come back if that changes.
+- **One database, not two.** A second SQLite file for the queue was considered. In the same file nothing has to be kept in step between two files, there is one pool, one set of migrations and one backup. Jobs here are a few a minute, so they don't slow the rest down. A second file can come back if that changes.
 - **`weacon_calls` goes:** a call is its job, whose unique key is its group, so "working" is whether that job is there.
 
 ## Steps
 
 ### Cycle 1: architecture
 
-- [ ] `error.rs`: `ApiError` with `not_found`, `invalid`, `forbidden`, `conflict`, `unauthorized` and `bad_gateway`
-- [ ] `db/` in one file per area
-- [ ] `http/` for the handlers and `routes.rs` for the router; the calls out in files of their own
-- [ ] The queue, its migration and the six jobs; `map_wake`, `weacon_calls`, `fail_interrupted_docs` and `end_interrupted_weacon_calls` go
-- [ ] The tests run the queue as the server does, and wait for it instead of calling the map's round
+- [x] `error.rs`: `ApiError` with `not_found`, `invalid`, `forbidden`, `conflict`, `unauthorized` and `bad_gateway`
+- [x] `db/` in one file per area
+- [x] `http/` for the handlers and `routes.rs` for the router; the calls out in files of their own
+- [x] The queue, its migration and the six jobs; `map_wake`, `weacon_calls`, `fail_interrupted_docs` and `end_interrupted_weacon_calls` go
+- [x] The tests run the queue as the server does, and wait for it instead of calling the map's round
 
 ### Cycle 1: areas
 
-- [ ] Server: names, comments, repeated code, area by area
-- [ ] Core: the connection, the terminals and the chats
-- [ ] Crates: `agent-run`, `chat-copy`, `code-map`, `core-link`, `doc-search`
-- [ ] Web app: shared hooks, names, comments
-- [ ] The flaky `a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them`: it reconnects the core before the server has stored the events it sent
+- [x] Server: names, comments, repeated code, area by area
+- [x] Core: the connection, the terminals and the chats
+- [x] Crates: `agent-run`, `chat-copy`, `code-map`, `core-link`, `doc-search`
+- [x] Web app: shared hooks, names, comments
+- [x] The flaky `a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them`: it reconnects the core before the server has stored the events it sent
 
-### Later cycles
+### Cycle 2
 
-- [ ] Architecture again, with what the area passes showed
-- [ ] Areas again, until a pass finds nothing worth changing
+- [x] Architecture again: the agent's tools as one method each on a `Tools` struct, the core's terminals in a file of their own, `noUnusedLocals` in the web app
+- [x] Areas again: a third pass found only comments that restate the code, which went
 
 ### Done
 
-- [ ] `docs/architecture.md`, `AGENTS.md` and the README match the code
-- [ ] `scripts/check.sh` passes
-- [ ] A pull request for Lorenzo's review
+- [x] `docs/architecture.md`, `AGENTS.md` and the README match the code
+- [x] `scripts/check.sh` passes
+- [x] A pull request for Lorenzo's review

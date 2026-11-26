@@ -36,7 +36,6 @@ impl Writer {
         json!({"kind": self.kind, "model": self.model})
     }
 
-    /// Sends the prompt and returns the answer's text.
     pub async fn ask(&self, state: &AppState, system: &str, prompt: &str) -> Result<String> {
         // A machine's core knows its agent's cheap default; the API is told ours.
         let model = self.model.as_deref().unwrap_or_default();

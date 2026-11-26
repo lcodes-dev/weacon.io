@@ -27,7 +27,6 @@ pub struct GithubApp {
 /// What a team's GitHub App can reach. All empty when the team has no app.
 #[derive(Default, Serialize)]
 pub struct Status {
-    /// The app's name on GitHub.
     app: Option<String>,
     /// The account it is installed on, once the owner has chosen repositories.
     account: Option<String>,

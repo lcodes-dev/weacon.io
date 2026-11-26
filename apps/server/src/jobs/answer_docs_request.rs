@@ -20,9 +20,7 @@ pub struct AnswerDocsRequest {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Request {
-    /// What the person asks for.
     pub text: String,
-    /// The page they had open.
     pub page: Option<String>,
     pub branch: String,
     /// A request they made before and the proposal they rejected, to do better this time.

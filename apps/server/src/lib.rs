@@ -40,14 +40,12 @@ pub struct AppState {
     pub github_api: String,
     /// `https://api.anthropic.com`, or a fake one in tests.
     pub anthropic_api: String,
-    /// The cores of people's machines that are connected now.
     pub cores: Arc<cores::Cores>,
     pub live: live::Live,
     /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
     /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
     pub embed: search::Embed,
-    /// Seals the secrets the database holds.
     pub server_key: secrets::ServerKey,
 }
 

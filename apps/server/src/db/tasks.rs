@@ -19,10 +19,8 @@ pub struct Task {
     pub text: String,
     pub checks: Json<Vec<Check>>,
     pub status: String,
-    /// Who does it, if anybody.
     pub owner_id: Option<String>,
     pub owner: Option<String>,
-    /// Who asked for it.
     pub asker_id: Option<String>,
     pub asker: Option<String>,
     pub created_at: i64,
