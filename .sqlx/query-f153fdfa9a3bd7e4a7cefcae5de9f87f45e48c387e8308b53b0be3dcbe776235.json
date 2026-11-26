@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE jobs SET started_at = unixepoch(), attempts = attempts + 1 WHERE id = ? RETURNING attempts",
+  "describe": {
+    "columns": [
+      {
+        "name": "attempts",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "jobs",
+            "name": "attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f153fdfa9a3bd7e4a7cefcae5de9f87f45e48c387e8308b53b0be3dcbe776235"
+}

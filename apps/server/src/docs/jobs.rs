@@ -42,7 +42,7 @@ struct Planned {
 }
 
 impl WriteDocs {
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         let writer = super::writer(state, &self.team_id, &self.user_id).await?;
         let sources = Sources::of(state, &self.team_id, &self.project_id, &self.branch).await?;
         let existing = db::list(&state.pool, &self.project_id).await?;
@@ -232,7 +232,7 @@ struct Target {
 }
 
 impl AnswerDocsRequest {
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         let (project_id, request) = (&self.project_id, &self.request);
         let writer = super::writer(state, &self.team_id, &self.user_id).await?;
         super::progress(state, project_id, self.run, "Reading the request").await?;
@@ -318,7 +318,7 @@ struct Files {
 }
 
 impl CheckPage {
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         let pages = db::list(&state.pool, &self.project_id).await?;
         let Some(page) = pages.iter().find(|page| page.id == self.doc_id) else {
             return Ok(());

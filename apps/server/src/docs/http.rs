@@ -62,7 +62,7 @@ pub async fn write_docs(
         branch,
         user_id: user.id,
     };
-    jobs::dispatch(&state, Job::WriteDocs(job)).await?;
+    jobs::perform_later(&state, Job::WriteDocs(job)).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -84,7 +84,7 @@ pub async fn ask_docs(
         user_id: user.id,
         request,
     };
-    jobs::dispatch(&state, Job::AnswerDocsRequest(job)).await?;
+    jobs::perform_later(&state, Job::AnswerDocsRequest(job)).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -174,7 +174,7 @@ pub async fn update_page(
             doc_id: page_id,
             user_id: user.id,
         };
-        jobs::dispatch(&state, Job::CheckPage(job)).await?;
+        jobs::perform_later(&state, Job::CheckPage(job)).await?;
     }
     live::team(&state, &team_id, Topic::Docs).await;
     Ok(StatusCode::NO_CONTENT)

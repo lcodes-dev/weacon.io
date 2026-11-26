@@ -26,9 +26,12 @@ pub async fn send(state: &AppState, key: &str, body: &Value) -> Result<Value> {
     let answer: Value = response.json().await.map_err(unreachable)?;
     if !status.is_success() {
         let message = answer["error"]["message"].as_str().unwrap_or("no message");
-        return Err(ApiError::bad_gateway(format!(
-            "Anthropic refused ({status}): {message}"
-        )));
+        let refused = format!("Anthropic refused ({status}): {message}");
+        return Err(if status.is_server_error() || status.as_u16() == 429 {
+            ApiError::bad_gateway(refused)
+        } else {
+            ApiError::invalid(refused)
+        });
     }
     Ok(answer)
 }

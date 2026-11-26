@@ -38,6 +38,7 @@ async fn main() -> Result<(), Error> {
         files,
         embed: doc_search::embed,
         server_key,
+        retry_wait: std::time::Duration::from_secs(1),
     };
     jobs::resume(&state).await?;
     tokio::spawn(jobs::schedule(state.clone()));

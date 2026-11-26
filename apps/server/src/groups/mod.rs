@@ -133,7 +133,7 @@ async fn call_weacon(
             agent: WEACON.into(),
         },
     };
-    if !jobs::dispatch(state, Job::AnswerAsWeacon(job)).await? {
+    if !jobs::perform_later(state, Job::AnswerAsWeacon(job)).await? {
         return Ok(Some("Weacon is still working on the last call here".into()));
     }
     Ok(None)
@@ -193,7 +193,7 @@ impl AnswerAsWeacon {
         format!("weacon:{group_id}")
     }
 
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         let team_id = &self.caller.team_id;
         let saved = settings::db::api_key(&state.pool, &state.server_key, team_id).await?;
         let (key, model) = saved.ok_or_else(|| ApiError::invalid("The team's API key is gone"))?;

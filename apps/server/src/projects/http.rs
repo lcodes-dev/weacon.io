@@ -107,7 +107,7 @@ pub async fn create_project(
         now(),
     )
     .await?;
-    jobs::dispatch(&state, Job::MapBranches(MapBranches)).await?;
+    jobs::perform_later(&state, Job::MapBranches(MapBranches)).await?;
     live::team(&state, &team_id, Topic::Projects).await;
     Ok(Json(json!({"id": id})))
 }
@@ -131,7 +131,7 @@ pub async fn update_project(
     )
     .await?;
     if changed.ok_or_else(ApiError::not_found)? {
-        jobs::dispatch(&state, Job::MapBranches(MapBranches)).await?;
+        jobs::perform_later(&state, Job::MapBranches(MapBranches)).await?;
     }
     live::team(&state, &team_id, Topic::Projects).await;
     Ok(StatusCode::NO_CONTENT)

@@ -34,6 +34,7 @@ pub struct AppState {
     pub files: PathBuf,
     pub embed: docs::search::Embed,
     pub server_key: settings::secrets::ServerKey,
+    pub retry_wait: std::time::Duration,
 }
 
 fn now() -> i64 {

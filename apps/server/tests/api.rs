@@ -39,12 +39,13 @@ async fn server() -> AppState {
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
         server_key: weacon_server::settings::secrets::ServerKey::random(),
+        retry_wait: std::time::Duration::ZERO,
     }
 }
 
 async fn map_branches(state: &AppState) {
     jobs_done(state).await;
-    weacon_server::jobs::dispatch(state, Job::MapBranches(MapBranches))
+    weacon_server::jobs::perform_later(state, Job::MapBranches(MapBranches))
         .await
         .unwrap();
     jobs_done(state).await;
@@ -1488,9 +1489,20 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                        headers: HeaderMap,
                        Json(body): Json<Value>| {
                     let key = headers["x-api-key"].to_str().unwrap();
-                    if !["good-key", "slow-key", "odd-key"].contains(&key) {
-                        let error = json!({"error": {"message": "invalid x-api-key"}});
-                        return (StatusCode::UNAUTHORIZED, Json(error));
+                    let refused = {
+                        let mut seen = prompts.lock().unwrap();
+                        if key == "flaky-key" && !seen.contains(&"overloaded".into()) {
+                            seen.push("overloaded".into());
+                            Some((StatusCode::from_u16(529).unwrap(), "Overloaded"))
+                        } else if !["good-key", "slow-key", "odd-key", "flaky-key"].contains(&key) {
+                            seen.push("refused".into());
+                            Some((StatusCode::UNAUTHORIZED, "invalid x-api-key"))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some((status, message)) = refused {
+                        return (status, Json(json!({"error": {"message": message}})));
                     }
                     while key == "slow-key" && !prompts.lock().unwrap().contains(&"continue".into()) {
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -2119,6 +2131,29 @@ async fn a_page_written_before_any_run_is_checked_against_a_mapped_branch() {
     let docs = settled_docs(&mut ada).await;
     assert_eq!(docs["pages"][0]["notes"][0]["quote"], "By hand.");
     assert_eq!(docs["pages"][0]["files"], json!(["src/app.ts"]));
+}
+
+#[tokio::test]
+async fn a_run_the_api_refuses_for_a_moment_is_retried() {
+    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let (api, prompts) = fake_anthropic().await;
+    ada.state.anthropic_api = api;
+    api_writer(&mut ada, "flaky-key").await;
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "idle");
+    assert!(!docs["pages"].as_array().unwrap().is_empty());
+    assert_eq!(prompts.lock().unwrap()[0], "overloaded");
+}
+
+#[tokio::test]
+async fn a_run_with_a_refused_key_fails_without_retrying() {
+    let (_, mut ada, _) = mapped_project(&[("src/price.ts", PRICE_TS)]).await;
+    let (api, prompts) = fake_anthropic().await;
+    ada.state.anthropic_api = api;
+    api_writer(&mut ada, "wrong-key").await;
+    let docs = written_docs(&mut ada).await;
+    assert_eq!(docs["state"], "failed");
+    assert_eq!(*prompts.lock().unwrap(), ["refused"]);
 }
 
 #[tokio::test]

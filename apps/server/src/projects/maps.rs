@@ -126,7 +126,7 @@ pub struct MapBranches;
 impl MapBranches {
     pub const KEY: &str = "map_branches";
 
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         if let Err(error) = notice_commits(state).await {
             tracing::error!("noticing commits failed: {}", error.message);
         }

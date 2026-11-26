@@ -15,7 +15,7 @@ pub async fn start_turn(state: &AppState, machine_id: &str, chat_id: &str) -> Re
         machine_id: machine_id.to_owned(),
         chat_id: chat_id.to_owned(),
     };
-    jobs::dispatch(state, Job::StartTurn(job)).await?;
+    jobs::perform_later(state, Job::StartTurn(job)).await?;
     Ok(())
 }
 
@@ -98,7 +98,7 @@ pub struct StartTurn {
 }
 
 impl StartTurn {
-    pub async fn handle(self, state: &AppState) -> Result<()> {
+    pub async fn perform(self, state: &AppState) -> Result<()> {
         live::chat(state, &self.chat_id).await;
         let running = db::running(&state.pool, Some(&self.machine_id)).await?;
         if let Some(chat) = running.into_iter().find(|chat| chat.id == self.chat_id) {
