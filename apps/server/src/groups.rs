@@ -92,7 +92,7 @@ pub async fn show(
     let group = found(&state, &user, &team_id, &id).await?;
     // Asked first, so that an answer is never missed between the two.
     let mut working = db::group_working(&state.pool, &id).await?;
-    if state.weacon.lock().unwrap().contains(&id) {
+    if db::weacon_is_working(&state.pool, &id).await? {
         working.push((String::new(), weacon::NAME.into()));
     }
     let messages = db::group_messages(&state.pool, &id, &after.after).await?;

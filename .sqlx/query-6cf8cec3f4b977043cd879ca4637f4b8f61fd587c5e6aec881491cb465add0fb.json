@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO weacon_calls (group_id, user_id, created_at)\n         VALUES (?, ?, unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6cf8cec3f4b977043cd879ca4637f4b8f61fd587c5e6aec881491cb465add0fb"
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (SELECT 1 FROM weacon_calls WHERE group_id = ?) AS \"working!: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "working!: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dbc73fb20d0c5c8323808c0d188f9b4f19c1118d27625e55cec7e4545c1b334f"
+}

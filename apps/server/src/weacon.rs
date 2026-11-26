@@ -38,7 +38,7 @@ pub async fn called(
     };
     let written = db::group_messages(&state.pool, &group.id, "").await?;
     let asked = chats::told(group, user, None, &written);
-    if !state.weacon.lock().unwrap().insert(group.id.clone()) {
+    if !db::start_weacon_call(&state.pool, &group.id, &user.id).await? {
         return Ok(Some("Weacon is still working on the last call here".into()));
     }
     let caller = Caller {
@@ -50,14 +50,26 @@ pub async fn called(
         task_id: None,
         agent: NAME.into(),
     };
+    let user_id = user.id.clone();
+    // The call runs in a task of its own, so that one that panics is still answered.
+    let call = tokio::spawn({
+        let state = state.clone();
+        async move {
+            let model = writer::model(model.as_deref());
+            answer(&state, &key, model, &caller, asked).await
+        }
+    });
     let (state, group_id) = (state.clone(), group.id.clone());
     tokio::spawn(async move {
-        let model = writer::model(model.as_deref());
-        let answer = answer(&state, &key, model, &caller, asked).await;
-        let text = answer.unwrap_or_else(|why| format!("It couldn't answer: {why}"));
+        let text = match call.await {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(why)) => format!("It couldn't answer: {why}"),
+            Err(_panicked) => {
+                "It stopped on an error in the server. Tag @weacon to ask again.".into()
+            }
+        };
         // The group may be gone by now.
-        let _ = db::answer_as_weacon(&state.pool, &group_id, &caller.user_id, &text).await;
-        state.weacon.lock().unwrap().remove(&group_id);
+        let _ = db::answer_as_weacon(&state.pool, &group_id, &user_id, &text).await;
         live::group(&state, &group_id).await;
     });
     Ok(None)
