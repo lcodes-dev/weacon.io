@@ -32,15 +32,17 @@ export function ChatPage({ team }: { team: Team }) {
   const { machine, connected, running, mine, events } = chat.data
   const changed = events.some((event) => event.kind === "done" && event.changed.length > 0)
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
+    <div className="flex h-full flex-col">
       <Header chat={chat.data} path={path} team={team} />
-      <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3 overflow-auto px-6 py-4 phone:px-4">
         <ChatEvents chat={chat.data} path={path} />
         {running && <p className="animate-pulse text-ink2">{connected ? "Working…" : `Waiting for ${machine} to connect…`}</p>}
         <div ref={end} />
       </div>
-      {mine && machine && changed && !running && <Push chat={chat.data} path={path} />}
-      {mine && machine && !chat.data.group_id && <Ask chat={chat.data} path={path} />}
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-6 pb-4 phone:px-3 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+        {mine && machine && changed && !running && <Push chat={chat.data} path={path} />}
+        {mine && machine && !chat.data.group_id && <Ask chat={chat.data} path={path} />}
+      </div>
     </div>
   )
 }
@@ -60,17 +62,17 @@ function Header({ chat, path, team }: Part & { team: Team }) {
     },
   })
   return (
-    <header className="flex flex-col gap-1 border-b border-line py-4">
-      <div className="flex items-start gap-3">
-        <h1 className="flex-1 text-[17px] font-semibold">{title}</h1>
+    <header className="bar">
+      <div className="flex w-full items-center gap-3">
+        <h1 className="flex-1 text-[15px] font-semibold">{title}</h1>
         {mine && !running && (
           <button type="button" className="btn btn-sm" disabled={remove.isPending} onClick={() => remove.mutate()}>
             Delete chat
           </button>
         )}
       </div>
-      {remove.error && <p className="text-acc">{remove.error.message}</p>}
-      <span className="lbl flex items-center gap-2">
+      {remove.error && <p className="w-full text-acc">{remove.error.message}</p>}
+      <span className="lbl flex w-full flex-wrap items-center gap-2">
         {project} · {branch} · {agents[agent].name} ·
         <span className={`size-2 rounded-full ${connected ? "bg-ok" : "bg-fld"}`} />
         {machine ? `${machine}${connected ? "" : " (away)"}` : "machine removed"}
@@ -101,7 +103,7 @@ function Header({ chat, path, team }: Part & { team: Team }) {
         )}
       </span>
       {hosts.length > 0 && (
-        <span className="lbl flex flex-wrap items-center gap-2">
+        <span className="lbl flex w-full flex-wrap items-center gap-2">
           Commands may reach
           {hosts.map((host) => (
             <span key={host} className="flex items-center gap-1 rounded border border-line px-1.5 font-mono normal-case">
@@ -125,7 +127,7 @@ function Push({ chat, path }: Part) {
   const push = useChatChange(path, () => api("POST", `${path}/push`, { text: message }))
   return (
     <form
-      className="flex flex-wrap items-center gap-2 border-t border-line pt-4"
+      className="flex flex-wrap items-center gap-2"
       onSubmit={(event) => {
         event.preventDefault()
         push.mutate()
@@ -154,7 +156,7 @@ function Ask({ chat, path }: Part) {
   const name = agents[chat.agent].name
   return (
     <form
-      className="flex flex-wrap items-end gap-2 border-t border-line py-4"
+      className="composer"
       onSubmit={(event) => {
         event.preventDefault()
         if (!chat.running && text.trim()) say.mutate()
@@ -163,7 +165,6 @@ function Ask({ chat, path }: Part) {
       {error && <p className="w-full text-acc">{error.message}</p>}
       <textarea
         aria-label={`Ask ${name}`}
-        className="max-h-48 min-h-11 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
         placeholder={`Ask ${name}`}
         value={text}
         onChange={(event) => setText(event.target.value)}

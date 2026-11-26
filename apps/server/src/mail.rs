@@ -31,7 +31,7 @@ pub enum Security {
     None,
 }
 
-/// `logo.svg` as a PNG, because mail clients don't show SVG.
+/// `apps/web/public/logo.svg` as a PNG, because mail clients don't show SVG.
 const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 const FOOTER: &str = "Sent by Weacon. If you didn't ask for this mail, ignore it.";
 

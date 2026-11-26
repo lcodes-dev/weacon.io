@@ -42,7 +42,7 @@ function Form({ saved }: { saved: Smtp | null }) {
           save.mutate()
         }}
       >
-        <div className="grid grid-cols-[1fr_90px_110px] gap-2">
+        <div className="grid grid-cols-[1fr_90px_110px] gap-2 phone:grid-cols-1">
           <Field>
             <FieldLabel>SMTP server</FieldLabel>
             <Input value={smtp.host} onChange={(event) => set({ host: event.target.value })} required />
@@ -69,7 +69,7 @@ function Form({ saved }: { saved: Smtp | null }) {
             </FieldControl>
           </Field>
         </div>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-2 gap-2 phone:grid-cols-1">
           <Field>
             <FieldLabel>Username</FieldLabel>
             <Input value={smtp.username ?? ""} onChange={(event) => set({ username: event.target.value || null })} />

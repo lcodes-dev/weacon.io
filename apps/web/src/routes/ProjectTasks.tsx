@@ -60,14 +60,14 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-line px-6 py-3">
-        <Link to={`/projects/${project.id}`} className="text-[16px] font-semibold">
+      <header className="bar">
+        <Link to={`/projects/${project.id}`} className="flex items-center gap-2 text-[16px] font-semibold phone:min-h-11">
+          <span className="rounded-md bg-pri px-1.5 py-0.5 font-mono text-[10px] text-pri-text">{project.key}</span>
           {project.name}
         </Link>
-        <span className="lbl">Tasks</span>
-        <nav aria-label="View" className="flex gap-1">
+        <nav aria-label="View" className="segs">
           {[false, true].map((view) => (
-            <Link key={String(view)} to={to(picked ?? undefined, view)} aria-current={view === board ? "page" : undefined} className="btn btn-sm aria-[current]:bg-hov">
+            <Link key={String(view)} to={to(picked ?? undefined, view)} aria-current={view === board ? "page" : undefined}>
               {view ? "Board" : "List"}
             </Link>
           ))}
@@ -78,11 +78,11 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
         </button>
       </header>
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-auto p-6">
+        <div className={`min-w-0 flex-1 overflow-auto p-[18px] phone:p-3 ${task ? "phone:hidden" : ""}`}>
           {(order.error ?? create.error) && <p className="pb-2 text-acc">{(order.error ?? create.error)?.message}</p>}
           {tasks.data.length === 0 && <p className="text-ink2">{project.name} has no tasks yet.</p>}
           {board ? (
-            <Board value={lists} onValueChange={place} className="grid min-w-[600px] grid-cols-3 items-start gap-3">
+            <Board value={lists} onValueChange={place} className="grid min-w-[600px] grid-cols-3 items-start gap-3 phone:min-w-0 phone:grid-cols-1">
               {({ lists }) =>
                 statusKeys.map((status) => (
                   <section key={status} className="flex flex-col gap-2 rounded-xl border border-line bg-side p-2">
@@ -96,7 +96,7 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
                         return (
                           <BoardCard key={id} value={id} tabIndex={0} aria-current={id === picked ? "true" : undefined} aria-describedby="board-keys">
                             <span className="font-mono text-[11px] text-ink3">{name(task)}</span>
-                            <Link to={to(id)} draggable={false} className="font-medium">
+                            <Link to={to(id)} draggable={false} className="font-medium phone:flex phone:min-h-11 phone:items-center">
                               {task.title}
                             </Link>
                             {task.owner && <span className="text-[12px] text-ink2">{task.owner}</span>}
@@ -109,30 +109,37 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
               }
             </Board>
           ) : (
-            statusKeys.map((status) => {
-              const listed = tasks.data.filter((task) => task.status === status)
-              return (
-                listed.length > 0 && (
-                  <section key={status} className="flex flex-col pb-4">
-                    <h2 className="lbl px-2 pb-1">
-                      {statuses[status]} · {listed.length}
-                    </h2>
-                    {listed.map((task) => (
-                      <Link
-                        key={task.id}
-                        to={to(task.id)}
-                        aria-current={task.id === picked ? "true" : undefined}
-                        className="flex items-baseline gap-3 rounded-md px-2 py-1.5 hover:bg-hov aria-[current]:bg-hov"
-                      >
-                        <span className="w-16 shrink-0 font-mono text-[12px] text-ink3">{name(task)}</span>
-                        <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                        <span className="text-ink2">{task.owner}</span>
-                      </Link>
+            tasks.data.length > 0 && (
+              <div className="overflow-hidden rounded-[10px] border border-line">
+                <table className="w-full table-fixed text-left">
+                  <thead className="lbl bg-side">
+                    <tr>
+                      <th className="w-20 px-3 py-2 font-medium">Task</th>
+                      <th className="px-3 py-2 font-medium">Title</th>
+                      <th className="w-24 px-3 py-2 font-medium">Status</th>
+                      <th className="w-40 px-3 py-2 font-medium phone:hidden">Owner</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {statusKeys.flatMap((status) => tasks.data.filter((task) => task.status === status)).map((task) => (
+                      <tr key={task.id} aria-current={task.id === picked ? "true" : undefined} className="relative border-t border-line hover:bg-hov aria-[current]:bg-vio-soft">
+                        <td className="px-3 py-2.5 font-mono text-[12px] text-ink3">{name(task)}</td>
+                        <td className="px-3 font-medium">
+                          {/* The link covers the row, so the whole row opens the task. */}
+                          <Link to={to(task.id)} className="flex min-h-10 items-center after:absolute after:inset-0 phone:min-h-11">
+                            {task.title}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2.5">
+                          <StatusChip status={task.status} />
+                        </td>
+                        <td className="truncate px-3 py-2.5 text-ink2 phone:hidden">{task.owner ?? "—"}</td>
+                      </tr>
                     ))}
-                  </section>
-                )
-              )
-            })
+                  </tbody>
+                </table>
+              </div>
+            )
           )}
           <p id="board-keys" hidden>
             Press Space to pick the card up, the arrows to move it, and Space to drop it.
@@ -153,6 +160,16 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
       </div>
     </div>
   )
+}
+
+const chipColors: Record<Status, string> = {
+  todo: "bg-sur2 text-ink2",
+  doing: "bg-vio-soft text-vio",
+  done: "bg-ok/15 text-ok",
+}
+
+function StatusChip({ status }: { status: Status }) {
+  return <span className={`inline-flex h-[22px] items-center rounded-md px-2 text-[11.5px] font-medium ${chipColors[status]}`}>{statuses[status]}</span>
 }
 
 type PanelProps = { team: Team; user: User; project: Project; task: Task; name: string; path: string; close: string }
@@ -192,7 +209,7 @@ function Panel({ team, user, project, task, name, path, close }: PanelProps) {
   const select = "rounded-md border border-fld bg-bg px-2 py-1"
 
   return (
-    <aside aria-label={name} className="flex w-[360px] shrink-0 flex-col gap-3 overflow-auto border-l border-line bg-side p-5">
+    <aside aria-label={name} className="flex w-[360px] shrink-0 flex-col gap-3 overflow-auto border-l border-line bg-side p-5 phone:w-full phone:border-0 phone:p-4">
       <div className="flex items-center gap-2">
         <span className="font-mono text-[12px] text-ink3">{name}</span>
         <select aria-label="Status" className={select} value={task.status} onChange={(event) => change.mutate({ status: event.target.value as Status })}>

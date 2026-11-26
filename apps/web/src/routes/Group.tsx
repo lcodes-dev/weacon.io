@@ -35,10 +35,13 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
   if (!group.data) return null
   const { members, project, project_id, messages, working } = group.data
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col px-6">
-      <header className="flex flex-col gap-1 border-b border-line py-4">
-        <h1 className="text-[17px] font-semibold">{groupName(group.data, user.id)}</h1>
-        <span className="lbl flex flex-wrap items-center gap-2 normal-case">
+    <div className="flex h-full flex-col">
+      <header className="bar">
+        <h1 className="w-full text-[15px] font-semibold">
+          <span className="pr-1.5 text-ink3">#</span>
+          {groupName(group.data, user.id)}
+        </h1>
+        <span className="lbl flex w-full flex-wrap items-center gap-2 normal-case">
           {members.map((member) => member.name).join(", ")}
           {project_id && (
             <>
@@ -51,7 +54,7 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         </span>
         <Settings key={group.data.id} group={group.data} path={path} team={team} />
       </header>
-      <div className="flex flex-1 flex-col gap-3 overflow-auto py-4">
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-3 overflow-auto px-6 py-4 phone:px-4">
         {messages.length === 0 && <p className="text-ink2">Nothing written yet.</p>}
         {messages.map((message) => (
           <div key={message.id} className="flex flex-col gap-0.5">
@@ -77,7 +80,9 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
         ))}
         <div ref={end} />
       </div>
-      <Write group={group.data} path={path} team={team} />
+      <div className="mx-auto w-full max-w-3xl px-6 pb-4 phone:px-3 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+        <Write group={group.data} path={path} team={team} />
+      </div>
     </div>
   )
 }
@@ -103,8 +108,8 @@ function Settings({ group, path, team }: Part) {
   const error = change.error ?? add.error ?? leave.error
   const outside = details.data?.members.filter((member) => !group.members.some((inside) => inside.id === member.id)) ?? []
   return (
-    <details className="text-[13px]">
-      <summary className="cursor-pointer text-ink2">Group settings</summary>
+    <details className="w-full text-[13px]">
+      <summary className="cursor-pointer text-ink2 phone:py-3.5">Group settings</summary>
       <div className="flex flex-wrap items-end gap-3 pt-2">
         <form
           className="flex items-end gap-2"
@@ -167,7 +172,7 @@ function Write({ group, path, team }: Part) {
   )
   return (
     <form
-      className="flex flex-wrap items-end gap-2 border-t border-line py-4"
+      className="composer"
       onSubmit={(event) => {
         event.preventDefault()
         if (text.trim()) write.mutate()
@@ -181,7 +186,6 @@ function Write({ group, path, team }: Part) {
       ))}
       <textarea
         aria-label="Write to the group"
-        className="max-h-48 min-h-11 flex-1 rounded-md border border-fld bg-bg px-3 py-2"
         placeholder="Write to the group"
         value={text}
         onChange={(event) => setText(event.target.value)}
@@ -193,13 +197,13 @@ function Write({ group, path, team }: Part) {
           }
         }}
       />
-      <button className="btn btn-primary" disabled={!text.trim() || write.isPending}>
-        Send
-      </button>
-      <p className="lbl w-full normal-case">
+      <p className="lbl min-w-0 flex-1 normal-case">
         {group.project_id ? "Write @claude or @codex to have your own agent answer here." : "Give the group a project to call an agent here."}
         {group.project_id && details.data?.has_key && " @weacon calls the team's, which sends this group's last messages to Anthropic."}
       </p>
+      <button className="btn btn-primary" disabled={!text.trim() || write.isPending}>
+        Send
+      </button>
     </form>
   )
 }

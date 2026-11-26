@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks everything a push is checked for: the format, the web app's build, the lints and the tests.
+# Checks everything a push is checked for: the format, the web app's build, the lints, the tests and the phone check.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -13,3 +13,6 @@ mise exec -- npm --prefix apps/web ci
 mise exec -- npm --prefix apps/web run build
 mise exec -- cargo clippy --all-targets -- -D warnings
 mise exec -- cargo test --workspace
+# Runs the server and opens every page in a browser the size of a phone.
+mise exec -- npm --prefix apps/web exec -- playwright install --with-deps chromium
+mise exec -- npm --prefix apps/web run phone-check

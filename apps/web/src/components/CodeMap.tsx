@@ -79,7 +79,7 @@ export function CodeMap({ team, project }: { team: Team; project: Project }) {
           </button>
         ))}
       </nav>
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 phone:flex-col phone:items-stretch">
         <CodeGraph
           files={files}
           uses={uses}
@@ -89,7 +89,7 @@ export function CodeMap({ team, project }: { team: Team; project: Project }) {
           selected={selected}
           onSelect={setSelected}
         />
-        <aside className="flex w-[220px] shrink-0 flex-col gap-1">
+        <aside className="flex w-[220px] shrink-0 flex-col gap-1 phone:w-full">
           {file ? (
             <>
               <div className="font-medium break-all">{file.path}</div>

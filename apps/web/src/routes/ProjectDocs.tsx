@@ -258,7 +258,7 @@ export function DocsPage({ team }: { team: Team }) {
                   note={
                     <>
                       <button
-                        className="flex items-center gap-1.5 rounded-md py-1 pr-2 pl-5 text-left text-ink2 hover:bg-hov hover:text-ink"
+                        className="flex items-center gap-1.5 rounded-md py-1 pr-2 pl-5 text-left text-ink2 phone:min-h-11 hover:bg-hov hover:text-ink"
                         disabled={add.isPending}
                         onClick={async () => (await leave()) && add.mutate(tab.section)}
                       >
