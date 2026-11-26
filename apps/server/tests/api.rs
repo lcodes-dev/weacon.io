@@ -36,7 +36,6 @@ async fn server() -> AppState {
         anthropic_api: "http://127.0.0.1:1".into(),
         cores: Arc::default(),
         live: Default::default(),
-        weacon: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
         server_key: secrets::ServerKey::random(),
@@ -187,12 +186,10 @@ async fn unknown_path_serves_the_web_app() {
 }
 
 #[tokio::test]
-async fn a_missing_asset_and_the_reserved_ws_path_are_404() {
-    for path in ["/assets/gone.js", "/ws"] {
-        let request = Request::get(path).body(Body::empty()).unwrap();
-        let response = router(server().await).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
-    }
+async fn a_missing_asset_is_404() {
+    let request = Request::get("/assets/gone.js").body(Body::empty()).unwrap();
+    let response = router(server().await).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -4367,6 +4364,69 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     assert_eq!(
         weacon_said(&mut ada, &group).await["text"],
         "It couldn't answer: It asked for its tools more than 10 times"
+    );
+}
+
+// On a database file, which a second server opens as after a restart.
+#[tokio::test]
+async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
+    let file = std::env::temp_dir().join(format!("weacon-test-{:x}.db", rand::random::<u64>()));
+    let file = file.to_str().unwrap().to_owned();
+    let (address, _) = fake_model().await;
+    let state = AppState {
+        pool: db::open(&file).await.unwrap(),
+        anthropic_api: address,
+        ..server().await
+    };
+    let (mut ada, marco) = ada_and_marco(&state).await;
+    let project = json!({"name": "Storefront", "key": "SF"});
+    let (_, project) = ada.post(&ada.team("/projects"), project).await;
+    let (_, team) = ada.get(&ada.team("")).await;
+    let his = &team["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["name"] == "Marco")
+        .unwrap()["id"];
+    let about = json!({"members": [his], "name": "Prices", "project_id": project["id"]});
+    let (_, group) = ada.post(&ada.team("/groups"), about).await;
+    let group = ada.team(&format!("/groups/{}", group["id"].as_str().unwrap()));
+    let messages = format!("{group}/messages");
+    ada.put(&ada.team("/key"), json!({"key": "slow-key"})).await;
+    ada.post(&messages, json!({"text": "@weacon slowly"})).await;
+    assert_eq!(ada.get(&group).await.1["working"], json!([["", "weacon"]]));
+
+    // The model never answers that call; the server restarts on the same file.
+    let state = AppState {
+        pool: db::open(&file).await.unwrap(),
+        ..state
+    };
+    db::end_interrupted_weacon_calls(&state.pool).await.unwrap();
+    let mut marco = marco;
+    (ada.state, marco.state) = (state.clone(), state.clone());
+    let (_, shown) = marco.get(&group).await;
+    assert_eq!(shown["working"], json!([]));
+    let said = shown["messages"].as_array().unwrap().last().unwrap();
+    assert_eq!(
+        (&said["agent"], &said["user"], &said["text"]),
+        (
+            &json!("weacon"),
+            &json!("Ada"),
+            &json!("It stopped when the server restarted. Tag @weacon to ask again.")
+        )
+    );
+
+    // A new tag runs.
+    ada.put(&ada.team("/key"), json!({"key": "good-key"})).await;
+    assert_eq!(
+        ada.post(&messages, json!({"text": "@weacon again"}))
+            .await
+            .1,
+        json!({"refused": []})
+    );
+    assert_eq!(
+        weacon_said(&mut ada, &group).await["text"],
+        "I heard: Made SF-1."
     );
 }
 

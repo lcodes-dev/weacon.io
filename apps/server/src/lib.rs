@@ -20,9 +20,8 @@ mod weacon;
 mod web;
 mod writer;
 
-use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request, State};
@@ -51,8 +50,6 @@ pub struct AppState {
     pub cores: Arc<machines::Cores>,
     /// What tells the browsers that something changed.
     pub live: live::Live,
-    /// The groups the team's own agent is answering in now.
-    pub weacon: Arc<Mutex<HashSet<String>>>,
     /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
     /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.

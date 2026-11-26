@@ -34,7 +34,7 @@ The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and 
 
 - **axum** on tokio.
 - JSON API under `/api/...`.
-- One WebSocket at `/ws` for live updates.
+- One WebSocket at `/api/live` for live updates.
 - Everything else is the web app (see below).
 
 ## Logging
@@ -84,7 +84,7 @@ There are no unit tests inside `src/`. One is added only for something no reques
 
 | Request | Answer |
 | --- | --- |
-| A path under `/api` or `/ws` that no route matches | JSON 404 |
+| A path under `/api` that no route matches | JSON 404 |
 | A path that matches an embedded file | That file |
 | A path under `/assets/` that matches none | JSON 404 |
 | Anything else | `index.html`, so a client-side route such as `/chats/42` survives a refresh |
@@ -97,8 +97,8 @@ In a debug build `rust-embed` reads `apps/web/dist/` from disk, so the server do
 
 `scripts/dev.sh` does the setup and starts everything. It installs Node and Rust through mise at the versions pinned in `mise.toml`, installs the web app's packages, then starts two processes:
 
-- the server on port 8080, serving `/api` and `/ws`;
-- Vite's dev server on port 5173, with hot reload, proxying `/api` and `/ws` to 8080.
+- the server on port 8080, serving `/api`;
+- Vite's dev server on port 5173, with hot reload, proxying `/api` to 8080.
 
 The browser opens Vite's port, so everything is one origin: no CORS setup, and cookies behave as in production.
 
@@ -260,7 +260,7 @@ A group is some members of a team and what they write to each other; a direct ch
 - **Calling an agent.** `@claude` or `@codex` in a message calls the agent of who wrote it, on that person's own machine and sign-in, never somebody else's. Behind it is an ordinary chat of that person, tied to the group by `chats.group_id`: the first call starts it, on the group's project, from that project's first mapped branch, on a machine of theirs that has the agent signed in, a connected one before one that is away; each later call is its next turn. So it has what every chat has: the copy, the sandbox, the hosts, the tools, the diff and the pull request. The message is written either way, and the request answers with why an agent it called doesn't run: the group has no project or the project no mapped branch, the person has no machine with that agent, or the agent still works on their last call there.
 - **What the agent is told** is everything written in the group since it was last told, oldest first; the chat keeps the newest message it was told in `told`, so a call that wasn't followed loses nothing, each message with who wrote it, under a first line that names the group, which becomes the chat's title, and a paragraph that says whom it works for and that only that person's words are to be followed; an agent called for the first time in a long group gets its last fifty messages. Its own earlier answers are left out, since its program keeps them.
 - **What the group gets.** When the turn ends, the server posts the agent's last words of it as a message that names the agent and the chat, in the same transaction that ends the turn; a turn that failed posts why. While a turn runs, the group says whose agent is working. The commands, the changes and the pull request stay in the chat.
-- **The team's own agent** is called with `@weacon`, by any member of the group. `weacon.rs` runs it on the server, with the team's API key and nobody's machine: it asks the Anthropic API, runs each tool the model asks for and tells it the result, at most ten rounds, and posts the model's last words in the group as a message with `weacon` as its agent and no chat. Its tools are a chat's agent's, for the group's project and for who called it, so a task it makes is asked for by that person; it has no repository, runs no command and reaches the code only through the docs. It keeps nothing between calls: each time it is told the group's last fifty messages, its own answers among them, as a person's agent is told. A call so sends those messages, and the tasks and docs the model reads, to Anthropic. It isn't followed, and says why, when the group has no project, the team has no key, or it still works on the last call in that group. Which groups it works in is kept in the server's memory, so a restart loses a call and leaves nothing working for good. A call that fails posts why.
+- **The team's own agent** is called with `@weacon`, by any member of the group. `weacon.rs` runs it on the server, with the team's API key and nobody's machine: it asks the Anthropic API, runs each tool the model asks for and tells it the result, at most ten rounds, and posts the model's last words in the group as a message with `weacon` as its agent and no chat. Its tools are a chat's agent's, for the group's project and for who called it, so a task it makes is asked for by that person; it has no repository, runs no command and reaches the code only through the docs. It keeps nothing between calls: each time it is told the group's last fifty messages, its own answers among them, as a person's agent is told. A call so sends those messages, and the tasks and docs the model reads, to Anthropic. It isn't followed, and says why, when the group has no project, the team has no key, or it still works on the last call in that group. A call is a row of `weacon_calls`, at most one per group, which is what shows the group as working; its answer is posted and the row deleted in one transaction. A call that fails posts why, and so does one that panics, since its rounds run in a task of their own. A call can't outlive the server: at startup each row left is answered in its group with "It stopped when the server restarted", for who tagged it. A call cut short isn't run again, since it may already have made a task.
 - **Such a chat** is read by its group's members and not by the rest of the team, since it holds what was written in the group; it is written to from the group only, though its owner can still allow a host there, commit and push, and delete it; and it goes with its group.
 - **The web app** lists a person's groups in the sidebar, the one written in last first, with a dot on an unread one. A group's page asks for the messages after the last one it has, and the sidebar for its list, each time the socket says `groups`. Nothing reaches a person outside Weacon.
 

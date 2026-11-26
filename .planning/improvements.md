@@ -31,7 +31,6 @@ Things noticed while working that could be better and that nobody has asked for.
 
 - **`npm install` runs on every `scripts/dev.sh` start.** It takes about a second when nothing changed; it could run only when `package-lock.json` is newer than `node_modules`.
 - **mise's `lts` alias can be stale.** An old mise resolves `node@lts` to Node 24, so `mise.toml` pins the exact version, which then has to be raised by hand.
-- **No formatting or lint check, and no CI.** Nothing runs `cargo fmt`, `cargo clippy`, a TypeScript linter, the web build or the tests on a push.
 - **`scripts/dev.sh` stops its whole process group.** Started from a terminal that is only itself; started by another program it can take that program down too. `cargo run` doesn't pass a signal on to the server, so stopping the two by their ids leaves the server running. *(noted in plan 08)*
 - **`picomatch` in the web build tools has an advisory with no fixed version** (GHSA-fc5q-39xc-vjpf). It runs only while building. *(noted in plan 08)*
 - **`.legacy/` holds about 4 GB of build output.** Its `target/` and `node_modules` folders are ignored by git and can be deleted to free space.
@@ -55,7 +54,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A command of an agent can read any file its person can,** and since plan 23 can send it to a host its chat allows. Plan 25 tried a limit and was dropped for the code it needs: Claude Code has one setting for it that worked; Codex can't close the home and keep the tools installed in it. Its page has the findings. *(plans 21, 23 and 25)*
 - **An agent's program outlives a core that is killed,** until it next prints. The core could end its turns when it is told to stop. *(seen checking plan 21)*
 - **A command Codex ran is shown as Codex quoted it for its shell,** so `\n` reads `\\n`. *(seen checking plan 21)*
-- **A chat's page asks for news every five seconds when nothing runs,** and every second when something does. A WebSocket would do both better. *(plan 21)*
 - **Chats have no model picker:** each program uses its own default. *(plan 21)*
 - **A chat's commit isn't signed,** since the core reads only the name and mail from the person's git settings. *(plan 22)*
 - **"Commit and push" shows also when nothing new was changed.** The core could say with a turn's end whether the copy holds anything unpushed. *(plan 22)*
@@ -85,16 +83,13 @@ Things noticed while working that could be better and that nobody has asked for.
 - **A chat whose machine was removed leaves its folder on that machine,** should its core ever run again. *(plan 30)*
 - **The same two people can have several unnamed groups.** "New group" could open the one they have. *(plan 31)*
 - **A message in a group can't be changed or deleted,** and nothing tells a person of one outside Weacon. *(plan 31)*
-- **A group's page asks again every two seconds.** A WebSocket to browsers would show a message at once, and say who is writing. *(plan 31)*
 - **A person can only call their own agent in a group.** The prototype lets one ask for a teammate's, who approves it first. *(plan 32)*
 - **A group's agent always works from the project's first mapped branch,** on the first machine that has it. Neither can be chosen. *(plan 32)*
 - **Why a tag wasn't followed is shown only to who wrote it,** and is gone after their next message. *(plan 32)*
 - **A group's chats are deleted with the group,** and their folders stay on the machines. *(plan 32)*
-- **A call to `@weacon` is lost when the server restarts,** and nothing says so in the group. *(plan 33)*
 - **Nothing limits or counts calls to `@weacon`,** which any member makes on the team's key. *(plan 33)*
 - **`@weacon` has no model of its own:** it uses the docs' while the API writes them, and the cheap default otherwise. *(plan 33)*
 - **The tools `@weacon` used aren't shown in the group,** only its last words. *(plan 33)*
-- **A call to `@weacon` that panics leaves its group "working"** until the server restarts. *(seen reviewing plan 33)*
 - **An agent's proposals pile up:** a second one for the same page doesn't replace the first, and the list names them alike. *(plan 34)*
 - **An agent's proposal gets none of the writer's notes** on a person's words it changes. *(plan 34)*
 - **An agent's proposal for a new page names no files,** though a chat's agent knows which it read. *(plan 34)*

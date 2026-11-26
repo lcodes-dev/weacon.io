@@ -39,12 +39,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         anthropic_api: "https://api.anthropic.com".into(),
         cores: Default::default(),
         live: Default::default(),
-        weacon: Default::default(),
         files,
         embed: doc_search::embed,
         server_key,
     };
     db::fail_interrupted_docs(&state.pool).await?;
+    db::end_interrupted_weacon_calls(&state.pool).await?;
     tokio::spawn(map::worker(state.clone()));
     axum::serve(listener, router(state)).await?;
     Ok(())
