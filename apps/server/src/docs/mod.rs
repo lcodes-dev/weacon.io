@@ -37,34 +37,19 @@ pub struct Sources {
 }
 
 impl Sources {
-    pub async fn of(
-        state: &AppState,
-        team_id: &str,
-        project_id: &str,
-        branch: &str,
-    ) -> Result<Self> {
+    pub async fn of(state: &AppState, team_id: &str, project_id: &str, branch: &str) -> Result<Self> {
         let sources = projects::db::sources(&state.pool, team_id, project_id, branch).await?;
-        let (commit, files, texts) =
-            sources.ok_or_else(|| ApiError::invalid("This branch isn't mapped"))?;
+        let (commit, files, texts) = sources.ok_or_else(|| ApiError::invalid("This branch isn't mapped"))?;
         let commit = commit.ok_or_else(|| ApiError::invalid("This branch isn't mapped yet"))?;
         let outline = outline(&files);
         if outline.len() > OUTLINE_CHARS {
-            return Err(ApiError::invalid(
-                "This repository is too large to write docs for yet",
-            ));
+            return Err(ApiError::invalid("This repository is too large to write docs for yet"));
         }
-        Ok(Self {
-            outline,
-            texts,
-            commit,
-        })
+        Ok(Self { outline, texts, commit })
     }
 
     pub fn readme(&self) -> &str {
-        let readme = self
-            .texts
-            .iter()
-            .find(|(path, _)| path.eq_ignore_ascii_case("README.md"));
+        let readme = self.texts.iter().find(|(path, _)| path.eq_ignore_ascii_case("README.md"));
         readme.map_or("(none)", |(_, text)| text)
     }
 
@@ -91,12 +76,7 @@ fn outline(files: &[MapFile]) -> String {
         let language = file.language.unwrap_or("not parsed");
         writeln!(outline, "{} ({language}, {} lines)", file.path, file.lines).ok();
         for symbol in file.symbols.iter().take(SYMBOLS_PER_FILE) {
-            writeln!(
-                outline,
-                "  {} {} :{}",
-                symbol.kind, symbol.name, symbol.line
-            )
-            .ok();
+            writeln!(outline, "  {} {} :{}", symbol.kind, symbol.name, symbol.line).ok();
         }
     }
     outline
@@ -130,11 +110,7 @@ pub async fn write_page(
         brief.left_out,
         paths.join("\n")
     );
-    let rules = if brief.section == "works" {
-        WORKS
-    } else {
-        BUILT
-    };
+    let rules = if brief.section == "works" { WORKS } else { BUILT };
     let mut system = format!("{rules}\n\n{WRITING}");
     if let Some(request) = brief.request {
         write!(prompt, "\n\nA person asks for this:\n{request}").ok();
@@ -161,9 +137,7 @@ pub async fn write_page(
     files.retain(|path| !unread.contains(path));
     let reason = Some(reason.trim()).filter(|reason| !reason.is_empty());
     Ok(Written {
-        doc: brief
-            .current
-            .map(|doc| (doc.id.clone(), doc.version.clone())),
+        doc: brief.current.map(|doc| (doc.id.clone(), doc.version.clone())),
         section: brief.section.to_owned(),
         title: brief.title.to_owned(),
         markdown: Some(markdown),
@@ -191,8 +165,7 @@ pub async fn fail_run(state: &AppState, project_id: &str, run: i64, why: &str) {
 
 pub fn json_in(answer: &str, open: char, close: char) -> &str {
     let ends = answer.find(open).zip(answer.rfind(close));
-    ends.filter(|(from, to)| from < to)
-        .map_or("", |(from, to)| &answer[from..=to])
+    ends.filter(|(from, to)| from < to).map_or("", |(from, to)| &answer[from..=to])
 }
 
 #[derive(Deserialize, Serialize)]

@@ -93,8 +93,7 @@ impl<'a> Index<'a> {
             }
 
             let separator = language.map_or("/", |language| language.separator);
-            let scope = file.scope.as_deref();
-            let scope = scope.map(|scope| parts(scope, separator).join("/"));
+            let scope = file.scope.as_deref().map(|scope| parts(scope, separator).join("/"));
             for name in &file.names {
                 index.definers.entry(name).or_default().push(at);
                 let name = parts(name, separator).join("/");
@@ -108,10 +107,7 @@ impl<'a> Index<'a> {
             let Some(language) = language else {
                 continue;
             };
-            let stem = file
-                .path
-                .rsplit_once('.')
-                .map_or(&*file.path, |(stem, _)| stem);
+            let stem = file.path.rsplit_once('.').map_or(&*file.path, |(stem, _)| stem);
             places.push((stem, Some(at), false));
             if last(stem) == language.index && !folder.is_empty() {
                 places.push((folder, Some(at), false));
@@ -127,10 +123,7 @@ impl<'a> Index<'a> {
 
     fn nearest(&self, from: usize, among: impl Iterator<Item = usize>) -> Option<usize> {
         let shared = |file: &usize| {
-            let (a, b) = (
-                self.folders[from].split('/'),
-                self.folders[*file].split('/'),
-            );
+            let (a, b) = (self.folders[from].split('/'), self.folders[*file].split('/'));
             a.zip(b).take_while(|(a, b)| a == b).count()
         };
         among.fold(None, |best, file| match best {
@@ -146,14 +139,11 @@ impl<'a> Index<'a> {
             let ends = ending
                 && place.path.ends_with(path)
                 && place.path[..place.path.len() - path.len()].ends_with('/');
-            let reachable = place
-                .file
-                .is_none_or(|file| place.exact || self.families[file] == self.families[from]);
+            let reachable =
+                place.file.is_none_or(|file| place.exact || self.families[file] == self.families[from]);
             (whole || ends) && reachable
         };
-        let places: Vec<&Place> = (self.paths.get(last).into_iter().flatten())
-            .filter(fits)
-            .collect();
+        let places: Vec<&Place> = (self.paths.get(last).into_iter().flatten()).filter(fits).collect();
         let over = |place: &&&Place| {
             let before = &place.path[..place.path.len() - path.len()];
             format!("{}/", self.folders[from]).starts_with(before)
@@ -166,9 +156,7 @@ impl<'a> Index<'a> {
             return Some(Found::File(file));
         }
         if let Some(folder) = places.first() {
-            let inside = self
-                .scopes
-                .get(&(self.families[from], format!("/{}", folder.path)))?;
+            let inside = self.scopes.get(&(self.families[from], format!("/{}", folder.path)))?;
             return Some(Found::All(inside.clone()));
         }
         // TypeScript names the file it will become: `./price.js` is `price.ts`.
@@ -180,8 +168,7 @@ impl<'a> Index<'a> {
     fn find(&self, from: usize, import: &str) -> Option<Found> {
         let language = language(&self.files[from].path)?;
         let parts = parts(import, language.separator);
-        let shorter =
-            (language.separator != "/" && parts.len() > 1).then(|| &parts[..parts.len() - 1]);
+        let shorter = (language.separator != "/" && parts.len() > 1).then(|| &parts[..parts.len() - 1]);
         [&parts[..]].into_iter().chain(shorter).find_map(|parts| {
             let name = parts.join("/");
             let declared = self.files[from].names.contains(&name);
@@ -191,15 +178,10 @@ impl<'a> Index<'a> {
                 let path = self.files[*file].path.to_lowercase();
                 let path = path.rsplit_once('.').map_or(&*path, |(stem, _)| stem);
                 let (path, name) = (path.rsplit('/'), parts.iter().rev());
-                path.zip(name)
-                    .take_while(|(a, b)| **a == b.to_lowercase())
-                    .count()
+                path.zip(name).take_while(|(a, b)| **a == b.to_lowercase()).count()
             };
             let most = named.iter().map(follows).max();
-            let named = named
-                .iter()
-                .copied()
-                .filter(|file| Some(follows(file)) == most);
+            let named = named.iter().copied().filter(|file| Some(follows(file)) == most);
             if let Some(file) = self.nearest(from, named) {
                 return Some(Found::File(file));
             }
@@ -210,19 +192,15 @@ impl<'a> Index<'a> {
             if let Some(found) = self.place(from, &beside, false, false) {
                 return Some(found);
             }
-            if parts
-                .first()
-                .is_some_and(|part| part == "." || part == "..")
-            {
+            if parts.first().is_some_and(|part| part == "." || part == "..") {
                 return None;
             }
             if let Some(found) = self.place(from, &name, false, false) {
                 return Some(found);
             }
             let above = parts.first().is_some_and(|part| ABOVE.contains(&&**part));
-            let root = |part: &&String| {
-                ABOVE.contains(&&***part) || NEAR.contains(&&***part) || part.contains(':')
-            };
+            let root =
+                |part: &&String| ABOVE.contains(&&***part) || NEAR.contains(&&***part) || part.contains(':');
             let rooted = parts.iter().take_while(root).count();
             let least = if rooted > 0 { 1 } else { 2 };
             (rooted..parts.len())
@@ -258,13 +236,10 @@ pub fn link(files: &[File]) -> Vec<(usize, usize)> {
         let own = index.scopes.get(&index.own[at]);
         for (name, member) in &file.mentions {
             let definers = index.definers.get(name.as_str()).into_iter().flatten();
-            let definers: Vec<usize> = definers
-                .copied()
-                .filter(|other| *other != at && index.families[*other] == family)
-                .collect();
-            let nearest = |among: &dyn Fn(&usize) -> bool| {
-                index.nearest(at, definers.iter().copied().filter(among))
-            };
+            let definers: Vec<usize> =
+                definers.copied().filter(|other| *other != at && index.families[*other] == family).collect();
+            let nearest =
+                |among: &dyn Fn(&usize) -> bool| index.nearest(at, definers.iter().copied().filter(among));
             let found = nearest(&|file| reach.contains(file)).or_else(|| {
                 if *member {
                     return None;
@@ -278,7 +253,5 @@ pub fn link(files: &[File]) -> Vec<(usize, usize)> {
             uses.extend(found.map(|found| (at, found)));
         }
     }
-    uses.into_iter()
-        .filter(|(user, used)| user != used)
-        .collect()
+    uses.into_iter().filter(|(user, used)| user != used).collect()
 }

@@ -45,16 +45,7 @@ pub async fn turn(
     stop: impl Future<Output = ()>,
     mut tell: impl FnMut(Event),
 ) -> Result<String, String> {
-    let Turn {
-        program,
-        agent,
-        folder,
-        session,
-        prompt,
-        hosts,
-        cache,
-        tools,
-    } = turn;
+    let Turn { program, agent, folder, session, prompt, hosts, cache, tools } = turn;
     let real = |folder: &Path| std::fs::canonicalize(folder).unwrap_or(folder.to_owned());
     let (folder, cache) = (real(folder), real(cache));
     let hosts = hosts.iter().map(String::as_str);
@@ -124,18 +115,13 @@ pub async fn turn(
             let complaint = complaint.await.unwrap_or_default();
             let tail = complaint.trim().char_indices().rev().nth(399);
             let tail = &complaint.trim()[tail.map_or(0, |(at, _)| at)..];
-            Err(format!(
-                "{program} stopped before the turn ended ({left}): {tail}"
-            ))
+            Err(format!("{program} stopped before the turn ended ({left}): {tail}"))
         }
     }
 }
 
 fn text(value: &Value) -> Option<&str> {
-    value
-        .as_str()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
+    value.as_str().map(str::trim).filter(|text| !text.is_empty())
 }
 
 fn said(words: &Value, folder: &str) -> Option<Event> {
@@ -146,10 +132,7 @@ fn said(words: &Value, folder: &str) -> Option<Event> {
 fn did(deed: Deed, what: &Value, folder: &str) -> Option<Event> {
     let what = text(what)?;
     let what = what.strip_prefix(folder).unwrap_or(what);
-    Some(Event::Did {
-        deed,
-        what: what.to_owned(),
-    })
+    Some(Event::Did { deed, what: what.to_owned() })
 }
 
 fn wanted(output: &str, before: &str, after: char, tell: &mut dyn FnMut(Event)) {

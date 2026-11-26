@@ -25,9 +25,8 @@ fn told(folder: &Path) -> Vec<String> {
 fn write(folder: &Path, event: &Event) -> Option<String> {
     let line = serde_json::to_string(event).expect("an event is JSON");
     std::fs::create_dir_all(folder).ok()?;
-    let mut file = std::fs::OpenOptions::new();
-    let file = file.create(true).append(true);
-    let mut file = file.open(folder.join("events.jsonl")).ok()?;
+    let events = folder.join("events.jsonl");
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(events).ok()?;
     writeln!(file, "{line}").ok()?;
     Some(line)
 }
@@ -37,12 +36,7 @@ fn send(work: &Work, chat: &str, told: &[String], heard: usize) {
     for (at, line) in told.iter().enumerate().skip(heard) {
         if let Ok(event) = serde_json::from_str(line) {
             let (chat, number) = (chat.to_owned(), at as u64 + 1);
-            out.send(FromCore::Event {
-                chat,
-                number,
-                event,
-            })
-            .ok();
+            out.send(FromCore::Event { chat, number, event }).ok();
         }
     }
 }
@@ -67,12 +61,8 @@ pub fn turn(work: &Shared, turn: Turn) {
 fn caught_up(work: &Shared, folder: &Path, chat: &str, heard: usize) -> bool {
     let work = work.lock().unwrap();
     let running = work.chats.contains_key(chat);
-    let last = told(folder).pop();
-    let last = last.and_then(|line| serde_json::from_str(&line).ok());
-    let unfinished = matches!(
-        last,
-        Some(Event::Said { .. } | Event::Did { .. } | Event::Wants { .. })
-    );
+    let last = told(folder).pop().and_then(|line| serde_json::from_str(&line).ok());
+    let unfinished = matches!(last, Some(Event::Said { .. } | Event::Did { .. } | Event::Wants { .. }));
     if !running && unfinished {
         let why = "weacon-core was restarted during the turn".to_owned();
         write(folder, &Event::Failed { why });
@@ -83,16 +73,7 @@ fn caught_up(work: &Shared, folder: &Path, chat: &str, heard: usize) -> bool {
 }
 
 fn run(work: &Shared, folder: PathBuf, turn: Turn) {
-    let Turn {
-        chat,
-        agent,
-        session,
-        prompt,
-        repository,
-        hosts,
-        tools,
-        ..
-    } = turn;
+    let Turn { chat, agent, session, prompt, repository, hosts, tools, .. } = turn;
     let stop = Arc::new(Notify::new());
     let running = stop.clone();
     work.lock().unwrap().chats.insert(chat.clone(), running);
@@ -125,11 +106,7 @@ fn run(work: &Shared, folder: PathBuf, turn: Turn) {
         let ended = match ended {
             Ok(session) => {
                 let (changed, diff) = chat_copy::changes(&folder).await;
-                Event::Done {
-                    session,
-                    changed,
-                    diff,
-                }
+                Event::Done { session, changed, diff }
             }
             Err(why) => Event::Failed { why },
         };

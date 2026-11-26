@@ -24,18 +24,13 @@ pub struct Membership {
 }
 
 pub async fn any_exist(pool: &SqlitePool) -> sqlx::Result<bool> {
-    sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM users) AS "found: bool""#)
-        .fetch_one(pool)
-        .await
+    sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM users) AS "found: bool""#).fetch_one(pool).await
 }
 
 pub async fn exists(pool: &SqlitePool, email: &str) -> sqlx::Result<bool> {
-    sqlx::query_scalar!(
-        r#"SELECT EXISTS (SELECT 1 FROM users WHERE email = ?) AS "found: bool""#,
-        email
-    )
-    .fetch_one(pool)
-    .await
+    sqlx::query_scalar!(r#"SELECT EXISTS (SELECT 1 FROM users WHERE email = ?) AS "found: bool""#, email)
+        .fetch_one(pool)
+        .await
 }
 
 pub async fn by_session(pool: &SqlitePool, token: &str, since: i64) -> sqlx::Result<Option<User>> {
@@ -61,13 +56,7 @@ pub async fn by_session(pool: &SqlitePool, token: &str, since: i64) -> sqlx::Res
     )
     .fetch_all(pool)
     .await?;
-    Ok(Some(User {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        is_owner: user.is_owner,
-        teams,
-    }))
+    Ok(Some(User { id: user.id, email: user.email, name: user.name, is_owner: user.is_owner, teams }))
 }
 
 pub async fn save_code(
@@ -97,13 +86,9 @@ pub async fn save_code(
 }
 
 pub async fn end_code_wait(pool: &SqlitePool, email: &str) -> sqlx::Result<()> {
-    sqlx::query!(
-        "UPDATE sign_in_codes SET expires_at = expires_at - ? WHERE email = ?",
-        CODE_WAIT,
-        email
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("UPDATE sign_in_codes SET expires_at = expires_at - ? WHERE email = ?", CODE_WAIT, email)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -129,36 +114,23 @@ pub async fn sign_in(
         tx.commit().await?;
         return Ok(false);
     }
-    sqlx::query!("DELETE FROM sign_in_codes WHERE email = ?", email)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!("DELETE FROM sign_in_codes WHERE email = ?", email).execute(&mut *tx).await?;
 
-    let existing = sqlx::query_scalar!("SELECT id FROM users WHERE email = ?", email)
-        .fetch_optional(&mut *tx)
-        .await?;
+    let existing =
+        sqlx::query_scalar!("SELECT id FROM users WHERE email = ?", email).fetch_optional(&mut *tx).await?;
     let user_id = match (existing, tried.name) {
         (Some(id), _) => id,
         (None, Some(name)) => register(&mut tx, email, &name, now).await?,
         (None, None) => return Ok(false),
     };
-    sqlx::query!(
-        "INSERT INTO sessions (token, user_id, renewed_at) VALUES (?, ?, ?)",
-        token,
-        user_id,
-        now
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query!("INSERT INTO sessions (token, user_id, renewed_at) VALUES (?, ?, ?)", token, user_id, now)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(true)
 }
 
-async fn register(
-    tx: &mut SqliteConnection,
-    email: &str,
-    name: &str,
-    now: i64,
-) -> sqlx::Result<String> {
+async fn register(tx: &mut SqliteConnection, email: &str, name: &str, now: i64) -> sqlx::Result<String> {
     let (user_id, team_id) = (new_id(), new_id());
     sqlx::query!(
         "INSERT INTO users (id, email, name, is_owner, created_at)
@@ -188,12 +160,7 @@ async fn register(
     Ok(user_id)
 }
 
-pub async fn renew_session(
-    pool: &SqlitePool,
-    token: &str,
-    now: i64,
-    before: i64,
-) -> sqlx::Result<bool> {
+pub async fn renew_session(pool: &SqlitePool, token: &str, now: i64, before: i64) -> sqlx::Result<bool> {
     let renewed = sqlx::query!(
         "UPDATE sessions SET renewed_at = ? WHERE token = ? AND renewed_at < ?",
         now,
@@ -206,9 +173,7 @@ pub async fn renew_session(
 }
 
 pub async fn sign_out(pool: &SqlitePool, token: &str) -> sqlx::Result<()> {
-    sqlx::query!("DELETE FROM sessions WHERE token = ?", token)
-        .execute(pool)
-        .await?;
+    sqlx::query!("DELETE FROM sessions WHERE token = ?", token).execute(pool).await?;
     Ok(())
 }
 
@@ -236,9 +201,7 @@ pub struct Invitation {
 }
 
 pub async fn rename_team(pool: &SqlitePool, team_id: &str, name: &str) -> sqlx::Result<()> {
-    sqlx::query!("UPDATE teams SET name = ? WHERE id = ?", name, team_id)
-        .execute(pool)
-        .await?;
+    sqlx::query!("UPDATE teams SET name = ? WHERE id = ?", name, team_id).execute(pool).await?;
     Ok(())
 }
 
@@ -256,12 +219,7 @@ pub async fn members(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Membe
 }
 
 pub async fn member_ids(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<String>> {
-    sqlx::query_scalar!(
-        "SELECT user_id FROM team_members WHERE team_id = ?",
-        team_id
-    )
-    .fetch_all(pool)
-    .await
+    sqlx::query_scalar!("SELECT user_id FROM team_members WHERE team_id = ?", team_id).fetch_all(pool).await
 }
 
 pub async fn has_member(pool: &SqlitePool, team_id: &str, user_id: &str) -> sqlx::Result<bool> {
@@ -274,11 +232,7 @@ pub async fn has_member(pool: &SqlitePool, team_id: &str, user_id: &str) -> sqlx
     .await
 }
 
-pub async fn has_member_with_email(
-    pool: &SqlitePool,
-    team_id: &str,
-    email: &str,
-) -> sqlx::Result<bool> {
+pub async fn has_member_with_email(pool: &SqlitePool, team_id: &str, email: &str) -> sqlx::Result<bool> {
     sqlx::query_scalar!(
         r#"SELECT EXISTS (SELECT 1 FROM team_members m JOIN users u ON u.id = m.user_id
                           WHERE m.team_id = ? AND u.email = ?) AS "found: bool""#,
@@ -342,21 +296,13 @@ pub async fn save_invite(
 }
 
 pub async fn delete_invite(pool: &SqlitePool, team_id: &str, invite_id: &str) -> sqlx::Result<()> {
-    sqlx::query!(
-        "DELETE FROM invites WHERE team_id = ? AND id = ?",
-        team_id,
-        invite_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("DELETE FROM invites WHERE team_id = ? AND id = ?", team_id, invite_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-pub async fn invitation(
-    pool: &SqlitePool,
-    token: &str,
-    now: i64,
-) -> sqlx::Result<Option<Invitation>> {
+pub async fn invitation(pool: &SqlitePool, token: &str, now: i64) -> sqlx::Result<Option<Invitation>> {
     sqlx::query_as!(
         Invitation,
         r#"SELECT t.name AS team_name, u.name AS invited_by, i.email,
@@ -372,18 +318,11 @@ pub async fn invitation(
     .await
 }
 
-pub async fn accept_invite(
-    pool: &SqlitePool,
-    token: &str,
-    user_id: &str,
-) -> sqlx::Result<Option<String>> {
+pub async fn accept_invite(pool: &SqlitePool, token: &str, user_id: &str) -> sqlx::Result<Option<String>> {
     let mut tx = pool.begin().await?;
-    let team_id = sqlx::query_scalar!(
-        "DELETE FROM invites WHERE token = ? RETURNING team_id",
-        token
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    let team_id = sqlx::query_scalar!("DELETE FROM invites WHERE token = ? RETURNING team_id", token)
+        .fetch_optional(&mut *tx)
+        .await?;
     if let Some(team_id) = &team_id {
         sqlx::query!(
             "INSERT OR IGNORE INTO team_members (team_id, user_id, role) VALUES (?, ?, 'member')",

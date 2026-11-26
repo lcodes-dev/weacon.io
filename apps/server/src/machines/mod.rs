@@ -34,9 +34,7 @@ struct Connected {
 
 impl Cores {
     fn lock(&self) -> MutexGuard<'_, Connected> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn connected(&self, machine: &str) -> bool {
@@ -59,24 +57,14 @@ impl Cores {
         }
     }
 
-    pub fn open_terminal(
-        &self,
-        machine: &str,
-        agent: Agent,
-    ) -> Result<mpsc::UnboundedReceiver<FromCore>> {
+    pub fn open_terminal(&self, machine: &str, agent: Agent) -> Result<mpsc::UnboundedReceiver<FromCore>> {
         let mut cores = self.lock();
         if !cores.cores.contains_key(machine) {
             return Err(ApiError::invalid("This machine isn't connected"));
         }
         let key = (machine.to_owned(), agent);
-        if cores
-            .terminals
-            .get(&key)
-            .is_some_and(|open| !open.is_closed())
-        {
-            return Err(ApiError::invalid(
-                "This sign-in is already open in another window",
-            ));
+        if cores.terminals.get(&key).is_some_and(|open| !open.is_closed()) {
+            return Err(ApiError::invalid("This sign-in is already open in another window"));
         }
         let (to_browser, from_core) = mpsc::unbounded_channel();
         cores.terminals.insert(key, to_browser);
@@ -180,11 +168,7 @@ async fn heard(state: &AppState, machine: &str, owner: &str, message: FromCore) 
                 core.send(ToCore::Taken { id }).ok();
             }
         }
-        FromCore::Event {
-            chat,
-            number,
-            event,
-        } => {
+        FromCore::Event { chat, number, event } => {
             chats::hear(state, machine, &chat, number, event).await;
         }
         FromCore::TerminalData { agent, .. } | FromCore::TerminalClose { agent } => {
@@ -208,10 +192,7 @@ pub async fn ask(
     prompt: &str,
 ) -> Result<String> {
     let machines = db::list(&state.pool, user_id).await?;
-    let signed_in = Found {
-        agent,
-        ready: Ready::SignedIn,
-    };
+    let signed_in = Found { agent, ready: Ready::SignedIn };
     let ready = |machine: &&Machine| {
         let found: Vec<Found> = serde_json::from_str(&machine.agents).unwrap_or_default();
         state.cores.connected(&machine.id) && found.contains(&signed_in)
@@ -220,9 +201,7 @@ pub async fn ask(
         let program = agent.program();
         return Err(ApiError::invalid(match machines.len() {
             0 => "Pair a machine of yours first, under Machines".to_owned(),
-            _ => format!(
-                "None of your machines is connected with {program} signed in. Look under Machines"
-            ),
+            _ => format!("None of your machines is connected with {program} signed in. Look under Machines"),
         }));
     };
     let slow = format!("{} took too long", agent.program());
@@ -288,9 +267,7 @@ pub async fn relay(
     mut from_core: mpsc::UnboundedReceiver<FromCore>,
 ) {
     let (cols, rows) = (80, 24);
-    state
-        .cores
-        .send(&machine, ToCore::TerminalOpen { agent, cols, rows });
+    state.cores.send(&machine, ToCore::TerminalOpen { agent, cols, rows });
     let mut still = tokio::time::interval(TERMINAL_PING);
     loop {
         tokio::select! {

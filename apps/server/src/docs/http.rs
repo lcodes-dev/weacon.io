@@ -23,8 +23,7 @@ pub async fn show_docs(
     State(state): State<AppState>,
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    let status = db::status(&state.pool, &team_id, &project_id).await?;
-    let status = status.ok_or_else(ApiError::not_found)?;
+    let status = db::status(&state.pool, &team_id, &project_id).await?.ok_or_else(ApiError::not_found)?;
     let pages = db::list(&state.pool, &project_id).await?;
     let proposals = db::list_proposals(&state.pool, &project_id).await?;
     let left_out = status.left_out.as_deref().unwrap_or("[]");
@@ -52,13 +51,7 @@ pub async fn write_docs(
     Json(FromBranch { branch }): Json<FromBranch>,
 ) -> Result<StatusCode> {
     let run = start_run(&state, &user, &team_id, &project_id, &branch).await?;
-    let job = WriteDocs {
-        team_id,
-        project_id,
-        run,
-        branch,
-        user_id: user.id,
-    };
+    let job = WriteDocs { team_id, project_id, run, branch, user_id: user.id };
     jobs::perform_later(&state, Job::WriteDocs(job)).await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -73,13 +66,7 @@ pub async fn ask_docs(
         return Err(ApiError::invalid("Say what to change"));
     }
     let run = start_run(&state, &user, &team_id, &project_id, &request.branch).await?;
-    let job = AnswerDocsRequest {
-        team_id,
-        project_id,
-        run,
-        user_id: user.id,
-        request,
-    };
+    let job = AnswerDocsRequest { team_id, project_id, run, user_id: user.id, request };
     jobs::perform_later(&state, Job::AnswerDocsRequest(job)).await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -123,15 +110,7 @@ pub async fn create_page(
         return Err(ApiError::invalid(message));
     }
     let title = titled(&page.title)?;
-    let added = db::add(
-        &state.pool,
-        &team_id,
-        &project_id,
-        &page.section,
-        title,
-        &user.id,
-    )
-    .await?;
+    let added = db::add(&state.pool, &team_id, &project_id, &page.section, title, &user.id).await?;
     let id = added.ok_or_else(ApiError::not_found)?;
     live::team(&state, &team_id, Topic::Docs).await;
     Ok(Json(json!({"id": id})))
@@ -144,30 +123,13 @@ pub async fn update_page(
     Json(edit): Json<DocEdit>,
 ) -> Result<StatusCode> {
     titled(&edit.title)?;
-    let saved = db::save(
-        &state.pool,
-        &team_id,
-        &project_id,
-        &page_id,
-        &edit,
-        &user.id,
-    );
+    let saved = db::save(&state.pool, &team_id, &project_id, &page_id, &edit, &user.id);
     if !saved.await?.ok_or_else(ApiError::not_found)? {
-        return Err(ApiError::conflict(
-            "Someone else changed this page meanwhile",
-        ));
+        return Err(ApiError::conflict("Someone else changed this page meanwhile"));
     }
-    if settings::db::writer(&state.pool, &state.server_key, &team_id)
-        .await?
-        .is_some()
-    {
+    if settings::db::writer(&state.pool, &state.server_key, &team_id).await?.is_some() {
         db::start_check(&state.pool, &page_id).await?;
-        let job = CheckPage {
-            team_id: team_id.clone(),
-            project_id,
-            doc_id: page_id,
-            user_id: user.id,
-        };
+        let job = CheckPage { team_id: team_id.clone(), project_id, doc_id: page_id, user_id: user.id };
         jobs::perform_later(&state, Job::CheckPage(job)).await?;
     }
     live::team(&state, &team_id, Topic::Docs).await;
@@ -299,11 +261,7 @@ pub async fn upload_file(
     let file = File {
         id: &id,
         kind: image.unwrap_or("application/octet-stream"),
-        name: if name.trim().is_empty() {
-            "file"
-        } else {
-            &name
-        },
+        name: if name.trim().is_empty() { "file" } else { &name },
     };
     if !db::add_file(&state.pool, &team_id, &project_id, file, &user.id).await? {
         tokio::fs::remove_file(&path).await.ok();
@@ -330,26 +288,14 @@ pub async fn shared_file(
     served(&state, &file_id, kept, &asked).await
 }
 
-async fn served(
-    state: &AppState,
-    id: &str,
-    kept: Option<Kept>,
-    asked: &HeaderMap,
-) -> Result<Response> {
+async fn served(state: &AppState, id: &str, kept: Option<Kept>, asked: &HeaderMap) -> Result<Response> {
     let Kept { kind, name } = kept.ok_or_else(ApiError::not_found)?;
     let tag = format!("\"{id}\"");
-    let caching = [
-        (CACHE_CONTROL, "private, no-cache".to_owned()),
-        (ETAG, tag.clone()),
-    ];
-    if asked
-        .get(IF_NONE_MATCH)
-        .is_some_and(|had| had.as_bytes() == tag.as_bytes())
-    {
+    let caching = [(CACHE_CONTROL, "private, no-cache".to_owned()), (ETAG, tag.clone())];
+    if asked.get(IF_NONE_MATCH).is_some_and(|had| had.as_bytes() == tag.as_bytes()) {
         return Ok((StatusCode::NOT_MODIFIED, caching).into_response());
     }
-    let bytes = tokio::fs::read(state.files.join(id)).await;
-    let bytes = bytes.map_err(|_| ApiError::not_found())?;
+    let bytes = tokio::fs::read(state.files.join(id)).await.map_err(|_| ApiError::not_found())?;
     // Only an image is shown. Anything else is downloaded, so that it can't run in the reader's browser.
     let disposition = if kind.starts_with("image/") {
         "inline".to_owned()
@@ -369,21 +315,7 @@ fn image_kind(bytes: &[u8]) -> Option<&'static str> {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
         [b'G', b'I', b'F', b'8', ..] => Some("image/gif"),
-        [
-            b'R',
-            b'I',
-            b'F',
-            b'F',
-            _,
-            _,
-            _,
-            _,
-            b'W',
-            b'E',
-            b'B',
-            b'P',
-            ..,
-        ] => Some("image/webp"),
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => Some("image/webp"),
         _ => None,
     }
 }
@@ -392,9 +324,7 @@ pub async fn list_shares(
     State(state): State<AppState>,
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<Share>>> {
-    Ok(Json(
-        db::list_shares(&state.pool, &team_id, &project_id).await?,
-    ))
+    Ok(Json(db::list_shares(&state.pool, &team_id, &project_id).await?))
 }
 
 pub async fn create_share(
@@ -412,15 +342,7 @@ pub async fn create_share(
         return Err(ApiError::invalid("This project has no user docs to share"));
     }
     let token = random_token();
-    let shared = db::share(
-        &state.pool,
-        &team_id,
-        &project_id,
-        &token,
-        &user.id,
-        now(),
-        &pages,
-    );
+    let shared = db::share(&state.pool, &team_id, &project_id, &token, &user.id, now(), &pages);
     if !shared.await? {
         return Err(ApiError::not_found());
     }
@@ -437,10 +359,7 @@ pub async fn delete_share(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn show_share(
-    State(state): State<AppState>,
-    Path(token): Path<String>,
-) -> Result<Json<Shared>> {
+pub async fn show_share(State(state): State<AppState>, Path(token): Path<String>) -> Result<Json<Shared>> {
     let shared = db::find_share(&state.pool, &token).await?;
     Ok(Json(shared.ok_or_else(ApiError::not_found)?))
 }

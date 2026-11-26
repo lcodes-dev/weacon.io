@@ -40,22 +40,14 @@ pub async fn create_chat(
     let projects = projects::db::list(&state.pool, &team_id).await?;
     let project = projects.iter().find(|project| project.id == project_id);
     let project = project.ok_or_else(ApiError::not_found)?;
-    if !project
-        .branches
-        .iter()
-        .any(|branch| branch.name == start.branch)
-    {
+    if !project.branches.iter().any(|branch| branch.name == start.branch) {
         return Err(ApiError::invalid("A chat needs a branch the project maps"));
     }
     let machines = machines::db::list(&state.pool, &user.id).await?;
-    if !machines
-        .iter()
-        .any(|machine| machine.id == start.machine_id)
-    {
+    if !machines.iter().any(|machine| machine.id == start.machine_id) {
         return Err(ApiError::invalid("A chat runs on a machine of your own"));
     }
-    let agent = Agent::named(&start.agent);
-    let agent = agent.ok_or_else(|| ApiError::invalid("Pick Claude Code or Codex"))?;
+    let agent = Agent::named(&start.agent).ok_or_else(|| ApiError::invalid("Pick Claude Code or Codex"))?;
     if start.text.trim().is_empty() {
         return Err(ApiError::invalid("Write what the agent should do"));
     }
@@ -94,12 +86,8 @@ pub async fn show_chat(
 ) -> Result<Json<Value>> {
     let chat = readable(&state, &user, &team_id, &chat_id).await?;
     let events = db::events(&state.pool, &chat_id, &after).await?;
-    let events: Vec<Value> = events
-        .iter()
-        .filter_map(|event| serde_json::from_str(event).ok())
-        .collect();
-    let connected = chat.machine_id.as_deref();
-    let connected = connected.is_some_and(|machine| state.cores.connected(machine));
+    let events: Vec<Value> = events.iter().filter_map(|event| serde_json::from_str(event).ok()).collect();
+    let connected = chat.machine_id.as_deref().is_some_and(|machine| state.cores.connected(machine));
     let mut shown = json!(chat);
     shown["mine"] = json!(chat.user_id == user.id);
     shown["connected"] = json!(connected);
@@ -160,10 +148,7 @@ pub async fn delete_chat(
         let machine = connected(&state, &chat)?;
         let name = chat.machine.as_deref().unwrap_or_default();
         let slow = format!("{name} took too long to remove the chat's folder");
-        let forget = |id| ToCore::Forget {
-            id,
-            chat: chat.id.clone(),
-        };
+        let forget = |id| ToCore::Forget { id, chat: chat.id.clone() };
         machines::answered(&state, (machine, name), &slow, forget).await?;
     }
     db::delete(&state.pool, &chat.id).await?;
@@ -185,9 +170,7 @@ pub async fn allow_host(
     let chat = own(&state, &user, &team_id, &chat_id).await?;
     let machine = machine(&chat)?;
     if !core_link::host(&host) {
-        return Err(ApiError::invalid(
-            "A host is an exact name, such as registry.npmjs.org",
-        ));
+        return Err(ApiError::invalid("A host is an exact name, such as registry.npmjs.org"));
     }
     db::allow_host(&state.pool, &chat_id, &host).await?;
     let again = format!("{host} can be reached now. Try again what needed it.");
@@ -235,9 +218,7 @@ pub async fn push(
     let machine = connected(&state, &chat)?;
     let name = chat.machine.as_deref().unwrap_or_default();
     let projects = projects::db::list(&state.pool, &team_id).await?;
-    let project = projects
-        .iter()
-        .find(|project| project.id == chat.project_id);
+    let project = projects.iter().find(|project| project.id == chat.project_id);
     let repo = project.and_then(|project| project.repo.as_deref());
     let repo = repo.ok_or_else(|| ApiError::invalid("The project has no repository any more"))?;
 
@@ -260,17 +241,9 @@ pub async fn push(
     let mut pull = json!({"commit": commit, "number": chat.pull_number, "url": chat.pull_url});
     if chat.pull_url.is_none() {
         let title = message.lines().next().unwrap_or_default();
-        let asker = format!(
-            "Asked for by {} in a Weacon chat: {}/chats/{}",
-            user.name, state.url, chat.id
-        );
-        let opened = projects::github::open_pull(
-            &state,
-            &opening,
-            repo,
-            (&to, &chat.branch),
-            (title, &asker),
-        );
+        let asker = format!("Asked for by {} in a Weacon chat: {}/chats/{}", user.name, state.url, chat.id);
+        let opened =
+            projects::github::open_pull(&state, &opening, repo, (&to, &chat.branch), (title, &asker));
         let opened = opened.await?;
         db::set_pull(&state.pool, &chat.id, opened.number, &opened.html_url).await?;
         live::chat(&state, &chat.id).await;
@@ -288,9 +261,7 @@ async fn readable(state: &AppState, user: &User, team_id: &str, chat_id: &str) -
 async fn own(state: &AppState, user: &User, team_id: &str, chat_id: &str) -> Result<Chat> {
     let chat = readable(state, user, team_id, chat_id).await?;
     if chat.user_id != user.id {
-        return Err(ApiError::forbidden(
-            "Only the person who started a chat writes in it",
-        ));
+        return Err(ApiError::forbidden("Only the person who started a chat writes in it"));
     }
     Ok(chat)
 }

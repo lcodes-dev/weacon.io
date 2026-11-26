@@ -64,12 +64,9 @@ pub async fn pair(
     token: &str,
 ) -> sqlx::Result<Option<String>> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let asked = sqlx::query!(
-        "DELETE FROM machine_codes WHERE code = ? RETURNING user_id, created_at",
-        code
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    let asked = sqlx::query!("DELETE FROM machine_codes WHERE code = ? RETURNING user_id, created_at", code)
+        .fetch_optional(&mut *tx)
+        .await?;
     let asked = asked.filter(|asked| asked.created_at > since);
     if let Some(asked) = &asked {
         let id = new_id();
@@ -90,13 +87,8 @@ pub async fn pair(
 }
 
 pub async fn delete(pool: &SqlitePool, user_id: &str, id: &str) -> sqlx::Result<bool> {
-    let deleted = sqlx::query!(
-        "DELETE FROM machines WHERE id = ? AND user_id = ?",
-        id,
-        user_id
-    )
-    .execute(pool)
-    .await?;
+    let deleted =
+        sqlx::query!("DELETE FROM machines WHERE id = ? AND user_id = ?", id, user_id).execute(pool).await?;
     Ok(deleted.rows_affected() > 0)
 }
 

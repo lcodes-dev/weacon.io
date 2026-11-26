@@ -90,9 +90,7 @@ pub fn host(name: &str) -> bool {
         !label.is_empty()
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && label
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+            && label.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     };
     name.len() <= 253
         && name.contains('.')

@@ -15,12 +15,7 @@ pub struct Terminal {
     sign_in: Box<dyn ChildKiller + Send + Sync>,
 }
 
-pub fn open(
-    work: &Shared,
-    agent: Agent,
-    cols: u16,
-    rows: u16,
-) -> Result<(), Box<dyn std::error::Error>> {
+pub fn open(work: &Shared, agent: Agent, cols: u16, rows: u16) -> Result<(), Box<dyn std::error::Error>> {
     let pair = native_pty_system().openpty(size(cols, rows))?;
     let mut command = CommandBuilder::new(agent.program());
     command.args(agents::sign_in(agent));
@@ -40,12 +35,8 @@ pub fn open(
     let number = {
         let mut work = work.lock().unwrap();
         work.opened += 1;
-        let terminal = Terminal {
-            number: work.opened,
-            typed,
-            pty: pair.master,
-            sign_in: child.clone_killer(),
-        };
+        let terminal =
+            Terminal { number: work.opened, typed, pty: pair.master, sign_in: child.clone_killer() };
         if let Some(mut earlier) = work.terminals.insert(agent, terminal) {
             earlier.sign_in.kill().ok();
         }
@@ -53,11 +44,7 @@ pub fn open(
     };
     let work = work.clone();
     std::thread::spawn(move || {
-        let current = |work: &Work| {
-            work.terminals
-                .get(&agent)
-                .is_some_and(|open| open.number == number)
-        };
+        let current = |work: &Work| work.terminals.get(&agent).is_some_and(|open| open.number == number);
         let mut bytes = [0; 4096];
         while let Ok(read @ 1..) = shown.read(&mut bytes) {
             let data = BASE64.encode(&bytes[..read]);
@@ -105,10 +92,5 @@ pub fn close_all(work: &mut Work) {
 }
 
 fn size(cols: u16, rows: u16) -> PtySize {
-    PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    }
+    PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }
 }

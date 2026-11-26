@@ -65,11 +65,8 @@ async fn map(state: &AppState, branch: &Waiting) -> Result<()> {
         })
         .collect();
     let mut seen = db::known_blobs(&state.pool, &branch.project_id).await?;
-    let new: HashMap<String, String> = files
-        .iter()
-        .filter(|(_, blob)| seen.insert(blob.clone()))
-        .cloned()
-        .collect();
+    let new: HashMap<String, String> =
+        files.iter().filter(|(_, blob)| seen.insert(blob.clone())).cloned().collect();
     let mut readings = Vec::new();
     if !new.is_empty() {
         let archive = github::archive(state, &token, &branch.repo, &branch.head_sha).await?;
@@ -85,10 +82,7 @@ fn unread(error: impl Display) -> ApiError {
     ApiError::bad_gateway(format!("The commit's archive couldn't be read: {error}"))
 }
 
-fn read_archive(
-    archive: &[u8],
-    mut new: HashMap<String, String>,
-) -> io::Result<Vec<(String, Reading)>> {
+fn read_archive(archive: &[u8], mut new: HashMap<String, String>) -> io::Result<Vec<(String, Reading)>> {
     let mut readings = Vec::new();
     let mut kept = 0;
     // One byte past the limit can be read, which tells an archive that is too large from one that ends there.
@@ -112,9 +106,7 @@ fn read_archive(
         readings.push((blob, code_map::read(&path, &bytes)));
     }
     if unpacked.limit() == 0 {
-        return Err(io::Error::other(
-            "it unpacks to more than can be mapped yet",
-        ));
+        return Err(io::Error::other("it unpacks to more than can be mapped yet"));
     }
     readings.extend(new.into_values().map(|blob| (blob, Reading::default())));
     Ok(readings)

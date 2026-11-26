@@ -44,19 +44,12 @@ impl Fields {
         }
         let key = self.key.trim().to_uppercase();
         if !(2..=5).contains(&key.len()) || !key.chars().all(|c| c.is_ascii_alphanumeric()) {
-            return Err(ApiError::invalid(
-                "A project's key is two to five letters or digits",
-            ));
+            return Err(ApiError::invalid("A project's key is two to five letters or digits"));
         }
         let projects = db::list(&state.pool, team_id).await?;
-        let taken = projects
-            .iter()
-            .find(|other| other.key == key && Some(other.id.as_str()) != project_id);
+        let taken = projects.iter().find(|other| other.key == key && Some(other.id.as_str()) != project_id);
         if let Some(other) = taken {
-            return Err(ApiError::invalid(format!(
-                "{} already has the key {key}",
-                other.name
-            )));
+            return Err(ApiError::invalid(format!("{} already has the key {key}", other.name)));
         }
         let repo = self.repo.as_deref().filter(|repo| !repo.is_empty());
         if let Some(repo) = repo {
@@ -66,17 +59,8 @@ impl Fields {
                 return Err(ApiError::invalid(message));
             }
         }
-        let branches = if repo.is_some() {
-            &self.branches[..]
-        } else {
-            &[]
-        };
-        Ok(Checked {
-            name,
-            key,
-            repo,
-            branches,
-        })
+        let branches = if repo.is_some() { &self.branches[..] } else { &[] };
+        Ok(Checked { name, key, repo, branches })
     }
 }
 
@@ -93,16 +77,9 @@ pub async fn create_project(
     Json(fields): Json<Fields>,
 ) -> Result<Json<Value>> {
     let project = fields.checked(&state, &team_id, None).await?;
-    let id = db::create(
-        &state.pool,
-        &team_id,
-        project.name,
-        &project.key,
-        project.repo,
-        project.branches,
-        now(),
-    )
-    .await?;
+    let id =
+        db::create(&state.pool, &team_id, project.name, &project.key, project.repo, project.branches, now())
+            .await?;
     jobs::perform_later(&state, Job::MapBranches(MapBranches)).await?;
     live::team(&state, &team_id, Topic::Projects).await;
     Ok(Json(json!({"id": id})))
@@ -159,10 +136,7 @@ pub async fn show_map(
     Ok(Json(map.ok_or_else(ApiError::not_found)?))
 }
 
-pub async fn show_github(
-    State(state): State<AppState>,
-    Path(team_id): Path<String>,
-) -> Result<Json<Status>> {
+pub async fn show_github(State(state): State<AppState>, Path(team_id): Path<String>) -> Result<Json<Status>> {
     Ok(Json(github::team_status(&state, &team_id).await?))
 }
 
@@ -209,10 +183,7 @@ pub async fn repo_branches(
     Path(team_id): Path<String>,
     Query(of): Query<OfRepo>,
 ) -> Result<Json<Value>> {
-    let plain = |part: &str| {
-        part.chars()
-            .all(|c| c.is_alphanumeric() || "-_.".contains(c))
-    };
+    let plain = |part: &str| part.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c));
     if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
         return Err(ApiError::not_found());
     }
@@ -221,7 +192,5 @@ pub async fn repo_branches(
     let branches = github::branches(&state, &token, &of.repo).await?;
     let mut names: Vec<String> = branches.into_keys().collect();
     names.sort();
-    Ok(Json(
-        json!({"default": repo.default_branch, "branches": names}),
-    ))
+    Ok(Json(json!({"default": repo.default_branch, "branches": names})))
 }

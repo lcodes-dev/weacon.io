@@ -7,11 +7,7 @@ use serde_json::{Value, json};
 
 use crate::{PLAIN, Paired, agents, fail, home, printed, private};
 
-const OS: &str = if cfg!(target_os = "macos") {
-    "macos"
-} else {
-    "linux"
-};
+const OS: &str = if cfg!(target_os = "macos") { "macos" } else { "linux" };
 
 fn yes(question: &str) -> bool {
     print!("{question} [y/N] ");
@@ -49,10 +45,8 @@ pub async fn pair(server: &str, code: &str) {
     let name = printed("hostname", &[]).unwrap_or_else(|| "A machine".into());
     let pairing = json!({"code": code, "name": name, "os": OS});
     let machine = post(&format!("{server}/api/machines"), None, pairing).await;
-    let paired = Paired {
-        server: server.to_owned(),
-        token: machine["token"].as_str().unwrap_or_default().to_owned(),
-    };
+    let paired =
+        Paired { server: server.to_owned(), token: machine["token"].as_str().unwrap_or_default().to_owned() };
     let folder = home();
     let file = folder.join("core.json");
     let kept = std::fs::create_dir_all(&folder).and_then(|()| {
@@ -117,15 +111,12 @@ pub async fn add(paired: &Paired, host: &str) {
     let here = printed(system[0], &system[1..]);
     let there = printed("ssh", &[host, "uname", "-sm"]);
     let Some(there) = there else {
-        fail(format!(
-            "{host} can't be reached over SSH. Try `ssh {host}` first."
-        ));
+        fail(format!("{host} can't be reached over SSH. Try `ssh {host}` first."));
     };
     if here.as_deref() != Some(&there) {
-        let own = "Build or download weacon-core for it, copy it there, and pair it from Weacon's Machines page.";
-        fail(format!(
-            "{host} runs {there}, which this copy of the core isn't built for. {own}"
-        ));
+        let own =
+            "Build or download weacon-core for it, copy it there, and pair it from Weacon's Machines page.";
+        fail(format!("{host} runs {there}, which this copy of the core isn't built for. {own}"));
     }
     println!(
         "This will, on {host}:\n  copy weacon-core to ~/.local/bin\n  pair it with {}\n  keep it running in the background",
@@ -136,35 +127,11 @@ pub async fn add(paired: &Paired, host: &str) {
     }
     let core = std::env::current_exe().unwrap_or_else(|error| fail(error));
     let core = core.to_string_lossy();
-    must(
-        "ssh",
-        &[host, "mkdir", "-p", ".local/bin"],
-        "The folder couldn't be made.",
-    );
-    must(
-        "scp",
-        &["-q", &core, &format!("{host}:.local/bin/weacon-core")],
-        "The core couldn't be copied.",
-    );
-    let code = post(
-        &format!("{}/api/machines/codes", paired.server),
-        Some(&paired.token),
-        json!(null),
-    )
-    .await;
+    must("ssh", &[host, "mkdir", "-p", ".local/bin"], "The folder couldn't be made.");
+    must("scp", &["-q", &core, &format!("{host}:.local/bin/weacon-core")], "The core couldn't be copied.");
+    let code = post(&format!("{}/api/machines/codes", paired.server), Some(&paired.token), json!(null)).await;
     let code = code["code"].as_str().unwrap_or_default();
-    must(
-        "ssh",
-        &[
-            "-t",
-            host,
-            ".local/bin/weacon-core",
-            "pair",
-            &paired.server,
-            code,
-        ],
-        "Pairing failed.",
-    );
+    must("ssh", &["-t", host, ".local/bin/weacon-core", "pair", &paired.server, code], "Pairing failed.");
     must(
         "ssh",
         &[host, ".local/bin/weacon-core", "install"],
@@ -176,22 +143,13 @@ pub async fn add(paired: &Paired, host: &str) {
 const NAME: &str = "io.weacon.core";
 
 fn kept() -> Vec<(String, String)> {
-    let names = [
-        "PATH",
-        "WEACON_CORE_HOME",
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-    ];
-    let set = names
-        .iter()
-        .filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)));
+    let names = ["PATH", "WEACON_CORE_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME"];
+    let set = names.iter().filter_map(|name| Some((name.to_string(), std::env::var(name).ok()?)));
     set.collect()
 }
 
 fn user_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }
 
 fn ran(program: &str, args: &[&str]) -> bool {
@@ -267,10 +225,8 @@ pub fn install() {
         );
         return;
     }
-    let variables: String = kept()
-        .iter()
-        .map(|(name, value)| format!("Environment=\"{name}={}\"\n", quoted(value)))
-        .collect();
+    let variables: String =
+        kept().iter().map(|(name, value)| format!("Environment=\"{name}={}\"\n", quoted(value))).collect();
     let unit = format!(
         "[Unit]\nDescription=Weacon core\nAfter=network-online.target\n\n[Service]\nExecStart=\"{}\"\nRestart=always\nRestartSec=5\n{variables}\n[Install]\nWantedBy=default.target\n",
         quoted(&core)
@@ -316,10 +272,7 @@ mod tests {
 
     #[test]
     fn values_are_written_the_way_each_file_asks() {
-        assert_eq!(
-            xml("/Volumes/R&D <x>/bin"),
-            "/Volumes/R&amp;D &lt;x&gt;/bin"
-        );
+        assert_eq!(xml("/Volumes/R&D <x>/bin"), "/Volumes/R&amp;D &lt;x&gt;/bin");
         assert_eq!(quoted(r#"/home/a b/50%"c\d"#), r#"/home/a b/50%%\"c\\d"#);
     }
 }

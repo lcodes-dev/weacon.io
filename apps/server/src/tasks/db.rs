@@ -149,9 +149,7 @@ async fn set_docs(
     task_id: &str,
     docs: &[String],
 ) -> sqlx::Result<()> {
-    sqlx::query!("DELETE FROM task_docs WHERE task_id = ?", task_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!("DELETE FROM task_docs WHERE task_id = ?", task_id).execute(&mut *tx).await?;
     let docs = Json(docs);
     sqlx::query!(
         "INSERT INTO task_docs (task_id, doc_id)
@@ -165,12 +163,7 @@ async fn set_docs(
     Ok(())
 }
 
-pub async fn order(
-    pool: &SqlitePool,
-    project_id: &str,
-    status: &str,
-    order: &[String],
-) -> sqlx::Result<()> {
+pub async fn order(pool: &SqlitePool, project_id: &str, status: &str, order: &[String]) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     for (position, id) in order.iter().enumerate() {
         let position = position as i64;
@@ -188,12 +181,8 @@ pub async fn order(
 }
 
 pub async fn delete(pool: &SqlitePool, project_id: &str, task_id: &str) -> sqlx::Result<()> {
-    sqlx::query!(
-        "DELETE FROM tasks WHERE id = ? AND project_id = ?",
-        task_id,
-        project_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("DELETE FROM tasks WHERE id = ? AND project_id = ?", task_id, project_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }

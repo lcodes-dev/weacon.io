@@ -4,10 +4,7 @@ use serde_json::{Value, json};
 use crate::{Ended, TOKEN, did, said, text, wanted};
 
 pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> Vec<String> {
-    let allowed: Vec<String> = hosts
-        .iter()
-        .map(|host| format!("{}=\"allow\"", json!(host)))
-        .collect();
+    let allowed: Vec<String> = hosts.iter().map(|host| format!("{}=\"allow\"", json!(host))).collect();
     let hosts = format!("features.network_proxy.domains={{{}}}", allowed.join(","));
     let cache = format!("sandbox_workspace_write.writable_roots=[{}]", json!(cache));
     let tools = format!("mcp_servers.weacon.url={}", json!(tools));
@@ -63,9 +60,7 @@ pub fn read(
             let shell = ["/bin/zsh -lc ", "/bin/bash -lc ", "/bin/sh -lc "];
             let bare = shell.iter().find_map(|shell| command.strip_prefix(shell));
             let command = bare.map_or(command, |bare| bare.trim_matches(['\'', '"']));
-            did(Deed::Command, &command.into(), "")
-                .into_iter()
-                .for_each(tell);
+            did(Deed::Command, &command.into(), "").into_iter().for_each(tell);
         }
         (Some("item.completed"), Some("command_execution")) => {
             let output = item["aggregated_output"].as_str().unwrap_or_default();
@@ -73,9 +68,7 @@ pub fn read(
         }
         (Some("item.completed"), Some("file_change")) => {
             for change in item["changes"].as_array().into_iter().flatten() {
-                did(Deed::Edit, &change["path"], folder)
-                    .into_iter()
-                    .for_each(&mut *tell);
+                did(Deed::Edit, &change["path"], folder).into_iter().for_each(&mut *tell);
             }
         }
         (Some("turn.completed"), _) => return Some(Ok(())),

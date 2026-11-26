@@ -38,8 +38,7 @@ pub async fn call_tagged(
 
 fn tags(text: &str, name: &str) -> bool {
     let tag = format!("@{name}");
-    text.split(|c: char| !c.is_alphanumeric() && c != '@')
-        .any(|word| word.eq_ignore_ascii_case(&tag))
+    text.split(|c: char| !c.is_alphanumeric() && c != '@').any(|word| word.eq_ignore_ascii_case(&tag))
 }
 
 async fn call_agent(
@@ -101,21 +100,13 @@ async fn call_agent(
     Ok(None)
 }
 
-async fn call_weacon(
-    state: &AppState,
-    user: &User,
-    team_id: &str,
-    group: &Group,
-) -> Result<Option<String>> {
+async fn call_weacon(state: &AppState, user: &User, team_id: &str, group: &Group) -> Result<Option<String>> {
     let projects = projects::db::list(&state.pool, team_id).await?;
     let about = group.project_id.as_deref();
     let Some(project) = projects.iter().find(|project| Some(&*project.id) == about) else {
         return Ok(Some(NO_PROJECT.into()));
     };
-    if settings::db::api_key(&state.pool, &state.server_key, team_id)
-        .await?
-        .is_none()
-    {
+    if settings::db::api_key(&state.pool, &state.server_key, team_id).await?.is_none() {
         let why = "This team has no API key for @weacon. Its owner saves one in Team settings";
         return Ok(Some(why.into()));
     }
@@ -146,18 +137,13 @@ pub fn told(group: &Group, user: &User, own: Option<&str>, written: &[GroupMessa
         Some(name) => format!("In the group \"{name}\""),
         None => format!("In a group with {}", others.join(", ")),
     };
-    let news = written
-        .iter()
-        .filter(|message| own.is_none() || message.chat_id.as_deref() != own);
+    let news = written.iter().filter(|message| own.is_none() || message.chat_id.as_deref() != own);
     let lines = news.map(|message| {
         let person = message.user.as_deref().unwrap_or("Someone who left");
-        let agent = message
-            .agent
-            .as_deref()
-            .map(|agent| match Agent::named(agent) {
-                Some(agent) => format!("{person}'s {}", agent.name()),
-                None => "Weacon, the team's agent".into(),
-            });
+        let agent = message.agent.as_deref().map(|agent| match Agent::named(agent) {
+            Some(agent) => format!("{person}'s {}", agent.name()),
+            None => "Weacon, the team's agent".into(),
+        });
         format!("{}: {}", agent.as_deref().unwrap_or(person), message.text)
     });
     let mut lines: Vec<String> = lines.collect();
@@ -204,8 +190,7 @@ impl AnswerAsWeacon {
     }
 
     pub async fn failed(self, state: &AppState, why: String) {
-        self.post(state, &format!("It couldn't answer: {why}"))
-            .await;
+        self.post(state, &format!("It couldn't answer: {why}")).await;
     }
 
     async fn answer(&self, state: &AppState, key: &str, model: &str) -> Result<String> {
@@ -213,12 +198,7 @@ impl AnswerAsWeacon {
             let (name, does, takes) = (&tool["name"], &tool["description"], &tool["inputSchema"]);
             json!({"name": name, "description": does, "input_schema": takes})
         };
-        let tools: Vec<Value> = chats::tools::list()
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(tool)
-            .collect();
+        let tools: Vec<Value> = chats::tools::list().as_array().into_iter().flatten().map(tool).collect();
         let mut messages = vec![json!({"role": "user", "content": self.asked})];
         for _ in 0..ROUNDS {
             let body = json!({
@@ -252,17 +232,12 @@ impl AnswerAsWeacon {
             messages.push(json!({"role": "assistant", "content": blocks}));
             messages.push(json!({"role": "user", "content": results}));
         }
-        Err(ApiError::invalid(format!(
-            "It asked for its tools more than {ROUNDS} times"
-        )))
+        Err(ApiError::invalid(format!("It asked for its tools more than {ROUNDS} times")))
     }
 
     async fn post(&self, state: &AppState, text: &str) {
         let (group, user) = (&self.group_id, &self.caller.user_id);
-        if db::post_as_weacon(&state.pool, group, user, text)
-            .await
-            .is_ok()
-        {
+        if db::post_as_weacon(&state.pool, group, user, text).await.is_ok() {
             live::group(state, group).await;
         }
     }

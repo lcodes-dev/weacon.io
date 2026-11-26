@@ -8,8 +8,7 @@ use serde_json::{Value, json};
 use super::db;
 use super::db::{Invitation, Membership, User};
 use crate::auth::{
-    SESSION_SECONDS, normalized, random_token, session_cookie, session_token, session_user,
-    signed_in,
+    SESSION_SECONDS, normalized, random_token, session_cookie, session_token, session_user, signed_in,
 };
 use crate::error::{ApiError, Result};
 use crate::live::Topic;
@@ -19,10 +18,7 @@ use crate::{AppState, live, now, settings};
 const CODE_SECONDS: i64 = 10 * 60;
 const RENEW_SECONDS: i64 = 24 * 60 * 60;
 
-pub async fn show_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
+pub async fn show_session(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse> {
     let setup_needed = !db::any_exist(&state.pool).await?;
     let user = signed_in(&state, &headers).await?;
     let mut cookie = None;
@@ -49,8 +45,7 @@ pub async fn send_code(
     if !settings::mail::is_address(&email) {
         return Err(ApiError::invalid("That isn't an email address"));
     }
-    let name = request.name.as_deref().map(str::trim);
-    let name = name.filter(|name| !name.is_empty());
+    let name = request.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
     if name.is_none() && !db::exists(&state.pool, &email).await? {
         return Ok(StatusCode::NO_CONTENT);
     }
@@ -92,10 +87,7 @@ pub async fn create_session(
     Ok((session_cookie(&state, &token, SESSION_SECONDS), Json(user)))
 }
 
-pub async fn delete_session(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> Result<impl IntoResponse> {
+pub async fn delete_session(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse> {
     if let Some(token) = session_token(&headers) {
         db::sign_out(&state.pool, token).await?;
     }
@@ -170,11 +162,7 @@ pub async fn create_invites(
     Json(invites): Json<NewInvites>,
 ) -> Result<StatusCode> {
     let team = user.owner_of(&team_id)?;
-    let mut emails: Vec<String> = invites
-        .emails
-        .iter()
-        .map(|email| normalized(email))
-        .collect();
+    let mut emails: Vec<String> = invites.emails.iter().map(|email| normalized(email)).collect();
     emails.sort();
     emails.dedup();
     for email in &emails {
@@ -203,18 +191,11 @@ async fn send_invite(state: &AppState, user: &User, team: &Membership, email: &s
         user.name, team.name
     );
     let link = format!("{}/invite/{token}", state.url);
-    let mail = Mail {
-        subject: &subject,
-        text: &text,
-        code: None,
-        button: Some(("Join the team", &link)),
-    };
-    settings::mail::send(state, email, &mail)
-        .await
-        .map_err(|error| {
-            tracing::error!("mail to {email} failed: {error}");
-            ApiError::bad_gateway(format!("The mail to {email} could not be sent"))
-        })
+    let mail = Mail { subject: &subject, text: &text, code: None, button: Some(("Join the team", &link)) };
+    settings::mail::send(state, email, &mail).await.map_err(|error| {
+        tracing::error!("mail to {email} failed: {error}");
+        ApiError::bad_gateway(format!("The mail to {email} could not be sent"))
+    })
 }
 
 pub async fn delete_invite(
@@ -244,8 +225,7 @@ pub async fn accept_invite(
         let message = format!("This invite is for {}", invitation.email);
         return Err(ApiError::forbidden(message));
     }
-    let team_id = db::accept_invite(&state.pool, &token, &user.id).await?;
-    let team_id = team_id.ok_or_else(gone)?;
+    let team_id = db::accept_invite(&state.pool, &token, &user.id).await?.ok_or_else(gone)?;
     Ok(Json(json!({"team_id": team_id})))
 }
 

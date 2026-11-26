@@ -36,10 +36,7 @@ pub async fn ping(pool: &SqlitePool) -> sqlx::Result<()> {
 }
 
 async fn migrated(pool: SqlitePool) -> sqlx::Result<SqlitePool> {
-    sqlx::migrate!()
-        .run(&pool)
-        .await
-        .map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
+    sqlx::migrate!().run(&pool).await.map_err(|error| sqlx::Error::Migrate(Box::new(error)))?;
     Ok(pool)
 }
 
@@ -48,16 +45,8 @@ pub fn keep_private(path: &str) -> std::io::Result<()> {
     use std::fs::{OpenOptions, Permissions, set_permissions};
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(path)?;
-    for file in [
-        path.to_owned(),
-        format!("{path}-wal"),
-        format!("{path}-shm"),
-    ] {
+    OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
+    for file in [path.to_owned(), format!("{path}-wal"), format!("{path}-shm")] {
         if std::fs::exists(&file)? {
             set_permissions(&file, Permissions::from_mode(0o600))?;
         }
@@ -70,9 +59,6 @@ pub fn as_json<S: serde::Serializer>(json: &str, to: S) -> Result<S::Ok, S::Erro
     value.serialize(to)
 }
 
-pub fn as_optional_json<S: serde::Serializer>(
-    json: &Option<String>,
-    to: S,
-) -> Result<S::Ok, S::Error> {
+pub fn as_optional_json<S: serde::Serializer>(json: &Option<String>, to: S) -> Result<S::Ok, S::Error> {
     as_json(json.as_deref().unwrap_or("null"), to)
 }

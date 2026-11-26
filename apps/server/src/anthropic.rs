@@ -8,9 +8,7 @@ use crate::error::{ApiError, Result};
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
 pub fn model(chosen: Option<&str>) -> &str {
-    chosen
-        .filter(|model| !model.is_empty())
-        .unwrap_or("claude-haiku-5-5")
+    chosen.filter(|model| !model.is_empty()).unwrap_or("claude-haiku-5-5")
 }
 
 pub async fn send(state: &AppState, key: &str, body: &Value) -> Result<Value> {
@@ -42,8 +40,5 @@ pub fn text(answer: &Value) -> String {
 }
 
 pub fn stopped(answer: &Value) -> ApiError {
-    ApiError::bad_gateway(format!(
-        "The answer stopped early: {}",
-        answer["stop_reason"]
-    ))
+    ApiError::bad_gateway(format!("The answer stopped early: {}", answer["stop_reason"]))
 }

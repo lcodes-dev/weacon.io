@@ -50,12 +50,10 @@ pub async fn exists(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx:
 }
 
 pub async fn list(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Project>> {
-    let projects = sqlx::query!(
-        "SELECT id, name, key, repo FROM projects WHERE team_id = ? ORDER BY name",
-        team_id
-    )
-    .fetch_all(pool)
-    .await?;
+    let projects =
+        sqlx::query!("SELECT id, name, key, repo FROM projects WHERE team_id = ? ORDER BY name", team_id)
+            .fetch_all(pool)
+            .await?;
     let mut branches = sqlx::query_as!(
         Branch,
         "SELECT b.project_id, b.name, b.head_sha, b.commit_sha, b.error
@@ -66,9 +64,7 @@ pub async fn list(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Project>
     .fetch_all(pool)
     .await?;
     let projects = projects.into_iter().map(|project| Project {
-        branches: branches
-            .extract_if(.., |branch| branch.project_id == project.id)
-            .collect(),
+        branches: branches.extract_if(.., |branch| branch.project_id == project.id).collect(),
         id: project.id,
         name: project.name,
         key: project.key,
@@ -114,25 +110,16 @@ pub async fn update(
     branches: &[String],
 ) -> sqlx::Result<Option<bool>> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let old_repo = sqlx::query_scalar!(
-        "SELECT repo FROM projects WHERE team_id = ? AND id = ?",
-        team_id,
-        project_id
-    )
-    .fetch_optional(&mut *tx)
-    .await?;
+    let old_repo =
+        sqlx::query_scalar!("SELECT repo FROM projects WHERE team_id = ? AND id = ?", team_id, project_id)
+            .fetch_optional(&mut *tx)
+            .await?;
     let Some(old_repo) = old_repo else {
         return Ok(None);
     };
-    sqlx::query!(
-        "UPDATE projects SET name = ?, key = ?, repo = ? WHERE id = ?",
-        name,
-        key,
-        repo,
-        project_id
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query!("UPDATE projects SET name = ?, key = ?, repo = ? WHERE id = ?", name, key, repo, project_id)
+        .execute(&mut *tx)
+        .await?;
     let moved = old_repo.as_deref() != repo;
     if moved {
         sqlx::query!(
@@ -142,9 +129,7 @@ pub async fn update(
         )
         .execute(&mut *tx)
         .await?;
-        sqlx::query!("DELETE FROM proposals WHERE project_id = ?", project_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!("DELETE FROM proposals WHERE project_id = ?", project_id).execute(&mut *tx).await?;
         sqlx::query!(
             "UPDATE projects SET docs_state = 'idle', docs_message = NULL, docs_run = NULL,
                     docs_branch = NULL, docs_commit = NULL, docs_left_out = NULL
@@ -168,37 +153,25 @@ async fn track_branches(
     let mut changed = false;
     for name in branch_names(&mut *tx, project_id).await? {
         if reset || !names.contains(&name) {
-            sqlx::query!(
-                "DELETE FROM branches WHERE project_id = ? AND name = ?",
-                project_id,
-                name
-            )
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query!("DELETE FROM branches WHERE project_id = ? AND name = ?", project_id, name)
+                .execute(&mut *tx)
+                .await?;
             changed = true;
         }
     }
     for name in names {
-        let added = sqlx::query!(
-            "INSERT OR IGNORE INTO branches (project_id, name) VALUES (?, ?)",
-            project_id,
-            name
-        )
-        .execute(&mut *tx)
-        .await?;
+        let added =
+            sqlx::query!("INSERT OR IGNORE INTO branches (project_id, name) VALUES (?, ?)", project_id, name)
+                .execute(&mut *tx)
+                .await?;
         changed |= added.rows_affected() > 0;
     }
     forget_unlisted_blobs(tx, project_id).await?;
     Ok(changed)
 }
 
-pub async fn branch_names(
-    db: impl sqlx::SqliteExecutor<'_>,
-    project_id: &str,
-) -> sqlx::Result<Vec<String>> {
-    sqlx::query_scalar!("SELECT name FROM branches WHERE project_id = ?", project_id)
-        .fetch_all(db)
-        .await
+pub async fn branch_names(db: impl sqlx::SqliteExecutor<'_>, project_id: &str) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar!("SELECT name FROM branches WHERE project_id = ?", project_id).fetch_all(db).await
 }
 
 pub async fn tracked(pool: &SqlitePool) -> sqlx::Result<Vec<Tracked>> {
@@ -260,11 +233,7 @@ pub async fn branch_commit(
     .await
 }
 
-pub async fn delete(
-    pool: &SqlitePool,
-    team_id: &str,
-    project_id: &str,
-) -> sqlx::Result<Vec<String>> {
+pub async fn delete(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<Vec<String>> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let files = sqlx::query_scalar!(
         "SELECT f.id FROM files f JOIN projects p ON p.id = f.project_id
@@ -274,13 +243,9 @@ pub async fn delete(
     )
     .fetch_all(&mut *tx)
     .await?;
-    sqlx::query!(
-        "DELETE FROM projects WHERE team_id = ? AND id = ?",
-        team_id,
-        project_id
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query!("DELETE FROM projects WHERE team_id = ? AND id = ?", team_id, project_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(files)
 }
@@ -326,20 +291,12 @@ pub(super) async fn forget_unlisted_blobs(
 
 pub async fn forget_other_readers(pool: &SqlitePool, reader: i64) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
-    let current = sqlx::query_scalar!("SELECT map_reader FROM config")
-        .fetch_one(&mut *tx)
-        .await?;
+    let current = sqlx::query_scalar!("SELECT map_reader FROM config").fetch_one(&mut *tx).await?;
     if current != reader {
-        sqlx::query!("DELETE FROM branch_files")
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!("DELETE FROM branch_files").execute(&mut *tx).await?;
         sqlx::query!("DELETE FROM blobs").execute(&mut *tx).await?;
-        sqlx::query!("UPDATE branches SET commit_sha = NULL")
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query!("UPDATE config SET map_reader = ?", reader)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!("UPDATE branches SET commit_sha = NULL").execute(&mut *tx).await?;
+        sqlx::query!("UPDATE config SET map_reader = ?", reader).execute(&mut *tx).await?;
     }
     tx.commit().await
 }
@@ -422,13 +379,9 @@ pub async fn save_map(
             .await?;
         }
     }
-    sqlx::query!(
-        "DELETE FROM branch_files WHERE project_id = ? AND branch = ?",
-        project,
-        branch.name
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query!("DELETE FROM branch_files WHERE project_id = ? AND branch = ?", project, branch.name)
+        .execute(&mut *tx)
+        .await?;
     for (path, blob) in files {
         sqlx::query!(
             "INSERT INTO branch_files (project_id, branch, path, blob) VALUES (?, ?, ?, ?)",
@@ -469,11 +422,7 @@ pub async fn find_map(
         return Ok(None);
     };
     let uses = uses(&mut tx, project_id, branch, &files).await?;
-    Ok(Some(Map {
-        commit,
-        files,
-        uses,
-    }))
+    Ok(Some(Map { commit, files, uses }))
 }
 
 pub async fn sources(
@@ -528,12 +477,7 @@ async fn read_files(
     .await?;
     let mut by_path: HashMap<String, Vec<Symbol>> = HashMap::new();
     for row in symbols {
-        let symbol = Symbol {
-            name: row.name,
-            kind: row.kind,
-            line: row.line,
-            end_line: row.end_line,
-        };
+        let symbol = Symbol { name: row.name, kind: row.kind, line: row.line, end_line: row.end_line };
         by_path.entry(row.path).or_default().push(symbol);
     }
     let files = files

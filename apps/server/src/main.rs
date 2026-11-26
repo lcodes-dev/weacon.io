@@ -17,10 +17,8 @@ async fn main() -> Result<(), Error> {
     let database = env_or("WEACON_DB", "weacon.db");
     let pool = db::open(&database).await?;
     let files = private_folder(&Path::new(&database).with_extension("files"))?;
-    let key_file = std::env::var("WEACON_KEY_FILE").map_or_else(
-        |_| Path::new(&database).with_extension("key"),
-        PathBuf::from,
-    );
+    let key_file = std::env::var("WEACON_KEY_FILE")
+        .map_or_else(|_| Path::new(&database).with_extension("key"), PathBuf::from);
     let server_key = secrets::load(&pool, &key_file).await?;
     match settings::db::smtp(&pool, &server_key).await? {
         Some(smtp) => info!("mail goes through {}", smtp.host),

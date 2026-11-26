@@ -14,9 +14,9 @@ fn team_secret(column: &str, team_id: &str) -> String {
 }
 
 fn open(server_key: &ServerKey, place: &str, sealed: String) -> sqlx::Result<String> {
-    server_key.open(place, &sealed).ok_or_else(|| {
-        sqlx::Error::Decode(format!("{place} doesn't open with the server's key").into())
-    })
+    server_key
+        .open(place, &sealed)
+        .ok_or_else(|| sqlx::Error::Decode(format!("{place} doesn't open with the server's key").into()))
 }
 
 pub async fn smtp(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Result<Option<Smtp>> {
@@ -31,18 +31,11 @@ pub async fn smtp(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Result<Opt
     let Some(mut smtp) = smtp else {
         return Ok(None);
     };
-    smtp.password = smtp
-        .password
-        .map(|sealed| open(server_key, SMTP_PASSWORD, sealed))
-        .transpose()?;
+    smtp.password = smtp.password.map(|sealed| open(server_key, SMTP_PASSWORD, sealed)).transpose()?;
     Ok(Some(smtp))
 }
 
-pub async fn save_smtp(
-    pool: &SqlitePool,
-    server_key: &ServerKey,
-    smtp: Option<&Smtp>,
-) -> sqlx::Result<()> {
+pub async fn save_smtp(pool: &SqlitePool, server_key: &ServerKey, smtp: Option<&Smtp>) -> sqlx::Result<()> {
     let password = smtp.and_then(|smtp| smtp.password.as_ref());
     let password = password.map(|password| server_key.seal(SMTP_PASSWORD, password));
     sqlx::query!(
@@ -76,11 +69,7 @@ pub async fn github_app(
     let Some(mut app) = app else {
         return Ok(None);
     };
-    app.pem = open(
-        server_key,
-        &team_secret(GITHUB_PRIVATE_KEY, team_id),
-        app.pem,
-    )?;
+    app.pem = open(server_key, &team_secret(GITHUB_PRIVATE_KEY, team_id), app.pem)?;
     Ok(Some(app))
 }
 
@@ -121,18 +110,12 @@ pub async fn writer(
     let Some(mut writer) = writer else {
         return Ok(None);
     };
-    writer.key = writer
-        .key
-        .map(|sealed| open(server_key, &team_secret(API_KEY, team_id), sealed))
-        .transpose()?;
+    writer.key =
+        writer.key.map(|sealed| open(server_key, &team_secret(API_KEY, team_id), sealed)).transpose()?;
     Ok(Some(writer))
 }
 
-pub async fn save_writer(
-    pool: &SqlitePool,
-    team_id: &str,
-    writer: Option<&Writer>,
-) -> sqlx::Result<()> {
+pub async fn save_writer(pool: &SqlitePool, team_id: &str, writer: Option<&Writer>) -> sqlx::Result<()> {
     sqlx::query!(
         "UPDATE teams SET writer = ?, writer_model = ? WHERE id = ?",
         writer.map(|writer| writer.kind),
@@ -171,31 +154,19 @@ pub async fn save_api_key(
 ) -> sqlx::Result<()> {
     let place = team_secret(API_KEY, team_id);
     let sealed = api_key.map(|api_key| server_key.seal(&place, api_key));
-    sqlx::query!(
-        "UPDATE teams SET writer_key = ? WHERE id = ?",
-        sealed,
-        team_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("UPDATE teams SET writer_key = ? WHERE id = ?", sealed, team_id).execute(pool).await?;
     Ok(())
 }
 
 pub async fn secrets_sealed(pool: &SqlitePool) -> sqlx::Result<bool> {
-    let sealed = sqlx::query_scalar!("SELECT secrets_sealed FROM config")
-        .fetch_one(pool)
-        .await?;
+    let sealed = sqlx::query_scalar!("SELECT secrets_sealed FROM config").fetch_one(pool).await?;
     Ok(sealed != 0)
 }
 
 pub async fn secrets(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String)>> {
-    let password = sqlx::query_scalar!("SELECT smtp_password FROM config")
-        .fetch_one(pool)
-        .await?;
-    let mut secrets: Vec<(String, String)> = password
-        .map(|password| (SMTP_PASSWORD.to_owned(), password))
-        .into_iter()
-        .collect();
+    let password = sqlx::query_scalar!("SELECT smtp_password FROM config").fetch_one(pool).await?;
+    let mut secrets: Vec<(String, String)> =
+        password.map(|password| (SMTP_PASSWORD.to_owned(), password)).into_iter().collect();
     let teams = sqlx::query!(
         r#"SELECT id AS "id!", github_private_key, writer_key FROM teams
            WHERE github_private_key IS NOT NULL OR writer_key IS NOT NULL"#
@@ -215,21 +186,14 @@ pub async fn secrets(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String)>> {
 
 pub async fn seal_secrets(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let config = sqlx::query!("SELECT secrets_sealed, smtp_password FROM config")
-        .fetch_one(&mut *tx)
-        .await?;
+    let config = sqlx::query!("SELECT secrets_sealed, smtp_password FROM config").fetch_one(&mut *tx).await?;
     if config.secrets_sealed != 0 {
         return Ok(());
     }
-    let password = config
-        .smtp_password
-        .map(|password| server_key.seal(SMTP_PASSWORD, &password));
-    sqlx::query!(
-        "UPDATE config SET smtp_password = ?, secrets_sealed = 1",
-        password
-    )
-    .execute(&mut *tx)
-    .await?;
+    let password = config.smtp_password.map(|password| server_key.seal(SMTP_PASSWORD, &password));
+    sqlx::query!("UPDATE config SET smtp_password = ?, secrets_sealed = 1", password)
+        .execute(&mut *tx)
+        .await?;
     let teams = sqlx::query!(
         r#"SELECT id AS "id!", github_private_key, writer_key FROM teams
            WHERE github_private_key IS NOT NULL OR writer_key IS NOT NULL"#
@@ -238,9 +202,7 @@ pub async fn seal_secrets(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Re
     .await?;
     for team in teams {
         let seal = |column, plain: String| server_key.seal(&team_secret(column, &team.id), &plain);
-        let pem = team
-            .github_private_key
-            .map(|pem| seal(GITHUB_PRIVATE_KEY, pem));
+        let pem = team.github_private_key.map(|pem| seal(GITHUB_PRIVATE_KEY, pem));
         let api_key = team.writer_key.map(|api_key| seal(API_KEY, api_key));
         sqlx::query!(
             "UPDATE teams SET github_private_key = ?, writer_key = ? WHERE id = ?",

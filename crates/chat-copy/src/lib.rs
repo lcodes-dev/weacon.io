@@ -85,29 +85,18 @@ pub async fn changes(chat: &Path) -> (Vec<Changed>, String) {
         let mut count = || parts.next().map(|count| count.parse().unwrap_or(0));
         let (added, removed) = (count()?, count()?);
         let path = parts.next()?.to_owned();
-        Some(Changed {
-            path,
-            added,
-            removed,
-        })
+        Some(Changed { path, added, removed })
     });
     let diff = diff("--no-color").await;
-    let diff = if diff.len() > LONGEST {
-        String::new()
-    } else {
-        diff
-    };
+    let diff = if diff.len() > LONGEST { String::new() } else { diff };
     (files.collect(), diff)
 }
 
 async fn own() -> Option<(String, String)> {
     let known = |key: &'static str| async move {
-        let asked = Command::new("git")
-            .args(["config", "--global", "--get", key])
-            .stdin(Stdio::null())
-            .output();
-        let value = String::from_utf8(asked.await.ok()?.stdout).ok()?;
-        let value = value.trim().to_owned();
+        let asked =
+            Command::new("git").args(["config", "--global", "--get", key]).stdin(Stdio::null()).output();
+        let value = String::from_utf8(asked.await.ok()?.stdout).ok()?.trim().to_owned();
         (!value.is_empty()).then_some(value)
     };
     Some((known("user.name").await?, known("user.email").await?))
@@ -121,10 +110,7 @@ pub async fn push(
     author: (&str, &str),
 ) -> Result<String, String> {
     git(chat, &["add", "--all"], None).await?;
-    if git(chat, &["diff", "--cached", "--quiet", "HEAD"], None)
-        .await
-        .is_err()
-    {
+    if git(chat, &["diff", "--cached", "--quiet", "HEAD"], None).await.is_err() {
         let own = own().await;
         let (name, mail) = match &own {
             Some((name, mail)) => (name.as_str(), mail.as_str()),
@@ -138,8 +124,5 @@ pub async fn push(
     let to = format!("HEAD:refs/heads/{to}");
     let push = ["push", "--quiet", &repository.url, &to];
     git(chat, &push, Some(&repository.token)).await?;
-    Ok(git(chat, &["rev-parse", "HEAD"], None)
-        .await?
-        .trim()
-        .to_owned())
+    Ok(git(chat, &["rev-parse", "HEAD"], None).await?.trim().to_owned())
 }

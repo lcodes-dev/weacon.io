@@ -20,11 +20,7 @@ impl ServerKey {
         let nonce: [u8; NONCE_LEN] = rand::random();
         let mut sealed = value.as_bytes().to_vec();
         self.cipher()
-            .seal_in_place_append_tag(
-                Nonce::assume_unique_for_key(nonce),
-                Aad::from(place),
-                &mut sealed,
-            )
+            .seal_in_place_append_tag(Nonce::assume_unique_for_key(nonce), Aad::from(place), &mut sealed)
             .expect("AES-GCM seals any value under 64 GB");
         STANDARD.encode([&nonce[..], &sealed].concat())
     }
@@ -34,10 +30,7 @@ impl ServerKey {
         let (nonce, sealed) = bytes.split_at_checked(NONCE_LEN)?;
         let nonce = Nonce::try_assume_unique_for_key(nonce).ok()?;
         let mut sealed = sealed.to_vec();
-        let value = self
-            .cipher()
-            .open_in_place(nonce, Aad::from(place), &mut sealed)
-            .ok()?;
+        let value = self.cipher().open_in_place(nonce, Aad::from(place), &mut sealed).ok()?;
         String::from_utf8(value.to_vec()).ok()
     }
 
@@ -52,11 +45,9 @@ pub async fn load(
 ) -> Result<ServerKey, Box<dyn std::error::Error + Send + Sync>> {
     let key_file = path.display();
     let key = match std::fs::read(path) {
-        Ok(bytes) => ServerKey(
-            bytes
-                .try_into()
-                .map_err(|_| format!("{key_file} doesn't hold a key of 32 bytes"))?,
-        ),
+        Ok(bytes) => {
+            ServerKey(bytes.try_into().map_err(|_| format!("{key_file} doesn't hold a key of 32 bytes"))?)
+        }
         Err(error) if error.kind() == ErrorKind::NotFound => {
             if db::secrets_sealed(pool).await? && !db::secrets(pool).await?.is_empty() {
                 return Err(format!(
@@ -73,9 +64,7 @@ pub async fn load(
     db::seal_secrets(pool, &key).await?;
     for (place, sealed) in db::secrets(pool).await? {
         if key.open(&place, &sealed).is_none() {
-            return Err(
-                format!("the key in {key_file} doesn't open the database's secrets").into(),
-            );
+            return Err(format!("the key in {key_file} doesn't open the database's secrets").into());
         }
     }
     Ok(key)

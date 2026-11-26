@@ -24,18 +24,8 @@ pub async fn serve_web(uri: Uri) -> Response {
             None => return (StatusCode::NOT_FOUND, "the web app is not built").into_response(),
         },
     };
-    let cache = if path.starts_with("assets/") {
-        "public, max-age=31536000, immutable"
-    } else {
-        "no-cache"
-    };
-    (
-        [
-            (header::CONTENT_TYPE, file.metadata.mimetype()),
-            (header::CACHE_CONTROL, cache),
-        ],
-        file.data,
-    )
+    let cache = if path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
+    ([(header::CONTENT_TYPE, file.metadata.mimetype()), (header::CACHE_CONTROL, cache)], file.data)
         .into_response()
 }
 

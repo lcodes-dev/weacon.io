@@ -36,19 +36,14 @@ pub async fn delete_mail(State(state): State<AppState>, _: ServerOwner) -> Resul
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn test_mail(
-    State(state): State<AppState>,
-    ServerOwner(user): ServerOwner,
-) -> Result<StatusCode> {
+pub async fn test_mail(State(state): State<AppState>, ServerOwner(user): ServerOwner) -> Result<StatusCode> {
     let mail = Mail {
         subject: "Weacon test mail",
         text: "This is a test mail from Weacon.\n\nYour mail settings work.",
         code: None,
         button: None,
     };
-    mail::send(&state, &user.email, &mail)
-        .await
-        .map_err(|error| ApiError::bad_gateway(error.to_string()))?;
+    mail::send(&state, &user.email, &mail).await.map_err(|error| ApiError::bad_gateway(error.to_string()))?;
     Ok(StatusCode::NO_CONTENT)
 }
 

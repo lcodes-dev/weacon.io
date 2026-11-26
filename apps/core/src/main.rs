@@ -25,9 +25,7 @@ struct Paired {
 
 fn home() -> PathBuf {
     let chosen = std::env::var_os("WEACON_CORE_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     chosen.unwrap_or_else(|| home.join(".config/weacon-core"))
 }
 
@@ -51,10 +49,7 @@ fn private(server: &str) -> bool {
 const PLAIN: &str = "Weacon's address must start with https://, so that this machine's token can't be read on its way. Only an address on this computer itself may be plain.";
 
 fn printed(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = std::process::Command::new(program).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     output.status.success().then_some(text)
 }
@@ -65,8 +60,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 }
 
 fn needs_pairing() -> Paired {
-    let how =
-        "This machine isn't paired. Open Machines in your Weacon and run the command it shows.";
+    let how = "This machine isn't paired. Open Machines in your Weacon and run the command it shows.";
     let paired = paired().unwrap_or_else(|| fail(how));
     if !private(&paired.server) {
         fail(PLAIN);

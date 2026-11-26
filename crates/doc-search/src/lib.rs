@@ -30,18 +30,14 @@ pub fn parts(title: &str, markdown: &str) -> Vec<String> {
 }
 
 pub fn score(question: &str, asked: &[f32], text: &str, embedding: &[f32]) -> f32 {
-    let named = question
-        .split_whitespace()
-        .filter_map(name)
-        .any(|name| text.contains(name));
+    let named = question.split_whitespace().filter_map(name).any(|name| text.contains(name));
     near(asked, embedding) + if named { 2.0 } else { 0.0 }
 }
 
 fn name(word: &str) -> Option<&str> {
     let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
     let marked = word.contains(['_', '.', '/', ':']);
-    let cased =
-        word.chars().skip(1).any(char::is_uppercase) && word.chars().any(char::is_lowercase);
+    let cased = word.chars().skip(1).any(char::is_uppercase) && word.chars().any(char::is_lowercase);
     (word.len() > 2 && (marked || cased)).then_some(word)
 }
 

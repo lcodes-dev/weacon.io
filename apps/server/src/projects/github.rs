@@ -118,8 +118,7 @@ async fn installation(
             change where the app is installed.";
         return Err(ApiError::invalid(message));
     }
-    let token = async { token.error_for_status()?.json::<Token>().await };
-    let token = token.await.map_err(failed)?;
+    let token = async { token.error_for_status()?.json::<Token>().await }.await.map_err(failed)?;
     Ok(Some((installation.account.login, token.token)))
 }
 
@@ -127,12 +126,7 @@ pub fn reading() -> Value {
     json!({"contents": "read"})
 }
 
-pub async fn token(
-    state: &AppState,
-    team_id: &str,
-    only: Option<&str>,
-    may: Value,
-) -> Result<String> {
+pub async fn token(state: &AppState, team_id: &str, only: Option<&str>, may: Value) -> Result<String> {
     let installed = match settings::db::github_app(&state.pool, &state.server_key, team_id).await? {
         Some(app) => installation(state, &app, only, may).await?,
         None => None,
@@ -156,13 +150,8 @@ pub async fn open_pull(
 ) -> Result<Pull> {
     let path = format!("/repos/{repo}/pulls");
     let pull = |draft: bool| {
-        let pull =
-            json!({"title": title, "body": body, "head": head, "base": base, "draft": draft});
-        answer(
-            request(state, Method::POST, &path)
-                .bearer_auth(token)
-                .json(&pull),
-        )
+        let pull = json!({"title": title, "body": body, "head": head, "base": base, "draft": draft});
+        answer(request(state, Method::POST, &path).bearer_auth(token).json(&pull))
     };
     match pull(true).await {
         Ok(pull) => Ok(pull),
@@ -179,10 +168,7 @@ pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status> {
         return Ok(Status::default());
     };
     let installed = installation(state, &app, None, reading()).await?;
-    let mut status = Status {
-        app: Some(app.slug),
-        ..Status::default()
-    };
+    let mut status = Status { app: Some(app.slug), ..Status::default() };
     let Some((account, token)) = installed else {
         return Ok(status);
     };
@@ -210,11 +196,7 @@ struct Commit {
     sha: String,
 }
 
-pub async fn branches(
-    state: &AppState,
-    token: &str,
-    repo: &str,
-) -> Result<HashMap<String, String>> {
+pub async fn branches(state: &AppState, token: &str, repo: &str) -> Result<HashMap<String, String>> {
     let mut heads = HashMap::new();
     for page in 1.. {
         let path = format!("/repos/{repo}/branches?per_page=100&page={page}");
@@ -222,10 +204,7 @@ pub async fn branches(
         if page.is_empty() {
             break;
         }
-        heads.extend(
-            page.into_iter()
-                .map(|branch| (branch.name, branch.commit.sha)),
-        );
+        heads.extend(page.into_iter().map(|branch| (branch.name, branch.commit.sha)));
     }
     Ok(heads)
 }
@@ -244,18 +223,11 @@ struct Entry {
     sha: String,
 }
 
-pub async fn files(
-    state: &AppState,
-    token: &str,
-    repo: &str,
-    commit: &str,
-) -> Result<Vec<(String, String)>> {
+pub async fn files(state: &AppState, token: &str, repo: &str, commit: &str) -> Result<Vec<(String, String)>> {
     let path = format!("/repos/{repo}/git/trees/{commit}?recursive=1");
     let tree: Tree = get(state, token, &path).await?;
     if tree.truncated {
-        return Err(ApiError::bad_gateway(
-            "This repository has too many files to map yet",
-        ));
+        return Err(ApiError::bad_gateway("This repository has too many files to map yet"));
     }
     let files = tree.tree.into_iter().filter(|entry| entry.r#type == "blob");
     Ok(files.map(|entry| (entry.path, entry.sha)).collect())
@@ -265,16 +237,12 @@ pub async fn archive(state: &AppState, token: &str, repo: &str, commit: &str) ->
     let path = format!("/repos/{repo}/tarball/{commit}");
     let request = request(state, Method::GET, &path).bearer_auth(token);
     let response = request.timeout(Duration::from_secs(600)).send().await;
-    let mut response = response
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(failed)?;
+    let mut response = response.and_then(reqwest::Response::error_for_status).map_err(failed)?;
     let mut archive = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(failed)? {
         archive.extend_from_slice(&chunk);
         if archive.len() > MAX_ARCHIVE {
-            return Err(ApiError::bad_gateway(
-                "This repository is too large to map yet",
-            ));
+            return Err(ApiError::bad_gateway("This repository is too large to map yet"));
         }
     }
     Ok(archive)

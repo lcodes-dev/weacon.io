@@ -145,9 +145,7 @@ async fn found(state: &AppState, user: &User, team_id: &str, group_id: &str) -> 
 async fn check_members(state: &AppState, team_id: &str, people: &[String]) -> Result<()> {
     let members = accounts::db::member_ids(&state.pool, team_id).await?;
     if !people.iter().all(|person| members.contains(person)) {
-        return Err(ApiError::invalid(
-            "A group's members are members of its team",
-        ));
+        return Err(ApiError::invalid("A group's members are members of its team"));
     }
     Ok(())
 }
@@ -161,7 +159,5 @@ async fn check_project(state: &AppState, team_id: &str, project_id: Option<&str>
 }
 
 fn named(name: &Option<String>) -> Option<&str> {
-    name.as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
+    name.as_deref().map(str::trim).filter(|name| !name.is_empty())
 }

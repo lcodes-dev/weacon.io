@@ -91,9 +91,7 @@ pub async fn resume(state: &AppState) -> sqlx::Result<()> {
         };
         if queued.started {
             let restarted = ApiError::internal("The server restarted");
-            if let Some(wait) =
-                retry_or_fail(state, &queued.id, &job, queued.attempts, restarted).await
-            {
+            if let Some(wait) = retry_or_fail(state, &queued.id, &job, queued.attempts, restarted).await {
                 tokio::spawn(run(state.clone(), queued.id, job, wait));
             }
         } else {
@@ -165,10 +163,7 @@ async fn retry_or_fail(
         return None;
     }
     let wait = state.retry_wait * (attempts.pow(4) + 2) as u32;
-    warn!(
-        job = job.name(),
-        id, attempts, "retrying in {wait:?}: {}", why.message
-    );
+    warn!(job = job.name(), id, attempts, "retrying in {wait:?}: {}", why.message);
     let run_at = now() + wait.as_secs() as i64;
     match retry(&state.pool, id, run_at, &why.message).await {
         Ok(()) => Some(wait),
@@ -186,9 +181,7 @@ async fn fail(state: &AppState, id: &str, job: &Job, attempts: i64, why: ApiErro
 }
 
 async fn delete(state: &AppState, id: &str) {
-    let deleted = sqlx::query!("DELETE FROM jobs WHERE id = ?", id)
-        .execute(&state.pool)
-        .await;
+    let deleted = sqlx::query!("DELETE FROM jobs WHERE id = ?", id).execute(&state.pool).await;
     if let Err(why) = deleted {
         error!(id, "couldn't be deleted: {why}");
     }
@@ -202,11 +195,7 @@ pub struct Queued {
     pub started: bool,
 }
 
-async fn enqueue(
-    pool: &SqlitePool,
-    job: &str,
-    unique_key: Option<&str>,
-) -> sqlx::Result<Option<String>> {
+async fn enqueue(pool: &SqlitePool, job: &str, unique_key: Option<&str>) -> sqlx::Result<Option<String>> {
     let id = new_id();
     let added = sqlx::query!(
         "INSERT OR IGNORE INTO jobs (id, job, unique_key, run_at, created_at)

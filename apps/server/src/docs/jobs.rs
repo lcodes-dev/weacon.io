@@ -55,8 +55,7 @@ impl WriteDocs {
             .collect();
 
         let own = |path: &&String| {
-            let inside =
-                |folder: &String| path.starts_with(&format!("{}/", folder.trim_matches('/')));
+            let inside = |folder: &String| path.starts_with(&format!("{}/", folder.trim_matches('/')));
             !plan.left_out.iter().any(inside)
         };
         let mut pages = Vec::new();
@@ -81,20 +80,14 @@ impl WriteDocs {
         let overview = overview(state, &writer, &sources, &existing, &pages).await?;
         pages.insert(0, overview);
 
-        let text = |id: &String| {
-            existing
-                .iter()
-                .find(|doc| doc.id == *id)
-                .map(|doc| &doc.markdown)
-        };
+        let text = |id: &String| existing.iter().find(|doc| doc.id == *id).map(|doc| &doc.markdown);
         pages.retain(|page| match &page.doc {
             Some((id, _)) => text(id) != page.markdown.as_ref(),
             None => true,
         });
         let is_planned = |doc: &Doc| {
-            let same = |(section, page): &(&str, &Planned)| {
-                doc.section == *section && doc.title == page.title
-            };
+            let same =
+                |(section, page): &(&str, &Planned)| doc.section == *section && doc.title == page.title;
             planned.iter().any(same)
         };
         for doc in existing.iter().filter(|doc| !is_planned(doc)) {
@@ -108,16 +101,7 @@ impl WriteDocs {
         let left_out = json!(plan.left_out).to_string();
         let from = Some((self.branch.as_str(), left_out.as_str()));
         let (project_id, commit) = (&self.project_id, &sources.commit);
-        db::save_written(
-            &state.pool,
-            project_id,
-            self.run,
-            commit,
-            from,
-            None,
-            &pages,
-        )
-        .await?;
+        db::save_written(&state.pool, project_id, self.run, commit, from, None, &pages).await?;
         live::project(state, &self.project_id, Topic::Docs).await;
         Ok(())
     }
@@ -137,11 +121,7 @@ impl WriteDocs {
         sources: &Sources,
         existing: &[Doc],
     ) -> Result<Outline> {
-        let mut prompt = format!(
-            "README:\n{}\n\nRepository outline:\n{}",
-            sources.readme(),
-            sources.outline
-        );
+        let mut prompt = format!("README:\n{}\n\nRepository outline:\n{}", sources.readme(), sources.outline);
         if !existing.is_empty() {
             prompt.push_str(
                 "\nThe pages that exist now. Plan a page that still covers the same thing under \
@@ -152,9 +132,8 @@ impl WriteDocs {
             }
         }
         let answer = writer.ask(state, OUTLINE, &prompt).await?;
-        serde_json::from_str(json_in(&answer, '{', '}')).map_err(|error| {
-            ApiError::invalid(format!("The writer's plan couldn't be read: {error}"))
-        })
+        serde_json::from_str(json_in(&answer, '{', '}'))
+            .map_err(|error| ApiError::invalid(format!("The writer's plan couldn't be read: {error}")))
     }
 }
 
@@ -240,11 +219,7 @@ impl AnswerDocsRequest {
         let existing = db::list(&state.pool, project_id).await?;
         let mut asked = request.text.trim().to_owned();
         if let Some(earlier) = &request.earlier {
-            write!(
-                asked,
-                "\n\nAn earlier try that the person rejected:\n{earlier}"
-            )
-            .ok();
+            write!(asked, "\n\nAn earlier try that the person rejected:\n{earlier}").ok();
         }
         let mut prompt = format!("The request:\n{asked}\n\nThe pages, as id, set and title:\n");
         for doc in &existing {
@@ -257,9 +232,8 @@ impl AnswerDocsRequest {
         }
         write!(prompt, "\nRepository outline:\n{}", sources.outline).ok();
         let found = writer.ask(state, REQUEST, &prompt).await?;
-        let target: Target = serde_json::from_str(json_in(&found, '{', '}')).map_err(|error| {
-            ApiError::invalid(format!("The writer's answer couldn't be read: {error}"))
-        })?;
+        let target: Target = serde_json::from_str(json_in(&found, '{', '}'))
+            .map_err(|error| ApiError::invalid(format!("The writer's answer couldn't be read: {error}")))?;
 
         super::progress(state, project_id, self.run, "Writing the page").await?;
         let current = target.page.as_ref().and_then(open);
@@ -284,16 +258,7 @@ impl AnswerDocsRequest {
         }
         let asked = Some(request.text.trim());
         let (commit, pages) = (&sources.commit, [page]);
-        db::save_written(
-            &state.pool,
-            project_id,
-            self.run,
-            commit,
-            None,
-            asked,
-            &pages,
-        )
-        .await?;
+        db::save_written(&state.pool, project_id, self.run, commit, None, asked, &pages).await?;
         live::project(state, project_id, Topic::Docs).await;
         Ok(())
     }
@@ -326,20 +291,12 @@ impl CheckPage {
         let (files, notes) = match self.check(state, page).await {
             Ok((files, notes)) => (Some(files), Some(notes)),
             Err(error) => {
-                tracing::warn!(
-                    "a page couldn't be checked against the code: {}",
-                    error.message
-                );
+                tracing::warn!("a page couldn't be checked against the code: {}", error.message);
                 (None, None)
             }
         };
-        let ended = db::end_check(
-            &state.pool,
-            &self.doc_id,
-            &page.version,
-            files.as_deref(),
-            notes.as_deref(),
-        );
+        let ended =
+            db::end_check(&state.pool, &self.doc_id, &page.version, files.as_deref(), notes.as_deref());
         ended.await?;
         live::project(state, &self.project_id, Topic::Docs).await;
         Ok(())

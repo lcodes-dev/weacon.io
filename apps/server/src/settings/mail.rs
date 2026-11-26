@@ -111,10 +111,7 @@ const TEMPLATE: &str = r##"<!doctype html>
 </html>"##;
 
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
 
 pub fn is_address(email: &str) -> bool {
@@ -128,26 +125,16 @@ pub fn check(smtp: &Smtp) -> Result<(), Error> {
 pub async fn send(state: &AppState, to: &str, mail: &Mail<'_>) -> Result<(), Error> {
     let (subject, text) = (mail.subject, mail.text());
     let Some(smtp) = db::smtp(&state.pool, &state.server_key).await? else {
-        tracing::info!(
-            "no SMTP, so this mail is only logged\nto: {to}\nsubject: {subject}\n\n{text}\n"
-        );
+        tracing::info!("no SMTP, so this mail is only logged\nto: {to}\nsubject: {subject}\n\n{text}\n");
         return Ok(());
     };
     let (transport, from) = connection(&smtp)?;
-    let logo =
-        Attachment::new_inline("logo".into()).body(LOGO.to_vec(), ContentType::parse("image/png")?);
-    let message = Message::builder()
-        .from(from)
-        .to(Mailbox::new(None, to.parse()?))
-        .subject(subject)
-        .multipart(
+    let logo = Attachment::new_inline("logo".into()).body(LOGO.to_vec(), ContentType::parse("image/png")?);
+    let message =
+        Message::builder().from(from).to(Mailbox::new(None, to.parse()?)).subject(subject).multipart(
             MultiPart::alternative()
                 .singlepart(SinglePart::plain(text))
-                .multipart(
-                    MultiPart::related()
-                        .singlepart(SinglePart::html(mail.html()))
-                        .singlepart(logo),
-                ),
+                .multipart(MultiPart::related().singlepart(SinglePart::html(mail.html())).singlepart(logo)),
         )?;
     transport.send(message).await?;
     Ok(())

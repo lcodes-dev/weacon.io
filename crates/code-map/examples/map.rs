@@ -20,20 +20,12 @@ fn walk(root: &Path, folder: &Path, files: &mut Vec<File>) {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        let path = path
-            .strip_prefix(root)
-            .unwrap()
-            .to_string_lossy()
-            .into_owned();
+        let path = path.strip_prefix(root).unwrap().to_string_lossy().into_owned();
         let reading = read(&path, &bytes);
         files.push(File {
             path,
             scope: reading.scope,
-            names: reading
-                .symbols
-                .into_iter()
-                .map(|symbol| symbol.name)
-                .collect(),
+            names: reading.symbols.into_iter().map(|symbol| symbol.name).collect(),
             imports: reading.imports.into_iter().collect(),
             mentions: reading.mentions.into_iter().collect(),
         });

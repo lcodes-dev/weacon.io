@@ -87,12 +87,7 @@ pub async fn start(pool: &SqlitePool, chat: &NewChat<'_>) -> sqlx::Result<String
     )
     .execute(&mut *tx)
     .await?;
-    add_event(
-        &mut tx,
-        &id,
-        &serde_json::json!({"kind": "asked", "text": asked}),
-    )
-    .await?;
+    add_event(&mut tx, &id, &serde_json::json!({"kind": "asked", "text": asked})).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -103,23 +98,13 @@ async fn add_event(
     body: &serde_json::Value,
 ) -> sqlx::Result<()> {
     let (id, body) = (new_id(), body.to_string());
-    sqlx::query!(
-        "INSERT INTO chat_events (id, chat_id, body) VALUES (?, ?, ?)",
-        id,
-        chat_id,
-        body
-    )
-    .execute(tx)
-    .await?;
+    sqlx::query!("INSERT INTO chat_events (id, chat_id, body) VALUES (?, ?, ?)", id, chat_id, body)
+        .execute(tx)
+        .await?;
     Ok(())
 }
 
-pub async fn ask(
-    pool: &SqlitePool,
-    id: &str,
-    asked: &str,
-    told: Option<&str>,
-) -> sqlx::Result<bool> {
+pub async fn ask(pool: &SqlitePool, id: &str, asked: &str, told: Option<&str>) -> sqlx::Result<bool> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let started = sqlx::query!(
         "UPDATE chats SET running = 1, asked = ?, told = COALESCE(?, told),
@@ -134,12 +119,7 @@ pub async fn ask(
     if started.rows_affected() == 0 {
         return Ok(false);
     }
-    add_event(
-        &mut tx,
-        id,
-        &serde_json::json!({"kind": "asked", "text": asked}),
-    )
-    .await?;
+    add_event(&mut tx, id, &serde_json::json!({"kind": "asked", "text": asked})).await?;
     tx.commit().await?;
     Ok(true)
 }
@@ -202,9 +182,7 @@ async fn answer_group(
     .await?;
     let text = match failed {
         Some(why) => format!("It couldn't answer: {why}"),
-        None => said
-            .flatten()
-            .unwrap_or("Done, with nothing to say.".into()),
+        None => said.flatten().unwrap_or("Done, with nothing to say.".into()),
     };
     let message = new_id();
     sqlx::query!(
@@ -222,19 +200,11 @@ async fn answer_group(
 
 pub async fn fail(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    let ended = sqlx::query!(
-        "UPDATE chats SET running = 0 WHERE id = ? AND running = 1",
-        id
-    )
-    .execute(&mut *tx)
-    .await?;
-    if ended.rows_affected() == 1 {
-        add_event(
-            &mut tx,
-            id,
-            &serde_json::json!({"kind": "failed", "why": why}),
-        )
+    let ended = sqlx::query!("UPDATE chats SET running = 0 WHERE id = ? AND running = 1", id)
+        .execute(&mut *tx)
         .await?;
+    if ended.rows_affected() == 1 {
+        add_event(&mut tx, id, &serde_json::json!({"kind": "failed", "why": why})).await?;
         answer_group(&mut tx, id, Some(why)).await?;
         tx.commit().await?;
     }
@@ -283,14 +253,9 @@ pub async fn diff(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Op
 }
 
 pub async fn set_pull(pool: &SqlitePool, id: &str, number: i64, url: &str) -> sqlx::Result<()> {
-    sqlx::query!(
-        "UPDATE chats SET pull_number = ?, pull_url = ? WHERE id = ?",
-        number,
-        url,
-        id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("UPDATE chats SET pull_number = ?, pull_url = ? WHERE id = ?", number, url, id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -359,19 +324,14 @@ pub async fn note(pool: &SqlitePool, chat_id: &str, body: &serde_json::Value) ->
 }
 
 pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {
-    sqlx::query!("DELETE FROM chats WHERE id = ?", id)
-        .execute(pool)
-        .await?;
+    sqlx::query!("DELETE FROM chats WHERE id = ?", id).execute(pool).await?;
     Ok(())
 }
 
 pub async fn people(pool: &SqlitePool, chat_id: &str) -> sqlx::Result<(Vec<String>, bool)> {
-    let chat = sqlx::query!(
-        "SELECT group_id, project_id FROM chats WHERE id = ?",
-        chat_id
-    )
-    .fetch_optional(pool)
-    .await?;
+    let chat = sqlx::query!("SELECT group_id, project_id FROM chats WHERE id = ?", chat_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(match chat {
         Some(chat) => match chat.group_id {
             Some(group) => (groups::db::people(pool, &group).await?, true),

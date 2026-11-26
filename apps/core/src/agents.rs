@@ -69,11 +69,7 @@ async fn answer(
 ) -> Result<String, String> {
     match agent {
         Agent::Claude => {
-            let model = if model.is_empty() {
-                "claude-haiku-5-5"
-            } else {
-                model
-            };
+            let model = if model.is_empty() { "claude-haiku-5-5" } else { model };
             let args = [
                 "--print",
                 "--safe-mode",
@@ -89,11 +85,7 @@ async fn answer(
             run(program, &args, prompt).await
         }
         Agent::Codex => {
-            let model = if model.is_empty() {
-                "gpt-5.6-luna"
-            } else {
-                model
-            };
+            let model = if model.is_empty() { "gpt-5.6-luna" } else { model };
             // The sandbox only stops writes, so a repository's text could still make Codex read this machine's files.
             let args = [
                 "exec",
@@ -152,11 +144,7 @@ async fn run(program: &str, args: &[&str], input: &str) -> Result<String, String
         return Ok(printed);
     }
     let complaint = String::from_utf8_lossy(&output.stderr);
-    let complaint = if complaint.trim().is_empty() {
-        &printed
-    } else {
-        complaint.trim()
-    };
+    let complaint = if complaint.trim().is_empty() { &printed } else { complaint.trim() };
     let tail = complaint.char_indices().rev().nth(399);
     let tail = &complaint[tail.map_or(0, |(at, _)| at)..];
     Err(format!("{program} failed: {tail}"))
@@ -178,10 +166,6 @@ mod tests {
         let failed = answer("false", Agent::Codex, "", "", "").await;
         assert_eq!(failed.unwrap_err(), "false failed: ");
         let missing = answer("no-such-program", Agent::Claude, "", "", "").await;
-        assert!(
-            missing
-                .unwrap_err()
-                .starts_with("no-such-program could not be started")
-        );
+        assert!(missing.unwrap_err().starts_with("no-such-program could not be started"));
     }
 }

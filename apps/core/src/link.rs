@@ -57,8 +57,7 @@ fn look_at_agents(work: &Shared) {
 
 pub async fn stay_connected(paired: Paired) {
     let lock = std::fs::File::create(home().join("core.lock"));
-    let lock =
-        lock.unwrap_or_else(|error| fail(format!("The core's folder can't be written: {error}")));
+    let lock = lock.unwrap_or_else(|error| fail(format!("The core's folder can't be written: {error}")));
     if lock.try_lock().is_err() {
         fail("weacon-core is already running for this pairing, perhaps in the background.");
     }
@@ -73,9 +72,7 @@ pub async fn stay_connected(paired: Paired) {
                 }
                 fail("This machine was removed from Weacon. Pair it again to use it.");
             }
-            Ended::Replaced => {
-                fail("Another weacon-core connected as this machine, so this one stops.")
-            }
+            Ended::Replaced => fail("Another weacon-core connected as this machine, so this one stops."),
         }
         tokio::time::sleep(wait).await;
         wait = (wait * 2).min(Duration::from_secs(60));
@@ -89,8 +86,7 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
         Ok(request) => request,
         Err(error) => return lost(&error),
     };
-    let bearer = format!("Bearer {}", paired.token);
-    let bearer = bearer.parse().expect("a token is plain text");
+    let bearer = format!("Bearer {}", paired.token).parse().expect("a token is plain text");
     request.headers_mut().insert("Authorization", bearer);
     let dialled = tokio::time::timeout(SLOW, tokio_tungstenite::connect_async(request)).await;
     let socket = match dialled {
@@ -150,11 +146,7 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
     ended
 }
 
-fn answer(
-    work: &Shared,
-    id: String,
-    answer: impl Future<Output = Result<String, String>> + Send + 'static,
-) {
+fn answer(work: &Shared, id: String, answer: impl Future<Output = Result<String, String>> + Send + 'static) {
     let mut known = work.lock().unwrap();
     if let Some(answer) = known.answers.get(&id).cloned() {
         drop(known);
@@ -178,26 +170,16 @@ fn answer(
 
 fn asked(work: &Shared, message: ToCore) {
     match message {
-        ToCore::Ask {
-            id,
-            agent,
-            model,
-            system,
-            prompt,
-        } => answer(work, id, async move {
-            agents::ask(agent, &model, &system, &prompt).await
-        }),
-        ToCore::Push {
-            id,
-            chat,
-            repository,
-            to,
-            message,
-            name,
-            mail,
-        } => answer(work, id, async move {
-            chats::push(&chat, repository, &to, &message, (&name, &mail)).await
-        }),
+        ToCore::Ask { id, agent, model, system, prompt } => {
+            answer(work, id, async move { agents::ask(agent, &model, &system, &prompt).await })
+        }
+        ToCore::Push { id, chat, repository, to, message, name, mail } => {
+            answer(
+                work,
+                id,
+                async move { chats::push(&chat, repository, &to, &message, (&name, &mail)).await },
+            )
+        }
         ToCore::Forget { id, chat } => answer(work, id, async move { chats::forget(&chat) }),
         ToCore::Taken { id } => {
             work.lock().unwrap().answers.remove(&id);

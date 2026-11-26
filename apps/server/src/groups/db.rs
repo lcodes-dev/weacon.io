@@ -60,13 +60,9 @@ pub async fn create(
     .execute(&mut *tx)
     .await?;
     for member in members {
-        sqlx::query!(
-            "INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)",
-            id,
-            member
-        )
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query!("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)", id, member)
+            .execute(&mut *tx)
+            .await?;
     }
     tx.commit().await?;
     Ok(id)
@@ -90,22 +86,13 @@ pub async fn change(
 }
 
 pub async fn join(pool: &SqlitePool, id: &str, user_id: &str) -> sqlx::Result<()> {
-    sqlx::query!(
-        "INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)",
-        id,
-        user_id
-    )
-    .execute(pool)
-    .await?;
+    sqlx::query!("INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)", id, user_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-pub async fn leave(
-    pool: &SqlitePool,
-    team_id: &str,
-    id: Option<&str>,
-    user_id: &str,
-) -> sqlx::Result<()> {
+pub async fn leave(pool: &SqlitePool, team_id: &str, id: Option<&str>, user_id: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query!(
         "DELETE FROM group_members WHERE user_id = ?1 AND group_id IN (
@@ -242,17 +229,11 @@ pub async fn working(pool: &SqlitePool, group_id: &str) -> sqlx::Result<Vec<(Str
     )
     .fetch_all(pool)
     .await?;
-    Ok(working
-        .into_iter()
-        .map(|chat| (chat.name, chat.agent))
-        .collect())
+    Ok(working.into_iter().map(|chat| (chat.name, chat.agent)).collect())
 }
 
 pub async fn people(pool: &SqlitePool, group_id: &str) -> sqlx::Result<Vec<String>> {
-    sqlx::query_scalar!(
-        "SELECT user_id FROM group_members WHERE group_id = ?",
-        group_id
-    )
-    .fetch_all(pool)
-    .await
+    sqlx::query_scalar!("SELECT user_id FROM group_members WHERE group_id = ?", group_id)
+        .fetch_all(pool)
+        .await
 }

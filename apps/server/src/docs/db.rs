@@ -73,11 +73,7 @@ pub struct DocVersion {
     pub created_at: i64,
 }
 
-pub async fn status(
-    pool: &SqlitePool,
-    team_id: &str,
-    project_id: &str,
-) -> sqlx::Result<Option<DocsStatus>> {
+pub async fn status(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<Option<DocsStatus>> {
     sqlx::query_as!(
         DocsStatus,
         r#"SELECT docs_state AS state, docs_message AS message, docs_branch AS branch,
@@ -166,12 +162,9 @@ pub async fn save_written(
         return Ok(());
     }
     if from.is_some() {
-        sqlx::query!(
-            "DELETE FROM proposals WHERE project_id = ? AND agent IS NULL",
-            project_id
-        )
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query!("DELETE FROM proposals WHERE project_id = ? AND agent IS NULL", project_id)
+            .execute(&mut *tx)
+            .await?;
     }
     let pages = sqlx::query_scalar!("SELECT COUNT(*) FROM docs WHERE project_id = ?", project_id)
         .fetch_one(&mut *tx)
@@ -220,16 +213,12 @@ pub async fn check_branch(pool: &SqlitePool, project_id: &str) -> sqlx::Result<O
 }
 
 pub async fn start_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
-    sqlx::query!("UPDATE docs SET checking = 1 WHERE id = ?", doc_id)
-        .execute(pool)
-        .await?;
+    sqlx::query!("UPDATE docs SET checking = 1 WHERE id = ?", doc_id).execute(pool).await?;
     Ok(())
 }
 
 pub async fn stop_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
-    sqlx::query!("UPDATE docs SET checking = 0 WHERE id = ?", doc_id)
-        .execute(pool)
-        .await?;
+    sqlx::query!("UPDATE docs SET checking = 0 WHERE id = ?", doc_id).execute(pool).await?;
     Ok(())
 }
 
@@ -400,12 +389,7 @@ pub async fn save(
     Ok(Some(true))
 }
 
-pub async fn delete(
-    pool: &SqlitePool,
-    team_id: &str,
-    project_id: &str,
-    doc_id: &str,
-) -> sqlx::Result<bool> {
+pub async fn delete(pool: &SqlitePool, team_id: &str, project_id: &str, doc_id: &str) -> sqlx::Result<bool> {
     let deleted = sqlx::query!(
         "DELETE FROM docs WHERE id = ? AND project_id =
              (SELECT id FROM projects WHERE team_id = ? AND id = ?)",
@@ -418,12 +402,7 @@ pub async fn delete(
     Ok(deleted.rows_affected() > 0)
 }
 
-pub async fn order(
-    pool: &SqlitePool,
-    team_id: &str,
-    project_id: &str,
-    ids: &[String],
-) -> sqlx::Result<()> {
+pub async fn order(pool: &SqlitePool, team_id: &str, project_id: &str, ids: &[String]) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
     for (position, id) in (0_i64..).zip(ids) {
         sqlx::query!(
@@ -560,8 +539,7 @@ pub async fn accept_proposal(
         return Ok(None);
     };
     if let Some(doc_id) = &proposal.doc_id {
-        let current =
-            sqlx::query_scalar!("SELECT MAX(id) FROM doc_versions WHERE doc_id = ?", doc_id);
+        let current = sqlx::query_scalar!("SELECT MAX(id) FROM doc_versions WHERE doc_id = ?", doc_id);
         if current.fetch_one(&mut *tx).await?.as_deref() != seen {
             return Ok(Some(false));
         }
@@ -577,18 +555,10 @@ pub async fn accept_proposal(
     };
     match (&proposal.doc_id, markdown.or(proposal.markdown.as_deref())) {
         (None, markdown) => {
-            add_page(
-                &mut tx,
-                project_id,
-                &text(markdown.unwrap_or_default()),
-                author,
-            )
-            .await?;
+            add_page(&mut tx, project_id, &text(markdown.unwrap_or_default()), author).await?;
         }
         (Some(doc_id), None) => {
-            sqlx::query!("DELETE FROM docs WHERE id = ?", doc_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!("DELETE FROM docs WHERE id = ?", doc_id).execute(&mut *tx).await?;
         }
         (Some(doc_id), Some(markdown)) => {
             let text = text(markdown);
@@ -755,11 +725,7 @@ pub async fn share(
     Ok(true)
 }
 
-pub async fn list_shares(
-    pool: &SqlitePool,
-    team_id: &str,
-    project_id: &str,
-) -> sqlx::Result<Vec<Share>> {
+pub async fn list_shares(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<Vec<Share>> {
     sqlx::query_as!(
         Share,
         "SELECT s.token, u.name AS created_by, s.created_at
@@ -792,12 +758,9 @@ pub async fn end_share(
 }
 
 pub async fn find_share(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Shared>> {
-    let share = sqlx::query!(
-        "SELECT title, created_at FROM shares WHERE token = ?",
-        token
-    )
-    .fetch_optional(pool)
-    .await?;
+    let share = sqlx::query!("SELECT title, created_at FROM shares WHERE token = ?", token)
+        .fetch_optional(pool)
+        .await?;
     let Some(share) = share else {
         return Ok(None);
     };
@@ -808,9 +771,5 @@ pub async fn find_share(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<S
     )
     .fetch_all(pool)
     .await?;
-    Ok(Some(Shared {
-        title: share.title,
-        created_at: share.created_at,
-        pages,
-    }))
+    Ok(Some(Shared { title: share.title, created_at: share.created_at, pages }))
 }

@@ -17,12 +17,7 @@ pub fn list() -> Value {
     });
     let tool = |name: &str, does: &str, takes: Value, needs: &[&str]| json!({"name": name, "description": does, "inputSchema": {"type": "object", "properties": takes, "required": needs}});
     json!([
-        tool(
-            "tasks",
-            "Lists this project's tasks: name, status, title and owner.",
-            json!({}),
-            &[]
-        ),
+        tool("tasks", "Lists this project's tasks: name, status, title and owner.", json!({}), &[]),
         tool(
             "task",
             "Reads one task: its text, what it is done when, and the pages of the docs it touches.",
@@ -41,12 +36,7 @@ pub fn list() -> Value {
             json!({"name": name, "title": text, "text": text, "status": {"enum": tasks::STATUSES}, "checks": checks}),
             &[]
         ),
-        tool(
-            "doc",
-            "Reads a page of this project's docs by its title.",
-            json!({"title": text}),
-            &["title"]
-        ),
+        tool("doc", "Reads a page of this project's docs by its title.", json!({"title": text}), &["title"]),
         tool(
             "propose_doc",
             "Proposes a new text for a page of this project's docs, or a new page, when a page is wrong or you changed the code it describes. Nothing changes until a person of the team accepts it. Read the page with the doc tool first, and give its whole new text.",
@@ -105,9 +95,8 @@ impl Tools<'_> {
         let task = self.named(&tasks, name)?;
         let docs = docs::db::list(&self.state.pool, &self.caller.project_id).await?;
         let pages = docs.iter().filter(|doc| task.docs.contains(&doc.id));
-        let pages: Vec<String> = pages
-            .map(|doc| format!("{}{}", doc.title, written_from(&doc.files)))
-            .collect();
+        let pages: Vec<String> =
+            pages.map(|doc| format!("{}{}", doc.title, written_from(&doc.files))).collect();
         let checks: Vec<String> = task
             .checks
             .iter()
@@ -148,15 +137,9 @@ impl Tools<'_> {
 
     async fn doc(&self, title: &str) -> Result<String> {
         let docs = docs::db::list(&self.state.pool, &self.caller.project_id).await?;
-        let Some(doc) = docs
-            .iter()
-            .find(|doc| doc.title.eq_ignore_ascii_case(title))
-        else {
+        let Some(doc) = docs.iter().find(|doc| doc.title.eq_ignore_ascii_case(title)) else {
             let titles: Vec<&str> = docs.iter().map(|doc| doc.title.as_str()).collect();
-            let message = format!(
-                "No page is called that. The pages are: {}",
-                titles.join("; ")
-            );
+            let message = format!("No page is called that. The pages are: {}", titles.join("; "));
             return Err(ApiError::invalid(message));
         };
         Ok(format!("# {}\n\n{}", doc.title, doc.markdown))
@@ -168,15 +151,11 @@ impl Tools<'_> {
         reason: &str,
     ) -> Result<String> {
         if title.is_empty() || markdown.is_empty() || reason.is_empty() {
-            return Err(ApiError::invalid(
-                "A proposal needs the page's title, its text and why",
-            ));
+            return Err(ApiError::invalid("A proposal needs the page's title, its text and why"));
         }
         let (state, caller) = (self.state, self.caller);
         let docs = docs::db::list(&state.pool, &caller.project_id).await?;
-        let page = docs
-            .iter()
-            .find(|doc| doc.title.eq_ignore_ascii_case(title));
+        let page = docs.iter().find(|doc| doc.title.eq_ignore_ascii_case(title));
         let headed = markdown.split_once('\n').filter(|(first, _)| {
             let first = first.strip_prefix("# ").unwrap_or_default().trim();
             first.eq_ignore_ascii_case(title)
@@ -193,23 +172,15 @@ impl Tools<'_> {
         let title = page.map_or(title, |page| &page.title);
         docs::db::propose(&state.pool, caller, page, section, title, markdown, reason).await?;
         live::team(state, &caller.team_id, Topic::Docs).await;
-        self.note(&json!({"kind": "proposal", "title": title, "new": page.is_none()}))
-            .await?;
-        Ok(format!(
-            "Proposed. \"{title}\" changes when a person of the team accepts it on the docs page."
-        ))
+        self.note(&json!({"kind": "proposal", "title": title, "new": page.is_none()})).await?;
+        Ok(format!("Proposed. \"{title}\" changes when a person of the team accepts it on the docs page."))
     }
 
     async fn search_docs(&self, about: &str) -> Result<String> {
         let parts = docs::search::search(self.state, &self.caller.project_id, about).await?;
         let shown = parts.iter().take(5).map(|part| {
             let text = part.text.split_once('\n').map_or("", |(_, text)| text);
-            format!(
-                "# {}{}\n\n{}",
-                part.title,
-                written_from(&part.files),
-                text.trim()
-            )
+            format!("# {}{}\n\n{}", part.title, written_from(&part.files), text.trim())
         });
         Ok(shown.collect::<Vec<_>>().join("\n\n---\n\n"))
     }
@@ -230,15 +201,10 @@ impl Tools<'_> {
     fn named<'t>(&self, tasks: &'t [Task], name: &Value) -> Result<&'t Task> {
         let found = match name.as_str() {
             Some(name) => {
-                let number = name
-                    .rsplit('-')
-                    .next()
-                    .and_then(|number| number.trim().parse().ok());
+                let number = name.rsplit('-').next().and_then(|number| number.trim().parse().ok());
                 tasks.iter().find(|task| Some(task.number) == number)
             }
-            None => tasks
-                .iter()
-                .find(|task| Some(&task.id) == self.caller.task_id.as_ref()),
+            None => tasks.iter().find(|task| Some(&task.id) == self.caller.task_id.as_ref()),
         };
         found.ok_or_else(|| match name.as_str() {
             Some(name) => ApiError::invalid(format!("This project has no task {name}")),
@@ -249,8 +215,7 @@ impl Tools<'_> {
     async fn wrote(&self, id: &str, number: i64, title: &str, made: bool) -> Result<String> {
         let name = format!("{}-{number}", self.caller.key);
         let named = format!("{name} {title}");
-        self.note(&json!({"kind": "task", "task_id": id, "name": named, "made": made}))
-            .await?;
+        self.note(&json!({"kind": "task", "task_id": id, "name": named, "made": made})).await?;
         Ok(format!("{} {name}.", if made { "Made" } else { "Changed" }))
     }
 
@@ -265,13 +230,8 @@ impl Tools<'_> {
 
 fn fields(given: &Value) -> Result<TaskFields> {
     let read = serde_json::from_value::<TaskFields>(given.clone());
-    let fields =
-        read.map_err(|error| ApiError::invalid(format!("That can't be read as a task: {error}")))?;
-    Ok(TaskFields {
-        owner_id: None,
-        docs: None,
-        ..fields
-    })
+    let fields = read.map_err(|error| ApiError::invalid(format!("That can't be read as a task: {error}")))?;
+    Ok(TaskFields { owner_id: None, docs: None, ..fields })
 }
 
 fn nobody(owner: &Option<String>) -> &str {

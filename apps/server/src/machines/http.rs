@@ -26,21 +26,17 @@ pub struct Listed {
 
 pub async fn list_machines(State(state): State<AppState>, user: User) -> Result<Json<Vec<Listed>>> {
     let machines = db::list(&state.pool, &user.id).await?;
-    let listed = machines.into_iter().map(|machine| Listed {
-        connected: state.cores.connected(&machine.id),
-        machine,
-    });
+    let listed =
+        machines.into_iter().map(|machine| Listed { connected: state.cores.connected(&machine.id), machine });
     Ok(Json(listed.collect()))
 }
 
 pub async fn code(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let asker = match bearer(&headers) {
-        Some(token) => db::by_token(&state.pool, token)
-            .await?
-            .map(|machine| (machine.user_id, Some(machine.id))),
-        None => auth::signed_in(&state, &headers)
-            .await?
-            .map(|user| (user.id, None)),
+        Some(token) => {
+            db::by_token(&state.pool, token).await?.map(|machine| (machine.user_id, Some(machine.id)))
+        }
+        None => auth::signed_in(&state, &headers).await?.map(|user| (user.id, None)),
     };
     let (user_id, machine_id) = asker.ok_or_else(|| ApiError::unauthorized("Sign in first"))?;
     let code = random_token();
@@ -55,15 +51,10 @@ pub struct Pairing {
     os: String,
 }
 
-pub async fn pair(
-    State(state): State<AppState>,
-    Json(pairing): Json<Pairing>,
-) -> Result<Json<Value>> {
+pub async fn pair(State(state): State<AppState>, Json(pairing): Json<Pairing>) -> Result<Json<Value>> {
     let name = pairing.name.trim();
     if name.is_empty() || !["macos", "linux"].contains(&pairing.os.as_str()) {
-        return Err(ApiError::invalid(
-            "A machine needs a name and runs macOS or Linux",
-        ));
+        return Err(ApiError::invalid("A machine needs a name and runs macOS or Linux"));
     }
     let token = random_token();
     let since = now() - CODE_SECONDS;
@@ -116,7 +107,5 @@ pub async fn sign_in(
     let agent = Agent::named(&agent).filter(|_| owned);
     let agent = agent.ok_or_else(ApiError::not_found)?;
     let from_core = state.cores.open_terminal(&machine_id, agent)?;
-    Ok(socket.on_upgrade(move |socket| {
-        super::relay(state, headers, machine_id, agent, socket, from_core)
-    }))
+    Ok(socket.on_upgrade(move |socket| super::relay(state, headers, machine_id, agent, socket, from_core)))
 }

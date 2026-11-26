@@ -21,9 +21,7 @@ impl FromRequestParts<AppState> for User {
         if let Some(user) = parts.extensions.get::<User>() {
             return Ok(user.clone());
         }
-        signed_in(state, &parts.headers)
-            .await?
-            .ok_or_else(|| ApiError::unauthorized("Sign in first"))
+        signed_in(state, &parts.headers).await?.ok_or_else(|| ApiError::unauthorized("Sign in first"))
     }
 }
 
@@ -90,9 +88,7 @@ pub fn own_page(state: &AppState, headers: &HeaderMap) -> Result<()> {
     if origin.is_some_and(|origin| origin.as_bytes() == state.url.as_bytes()) {
         return Ok(());
     }
-    Err(ApiError::forbidden(
-        "This is opened from Weacon's own pages",
-    ))
+    Err(ApiError::forbidden("This is opened from Weacon's own pages"))
 }
 
 pub fn session_token(headers: &HeaderMap) -> Option<&str> {
@@ -105,21 +101,12 @@ pub fn session_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
-    headers
-        .get(AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
+    headers.get(AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
 }
 
 pub fn session_cookie(state: &AppState, token: &str, max_age: i64) -> [(HeaderName, String); 1] {
-    let secure = if state.url.starts_with("https://") {
-        "; Secure"
-    } else {
-        ""
-    };
-    let cookie =
-        format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}");
+    let secure = if state.url.starts_with("https://") { "; Secure" } else { "" };
+    let cookie = format!("{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}");
     [(SET_COOKIE, cookie)]
 }
 

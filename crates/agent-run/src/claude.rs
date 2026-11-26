@@ -55,8 +55,7 @@ pub fn read(
     session: &mut Option<String>,
     tell: &mut dyn FnMut(Event),
 ) -> Ended {
-    let parts = printed["message"]["content"].as_array();
-    let parts = parts.into_iter().flatten();
+    let parts = printed["message"]["content"].as_array().into_iter().flatten();
     let own = printed["parent_tool_use_id"].is_null();
     match printed["type"].as_str() {
         Some("assistant") if own => {
@@ -65,13 +64,9 @@ pub fn read(
                 let event = match (part["type"].as_str(), part["name"].as_str()) {
                     (Some("text"), _) => said(&part["text"], folder),
                     (Some("tool_use"), Some("Bash")) => did(Deed::Command, &input["command"], ""),
-                    (Some("tool_use"), Some("Read")) => {
-                        did(Deed::Read, &input["file_path"], folder)
-                    }
+                    (Some("tool_use"), Some("Read")) => did(Deed::Read, &input["file_path"], folder),
                     (Some("tool_use"), Some("Edit" | "Write" | "NotebookEdit")) => {
-                        let path = input["file_path"]
-                            .as_str()
-                            .or(input["notebook_path"].as_str());
+                        let path = input["file_path"].as_str().or(input["notebook_path"].as_str());
                         did(Deed::Edit, &path.into(), folder)
                     }
                     (Some("tool_use"), Some(name))

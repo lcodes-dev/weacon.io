@@ -100,9 +100,7 @@ pub struct Reading {
 
 pub fn language(path: &str) -> Option<&'static Language> {
     let extension = path.rsplit('.').next().unwrap_or_default();
-    LANGUAGES
-        .iter()
-        .find(|language| language.extensions.contains(&extension))
+    LANGUAGES.iter().find(|language| language.extensions.contains(&extension))
 }
 
 pub fn key(path: &str, blob: &str) -> String {
@@ -123,17 +121,14 @@ fn foreign(path: &str) -> bool {
 }
 
 fn blank(text: &str) -> impl Iterator<Item = char> {
-    text.bytes()
-        .map(|byte| if byte == b'\n' { '\n' } else { ' ' })
+    text.bytes().map(|byte| if byte == b'\n' { '\n' } else { ' ' })
 }
 
 fn uncommented(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find("<!--") {
-        let end = rest[at..]
-            .find("-->")
-            .map_or(rest.len(), |end| at + end + 3);
+        let end = rest[at..].find("-->").map_or(rest.len(), |end| at + end + 3);
         kept.push_str(&rest[..at]);
         kept.extend(blank(&rest[at..end]));
         rest = &rest[end..];
@@ -160,10 +155,7 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Reading::default();
     };
-    let mut reading = Reading {
-        lines: text.lines().count() as i64,
-        ..Reading::default()
-    };
+    let mut reading = Reading { lines: text.lines().count() as i64, ..Reading::default() };
     if foreign(path) || text.lines().any(|line| line.len() > MAX_LINE) {
         return reading;
     }
@@ -220,11 +212,7 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
         }
         if let Some(import) = import {
             for name in imported {
-                let between = if import.ends_with(language.separator) {
-                    ""
-                } else {
-                    language.separator
-                };
+                let between = if import.ends_with(language.separator) { "" } else { language.separator };
                 reading.imports.insert(format!("{import}{between}{name}"));
             }
             reading.imports.insert(import);
@@ -240,52 +228,33 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
             end_line: reading.lines,
         });
         let tags = markup.as_deref().unwrap_or(text).split('<').skip(1);
-        let names = tags.map(|tag| {
-            tag.split(|c: char| !c.is_alphanumeric())
-                .next()
-                .unwrap_or("")
-        });
+        let names = tags.map(|tag| tag.split(|c: char| !c.is_alphanumeric()).next().unwrap_or(""));
         let components = names.filter(|name| name.starts_with(char::is_uppercase));
-        reading
-            .mentions
-            .extend(components.map(|name| (name.to_owned(), false)));
+        reading.mentions.extend(components.map(|name| (name.to_owned(), false)));
     }
     let mut seen = HashSet::new();
-    reading
-        .symbols
-        .retain(|symbol| seen.insert((symbol.name.clone(), symbol.kind.clone(), symbol.line)));
+    reading.symbols.retain(|symbol| seen.insert((symbol.name.clone(), symbol.kind.clone(), symbol.line)));
     let defined: HashSet<&str> = reading.symbols.iter().map(|s| s.name.as_str()).collect();
-    reading
-        .mentions
-        .retain(|(name, _)| !defined.contains(name.as_str()));
+    reading.mentions.retain(|(name, _)| !defined.contains(name.as_str()));
     reading
 }
 
 fn line(import: &str) -> (Option<String>, Vec<String>) {
     let import = import.trim_start_matches("import").trim();
     let (from, names) = import.split_once('{').unwrap_or((import, ""));
-    let names = names.trim_end_matches('}').split(',');
-    let names = names.filter_map(|name| name.split_whitespace().next());
+    let names = names.trim_end_matches('}').split(',').filter_map(|name| name.split_whitespace().next());
     let from = from.trim_end_matches('.').to_owned();
     (Some(from), names.map(str::to_owned).collect())
 }
 
 fn mention(reading: &mut Reading, node: Node, name: String) {
-    let member = node
-        .prev_sibling()
-        .is_some_and(|before| MEMBER.contains(&before.kind()));
+    let member = node.prev_sibling().is_some_and(|before| MEMBER.contains(&before.kind()));
     reading.mentions.insert((name, member));
 }
 
 pub fn tree(path: &str, text: &str) -> String {
     let mut parser = Parser::new();
     let language = language(path).expect("a language we read");
-    parser
-        .set_language(&language.grammar)
-        .expect("a grammar that loads");
-    parser
-        .parse(text, None)
-        .expect("a tree")
-        .root_node()
-        .to_sexp()
+    parser.set_language(&language.grammar).expect("a grammar that loads");
+    parser.parse(text, None).expect("a tree").root_node().to_sexp()
 }

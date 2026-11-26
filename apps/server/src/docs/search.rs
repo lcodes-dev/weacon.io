@@ -17,12 +17,9 @@ pub async fn search(state: &AppState, project_id: &str, question: &str) -> Resul
     for page in unsearched(&state.pool, project_id, MODEL).await? {
         let texts = doc_search::parts(&page.title, &page.markdown);
         let embeddings = embedded(state, texts.clone()).await?;
-        let bytes =
-            |embedding: Vec<f32>| embedding.into_iter().flat_map(f32::to_le_bytes).collect();
-        let parts: Vec<(String, Vec<u8>)> = texts
-            .into_iter()
-            .zip(embeddings.into_iter().map(bytes))
-            .collect();
+        let bytes = |embedding: Vec<f32>| embedding.into_iter().flat_map(f32::to_le_bytes).collect();
+        let parts: Vec<(String, Vec<u8>)> =
+            texts.into_iter().zip(embeddings.into_iter().map(bytes)).collect();
         set_parts(&state.pool, &page.id, &page.version, MODEL, &parts).await?;
     }
     let parts = parts(&state.pool, project_id).await?;
@@ -33,10 +30,7 @@ pub async fn search(state: &AppState, project_id: &str, question: &str) -> Resul
     let score = |part: DocPart| {
         let (fours, _) = part.embedding.as_chunks::<4>();
         let embedding: Vec<f32> = fours.iter().map(|four| f32::from_le_bytes(*four)).collect();
-        (
-            doc_search::score(question, &asked, &part.text, &embedding),
-            part,
-        )
+        (doc_search::score(question, &asked, &part.text, &embedding), part)
     };
     let mut scored: Vec<(f32, DocPart)> = parts.into_iter().map(score).collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -50,11 +44,7 @@ pub struct Unsearched {
     pub version: String,
 }
 
-pub async fn unsearched(
-    pool: &SqlitePool,
-    project_id: &str,
-    model: &str,
-) -> sqlx::Result<Vec<Unsearched>> {
+pub async fn unsearched(pool: &SqlitePool, project_id: &str, model: &str) -> sqlx::Result<Vec<Unsearched>> {
     sqlx::query_as!(
         Unsearched,
         r#"SELECT id, title, markdown, version AS "version!" FROM (
@@ -77,9 +67,7 @@ pub async fn set_parts(
     parts: &[(String, Vec<u8>)],
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-    sqlx::query!("DELETE FROM doc_parts WHERE doc_id = ?", doc_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!("DELETE FROM doc_parts WHERE doc_id = ?", doc_id).execute(&mut *tx).await?;
     for (position, (text, embedding)) in parts.iter().enumerate() {
         let position = position as i64;
         sqlx::query!(
@@ -92,14 +80,9 @@ pub async fn set_parts(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query!(
-        "UPDATE docs SET parts_version = ?, parts_model = ? WHERE id = ?",
-        version,
-        model,
-        doc_id
-    )
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query!("UPDATE docs SET parts_version = ?, parts_model = ? WHERE id = ?", version, model, doc_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await
 }
 

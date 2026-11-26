@@ -11,10 +11,7 @@ use crate::jobs::Job;
 use crate::{AppState, jobs, live, projects};
 
 pub async fn start_turn(state: &AppState, machine_id: &str, chat_id: &str) -> Result<()> {
-    let job = StartTurn {
-        machine_id: machine_id.to_owned(),
-        chat_id: chat_id.to_owned(),
-    };
+    let job = StartTurn { machine_id: machine_id.to_owned(), chat_id: chat_id.to_owned() };
     jobs::perform_later(state, Job::StartTurn(job)).await?;
     Ok(())
 }
@@ -50,13 +47,8 @@ async fn turn(state: &AppState, chat: Running) -> Result<core_link::Turn> {
     let no_repository = || ApiError::invalid("The project has no repository any more");
     let repo = chat.repo.as_deref().ok_or_else(no_repository)?;
     let agent = Agent::named(&chat.agent).ok_or_else(ApiError::not_found)?;
-    let token = projects::github::token(
-        state,
-        &chat.team_id,
-        Some(repo),
-        projects::github::reading(),
-    )
-    .await?;
+    let token =
+        projects::github::token(state, &chat.team_id, Some(repo), projects::github::reading()).await?;
     Ok(core_link::Turn {
         repository: repository(repo, chat.branch, token),
         chat: chat.id,
@@ -65,19 +57,12 @@ async fn turn(state: &AppState, chat: Running) -> Result<core_link::Turn> {
         prompt: chat.asked,
         heard: chat.heard as u64,
         hosts: chat.hosts.0,
-        tools: Tools {
-            url: format!("{}/api/tools", state.url),
-            token: chat.tools_token.unwrap_or_default(),
-        },
+        tools: Tools { url: format!("{}/api/tools", state.url), token: chat.tools_token.unwrap_or_default() },
     })
 }
 
 pub fn repository(repo: &str, branch: String, token: String) -> Repository {
-    Repository {
-        url: format!("https://github.com/{repo}.git"),
-        branch,
-        token,
-    }
+    Repository { url: format!("https://github.com/{repo}.git"), branch, token }
 }
 
 async fn fail(state: &AppState, chat_id: &str, why: &str) {
