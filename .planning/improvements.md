@@ -25,7 +25,8 @@ Things noticed while working that could be better and that nobody has asked for.
 
 - **A file in the graph can only be chosen with a pointer.** A labeled list of files would let the keyboard and a screen reader open the same panel. *(noted in plan 08)*
 - **The status dot starts red.** Until the first health call answers, the dot shows "unreachable" for a moment.
-- **The shell is plainer than the reference.** It has no search field, no icons beside Tasks and Docs, and no workspace and account rows at the bottom of the sidebar.
+- **The sidebar has no search field,** which the reference draws above Tasks and Docs. *(noted in plan 40)*
+- **Pages of the docs can't be reordered on a phone.** Their handles are hidden there, since they only show on hover. *(noted in plan 40)*
 
 ## Setup
 

@@ -84,19 +84,7 @@ function Form({ team, project }: { team: Team; project?: Project }) {
         save.mutate()
       }}
     >
-      <h1 className="flex items-baseline gap-3">
-        {project?.name ?? "New project"}
-        {project && (
-          <Link to={`/projects/${project.id}/docs`} className="text-[13px] font-normal underline">
-            Docs
-          </Link>
-        )}
-        {project && (
-          <Link to={`/projects/${project.id}/tasks`} className="text-[13px] font-normal underline">
-            Tasks
-          </Link>
-        )}
-      </h1>
+      <h1>{project?.name ?? "New project"}</h1>
       <Field>
         <FieldLabel>Name</FieldLabel>
         <Input value={name} onChange={(event) => setName(event.target.value)} required />

@@ -61,7 +61,9 @@ export function NewChat({ team }: { team: Team }) {
       {!project && <p className="text-ink2">No project of {team.name} has a repository with a mapped branch yet.</p>}
       {!machine && (
         <p className="text-ink2">
-          None of your machines has {agents[agent].name} signed in. <Link to="/settings/machines">Look under Machines</Link>.
+          None of your machines has {agents[agent].name} signed in. <Link to="/settings/machines" className="underline">
+            Look under Machines
+          </Link>.
         </p>
       )}
       <div className="flex flex-wrap gap-3">

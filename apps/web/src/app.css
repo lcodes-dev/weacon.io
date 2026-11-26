@@ -2,12 +2,16 @@
 
 @import "tailwindcss";
 
+/* Below this width the sidebar becomes a drawer. */
+@custom-variant phone (@media (width < 720px));
+
 /* The reference's colors. */
 :root {
   color-scheme: light dark;
   --bg: #fbfaf7;
   --side: #f4f2ed;
   --sur: #ffffff;
+  --sur2: #efece6;
   --fld: #d9d4cb;
   --amb: oklch(0.42 0.11 60);
   --amb-soft: oklch(0.96 0.04 85);
@@ -18,6 +22,11 @@
   --ink2: #6b665e;
   --ink3: #77716a;
   --acc: #b83a1b;
+  --acc-fill: #b83a1b;
+  --vio: #5d4a8c;
+  --vio-fill: #5d4a8c;
+  --vio-soft: #efeaf7;
+  --team: #2f7a5f;
   --ok: #3d8b5a;
   --pri: #1f1d1a;
   --pri-text: #ffffff;
@@ -35,6 +44,7 @@
     --bg: #1a1917;
     --side: #141312;
     --sur: #211f1d;
+    --sur2: #2a2825;
     --fld: #3c3834;
     --amb: #e4b45e;
     --amb-soft: rgba(228, 180, 94, 0.11);
@@ -45,6 +55,11 @@
     --ink2: #aaa398;
     --ink3: #918b81;
     --acc: #e8714a;
+    --acc-fill: #c44a27;
+    --vio: #ab9be6;
+    --vio-fill: #6e5aab;
+    --vio-soft: rgba(171, 155, 230, 0.13);
+    --team: #2f7a5f;
     --ok: #67b986;
     --pri: #ece7df;
     --pri-text: #1a1917;
@@ -61,6 +76,7 @@
   --color-bg: var(--bg);
   --color-side: var(--side);
   --color-sur: var(--sur);
+  --color-sur2: var(--sur2);
   --color-fld: var(--fld);
   --color-amb: var(--amb);
   --color-amb-soft: var(--amb-soft);
@@ -71,6 +87,11 @@
   --color-ink2: var(--ink2);
   --color-ink3: var(--ink3);
   --color-acc: var(--acc);
+  --color-acc-fill: var(--acc-fill);
+  --color-vio: var(--vio);
+  --color-vio-fill: var(--vio-fill);
+  --color-vio-soft: var(--vio-soft);
+  --color-team: var(--team);
   --color-ok: var(--ok);
   --color-pri: var(--pri);
   --color-pri-text: var(--pri-text);
@@ -78,6 +99,8 @@
 }
 
 body {
+  /* No grey flash when a link is tapped on a phone. */
+  -webkit-tap-highlight-color: transparent;
   background: var(--bg);
   color: var(--ink);
   font: 13px/1.4 -apple-system, system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -86,16 +109,63 @@ body {
 /* UI SDK's parts are unstyled; these style each by its data-slot. */
 @layer components {
   .btn {
-    @apply inline-flex h-[30px] shrink-0 items-center rounded-lg border border-fld px-3 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50;
+    @apply inline-flex h-[30px] shrink-0 items-center rounded-lg border border-fld px-3 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50 phone:h-11 phone:px-4;
+  }
+
+  /* A row of the sidebar; the open page's row is raised. */
+  .nav {
+    @apply flex min-h-8 w-full items-center gap-2.5 rounded-[7px] border border-transparent px-2 py-[5px] text-left hover:bg-hov aria-[current=page]:border-line aria-[current=page]:bg-sur aria-[current=page]:font-semibold phone:min-h-11;
+  }
+
+  /* A section's name in the sidebar. */
+  .sec {
+    @apply block px-2 pt-3.5 pb-1 font-mono text-[10.5px] font-medium tracking-[0.06em] text-ink3 uppercase;
+  }
+
+  /* The grey second line of a row. */
+  .sub {
+    @apply truncate text-[11px] leading-snug font-normal text-ink3;
+  }
+
+  /* The bar along the top of a page, with its title and actions. */
+  .bar {
+    @apply flex min-h-[52px] shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-[18px] py-2;
+  }
+
+  /* Links that switch between views, drawn as one segmented control. */
+  .segs {
+    @apply flex rounded-lg bg-sur2 p-0.5;
+  }
+
+  .segs > * {
+    @apply flex h-[26px] items-center rounded-md px-2.5 text-[12.5px] text-ink2 hover:text-ink aria-[current]:bg-sur aria-[current]:font-semibold aria-[current]:text-ink aria-[current]:shadow-sm phone:h-11;
+  }
+
+  /* The box at the bottom of a chat or a group, to write in. */
+  .composer {
+    @apply flex flex-wrap items-end gap-2 rounded-xl border border-fld bg-sur p-2.5 focus-within:border-ink3;
+  }
+
+  .composer textarea {
+    @apply max-h-48 min-h-11 w-full resize-none bg-transparent px-1 py-1 outline-none;
+  }
+
+  .composer > button {
+    @apply ml-auto;
+  }
+
+  /* Initials in a small square, for a person or a team. */
+  .initials {
+    @apply flex size-7 shrink-0 items-center justify-center rounded-lg font-mono text-[9.5px] font-semibold text-white;
   }
 
   .btn-sm {
-    @apply h-6 rounded-md px-2 text-[12px];
+    @apply h-6 rounded-md px-2 text-[12px] phone:h-11 phone:px-3;
   }
 
   /* A button that is only an icon. */
   .icb {
-    @apply flex size-7 shrink-0 items-center justify-center rounded-md text-ink2 hover:bg-hov hover:text-ink;
+    @apply flex size-7 shrink-0 items-center justify-center rounded-md text-ink2 hover:bg-hov hover:text-ink phone:size-11;
   }
 
   .icb svg {
@@ -108,7 +178,7 @@ body {
   }
 
   .page {
-    @apply mx-auto flex max-w-[560px] flex-col gap-3 p-8;
+    @apply mx-auto flex max-w-[560px] flex-col gap-3 p-8 phone:p-4;
   }
 
   .page-wide {
@@ -297,7 +367,7 @@ body {
   }
 
   [data-slot="tabs-tab"] {
-    @apply -mb-px border-b-2 border-transparent px-3 py-1.5 text-ink2 hover:text-ink data-selected:border-ink data-selected:font-medium data-selected:text-ink;
+    @apply -mb-px border-b-2 border-transparent px-3 py-1.5 text-ink2 phone:min-h-11 hover:text-ink data-selected:border-ink data-selected:font-medium data-selected:text-ink;
   }
 
   [data-slot="otp-input-group"] {
@@ -306,5 +376,15 @@ body {
 
   [data-slot="otp-input-slot"] {
     @apply relative flex h-11 w-9 items-center justify-center rounded-md border border-fld bg-bg text-lg data-active:border-ink;
+  }
+}
+
+/* iOS zooms into a field whose text is under 16px. */
+@media (width < 720px) {
+  input:not([type="checkbox"], [type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+    min-height: 44px;
   }
 }

@@ -67,15 +67,15 @@ export function DocPages<Page extends DocPage>(
   const link = (entry: Page) => (
     <button
       aria-current={entry === page ? "page" : undefined}
-      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left hover:bg-hov aria-[current]:bg-hov aria-[current]:font-medium"
+      className="min-w-0 flex-1 rounded-md px-2 py-1 text-left phone:min-h-11 hover:bg-hov aria-[current]:bg-hov aria-[current]:font-medium"
       onClick={() => props.onOpen(entry.id)}
     >
       {entry.title}
     </button>
   )
   return (
-    <div className="flex items-start gap-8 pt-4">
-      <nav aria-label="Pages" className="flex w-[220px] shrink-0 flex-col">
+    <div className="flex items-start gap-8 pt-4 phone:flex-col phone:items-stretch phone:gap-4">
+      <nav aria-label="Pages" className="flex w-[220px] shrink-0 flex-col phone:w-full">
         {props.onOrder ? (
           <Sortable value={props.pages.map((page) => page.id)} onValueChange={props.onOrder} className="flex flex-col">
             {({ order }) =>
@@ -84,7 +84,7 @@ export function DocPages<Page extends DocPage>(
                 if (!entry) return []
                 return (
                   <SortableItem key={id} value={id} className="group flex items-center">
-                    <SortableHandle value={id} aria-label={`Move ${entry.title}`} className="icb w-5 cursor-grab opacity-0 group-hover:opacity-100 focus-visible:opacity-100">
+                    <SortableHandle value={id} aria-label={`Move ${entry.title}`} className="icb w-5 cursor-grab opacity-0 group-hover:opacity-100 focus-visible:opacity-100 phone:hidden">
                       <GripVerticalIcon aria-hidden="true" />
                     </SortableHandle>
                     {link(entry)}

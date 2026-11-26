@@ -76,6 +76,8 @@ There are no unit tests inside `src/`. One is added only for something no reques
 - UI SDK is a beta a few weeks old, so its version is pinned exactly and upgraded on purpose.
 - **React Router** for client-side routes. Settings are pages under `/settings/`, shown beside the sidebar.
 - **TanStack Query** for fetching and caching API data.
+- **Phones.** Below 720px wide (Tailwind's `phone:` variant, set in `app.css`) the sidebar is a drawer behind a menu button, except at `/`, where it is the page. Side panels and columns stack, a task's panel takes the place of the list, and everything to tap is at least 44px tall. `npm --prefix apps/web run phone-check` opens every page at a phone's size, with Playwright against the server on a fresh database, and fails on anything that scrolls sideways or is too small to tap; `scripts/check.sh` runs it.
+- **The logo** is `apps/web/public/logo.svg`, served at `/logo.svg` and used as the tab's icon.
 - API types are **written by hand** in TypeScript, next to the fetch functions that use them. No OpenAPI, no generation.
 
 ## How the server serves the web app
@@ -286,7 +288,7 @@ A team has at most one key, for the Anthropic API, saved and removed by its owne
 
 - Every mail goes out as HTML with a plain-text fallback, both made from the same `Mail`.
 - The HTML is one layout, the `TEMPLATE` string in `mail.rs`: the logo, a card with the subject, text, code and button, and a footer. It is filled by replacing `{subject}`, `{body}` and `{footer}`.
-- The logo is attached to each mail and shown inline, so it needs no public address. Mail clients don't show SVG, so `apps/server/assets/logo.png` is made from `logo.svg` beside it: `sed 's/viewBox="0 0 640 640"/viewBox="96 96 448 448"/' logo.svg | rsvg-convert -w 128 -h 128 -o logo.png`.
+- The logo is attached to each mail and shown inline, so it needs no public address. Mail clients don't show SVG, so `apps/server/assets/logo.png` is made from the web app's `apps/web/public/logo.svg`: `sed 's/viewBox="0 0 640 640"/viewBox="96 96 448 448"/' apps/web/public/logo.svg | rsvg-convert -w 128 -h 128 -o logo.png`.
 
 - The owner's SMTP settings are the one row of the `config` table. The server reads it at startup and keeps a ready connection in memory; saving new settings replaces it, with no restart.
 - A link in a mail starts with the `WEACON_URL` setting, the address people open in their browser.

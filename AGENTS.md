@@ -23,6 +23,7 @@ Node and Rust come from mise at the versions in `mise.toml`. In a shell without 
 | `scripts/prepare-queries.sh` | Writes `.sqlx/`, which the build checks every query against; run it after changing a query or a migration |
 | `scripts/check.sh` | Checks what GitHub checks on every push: the format, the web app's build, the lints and every test |
 | `npm --prefix apps/web run build` | Type-checks and builds the web app into `apps/web/dist/` |
+| `npm --prefix apps/web run phone-check` | Runs the server on a fresh database and opens every page at a phone's size, checking that nothing scrolls sideways and everything to tap is 44px tall; build the web app first |
 | `cargo test -p weacon-server` | Runs the server's tests in `apps/server/tests/`; build the web app first |
 | `cargo test -p weacon-core` | Runs the core's test of the agents' programs |
 | `cargo test -p agent-run` | Runs the agents' turns against a stand-in that prints what the real programs printed |
