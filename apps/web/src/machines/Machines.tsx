@@ -1,10 +1,10 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { confirm } from "@ui-sdk/react/alert-dialog"
 import { lazy, Suspense, useState } from "react"
-import { agents, api, type Agent } from "../api"
+import { type Agent, agents, api } from "../api"
 import { useMachines } from "../queries"
 
-const SignIn = lazy(() => import("../components/SignIn").then((module) => ({ default: module.SignIn })))
+const SignIn = lazy(() => import("./AgentSignIn").then((module) => ({ default: module.SignIn })))
 
 export function Machines() {
   const queryClient = useQueryClient()

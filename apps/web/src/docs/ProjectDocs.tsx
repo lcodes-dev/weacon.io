@@ -7,13 +7,11 @@ import { EllipsisIcon, LoaderCircleIcon, PlusIcon } from "lucide-react"
 import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { Link, useParams, useSearchParams } from "react-router"
 import { api, type CodeMap, type Docs, type Proposal, type Share, type Team } from "../api"
-import { DocHistory } from "../components/DocHistory"
-import { PageNotes } from "../components/DocNotes"
-import { DocArticle, DocPages } from "../components/DocPages"
-import { DocProposal } from "../components/DocProposal"
+import { DocHistory, DocProposal, PageNotes } from "./DocChanges"
+import { DocArticle, DocPages } from "./DocPages"
 import { useProjects } from "../queries"
 
-const DocEditor = lazy(() => import("../components/DocEditor").then((module) => ({ default: module.DocEditor })))
+const DocEditor = lazy(() => import("./DocEditor").then((module) => ({ default: module.DocEditor })))
 
 export function DocsPage({ team }: { team: Team }) {
   const { id } = useParams()

@@ -4,7 +4,7 @@ import Markdown from "markdown-to-jsx"
 import type { ReactNode } from "react"
 import { Link } from "react-router"
 import { api, type ChatEvent, type OpenChat } from "../api"
-import { safeUrl } from "./DocPages"
+import { safeUrl } from "../docs/DocPages"
 
 const icons = { read: FileTextIcon, edit: PencilIcon, command: TerminalIcon, other: WrenchIcon }
 

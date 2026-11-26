@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
 import { agents, api, type OpenChat, type Team } from "../api"
-import { ChatEvents, useChatChange } from "../components/ChatEvents"
+import { ChatEvents, useChatChange } from "./ChatEvents"
 
 type Part = { chat: OpenChat; path: string }
 

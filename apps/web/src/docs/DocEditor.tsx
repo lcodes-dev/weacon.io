@@ -1,61 +1,21 @@
-import { Editor, defaultValueCtx, editorViewCtx, remarkStringifyOptionsCtx, rootCtx } from "@milkdown/kit/core"
+import { defaultValueCtx, Editor, editorViewCtx, remarkStringifyOptionsCtx, rootCtx } from "@milkdown/kit/core"
 import { clipboard } from "@milkdown/kit/plugin/clipboard"
 import { history, redoCommand, undoCommand } from "@milkdown/kit/plugin/history"
 import { upload, uploadConfig } from "@milkdown/kit/plugin/upload"
-import {
-  commonmark,
-  createCodeBlockCommand,
-  insertHrCommand,
-  toggleEmphasisCommand,
-  toggleInlineCodeCommand,
-  toggleLinkCommand,
-  toggleStrongCommand,
-  turnIntoTextCommand,
-  wrapInBlockquoteCommand,
-  wrapInBulletListCommand,
-  wrapInHeadingCommand,
-  wrapInOrderedListCommand,
-} from "@milkdown/kit/preset/commonmark"
+import { commonmark, createCodeBlockCommand, insertHrCommand, toggleEmphasisCommand, toggleInlineCodeCommand, toggleLinkCommand, toggleStrongCommand, turnIntoTextCommand, wrapInBlockquoteCommand, wrapInBulletListCommand, wrapInHeadingCommand, wrapInOrderedListCommand } from "@milkdown/kit/preset/commonmark"
 import { gfm, insertTableCommand, toggleStrikethroughCommand } from "@milkdown/kit/preset/gfm"
 import type { Schema } from "@milkdown/kit/prose/model"
 import type { EditorView } from "@milkdown/kit/prose/view"
-import "@milkdown/kit/prose/view/style/prosemirror.css"
 import { callCommand, getMarkdown } from "@milkdown/kit/utils"
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Toolbar, ToolbarButton, ToolbarSeparator } from "@ui-sdk/react/toolbar"
-import {
-  TriggerMenu,
-  TriggerMenuContent,
-  TriggerMenuEmpty,
-  TriggerMenuItem,
-  TriggerMenuItemIcon,
-  TriggerMenuList,
-  type EditorChange,
-  type TextEditorAdapter,
-} from "@ui-sdk/react/trigger-menu"
-import {
-  BoldIcon,
-  CodeIcon,
-  Heading2Icon,
-  Heading3Icon,
-  ImageIcon,
-  ItalicIcon,
-  LinkIcon,
-  ListIcon,
-  ListOrderedIcon,
-  MinusIcon,
-  PaperclipIcon,
-  QuoteIcon,
-  RedoIcon,
-  SquareCodeIcon,
-  StrikethroughIcon,
-  TableIcon,
-  UndoIcon,
-  type LucideIcon,
-} from "lucide-react"
+import { type EditorChange, type TextEditorAdapter, TriggerMenu, TriggerMenuContent, TriggerMenuEmpty, TriggerMenuItem, TriggerMenuItemIcon, TriggerMenuList } from "@ui-sdk/react/trigger-menu"
+import { BoldIcon, CodeIcon, Heading2Icon, Heading3Icon, ImageIcon, ItalicIcon, LinkIcon, ListIcon, ListOrderedIcon, type LucideIcon, MinusIcon, PaperclipIcon, QuoteIcon, RedoIcon, SquareCodeIcon, StrikethroughIcon, TableIcon, UndoIcon } from "lucide-react"
 import { useEffect, useMemo, useRef, useState } from "react"
 import { api, type DocsPage } from "../api"
 import { Diff } from "./Diff"
+
+import "@milkdown/kit/prose/view/style/prosemirror.css"
 
 type Command = { key: Parameters<typeof callCommand>[0] }
 

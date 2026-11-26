@@ -3,12 +3,13 @@ import { lazy, StrictMode, Suspense } from "react"
 import { createRoot } from "react-dom/client"
 import { BrowserRouter, Route, Routes } from "react-router"
 import { api, type Session } from "./api"
-import "./app.css"
-import { Shell } from "./components/Shell"
-import { Invite } from "./routes/Invite"
-import { SignIn } from "./routes/SignIn"
+import { Shell } from "./Shell"
+import { Invite } from "./accounts/Invite"
+import { SignIn } from "./accounts/SignIn"
 
-const Shared = lazy(() => import("./routes/Shared").then((module) => ({ default: module.Shared })))
+import "./app.css"
+
+const Shared = lazy(() => import("./docs/Shared").then((module) => ({ default: module.Shared })))
 
 function App() {
   const session = useQuery({ queryKey: ["session"], queryFn: () => api<Session>("GET", "/session") })

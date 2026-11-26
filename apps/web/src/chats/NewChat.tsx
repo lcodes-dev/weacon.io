@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router"
-import { agents, api, type Agent, type Machine, type Team } from "../api"
+import { type Agent, agents, api, type Machine, type Team } from "../api"
 import { useMachines, useProjects, useTasks } from "../queries"
 
 export function NewChat({ team }: { team: Team }) {

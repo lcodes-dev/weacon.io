@@ -4,7 +4,7 @@ import { Input } from "@ui-sdk/react/input"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
 import { api, groupName, type OpenGroup, type Team, type User, who } from "../api"
-import { Said } from "../components/ChatEvents"
+import { Said } from "../chats/ChatEvents"
 import { useProjects, useTeamDetails } from "../queries"
 
 type Part = { group: OpenGroup; path: string; team: Team }

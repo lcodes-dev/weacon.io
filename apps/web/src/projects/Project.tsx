@@ -4,7 +4,7 @@ import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
 import { api, type Project, type RepoBranches, type Team } from "../api"
-import { CodeMap } from "../components/CodeMap"
+import { CodeMap } from "./CodeMap"
 import { useGithub, useProjects } from "../queries"
 
 export function ProjectPage({ team }: { team: Team }) {

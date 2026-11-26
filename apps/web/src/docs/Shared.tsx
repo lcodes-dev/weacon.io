@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 import { useState } from "react"
 import { useParams } from "react-router"
 import { api, type Shared as SharedDocs } from "../api"
-import { DocPages } from "../components/DocPages"
+import { DocPages } from "./DocPages"
 
 export function Shared() {
   const { token } = useParams()

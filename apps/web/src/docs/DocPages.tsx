@@ -1,7 +1,8 @@
 import Markdown from "markdown-to-jsx"
 import { GripVerticalIcon } from "lucide-react"
-import { Fragment, type ComponentType, type ReactNode } from "react"
-import { Sortable, SortableHandle, SortableItem } from "./Sortable"
+import { type ComponentType, Fragment, type ReactNode } from "react"
+import { type ChangeDetails, createChange, createReorder, definePrimitive, type ReorderDraft, type ReorderReason } from "@ui-sdk/core"
+import { createParts } from "@ui-sdk/react/primitive"
 
 export type DocPage = { id: string; title: string; markdown: string }
 
@@ -97,3 +98,49 @@ export function DocPages<Page extends DocPage>(
     </div>
   )
 }
+
+type Options = {
+  value?: string[]
+  onValueChange?: (value: string[], details: ChangeDetails<ReorderReason>) => void
+}
+
+const sortable = definePrimitive({
+  name: "sortable",
+  options: { value: "list", onValueChange: "callback" },
+  controlled: ["value"],
+  state: (options: Options) => ({ value: options.value ?? [], moving: null as ReorderDraft | null }),
+  sync: (options) => (options.value === undefined ? {} : { value: options.value }),
+  api: (context) => {
+    const change = createChange(context)
+    return {
+      reorder: createReorder(context, {
+        slot: "item",
+        key: "value",
+        draft: "moving",
+        set: (value, details) => change("value", value, details),
+      }),
+    }
+  },
+  slots: (slot) => ({
+    root: slot<{}, { order: string[] }>({
+      role: "list",
+      state: (state, part) => ({ order: part.api.reorder.order(state) }),
+    }),
+    item: slot<{ value: string }>({
+      role: "listitem",
+      props: { value: "string" },
+      attrs: (state, part) => ({ "data-grabbed": part.api.reorder.moving(state, part.key) ? "" : undefined }),
+      bind: (el, part) => part.api.reorder.bind(el, part),
+    }),
+    handle: slot<{ value: string }>({
+      props: { value: "string" },
+      attrs: () => ({ type: "button" }),
+      on: {
+        keydown: (event, { api, key }) => void api.reorder.keydown(event, key),
+        pointerdown: (event, { api, key }) => api.reorder.pointerdown(event, key),
+      },
+    }),
+  }),
+})
+
+export const { Root: Sortable, Item: SortableItem, Handle: SortableHandle } = createParts(sortable, { root: "div", item: "div", handle: "button" })

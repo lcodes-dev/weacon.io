@@ -3,20 +3,19 @@ import { OverlayHost } from "@ui-sdk/react/overlays"
 import { CheckIcon, ChevronsUpDownIcon, LogOutIcon, MenuIcon, PlusIcon, SettingsIcon, TextIcon } from "lucide-react"
 import { lazy, Suspense, useEffect, useState } from "react"
 import { Link, NavLink, Route, Routes, useLocation, useMatch } from "react-router"
-import { agents, api, groupName, type Chat, type Team, type User } from "../api"
-import { useLive } from "../live"
-import { ChatPage } from "../routes/Chat"
-import { GroupPage } from "../routes/Group"
-import { Machines } from "../routes/Machines"
-import { MailSettings } from "../routes/MailSettings"
-import { NewChat } from "../routes/NewChat"
-import { NewGroup } from "../routes/NewGroup"
-import { ProjectPage } from "../routes/Project"
-import { TasksPage } from "../routes/ProjectTasks"
-import { TeamSettings } from "../routes/TeamSettings"
-import { useChats, useGroups, useMachines, useMailConfig, useProjects, useTeamDetails } from "../queries"
+import { agents, api, type Chat, groupName, type Team, type User } from "./api"
+import { useChats, useGroups, useLive, useMachines, useMailConfig, useProjects, useTeamDetails } from "./queries"
+import { ChatPage } from "./chats/Chat"
+import { GroupPage } from "./groups/Group"
+import { Machines } from "./machines/Machines"
+import { MailSettings } from "./settings/MailSettings"
+import { NewChat } from "./chats/NewChat"
+import { NewGroup } from "./groups/NewGroup"
+import { ProjectPage } from "./projects/Project"
+import { TasksPage } from "./tasks/ProjectTasks"
+import { TeamSettings } from "./settings/TeamSettings"
 
-const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
+const DocsPage = lazy(() => import("./docs/ProjectDocs").then((module) => ({ default: module.DocsPage })))
 
 export function Shell({ user }: { user: User }) {
   const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
