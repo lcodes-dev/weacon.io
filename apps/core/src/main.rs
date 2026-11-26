@@ -1,7 +1,6 @@
 mod agents;
 mod chats;
 mod link;
-mod service;
 mod setup;
 mod terminals;
 
@@ -87,8 +86,8 @@ async fn main() {
             None => println!("Not paired"),
         },
         ["agents"] => setup::say_agents().await,
-        ["install"] => service::install(),
-        ["uninstall"] => service::uninstall(),
+        ["install"] => setup::install(),
+        ["uninstall"] => setup::uninstall(),
         ["add", host] => setup::add(&needs_pairing(), host).await,
         _ => fail(USAGE),
     }
