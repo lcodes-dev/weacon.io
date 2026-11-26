@@ -1,4 +1,4 @@
-# Plan 38: sealed secrets
+# Plan 39: sealed secrets
 
 **Status: done** (2026-11-26)
 
