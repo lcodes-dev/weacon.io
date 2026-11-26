@@ -1,7 +1,3 @@
-//! The team's own agent, called in a group as `@weacon`. It runs here, on the team's API
-//! key, and answers from the tasks and docs of the group's project with the tools a chat's
-//! agent has. It keeps nothing between calls.
-
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -9,7 +5,6 @@ use crate::db::chats::Caller;
 use crate::error::{ApiError, Result};
 use crate::{AppState, anthropic, db, live, tools};
 
-/// How often it may ask for its tools in one call.
 const ROUNDS: usize = 10;
 
 const SYSTEM: &str = "You are Weacon, the agent of a team, called in one of its groups about one \
@@ -22,13 +17,11 @@ const SYSTEM: &str = "You are Weacon, the agent of a team, called in one of its 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AnswerAsWeacon {
     pub group_id: String,
-    /// What was written in the group, as it is told to the agent.
     pub asked: String,
     pub caller: Caller,
 }
 
 impl AnswerAsWeacon {
-    /// One call at a time in a group, and while it runs the group shows Weacon working.
     pub fn key(group_id: &str) -> String {
         format!("weacon:{group_id}")
     }
@@ -48,9 +41,7 @@ impl AnswerAsWeacon {
             .await;
     }
 
-    /// Asks the model, runs each tool it asks for and tells it the result, until it has its answer.
     async fn answer(&self, state: &AppState, key: &str, model: &str) -> Result<String> {
-        // The same tools, as Anthropic names their parts.
         let tool = |tool: &Value| {
             let (name, does, takes) = (&tool["name"], &tool["description"], &tool["inputSchema"]);
             json!({"name": name, "description": does, "input_schema": takes})
@@ -99,7 +90,6 @@ impl AnswerAsWeacon {
         )))
     }
 
-    /// The group may be gone by now, and then nobody is told.
     async fn post(&self, state: &AppState, text: &str) {
         let (group, user) = (&self.group_id, &self.caller.user_id);
         if db::groups::post_as_weacon(&state.pool, group, user, text)

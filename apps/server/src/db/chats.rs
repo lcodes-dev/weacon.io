@@ -15,23 +15,16 @@ pub struct Chat {
     pub project: String,
     pub user_id: String,
     pub user: String,
-    /// The machine it runs on, unless that was removed.
     pub machine_id: Option<String>,
     pub machine: Option<String>,
-    /// The pull request it opened, once it has.
     pub pull_number: Option<i64>,
     pub pull_url: Option<String>,
-    /// The hosts its commands may reach.
     pub hosts: Json<Vec<String>>,
-    /// The task it is for, if any, and what that is called, as `SF-12 Returns link`.
     pub task_id: Option<String>,
     pub task: Option<String>,
-    /// The group its agent answers in, when its owner called it there.
     pub group_id: Option<String>,
 }
 
-/// The chats of a team that a member may read, newest first, or only the one with `id`. A
-/// chat of a group is read by that group's members alone.
 pub async fn list(
     pool: &SqlitePool,
     team_id: &str,
@@ -58,7 +51,6 @@ pub async fn list(
     .await
 }
 
-/// A chat to start: whose it is, where its agent works, and what it is asked first.
 pub struct NewChat<'a> {
     pub project_id: &'a str,
     pub user_id: &'a str,
@@ -67,17 +59,14 @@ pub struct NewChat<'a> {
     pub branch: &'a str,
     pub asked: &'a str,
     pub task_id: Option<&'a str>,
-    /// The group its agent answers in, and the newest message there it is told.
     pub group: Option<(&'a str, &'a str)>,
 }
 
-/// What the person wrote is the chat's first event, and its first turn is running.
 pub async fn start(pool: &SqlitePool, chat: &NewChat<'_>) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     let id = new_id();
     let asked = chat.asked.trim();
     let (group_id, told) = chat.group.unzip();
-    // A chat is called by how it began.
     let title = asked.lines().next().unwrap_or_default();
     let title: String = title.chars().take(60).collect();
     sqlx::query!(
@@ -124,8 +113,6 @@ async fn add_event(
     Ok(())
 }
 
-/// Starts a chat's next turn with what its owner wrote. False while a turn is running.
-/// `told` is the newest message of its group that this tells its agent, for a group's chat.
 pub async fn ask(
     pool: &SqlitePool,
     id: &str,
@@ -156,9 +143,6 @@ pub async fn ask(
     Ok(true)
 }
 
-/// Takes in the `number`th event a machine tells of a chat of its own, when it is the next
-/// one. A turn that ended well gives the session to go on with and the diff of what the
-/// chat changed, which is kept once, on the chat, and not with every turn's end.
 pub async fn hear(
     pool: &SqlitePool,
     machine_id: &str,
@@ -200,8 +184,6 @@ pub async fn hear(
     Ok(())
 }
 
-/// Posts the end of a turn in the chat's group, if it has one: the agent's last words of the
-/// turn, or why it failed.
 async fn answer_group(
     tx: &mut sqlx::SqliteConnection,
     chat_id: &str,
@@ -237,7 +219,6 @@ async fn answer_group(
     Ok(())
 }
 
-/// Ends a chat's turn with why it failed, when the machine can't say so itself.
 pub async fn fail(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let ended = sqlx::query!(
@@ -259,7 +240,6 @@ pub async fn fail(pool: &SqlitePool, id: &str, why: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Puts a host among those a chat's commands may reach, and says so in the chat.
 pub async fn allow_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query!(
@@ -277,7 +257,6 @@ pub async fn allow_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Result
     tx.commit().await
 }
 
-/// Takes a host off those a chat's commands may reach.
 pub async fn forget_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Result<()> {
     sqlx::query!(
         "UPDATE chats SET hosts = (
@@ -291,7 +270,6 @@ pub async fn forget_host(pool: &SqlitePool, id: &str, host: &str) -> sqlx::Resul
     Ok(())
 }
 
-/// Everything a chat changed, as git writes it.
 pub async fn diff(pool: &SqlitePool, team_id: &str, id: &str) -> sqlx::Result<Option<String>> {
     sqlx::query_scalar!(
         "SELECT c.diff FROM chats c JOIN projects p ON p.id = c.project_id
@@ -315,7 +293,6 @@ pub async fn set_pull(pool: &SqlitePool, id: &str, number: i64, url: &str) -> sq
     Ok(())
 }
 
-/// A chat whose turn is running, with what its machine needs to run it or to go on telling of it.
 pub struct Running {
     pub id: String,
     pub team_id: String,
@@ -329,7 +306,6 @@ pub struct Running {
     pub tools_token: Option<String>,
 }
 
-/// The chats whose turn is running on a machine, or on none any more when `machine_id` is `None`.
 pub async fn running(pool: &SqlitePool, machine_id: Option<&str>) -> sqlx::Result<Vec<Running>> {
     sqlx::query_as!(
         Running,
@@ -343,7 +319,6 @@ pub async fn running(pool: &SqlitePool, machine_id: Option<&str>) -> sqlx::Resul
     .await
 }
 
-/// A chat's events after the one with id `after`, as JSON, each with its id.
 pub async fn events(pool: &SqlitePool, chat_id: &str, after: &str) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar!(
         r#"SELECT json_set(body, '$.id', id) AS "event!: String" FROM chat_events
@@ -355,23 +330,17 @@ pub async fn events(pool: &SqlitePool, chat_id: &str, after: &str) -> sqlx::Resu
     .await
 }
 
-/// Whom an agent's tools are run for.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Caller {
-    /// The chat the agent works in, which the team's own agent has none of.
     pub chat_id: Option<String>,
     pub team_id: String,
     pub project_id: String,
-    /// The project's key.
     pub key: String,
-    /// Who the agent works for.
     pub user_id: String,
     pub task_id: Option<String>,
-    /// Which agent: a program's name, or the team's own.
     pub agent: String,
 }
 
-/// Whom the agent of the chat with this running turn's token works for.
 pub async fn caller(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Caller>> {
     sqlx::query_as!(
         Caller,
@@ -384,7 +353,6 @@ pub async fn caller(pool: &SqlitePool, token: &str) -> sqlx::Result<Option<Calle
     .await
 }
 
-/// Adds to a chat something the server did in it.
 pub async fn note(pool: &SqlitePool, chat_id: &str, body: &serde_json::Value) -> sqlx::Result<()> {
     add_event(&mut *pool.acquire().await?, chat_id, body).await
 }
@@ -396,8 +364,6 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Who may read a chat, and whether that is its group: its group's members if it has one,
-/// else its team's.
 pub async fn people(pool: &SqlitePool, chat_id: &str) -> sqlx::Result<(Vec<String>, bool)> {
     let chat = sqlx::query!(
         "SELECT group_id, project_id FROM chats WHERE id = ?",

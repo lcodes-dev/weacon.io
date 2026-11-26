@@ -1,6 +1,3 @@
-//! Work done after a request is answered. A job is kept in the `jobs` table from when it is
-//! dispatched until it has run, so that a restart neither loses it nor leaves it half done.
-
 mod answer_as_weacon;
 pub mod answer_docs_request;
 mod check_page;
@@ -53,7 +50,6 @@ impl Job {
         }
     }
 
-    /// Ends what the job left undone, so that nothing shows as still running.
     async fn failed(self, state: &AppState, why: String) {
         tracing::warn!("a job failed: {why}");
         match self {
@@ -66,7 +62,6 @@ impl Job {
     }
 }
 
-/// Queues the job and starts it. False when a job with the same key is queued already.
 pub async fn dispatch(state: &AppState, job: Job) -> sqlx::Result<bool> {
     let queued = serde_json::to_string(&job).expect("a job is plain data");
     let Some(id) = db::jobs::add(&state.pool, &queued, job.unique_key().as_deref()).await? else {
@@ -76,7 +71,6 @@ pub async fn dispatch(state: &AppState, job: Job) -> sqlx::Result<bool> {
     Ok(true)
 }
 
-/// At startup: a job the restart cut short fails, and one that never started runs now.
 pub async fn resume(state: &AppState) -> sqlx::Result<()> {
     for queued in db::jobs::all(&state.pool).await? {
         let Ok(job) = serde_json::from_str::<Job>(&queued.job) else {
@@ -93,7 +87,6 @@ pub async fn resume(state: &AppState) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Dispatches the jobs that run on the clock, for as long as the server runs.
 pub async fn schedule(state: AppState) {
     let mut every_minute = tokio::time::interval(Duration::from_secs(60));
     loop {
@@ -109,7 +102,6 @@ async fn run(state: AppState, id: String, job: Job) {
     if let Err(error) = db::jobs::start(&state.pool, &id).await {
         tracing::error!("a job couldn't start: {error}");
     }
-    // In a task of its own, so that a job that panics still fails as it should.
     let handled = tokio::spawn({
         let (state, job) = (state.clone(), job.clone());
         async move { job.handle(&state).await }

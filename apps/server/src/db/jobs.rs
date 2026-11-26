@@ -8,7 +8,6 @@ pub struct Queued {
     pub started: bool,
 }
 
-/// The new job's id, or `None` when a job with its key is queued already.
 pub async fn add(
     pool: &SqlitePool,
     job: &str,
@@ -40,7 +39,6 @@ pub async fn delete(pool: &SqlitePool, id: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Oldest first.
 pub async fn all(pool: &SqlitePool) -> sqlx::Result<Vec<Queued>> {
     sqlx::query_as!(
         Queued,

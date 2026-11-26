@@ -28,11 +28,9 @@ pub struct Start {
     machine_id: String,
     branch: String,
     text: String,
-    /// The task of the project the chat is for, if any.
     task_id: Option<String>,
 }
 
-/// Starts a chat with its first message, on one of the person's own machines.
 pub async fn create(
     State(state): State<AppState>,
     user: User,
@@ -85,12 +83,10 @@ pub async fn create(
 
 #[derive(Deserialize)]
 pub struct After {
-    /// The last event or message the web app has, or nothing for all of them.
     #[serde(default)]
     pub after: String,
 }
 
-/// A chat and what happened in it after an event. Every member of the team may read it.
 pub async fn show(
     State(state): State<AppState>,
     user: User,
@@ -117,7 +113,6 @@ pub struct Message {
     text: String,
 }
 
-/// The chat's next turn.
 pub async fn say(
     State(state): State<AppState>,
     user: User,
@@ -140,7 +135,6 @@ pub async fn say(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Ends the chat's turn. Only the machine can, since the agent's program runs there.
 pub async fn stop(
     State(state): State<AppState>,
     user: User,
@@ -154,8 +148,6 @@ pub async fn stop(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Deletes a chat, once its machine has removed its folder. A chat whose machine was removed
-/// has none that can be reached.
 pub async fn delete(
     State(state): State<AppState>,
     user: User,
@@ -185,8 +177,6 @@ pub struct Host {
     host: String,
 }
 
-/// Lets the chat's commands reach a host that one of them was refused, and tells the agent
-/// in a next turn to try again.
 pub async fn allow_host(
     State(state): State<AppState>,
     user: User,
@@ -208,7 +198,6 @@ pub async fn allow_host(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Takes a host off those the chat's commands may reach, from its next turn on.
 pub async fn forget_host(
     State(state): State<AppState>,
     user: User,
@@ -220,7 +209,6 @@ pub async fn forget_host(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Everything a chat changed in its folder, as git writes it.
 pub async fn diff(
     State(state): State<AppState>,
     user: User,
@@ -231,8 +219,6 @@ pub async fn diff(
     Ok(Json(json!({"diff": diff.ok_or_else(ApiError::not_found)?})))
 }
 
-/// Has the chat's machine commit and push what its folder holds changed, and opens the
-/// chat's pull request if it has none.
 pub async fn push(
     State(state): State<AppState>,
     user: User,
@@ -256,8 +242,6 @@ pub async fn push(
     let repo = project.and_then(|project| project.repo.as_deref());
     let repo = repo.ok_or_else(|| ApiError::invalid("The project has no repository any more"))?;
 
-    // Each token may do one thing in this one repository: the machine's pushes, the server's
-    // opens the pull request.
     let token = |may| github::token(&state, &team_id, Some(repo), may);
     let pushing = token(json!({"contents": "write"})).await?;
     let opening = token(json!({"pull_requests": "write", "contents": "read"})).await?;
@@ -292,14 +276,12 @@ pub async fn push(
     Ok(Json(pull))
 }
 
-/// The chat, for a member of its team, or of its group if it has one.
 async fn readable(state: &AppState, user: &User, team_id: &str, chat_id: &str) -> Result<Chat> {
     user.member_of(team_id)?;
     let chats = db::chats::list(&state.pool, team_id, &user.id, Some(chat_id)).await?;
     chats.into_iter().next().ok_or_else(ApiError::not_found)
 }
 
-/// The chat, for the one person who may write in it.
 async fn own(state: &AppState, user: &User, team_id: &str, chat_id: &str) -> Result<Chat> {
     let chat = readable(state, user, team_id, chat_id).await?;
     if chat.user_id != user.id {
@@ -310,13 +292,11 @@ async fn own(state: &AppState, user: &User, team_id: &str, chat_id: &str) -> Res
     Ok(chat)
 }
 
-/// The chat's machine, where its folder and its agent are.
 fn machine(chat: &Chat) -> Result<&str> {
     let gone = || ApiError::invalid("This chat's machine was removed, and its folder with it");
     chat.machine_id.as_deref().ok_or_else(gone)
 }
 
-/// The chat's machine, for what can't wait until it is back.
 fn connected<'a>(state: &AppState, chat: &'a Chat) -> Result<&'a str> {
     let machine = machine(chat)?;
     if !state.cores.connected(machine) {
@@ -327,13 +307,10 @@ fn connected<'a>(state: &AppState, chat: &'a Chat) -> Result<&'a str> {
     Ok(machine)
 }
 
-/// Why nothing new can be asked of a chat whose turn is running.
 fn busy() -> ApiError {
     ApiError::conflict("The agent is still working. Stop it, or wait for it to finish")
 }
 
-/// The branch a chat's work is pushed to: its title, and the end of its id to tell it from a
-/// chat called the same.
 fn pushed_to(chat: &Chat) -> String {
     let letters = chat.title.to_lowercase();
     let words = letters.split(|c: char| !c.is_ascii_alphanumeric());

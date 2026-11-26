@@ -4,10 +4,8 @@ import { lazy, Suspense, useState } from "react"
 import { agents, api, type Agent } from "../api"
 import { useMachines } from "../queries"
 
-// The terminal is large, so it is fetched when a sign-in is first opened.
 const SignIn = lazy(() => import("../components/SignIn").then((module) => ({ default: module.SignIn })))
 
-/** Your own machines, at `/settings/machines`: pairing one, its agents, and signing in to them. */
 export function Machines() {
   const queryClient = useQueryClient()
   const [signing, setSigning] = useState<{ machine: string; agent: Agent }>()

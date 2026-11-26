@@ -4,13 +4,10 @@ use code_map::{Reading, Symbol};
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-/// A branch's map.
 #[derive(Serialize)]
 pub struct Map {
-    /// The commit it describes; `None` until the branch is first mapped.
     pub commit: Option<String>,
     pub files: Vec<MapFile>,
-    /// Pairs of a file and a file it uses.
     pub uses: Vec<(String, String)>,
 }
 
@@ -22,7 +19,6 @@ pub struct MapFile {
     pub symbols: Vec<Symbol>,
 }
 
-/// Deletes the contents that no branch of the project lists any more, with what was read from them.
 pub(super) async fn forget_unlisted_blobs(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,
@@ -37,7 +33,6 @@ pub(super) async fn forget_unlisted_blobs(
     Ok(())
 }
 
-/// Forgets every map made by another version of the reader, so that all are read again.
 pub async fn forget_other_readers(pool: &SqlitePool, reader: i64) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
     let current = sqlx::query_scalar!("SELECT map_reader FROM config")
@@ -65,8 +60,6 @@ pub async fn known_blobs(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Ha
     Ok(blobs.into_iter().collect())
 }
 
-/// Saves what was newly read, and makes `files` the branch's map at its latest commit.
-/// Does nothing when the branch or its project changed while the commit was being read.
 pub async fn save(
     pool: &SqlitePool,
     branch: &super::projects::Waiting,
@@ -156,8 +149,6 @@ pub async fn save(
         .execute(&mut *tx)
         .await?;
     }
-    // A content known from another branch is gone if that branch was untracked meanwhile.
-    // Nothing is saved then, so the branch still waits and is mapped again.
     let incomplete = sqlx::query_scalar!(
         r#"SELECT EXISTS (
                SELECT 1 FROM branch_files f
@@ -176,14 +167,12 @@ pub async fn save(
     tx.commit().await
 }
 
-/// `None` as for `branch_commit`.
 pub async fn find(
     pool: &SqlitePool,
     team_id: &str,
     project_id: &str,
     branch: &str,
 ) -> sqlx::Result<Option<Map>> {
-    // One transaction, so that a map saved meanwhile can't mix into this one.
     let mut tx = pool.begin().await?;
     let Some((commit, files)) = read_files(&mut tx, team_id, project_id, branch).await? else {
         return Ok(None);
@@ -196,8 +185,6 @@ pub async fn find(
     }))
 }
 
-/// A branch's commit, its files with their symbols, and the text of its text files by path,
-/// all as they were at one moment. Which file uses which is left out: the docs writer has no use for it.
 pub async fn sources(
     pool: &SqlitePool,
     team_id: &str,
@@ -221,7 +208,6 @@ pub async fn sources(
     Ok(Some((commit, files, texts)))
 }
 
-/// A branch's commit and its files with their symbols, in the order of their paths.
 async fn read_files(
     tx: &mut sqlx::SqliteConnection,
     team_id: &str,
@@ -273,8 +259,6 @@ async fn read_files(
     Ok(Some((commit, files)))
 }
 
-/// The pairs of a file and a file it uses. It depends on where each file sits, so it is
-/// worked out when asked for, not kept.
 async fn uses(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,

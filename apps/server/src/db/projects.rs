@@ -7,34 +7,27 @@ use super::new_id;
 pub struct Project {
     pub id: String,
     pub name: String,
-    /// What its tasks are named by, as `SF` in SF-12.
     pub key: String,
-    /// `owner/name` on GitHub.
     pub repo: Option<String>,
     pub branches: Vec<Branch>,
 }
 
-/// A branch a project tracks. Its map is behind while the two commits differ.
 #[derive(Serialize)]
 pub struct Branch {
     #[serde(skip)]
     pub project_id: String,
     pub name: String,
-    /// The latest commit GitHub has.
     pub head_sha: Option<String>,
-    /// The commit the map describes.
     pub commit_sha: Option<String>,
     pub error: Option<String>,
 }
 
-/// A project with a repository and at least one tracked branch.
 pub struct Tracked {
     pub id: String,
     pub team_id: String,
     pub repo: String,
 }
 
-/// A branch whose map is behind `head_sha`.
 pub struct Waiting {
     pub project_id: String,
     pub team_id: String,
@@ -98,7 +91,6 @@ pub async fn create(
     Ok(id)
 }
 
-/// Whether the tracked branches changed; `None` when the team has no such project.
 pub async fn update(
     pool: &SqlitePool,
     team_id: &str,
@@ -108,7 +100,6 @@ pub async fn update(
     repo: Option<&str>,
     branches: &[String],
 ) -> sqlx::Result<Option<bool>> {
-    // It reads before it writes, and SQLite refuses the write if another landed in between.
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let old_repo = sqlx::query_scalar!(
         "SELECT repo FROM projects WHERE team_id = ? AND id = ?",
@@ -129,8 +120,6 @@ pub async fn update(
     )
     .execute(&mut *tx)
     .await?;
-    // Another repository's maps say nothing about this one. The pages stay, since people wrote
-    // in them, without what tied them to the old repository.
     let moved = old_repo.as_deref() != repo;
     if moved {
         sqlx::query!(
@@ -157,8 +146,6 @@ pub async fn update(
     Ok(Some(changed))
 }
 
-/// Makes `names` the project's tracked branches, and returns whether that changed anything.
-/// `reset` forgets every map first.
 async fn track_branches(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,
@@ -211,7 +198,6 @@ pub async fn tracked(pool: &SqlitePool) -> sqlx::Result<Vec<Tracked>> {
     .await
 }
 
-/// Records the branch's latest commit on GitHub, or why it couldn't be learned or mapped.
 pub async fn set_branch_head(
     pool: &SqlitePool,
     project_id: &str,
@@ -244,8 +230,6 @@ pub async fn waiting(pool: &SqlitePool) -> sqlx::Result<Vec<Waiting>> {
     .await
 }
 
-/// The commit a branch's map describes, itself `None` until the branch is first mapped.
-/// `None` when the team has no such project or the project doesn't track the branch.
 pub async fn branch_commit(
     db: impl sqlx::SqliteExecutor<'_>,
     team_id: &str,
@@ -263,7 +247,6 @@ pub async fn branch_commit(
     .await
 }
 
-/// Deletes the project and returns the ids of its files, which the caller removes from the folder.
 pub async fn delete(
     pool: &SqlitePool,
     team_id: &str,
@@ -289,7 +272,6 @@ pub async fn delete(
     Ok(files)
 }
 
-/// The members of a project's team.
 pub async fn people(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<String>> {
     sqlx::query_scalar!(
         "SELECT m.user_id FROM projects p JOIN team_members m ON m.team_id = p.team_id

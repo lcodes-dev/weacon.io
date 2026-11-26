@@ -16,7 +16,6 @@ use crate::{AppState, db, now};
 const CODE_SECONDS: i64 = 10 * 60;
 const RENEW_SECONDS: i64 = 24 * 60 * 60;
 
-/// The web app asks this on every load, so a session in use is renewed here, once a day.
 pub async fn show(State(state): State<AppState>, headers: HeaderMap) -> Result<impl IntoResponse> {
     let setup_needed = !db::users::any_exist(&state.pool).await?;
     let user = signed_in(&state, &headers).await?;
@@ -33,7 +32,6 @@ pub async fn show(State(state): State<AppState>, headers: HeaderMap) -> Result<i
 #[derive(Deserialize)]
 pub struct CodeRequest {
     email: String,
-    /// Present when registering.
     name: Option<String>,
 }
 
@@ -47,7 +45,6 @@ pub async fn send_code(
     }
     let name = request.name.as_deref().map(str::trim);
     let name = name.filter(|name| !name.is_empty());
-    // An unknown email gets the same answer, and no mail.
     if name.is_none() && !db::users::exists(&state.pool, &email).await? {
         return Ok(StatusCode::NO_CONTENT);
     }

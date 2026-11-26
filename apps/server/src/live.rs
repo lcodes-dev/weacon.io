@@ -1,6 +1,3 @@
-//! What changed, told to the browsers that have a page open. Only the topic is told, never
-//! the change: a browser then asks again for what it shows of that topic.
-
 use tokio::sync::broadcast;
 
 use crate::{AppState, db};
@@ -28,11 +25,8 @@ impl Topic {
     }
 }
 
-/// Who is told, and of what.
 pub type News = (Vec<String>, Topic);
 
-/// The one channel every browser's socket listens to. It lives in memory only: a browser
-/// connects again after the server restarts.
 #[derive(Clone)]
 pub struct Live(broadcast::Sender<News>);
 
@@ -66,13 +60,11 @@ pub async fn project(state: &AppState, project_id: &str, topic: Topic) {
     tell(state, people.unwrap_or_default(), topic);
 }
 
-/// Tells a group's members, and nobody else, since only they may know it is there.
 pub async fn group(state: &AppState, group_id: &str) {
     let people = db::groups::people(&state.pool, group_id).await;
     tell(state, people.unwrap_or_default(), Topic::Groups);
 }
 
-/// Tells who may read a chat: its team, or its group, which shows what its agent answers.
 pub async fn chat(state: &AppState, chat_id: &str) {
     let found = db::chats::people(&state.pool, chat_id).await;
     let (people, grouped) = found.unwrap_or_default();

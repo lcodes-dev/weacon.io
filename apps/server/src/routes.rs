@@ -119,7 +119,6 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(async || ApiError::not_found())
         .layer(log)
-        // Added after the layer, so health checks aren't logged.
         .route("/health", get(health::show))
         .with_state(state);
     Router::new().nest("/api", api).fallback(web::serve)

@@ -18,13 +18,11 @@ pub struct Invite {
     pub expires_at: i64,
 }
 
-/// What the person opening an invite link sees.
 #[derive(Serialize)]
 pub struct Invitation {
     pub team_name: String,
     pub invited_by: String,
     pub email: String,
-    /// Whether to offer signing in rather than registering.
     pub has_account: bool,
 }
 
@@ -35,7 +33,6 @@ pub async fn rename(pool: &SqlitePool, team_id: &str, name: &str) -> sqlx::Resul
     Ok(())
 }
 
-/// The owner first, then the members by name.
 pub async fn members(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Member>> {
     sqlx::query_as!(
         Member,
@@ -83,7 +80,6 @@ pub async fn has_member_with_email(
     .await
 }
 
-/// Whether a member was removed, who then leaves the team's groups too. The team's owner never is.
 pub async fn remove_member(pool: &SqlitePool, team_id: &str, user_id: &str) -> sqlx::Result<bool> {
     let removed = sqlx::query!(
         "DELETE FROM team_members WHERE team_id = ? AND user_id = ? AND role = 'member'",
@@ -109,7 +105,6 @@ pub async fn invites(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Invit
     .await
 }
 
-/// Inviting an address again replaces its token and expiry.
 pub async fn save_invite(
     pool: &SqlitePool,
     team_id: &str,
@@ -168,7 +163,6 @@ pub async fn invitation(
     .await
 }
 
-/// Uses the invite up, and gives the team joined, or `None` when the token is gone.
 pub async fn accept_invite(
     pool: &SqlitePool,
     token: &str,

@@ -1,5 +1,3 @@
-//! Cutting pages and scoring their parts, with the real model, which the first run fetches.
-
 use doc_search::{embed, parts, score};
 
 const PAGES: [(&str, &str); 4] = [
@@ -30,12 +28,10 @@ fn a_page_is_cut_at_its_headings() {
         "Sign in\nOpen the sign-in page and type your email.\n\n"
     );
     assert!(cut[1].starts_with("Sign in\n## The link\n") && cut[1].contains("# not a heading"));
-    // A page that starts with a heading has no empty part before it, and an empty page has none.
     assert_eq!(parts(PAGES[1].0, PAGES[1].1).len(), 2);
     assert!(parts("Empty", "\n").is_empty());
 }
 
-/// The part each question finds first, among all the pages' parts.
 fn found(questions: &[&str]) -> Vec<String> {
     let cut: Vec<String> = PAGES
         .iter()
@@ -76,7 +72,6 @@ fn a_question_finds_the_part_about_it() {
 
 #[test]
 fn a_name_written_exactly_comes_first() {
-    // The first is worded like billing; the column's name says where to look.
     let first = found(&[
         "Customers pay for more than seat_count says",
         "What does Seats.php check?",

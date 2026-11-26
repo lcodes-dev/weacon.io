@@ -11,11 +11,8 @@ use crate::live::{self, Topic};
 use crate::writer::Writer;
 use crate::{AppState, db};
 
-/// At most this many pages in each of "How it works" and "How it's built".
 const PAGES: usize = 8;
 
-/// Writes the docs of a branch: as pages when the project has none, else as proposals to
-/// change them. `run` is the run that holds the project while it writes.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WriteDocs {
     pub team_id: String,
@@ -83,7 +80,6 @@ impl WriteDocs {
         let overview = overview(state, &writer, &sources, &existing, &pages).await?;
         pages.insert(0, overview);
 
-        // A page whose text would stay as it is needs no proposal.
         let text = |id: &String| {
             existing
                 .iter()
@@ -103,7 +99,6 @@ impl WriteDocs {
         for doc in existing.iter().filter(|doc| !is_planned(doc)) {
             let files: Vec<String> = serde_json::from_str(&doc.files).unwrap_or_default();
             let gone = files.iter().all(|path| !sources.texts.contains_key(path));
-            // A page a person made has no files, and is never proposed for removal.
             if !files.is_empty() && gone {
                 pages.push(removal(doc));
             }
@@ -134,8 +129,6 @@ impl WriteDocs {
         docs::progress(state, &self.project_id, self.run, message).await
     }
 
-    /// Asks the writer which pages to write, from which files, and which folders aren't the
-    /// project's own code.
     async fn plan(
         &self,
         state: &AppState,
@@ -164,7 +157,6 @@ impl WriteDocs {
     }
 }
 
-/// The overview, written again from the pages as they would be.
 async fn overview(
     state: &AppState,
     writer: &Writer,

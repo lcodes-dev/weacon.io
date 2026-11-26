@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::{AppState, chats, db, live};
 
-/// Sent once the request that asked for the turn is answered, so that a browser that goes
-/// away in the middle of its request doesn't leave a turn nobody was told of.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct StartTurn {
     pub machine_id: String,

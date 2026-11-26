@@ -1,5 +1,3 @@
-//! What the docs writer is told, for each thing it writes.
-
 pub const WRITING: &str = "\
 Write for a person. Use plain sentences and short paragraphs, explain a term the first time you \
 use it, and start with what the reader most needs. Leave out anything that only restates the code.

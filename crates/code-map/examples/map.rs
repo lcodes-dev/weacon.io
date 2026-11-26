@@ -1,10 +1,7 @@
-//! Prints which file uses which in a folder on this computer: `cargo run -p code-map --example map -- ../some/project`.
-//! With a second argument, only the lines to and from paths that hold it.
 use std::path::Path;
 
 use code_map::{File, link, read};
 
-/// Folders too large to be worth walking.
 const SKIPPED: [&str; 4] = [".git", "node_modules", "target", "vendor"];
 
 fn walk(root: &Path, folder: &Path, files: &mut Vec<File>) {

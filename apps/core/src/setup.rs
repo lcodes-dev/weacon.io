@@ -1,5 +1,3 @@
-//! What a person does once at a terminal: pairing this machine, and setting up a server of theirs.
-
 use std::io::Write;
 use std::process::Command;
 
@@ -14,7 +12,6 @@ const OS: &str = if cfg!(target_os = "macos") {
     "linux"
 };
 
-/// Asks a question at the terminal, and takes anything but a yes as a no.
 fn yes(question: &str) -> bool {
     print!("{question} [y/N] ");
     std::io::stdout().flush().ok();
@@ -23,9 +20,7 @@ fn yes(question: &str) -> bool {
     matches!(answer.trim(), "y" | "Y" | "yes")
 }
 
-/// Sends JSON to the server and returns its JSON answer, or ends with what the server said.
 async fn post(address: &str, token: Option<&str>, body: Value) -> Value {
-    // A redirect could lead somewhere that isn't encrypted, so none is followed.
     let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
     let client = client.build().unwrap_or_else(|error| fail(error));
     let request = client.post(address).json(&body);
@@ -45,7 +40,6 @@ async fn post(address: &str, token: Option<&str>, body: Value) -> Value {
     answer
 }
 
-/// Pairs this machine with the Weacon at `server`, with a code from its Machines page.
 pub async fn pair(server: &str, code: &str) {
     let server = server.trim_end_matches('/');
     if !private(server) {
@@ -61,13 +55,11 @@ pub async fn pair(server: &str, code: &str) {
     let folder = home();
     let file = folder.join("core.json");
     let kept = std::fs::create_dir_all(&folder).and_then(|()| {
-        // The token is this machine's key to Weacon, so only its user may read it.
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         let text = serde_json::to_string(&paired).expect("a pairing is JSON");
-        // Written beside and moved into place, so the file is never half a pairing.
         let new = folder.join("core.json.new");
         options.open(&new)?.write_all(text.as_bytes())?;
         std::fs::rename(new, &file)
@@ -112,7 +104,6 @@ pub async fn say_agents() {
     }
 }
 
-/// Runs a command with this terminal, and ends if it fails.
 fn must(program: &str, args: &[&str], failed: &str) {
     let ended = Command::new(program).args(args).status();
     if !ended.is_ok_and(|ended| ended.success()) {
@@ -120,7 +111,6 @@ fn must(program: &str, args: &[&str], failed: &str) {
     }
 }
 
-/// Sets up a server the person reaches over SSH: copies the core there, pairs it and keeps it running.
 pub async fn add(paired: &Paired, host: &str) {
     let system = ["uname", "-sm"];
     let here = printed(system[0], &system[1..]);
@@ -155,7 +145,6 @@ pub async fn add(paired: &Paired, host: &str) {
         &["-q", &core, &format!("{host}:.local/bin/weacon-core")],
         "The core couldn't be copied.",
     );
-    // A code for the same person this machine belongs to.
     let code = post(
         &format!("{}/api/machines/codes", paired.server),
         Some(&paired.token),
@@ -163,7 +152,6 @@ pub async fn add(paired: &Paired, host: &str) {
     )
     .await;
     let code = code["code"].as_str().unwrap_or_default();
-    // With a terminal, so that the core there can ask about installing the agents.
     must(
         "ssh",
         &[

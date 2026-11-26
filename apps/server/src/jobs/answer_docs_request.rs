@@ -8,7 +8,6 @@ use crate::error::{ApiError, Result};
 use crate::live::{self, Topic};
 use crate::{AppState, db};
 
-/// Finds the page a person's request is about, writes it, and saves the result as a proposal.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AnswerDocsRequest {
     pub team_id: String,
@@ -23,12 +22,9 @@ pub struct Request {
     pub text: String,
     pub page: Option<String>,
     pub branch: String,
-    /// A request they made before and the proposal they rejected, to do better this time.
     pub earlier: Option<String>,
 }
 
-/// Which page a request is about. A writer leaves out, or gives as null, what it has nothing
-/// to say about, such as the set of a page that exists.
 #[derive(Deserialize)]
 struct Target {
     page: Option<String>,

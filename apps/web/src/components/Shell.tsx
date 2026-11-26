@@ -16,7 +16,6 @@ import { TasksPage } from "../routes/ProjectTasks"
 import { TeamSettings } from "../routes/TeamSettings"
 import { useChats, useGroups, useMachines, useMailConfig, useProjects, useTeamDetails } from "../queries"
 
-// The docs page is the largest, so it is fetched when first opened.
 const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
 
 export function Shell({ user }: { user: User }) {
@@ -24,7 +23,6 @@ export function Shell({ user }: { user: User }) {
   const team = user.teams.find((team) => team.id === teamId) ?? user.teams[0]
   const live = useLive()
   const [menuOpen, setMenuOpen] = useState(false)
-  // On a phone the sidebar is a drawer, except with no page open, where it is the page.
   const home = useLocation().pathname === "/"
   const sidebarOnPhone = home
     ? "phone:w-full phone:border-0"
@@ -118,7 +116,6 @@ function Logo() {
   )
 }
 
-/** Tasks and Docs, of the project that is open or else the first. */
 function Modules({ team }: { team: Team }) {
   const projects = useProjects(team)
   const openId = useMatch("/projects/:id/*")?.params.id
@@ -161,7 +158,6 @@ function Projects({ team }: { team: Team }) {
   )
 }
 
-/** The groups you are in, the one written in last first, each with a dot while it has something unread. */
 function Groups({ team, user }: { team: Team; user: User }) {
   const groups = useGroups(team)
   return (
@@ -185,7 +181,6 @@ function Groups({ team, user }: { team: Team; user: User }) {
   )
 }
 
-/** The team's chats: your own, then your teammates', which you can read. */
 function Chats({ team, user }: { team: Team; user: User }) {
   const chats = useChats(team)
   const list = (title: string, chats: Chat[], whose: boolean) => (
@@ -252,13 +247,11 @@ function ServerStatus({ up }: { up: boolean }) {
   return <span title={up ? "Server connected" : "Server unreachable"} className={`size-[7px] rounded-full ${up ? "bg-ok" : "bg-acc"}`} />
 }
 
-/** The first letters of the first two words, as in "NW" for Northwind or "AD" for Ada Dorn. */
 function initials(name: string) {
   const words = name.trim().split(/\s+/)
   return (words.length > 1 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase()
 }
 
-/** The open team, and the switch to another while you are in several. */
 function TeamCard({ user, team, openTeam }: { user: User; team: Team; openTeam: (id: string) => void }) {
   const details = useTeamDetails(team)
   const people = details.data?.members.length
@@ -289,7 +282,6 @@ function Account({ user }: { user: User }) {
   const queryClient = useQueryClient()
   const signOut = useMutation({
     mutationFn: () => api("POST", "/sign-out"),
-    // Everything remembered was the last account's.
     onSuccess: () => queryClient.resetQueries(),
   })
   return (

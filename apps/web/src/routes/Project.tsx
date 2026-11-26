@@ -7,7 +7,6 @@ import { api, type Project, type RepoBranches, type Team } from "../api"
 import { CodeMap } from "../components/CodeMap"
 import { useGithub, useProjects } from "../queries"
 
-/** The page at `/projects/{id}`, where the id `new` makes a project. */
 export function ProjectPage({ team }: { team: Team }) {
   const { id } = useParams()
   const projects = useProjects(team)
@@ -26,7 +25,6 @@ function waiting(branch: Project["branches"][number]) {
   return !branch.error && (!branch.commit_sha || branch.commit_sha !== branch.head_sha)
 }
 
-/** A key for a project of this name: its words' first letters, or the first two of its only word. */
 function suggested(name: string) {
   const words = name.toUpperCase().match(/[A-Z0-9]+/g) ?? []
   return words.length > 1 ? words.map((word) => word[0]).join("").slice(0, 5) : (words[0] ?? "").slice(0, 2)
@@ -36,11 +34,9 @@ function Form({ team, project }: { team: Team; project?: Project }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [name, setName] = useState(project?.name ?? "")
-  // Unset means the one suggested from the name.
   const [typedKey, setKey] = useState(project?.key)
   const key = typedKey ?? suggested(name)
   const [repo, setRepo] = useState(project?.repo ?? "")
-  // Unset means the repository's default branch.
   const [chosen, setChosen] = useState(project?.repo ? project.branches.map((branch) => branch.name) : undefined)
   const path = `/teams/${team.id}/projects`
   const github = useGithub(team)
@@ -71,7 +67,6 @@ function Form({ team, project }: { team: Team; project?: Project }) {
     },
   })
   const error = save.error ?? remove.error ?? github.error ?? repoBranches.error
-  // A saved repository stays in the list even when the app no longer reaches it.
   const repos = new Set([...(github.data?.repos ?? []), ...(project?.repo ? [project.repo] : [])])
 
   return (
@@ -153,7 +148,6 @@ function Form({ team, project }: { team: Team; project?: Project }) {
         </fieldset>
       )}
       <div className="flex gap-2">
-        {/* Saved without its branches listed, a repository would track none. */}
         <button className="btn btn-primary" disabled={save.isPending || (!!repo && !chosen && !repoBranches.data)}>
           {project ? "Save" : "Create"}
         </button>

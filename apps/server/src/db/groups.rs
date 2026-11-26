@@ -10,11 +10,9 @@ pub struct GroupMember {
     pub name: String,
 }
 
-/// Some members of a team and what they write to each other.
 #[derive(Serialize)]
 pub struct Group {
     pub id: String,
-    /// `None` for one called by its other members' names.
     pub name: Option<String>,
     pub project_id: Option<String>,
     pub project: Option<String>,
@@ -22,7 +20,6 @@ pub struct Group {
     pub unread: bool,
 }
 
-/// The groups of a team a person is in, the one written in last first.
 pub async fn list(pool: &SqlitePool, team_id: &str, user_id: &str) -> sqlx::Result<Vec<Group>> {
     sqlx::query_as!(
         Group,
@@ -75,7 +72,6 @@ pub async fn create(
     Ok(id)
 }
 
-/// Names a group, and gives it a project if it has none.
 pub async fn change(
     pool: &SqlitePool,
     id: &str,
@@ -104,8 +100,6 @@ pub async fn join(pool: &SqlitePool, id: &str, user_id: &str) -> sqlx::Result<()
     Ok(())
 }
 
-/// Takes a person out of one group, or out of all of a team's when `id` is `None`. A group
-/// nobody is in any more is deleted with its messages.
 pub async fn leave(
     pool: &SqlitePool,
     team_id: &str,
@@ -135,18 +129,15 @@ pub async fn leave(
 #[derive(Serialize)]
 pub struct GroupMessage {
     pub id: String,
-    /// Who wrote it; `None` once that person's account is gone.
     pub user_id: Option<String>,
     pub user: Option<String>,
     pub text: String,
     pub created_at: i64,
-    /// For an agent's answer: which agent, for the person above, and the chat and machine it worked in.
     pub agent: Option<String>,
     pub chat_id: Option<String>,
     pub machine: Option<String>,
 }
 
-/// A group's messages after the one with id `after`, oldest first.
 pub async fn messages(pool: &SqlitePool, id: &str, after: &str) -> sqlx::Result<Vec<GroupMessage>> {
     sqlx::query_as!(
         GroupMessage,
@@ -162,7 +153,6 @@ pub async fn messages(pool: &SqlitePool, id: &str, after: &str) -> sqlx::Result<
     .await
 }
 
-/// Posts what the team's own agent answered `user_id`.
 pub async fn post_as_weacon(
     pool: &SqlitePool,
     group_id: &str,
@@ -183,7 +173,6 @@ pub async fn post_as_weacon(
     Ok(())
 }
 
-/// Notes that a member has read a group up to its newest message.
 pub async fn read(pool: &SqlitePool, id: &str, user_id: &str) -> sqlx::Result<()> {
     sqlx::query!(
         "UPDATE group_members SET read = (SELECT MAX(id) FROM group_messages WHERE group_id = ?1)
@@ -196,7 +185,6 @@ pub async fn read(pool: &SqlitePool, id: &str, user_id: &str) -> sqlx::Result<()
     Ok(())
 }
 
-/// Adds a member's message to a group, which that member has then read, and gives its id.
 pub async fn write(pool: &SqlitePool, id: &str, user_id: &str, text: &str) -> sqlx::Result<String> {
     let mut tx = pool.begin().await?;
     let message = new_id();
@@ -221,11 +209,9 @@ pub async fn write(pool: &SqlitePool, id: &str, user_id: &str, text: &str) -> sq
     Ok(message)
 }
 
-/// A person's chat with an agent in a group, on a machine that is still theirs.
 pub struct GroupChat {
     pub id: String,
     pub machine_id: String,
-    /// The newest message of the group its agent was told.
     pub told: Option<String>,
 }
 
@@ -248,7 +234,6 @@ pub async fn chat(
     .await
 }
 
-/// Whose agents are working in a group now, each as the person and the agent.
 pub async fn working(pool: &SqlitePool, group_id: &str) -> sqlx::Result<Vec<(String, String)>> {
     let working = sqlx::query!(
         "SELECT u.name, c.agent FROM chats c JOIN users u ON u.id = c.user_id

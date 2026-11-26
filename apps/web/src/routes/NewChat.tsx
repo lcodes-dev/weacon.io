@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from "react-router"
 import { agents, api, type Agent, type Machine, type Team } from "../api"
 import { useMachines, useProjects, useTasks } from "../queries"
 
-/** The page at `/chats/new`: what to ask, of which agent, on which project and machine. */
 export function NewChat({ team }: { team: Team }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -12,12 +11,10 @@ export function NewChat({ team }: { team: Team }) {
   const machines = useMachines()
   const [params] = useSearchParams()
   const [chosen, setChosen] = useState<{ project?: string; branch?: string; agent?: Agent; machine?: string }>({ project: params.get("project") ?? undefined })
-  // Unset means what a chat for a task starts with.
   const [typed, setText] = useState<string>()
   const tasks = useTasks(team, params.get("task") ? chosen.project : undefined)
   const task = tasks.data?.find((task) => task.id === params.get("task"))
 
-  // An agent works in a copy of the repository, so a project without one has nothing to work on.
   const mapped = projects.data?.filter((project) => project.branches.length) ?? []
   const project = mapped.find((project) => project.id === chosen.project) ?? mapped[0]
   const branch = project?.branches.find((branch) => branch.name === chosen.branch) ?? project?.branches[0]
@@ -25,7 +22,6 @@ export function NewChat({ team }: { team: Team }) {
   const agent = chosen.agent ?? (["claude", "codex"] as const).find((agent) => machines.data?.some((machine) => ready(machine, agent))) ?? "claude"
   const able = machines.data?.filter((machine) => ready(machine, agent)) ?? []
   const machine = able.find((machine) => machine.id === chosen.machine) ?? able.find((machine) => machine.connected) ?? able[0]
-  // The agent reads the task itself, so it has the text, the checks and the pages as they are then.
   const brief = task && `Do the task ${project?.key}-${task.number}, "${task.title}". Read it first with your task tool, and tick each of its checks once it is met.`
   const text = typed ?? brief ?? ""
 

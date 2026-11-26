@@ -18,11 +18,9 @@ use tower::ServiceExt;
 use weacon_server::jobs::{self, Job, MapBranches};
 use weacon_server::{AppState, db, router, secrets};
 
-/// Keeps the session cookie, as a browser does.
 struct Client {
     state: AppState,
     cookie: Option<String>,
-    /// Set by signing in: the account and its own team.
     user_id: String,
     team_id: String,
     project_id: String,
@@ -42,7 +40,6 @@ async fn server() -> AppState {
     }
 }
 
-/// Maps the tracked branches now, as the server does every minute.
 async fn map_branches(state: &AppState) {
     jobs_done(state).await;
     jobs::dispatch(state, Job::MapBranches(MapBranches))
@@ -51,7 +48,6 @@ async fn map_branches(state: &AppState) {
     jobs_done(state).await;
 }
 
-/// Waits until every queued job has run.
 async fn jobs_done(state: &AppState) {
     for _ in 0..500 {
         if db::jobs::all(&state.pool).await.unwrap().is_empty() {
@@ -62,7 +58,6 @@ async fn jobs_done(state: &AppState) {
     panic!("the jobs never finished");
 }
 
-/// Stands in for the model that embeds docs: texts that share words come out alike.
 fn by_words(texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
     let embedding = |text: &String| {
         let mut embedding = vec![0.0; 64];
@@ -89,12 +84,10 @@ impl Client {
         }
     }
 
-    /// A path under this client's own team.
     fn team(&self, rest: &str) -> String {
         format!("/api/teams/{}{rest}", self.team_id)
     }
 
-    /// A path under the project a helper made for this client.
     fn project(&self, rest: &str) -> String {
         self.team(&format!("/projects/{}{rest}", self.project_id))
     }
@@ -154,7 +147,6 @@ impl Client {
             .unwrap()
     }
 
-    /// Invites the address to this client's first team and returns the link's token.
     async fn invite(&mut self, email: &str) -> String {
         let (status, _) = self
             .post(&self.team("/invites"), json!({"emails": [email]}))
@@ -163,7 +155,6 @@ impl Client {
         self.token(email).await.unwrap()
     }
 
-    /// With a name, registers.
     async fn sign_in(&mut self, email: &str, name: Option<&str>) -> (StatusCode, Value) {
         let (status, _) = self
             .post("/api/sign-in/code", json!({"email": email, "name": name}))
@@ -195,7 +186,6 @@ async fn unknown_api_path_is_a_json_404() {
     );
 }
 
-// Needs the web app built: `npm run build` in apps/web.
 #[tokio::test]
 async fn unknown_path_serves_the_web_app() {
     let request = Request::get("/chats/42").body(Body::empty()).unwrap();
@@ -292,12 +282,10 @@ async fn asking_for_a_new_code_buys_no_guesses() {
         client.post("/api/sign-in/verify", attempt).await;
     }
 
-    // Within a minute the first code stands.
     let (status, _) = client.post("/api/sign-in/code", request.clone()).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert_eq!(client.code("ada@example.com").await.unwrap(), code);
 
-    // A minute later a new code is made, and the five wrong tries still count against it.
     sqlx::query!("UPDATE sign_in_codes SET expires_at = expires_at - 61")
         .execute(&client.state.pool)
         .await
@@ -391,19 +379,16 @@ async fn the_owner_saves_and_clears_smtp() {
     let (_, saved) = owner.get("/api/config/mail").await;
     assert_eq!(saved["smtp"]["host"], "127.0.0.1");
     assert_eq!(saved["smtp"].get("password"), None);
-    // Nothing listens on that port, so a mail that goes over SMTP fails.
     assert_eq!(
         owner.post("/api/config/mail/test", Value::Null).await.0,
         StatusCode::BAD_GATEWAY
     );
-    // A code whose mail failed doesn't count as asked for, so the next request tries again.
     for _ in 0..2 {
         let request = json!({"email": "ada@example.com"});
         let (status, _) = owner.post("/api/sign-in/code", request).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 
-    // Saving again without a password keeps the saved one.
     let mut without = smtp.clone();
     without.as_object_mut().unwrap().remove("password");
     owner.put("/api/config/mail", without).await;
@@ -473,7 +458,6 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
     let api_key = db::settings::api_key(&state.pool, &state.server_key, &ada.team_id).await;
     assert_eq!(api_key.unwrap().unwrap().0, "sk-ant-secret");
 
-    // A sealed value opens only where it was sealed.
     sqlx::query("UPDATE teams SET writer_key = ? WHERE id = ?")
         .bind(&stored.1)
         .bind(&bob.team_id)
@@ -489,7 +473,6 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
         .await
         .unwrap();
 
-    // The same key opens them again at the next start; a missing or another key stops it.
     assert!(secrets::load(&state.pool, &key_file).await.is_ok());
     let missing = folder.join("missing.key");
     let error = secrets::load(&state.pool, &missing).await.err().unwrap();
@@ -525,7 +508,6 @@ async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
     assert_ne!(stored, "smtp-secret");
     let smtp = db::settings::smtp(&pool, &key).await.unwrap().unwrap();
     assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
-    // A second start seals nothing twice.
     let key = secrets::load(&pool, &folder.join("weacon.key"))
         .await
         .unwrap();
@@ -534,7 +516,6 @@ async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
     std::fs::remove_dir_all(&folder).unwrap();
 }
 
-/// Ada, who owns team 1, and Marco, who has joined it.
 async fn ada_and_marco(state: &AppState) -> (Client, Client) {
     let mut ada = Client::new(state);
     ada.sign_in("ada@example.com", Some("Ada")).await;
@@ -592,7 +573,6 @@ async fn an_invited_person_registers_and_joins() {
     assert_eq!(team["members"][1]["email"], "marco@example.com");
     assert_eq!(team["invites"], json!([]));
 
-    // The link worked once.
     assert_eq!(marco.get(&path).await.0, StatusCode::NOT_FOUND);
     assert_eq!(
         marco.post(&accept, Value::Null).await.0,
@@ -669,13 +649,11 @@ async fn only_the_owner_renames_invites_and_removes() {
         ada.put(&ada.team(""), json!({"name": " "})).await,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    // Marco is already in.
     let invite = json!({"emails": ["marco@example.com"]});
     assert_eq!(
         ada.post(&ada.team("/invites"), invite).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
-    // Marco's own team isn't Ada's to see.
     assert_eq!(ada.get(&marco.team("")).await.0, StatusCode::NOT_FOUND);
     assert_eq!(
         ada.put(&marco.team(""), json!({"name": "Mine"})).await,
@@ -727,7 +705,6 @@ async fn several_addresses_are_invited_at_once_or_none_is() {
     );
     assert_eq!(ada.token("marco@example.com").await, None);
 
-    // An address given twice is invited once.
     let invites = json!({"emails": ["marco@example.com", "lena@example.com", " Lena@Example.com"]});
     assert_eq!(
         ada.post(&ada.team("/invites"), invites).await.0,
@@ -760,30 +737,21 @@ async fn an_expired_invite_is_refused_until_it_is_sent_again() {
     assert_eq!(marco.post(&accept, Value::Null).await.0, StatusCode::OK);
 }
 
-/// The repository `northwind/storefront` on the fake GitHub: its branches and commits.
 #[derive(Clone, Default)]
 struct Repo(Arc<Mutex<RepoState>>);
 
 #[derive(Default)]
 struct RepoState {
-    /// Branch to its latest commit.
     heads: BTreeMap<String, String>,
-    /// Commit to its files, as path and content.
     commits: HashMap<String, Vec<(String, String)>>,
-    /// How many archives were downloaded.
     archives: usize,
-    /// GitHub says its list of files is cut short.
     truncated: bool,
-    /// The archive arrives damaged.
     broken: bool,
-    /// The app was never allowed to write.
     reads_only: bool,
-    /// The pull requests that were opened.
     pulls: Vec<Value>,
 }
 
 impl Repo {
-    /// Makes `commit`, with these files, the latest on the branch.
     fn push(&self, branch: &str, commit: &str, files: &[(&str, &str)]) {
         let mut repo = self.0.lock().unwrap();
         repo.heads.insert(branch.into(), commit.into());
@@ -798,9 +766,7 @@ impl Repo {
     }
 }
 
-/// Starts a GitHub that knows one app, installed on `northwind` with two repositories.
 async fn fake_github() -> (String, Repo) {
-    // The app's calls must carry a token signed with the key GitHub handed out.
     fn signed(headers: &HeaderMap) -> bool {
         let token = headers["authorization"].to_str().unwrap();
         token.strip_prefix("Bearer ").unwrap().split('.').count() == 3
@@ -827,7 +793,6 @@ async fn fake_github() -> (String, Repo) {
             post(
                 async |State(repo): State<Repo>, headers: HeaderMap, Json(scope): Json<Value>| {
                     assert!(signed(&headers));
-                    // A token is asked for what it is needed for, and nothing else.
                     let one = json!(["storefront"]);
                     let token = match (&scope["repositories"], scope["permissions"].to_string()) {
                         (Value::Null, may) if may == r#"{"contents":"read"}"# => {
@@ -992,14 +957,12 @@ async fn members_make_projects_and_only_the_owner_deletes_them() {
     assert_eq!(ada.delete(&ada.project("")).await, StatusCode::NO_CONTENT);
     assert_eq!(ada.get(&ada.team("/projects")).await.1, json!([]));
 
-    // Marco's own team isn't Ada's to see.
     assert_eq!(
         ada.get(&marco.team("/projects")).await.0,
         StatusCode::NOT_FOUND
     );
 }
 
-// On a database file, where requests really run side by side.
 #[tokio::test(flavor = "multi_thread")]
 async fn projects_edited_at_the_same_time_are_all_saved() {
     let file = std::env::temp_dir().join(format!("weacon-test-{}.db", std::process::id()));
@@ -1148,7 +1111,6 @@ const LIB_RS: &str = "pub struct Order;
 pub fn ship(order: Order) {}
 ";
 
-/// Ada's team with its GitHub App, and project 1 tracking `main` of `northwind/storefront`.
 async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
     let mut state = server().await;
     let (address, repo) = fake_github().await;
@@ -1171,7 +1133,6 @@ fn file<'a>(map: &'a Value, path: &str) -> &'a Value {
     files.find(|file| file["path"] == path).unwrap()
 }
 
-/// The names of the symbols the map has for a file.
 fn symbols(map: &Value, path: &str) -> Vec<String> {
     let symbols = file(map, path)["symbols"].as_array().unwrap().iter();
     symbols
@@ -1181,7 +1142,6 @@ fn symbols(map: &Value, path: &str) -> Vec<String> {
 
 #[tokio::test]
 async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
-    // A bundle on one long line defines the name the app calls, and is listed without being read.
     let bundle = format!("function formatPrice() {{}}{}", ";".repeat(5_000));
     let files = [
         ("src/app.ts", APP_TS),
@@ -1220,7 +1180,6 @@ async fn a_tracked_branch_is_mapped_with_symbols_and_uses() {
         map["files"][3]["symbols"][1],
         json!({"name": "total", "kind": "method", "line": 3, "end_line": 5})
     );
-    // The app imports the price file. `init` is defined in two languages and imported from neither.
     assert_eq!(map["uses"], json!([["src/app.ts", "src/price.ts"]]));
 
     assert_eq!(
@@ -1235,11 +1194,9 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
     let (state, mut ada, repo) = mapped_project(&files).await;
     assert_eq!(repo.archives(), 1);
 
-    // Nothing moved, so nothing is mapped.
     map_branches(&state).await;
     assert_eq!(repo.archives(), 1);
 
-    // A commit that only moves a file brings no new content.
     repo.push(
         "main",
         "c2",
@@ -1257,7 +1214,6 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
     let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"].as_array().unwrap().len(), 1);
     assert_eq!(symbols(&map, "app.ts"), ["start"]);
-    // The contents no commit lists any more are forgotten.
     let kept = sqlx::query_scalar!("SELECT COUNT(*) FROM blobs")
         .fetch_one(&state.pool)
         .await
@@ -1275,13 +1231,11 @@ async fn a_file_s_language_follows_its_name() {
     map_branches(&state).await;
     let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"][0]["language"], "Rust");
-    // The content is the same, and is read again as what it now is.
     assert_eq!(symbols(&map, "notes.rs"), ["start"]);
 }
 
 #[tokio::test]
 async fn each_language_is_read_by_its_own_grammar() {
-    // A path, its language, its source and a name the source defines.
     let files = [
         (
             "a.go",
@@ -1380,12 +1334,10 @@ async fn a_component_is_used_where_its_tag_is_written() {
             "Price.vue",
             "<template>\n  <b>{{ shown }}</b>\n</template>\n\n<script setup lang=\"ts\">\nfunction shown() {}\n</script>\n",
         ),
-        // What is commented out isn't there.
         (
             "Cart.vue",
             "<template>\n  <Price />\n  <!-- <Chip /> -->\n</template>\n<!-- <script>function old() {}</script> -->\n",
         ),
-        // The same content under another name is another component.
         ("Row.svelte", "<ul><li><Chip label=\"a\" /></li></ul>\n"),
         (
             "Chip.svelte",
@@ -1406,7 +1358,6 @@ async fn a_component_is_used_where_its_tag_is_written() {
     );
     assert_eq!(symbols(&map, "Cart.vue"), ["Cart"]);
     assert_eq!(symbols(&map, "Row.svelte"), ["Row"]);
-    // A script's line is its line in the whole file.
     assert_eq!(
         file(&map, "Price.vue")["symbols"],
         json!([
@@ -1467,7 +1418,6 @@ async fn each_tracked_branch_has_its_own_map() {
     let (_, dev) = ada.get(&ada.project("/map?branch=dev")).await;
     assert_eq!(main["files"].as_array().unwrap().len(), 2);
     assert_eq!(dev["files"].as_array().unwrap().len(), 2);
-    // The same content at two paths is read once.
     assert_eq!(symbols(&main, "old/price.ts"), ["formatPrice", "init"]);
     assert_eq!(dev["commit"], "d1");
     let (_, projects) = ada.get(&ada.team("/projects")).await;
@@ -1489,7 +1439,6 @@ async fn each_tracked_branch_has_its_own_map() {
         .unwrap();
     assert_eq!(kept, 1);
 
-    // Without a repository there is nothing to map.
     project["repo"] = Value::Null;
     ada.put(&ada.project(""), project).await;
     assert_eq!(
@@ -1498,14 +1447,12 @@ async fn each_tracked_branch_has_its_own_map() {
     );
 }
 
-/// Saves the team's API key and has the API write its docs.
 async fn api_writer(ada: &mut Client, key: &str) {
     ada.put(&ada.team("/key"), json!({"key": key})).await;
     ada.put(&ada.team("/writer"), json!({"kind": "claude_api"}))
         .await;
 }
 
-/// Starts an Anthropic API that plans one "works" and one "built" page, and keeps the prompts it got.
 async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
     let prompts = Arc::new(Mutex::new(Vec::new()));
     let api = Router::new()
@@ -1520,7 +1467,6 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                         let error = json!({"error": {"message": "invalid x-api-key"}});
                         return (StatusCode::UNAUTHORIZED, Json(error));
                     }
-                    // The slow key answers only once a test has put "continue" among the prompts.
                     while key == "slow-key" && !prompts.lock().unwrap().contains(&"continue".into()) {
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
@@ -1535,7 +1481,6 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                     let text = if key == "odd-key" {
                         "} {".to_owned()
                     } else if system.contains("Someone asks for a change") {
-                        // About a page that exists, a writer gives no set and no title.
                         let page = prompt.split("The page they had open is ").nth(1);
                         match page.and_then(|page| page.split(':').next()) {
                             Some(page) => json!({
@@ -1553,7 +1498,6 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                     } else if system.contains("You check one page") {
                         note.to_string()
                     } else if system.contains("Answer with JSON") {
-                        // Prices is planned only while its file is in the repository.
                         let prices = json!({
                             "title": "Prices", "summary": "Formatting prices.",
                             "files": ["src/price.ts", "vendor/lib.ts", "no/such.ts"],
@@ -1566,7 +1510,6 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
                         })
                         .to_string()
                     } else if system.contains("---REASON---") {
-                        // A page that exists is written again; a person's words in it get a note.
                         let page = if prompt.contains("The page as it is now") {
                             "A page, written again."
                         } else {
@@ -1591,7 +1534,6 @@ async fn fake_anthropic() -> (String, Arc<Mutex<Vec<String>>>) {
     (address, prompts)
 }
 
-/// Starts writing project 1's docs from `main` and returns them once the run has ended.
 async fn written_docs(client: &mut Client) -> Value {
     let (status, _) = client
         .post(&client.project("/docs"), json!({"branch": "main"}))
@@ -1600,7 +1542,6 @@ async fn written_docs(client: &mut Client) -> Value {
     settled_docs(client).await
 }
 
-/// Project 1's docs, once no run is writing them and no page is being checked.
 async fn settled_docs(client: &mut Client) -> Value {
     let ended = async {
         loop {
@@ -1616,7 +1557,6 @@ async fn settled_docs(client: &mut Client) -> Value {
     tokio::time::timeout(patience, ended).await.unwrap()
 }
 
-/// Ada's mapped project with docs, and a new run held up at the slow writer's first answer.
 async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
     let (_, mut ada, _) =
         mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
@@ -1638,18 +1578,15 @@ async fn docs_with_a_run_held_up() -> (Client, Arc<Mutex<Vec<String>>>) {
         ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::ACCEPTED
     );
-    // The run is held up once it has asked for its plan.
     while ada.get(&ada.project("/docs")).await.1["message"] != "Planning the pages" {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     (ada, prompts)
 }
 
-/// Lets the held-up call return. The run has lost its project, so it asks the writer for nothing more.
 async fn let_the_run_go_on(prompts: &Mutex<Vec<String>>) {
     prompts.lock().unwrap().push("continue".into());
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    // The outline it was asked for, and the word above.
     assert_eq!(prompts.lock().unwrap().len(), 2);
 }
 
@@ -1661,7 +1598,6 @@ async fn changing_the_repository_keeps_the_pages_and_stops_a_run_under_way() {
         ada.put(&ada.project(""), project).await,
         StatusCode::NO_CONTENT
     );
-    // People may have written in the pages, so they stay, without what tied them to the old repository.
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(
         (&docs["state"], &docs["branch"], &docs["commit"]),
@@ -1720,7 +1656,6 @@ async fn a_shared_link_shows_a_copy_of_the_user_docs_to_anyone() {
     assert_eq!(listed[0]["token"], token);
     assert_eq!(listed[0]["created_by"], "Ada");
 
-    // Without a session, and still the same after the docs are deleted with the repository.
     let public = format!("/api/shares/{token}");
     let mut anyone = Client::new(&state);
     let (status, shared) = anyone.get(&public).await;
@@ -1756,7 +1691,6 @@ async fn deleting_a_project_ends_its_shared_links() {
     );
 }
 
-/// Ada's mapped project with the docs a run wrote: an overview, "Buy" and "Prices".
 async fn project_with_docs() -> (AppState, Client) {
     let (state, mut ada, _) =
         mapped_project(&[("src/app.ts", APP_TS), ("src/price.ts", PRICE_TS)]).await;
@@ -1780,7 +1714,6 @@ async fn a_member_edits_a_page_and_every_text_stays_in_its_history() {
     assert_eq!(docs["pages"][1]["title"], "Buying");
     assert_eq!(docs["pages"][1]["markdown"], "By hand.");
 
-    // An edit that started from the text before is refused, and changes nothing.
     assert_eq!(ada.put(&page, edit).await, StatusCode::CONFLICT);
     let untitled = json!({"title": " ", "markdown": "", "version": docs["pages"][1]["version"]});
     assert_eq!(
@@ -1853,7 +1786,6 @@ async fn a_member_adds_orders_and_deletes_pages() {
     assert_eq!(titles(&mut ada).await.1, ["Overview", "Buy", "Prices"]);
 }
 
-/// Sends `bytes` as a file of Ada's project, and returns the answer.
 async fn upload(client: &Client, path: &str, bytes: &[u8]) -> (StatusCode, Value) {
     let request = Request::post(path)
         .header(COOKIE, client.cookie.as_deref().unwrap())
@@ -1865,7 +1797,6 @@ async fn upload(client: &Client, path: &str, bytes: &[u8]) -> (StatusCode, Value
     (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
 }
 
-/// The status, media type, disposition and bytes that `path` answers with, asked without a session.
 async fn fetched(state: &AppState, path: &str) -> (StatusCode, String, String, Vec<u8>) {
     let request = Request::get(path).body(Body::empty()).unwrap();
     let response = router(state.clone()).oneshot(request).await.unwrap();
@@ -1905,7 +1836,6 @@ async fn a_file_is_kept_for_its_team_and_served_by_a_link_whose_page_names_it() 
     let shown = shown["id"].as_str().unwrap().to_owned();
     let (_, unshown) = upload(&ada, &files, png).await;
     let unshown = unshown["id"].as_str().unwrap();
-    // Anything that isn't an image is kept as an attachment, under a name made plain.
     let named = format!("{files}?name=a%22b%2Fdrawing.svg");
     let (_, attached) = upload(&ada, &named, svg).await;
     assert_eq!(attached["image"], false);
@@ -1919,7 +1849,6 @@ async fn a_file_is_kept_for_its_team_and_served_by_a_link_whose_page_names_it() 
         StatusCode::UNAUTHORIZED
     );
 
-    // Only what a shared page names can be had through the link.
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     let buy = &docs["pages"][1];
     let page = ada.project(&format!("/docs/pages/{}", buy["id"].as_str().unwrap()));
@@ -1934,14 +1863,12 @@ async fn a_file_is_kept_for_its_team_and_served_by_a_link_whose_page_names_it() 
         (disposition.as_str(), bytes.as_slice()),
         ("inline", &png[..])
     );
-    // A browser that has the file asks before using its copy, and is told the copy is good.
     let again = Request::get(format!("{public}/{shown}"))
         .header(IF_NONE_MATCH, format!("\"{shown}\""))
         .body(Body::empty())
         .unwrap();
     let answer = router(state.clone()).oneshot(again).await.unwrap();
     assert_eq!(answer.status(), StatusCode::NOT_MODIFIED);
-    // An attachment is downloaded and never shown, whatever it holds.
     let (status, kind, disposition, bytes) = fetched(&state, &format!("{public}/{attached}")).await;
     assert_eq!(
         (status, kind.as_str()),
@@ -1973,7 +1900,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     ada.put(&page, edit).await;
     let before = settled_docs(&mut ada).await;
 
-    // The pages stay as they are. The overview would come out the same, so it has no proposal.
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["pages"], before["pages"]);
     let proposals = docs["proposals"].as_array().unwrap();
@@ -1987,7 +1913,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     assert_eq!(bought["base"], before["pages"][1]["version"]);
     assert_eq!(bought["markdown"], "A page, written again.");
     assert_eq!(bought["reason"], "The code changed.");
-    // Only the page a person edited gets a note on their words.
     assert_eq!(bought["notes"][0]["quote"], "By hand.");
     assert_eq!(proposals[1]["notes"], json!([]));
 
@@ -2000,7 +1925,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(eve.delete(&proposal(bought)).await, StatusCode::NOT_FOUND);
 
-    // Accepted from a view of the page as it was before the edit, nothing happens and the proposal stays.
     let stale = json!({"version": buy["version"]});
     let (status, _) = ada.post(&proposal(bought), stale).await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -2008,7 +1932,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
     assert_eq!(docs["pages"], before["pages"]);
     assert_eq!(docs["proposals"].as_array().unwrap().len(), 2);
 
-    // Accepted whole, the text is the writer's; with some changes left out, the person's.
     let seen = json!({"version": before["pages"][2]["version"]});
     let (status, _) = ada.post(&proposal(&proposals[1]), seen).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -2029,7 +1952,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
         .await;
     assert_eq!(versions[0]["author"], Value::Null);
 
-    // A page whose files left the repository is proposed for removal, and a rejected proposal changes nothing.
     repo.push("main", "c2", &[("src/app.ts", APP_TS)]);
     map_branches(&state).await;
     let docs = written_docs(&mut ada).await;
@@ -2044,7 +1966,6 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
         ada.delete(&proposal(other.unwrap())).await,
         StatusCode::NO_CONTENT
     );
-    // A page keeps the commit its text was written from, whatever a later run looked at.
     assert_eq!(docs["commit"], "c2");
     assert_eq!(docs["pages"][1]["commit"], "c1");
     let seen = json!({"version": docs["pages"][2]["version"]});
@@ -2099,7 +2020,6 @@ async fn a_request_is_answered_with_one_proposal() {
     assert_eq!(docs["pages"][3]["files"], json!(["src/app.ts"]));
     assert_eq!(docs["pages"][3]["commit"], "c1");
 
-    // A request made with a page open is about that page.
     let buy = docs["pages"][1].clone();
     let request = json!({"text": "Say more", "branch": "main", "page": buy["id"]});
     assert_eq!(ada.post(&requests, request).await.0, StatusCode::ACCEPTED);
@@ -2141,7 +2061,6 @@ async fn a_person_s_edit_is_checked_against_the_code() {
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(docs["pages"][1]["notes"], json!([]));
 
-    // Words that look like the line a run once put under a page are part of the text, and shared whole.
     let text = "By hand.\n\nWritten from: memory.\n\nAnd more.";
     let edit = json!({"title": "Buy", "markdown": text, "version": docs["pages"][1]["version"]});
     ada.put(&page, edit).await;
@@ -2149,7 +2068,6 @@ async fn a_person_s_edit_is_checked_against_the_code() {
     let public = format!("/api/shares/{}", share["token"].as_str().unwrap());
     assert_eq!(ada.get(&public).await.1["pages"][0]["markdown"], text);
 
-    // A page a person made is checked too, against the files the writer says it is about.
     let new = json!({"section": "works", "title": "Returns"});
     let (_, added) = ada.post(&ada.project("/docs/pages"), new).await;
     let page = ada.project(&format!("/docs/pages/{}", added["id"].as_str().unwrap()));
@@ -2201,14 +2119,12 @@ async fn the_team_owner_saves_its_api_key_and_chooses_the_docs_writer() {
         StatusCode::FORBIDDEN
     );
     assert_eq!(marco.put(&writer, api.clone()).await, StatusCode::FORBIDDEN);
-    // Marco owns team 2, and may have its docs written on the machines of whoever starts a run.
     assert_eq!(
         marco
             .put(&marco.team("/writer"), json!({"kind": "codex"}))
             .await,
         StatusCode::NO_CONTENT
     );
-    // The API writes the docs only once the team has a key, which is never read back.
     assert_eq!(
         ada.put(&writer, api.clone()).await,
         StatusCode::UNPROCESSABLE_ENTITY
@@ -2232,7 +2148,6 @@ async fn the_team_owner_saves_its_api_key_and_chooses_the_docs_writer() {
         )
     );
 
-    // The key stays while the docs are written with it, and when they are written elsewhere.
     assert_eq!(ada.delete(&key).await, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(
         ada.put(&writer, json!({"kind": "codex"})).await,
@@ -2263,7 +2178,6 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     ada.state.anthropic_api = address;
     let start = json!({"branch": "main"});
 
-    // Nothing to write with, and nothing to write from.
     assert_eq!(
         ada.post(&ada.project("/docs"), start).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
@@ -2300,7 +2214,6 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
         ]
     );
     assert_eq!(docs["pages"][0]["markdown"], "The overview.");
-    // What a page was written from is kept beside its text, not in it.
     let buy = &docs["pages"][1];
     assert_eq!(buy["markdown"], "A page, citing `src/price.ts:1`.");
     assert_eq!(
@@ -2308,7 +2221,6 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
         (&json!(["src/app.ts"]), &json!([]), &json!("c1"))
     );
 
-    // The outline, one prompt per page with only that page's own files, then the overview.
     let asked = prompts.lock().unwrap().clone();
     assert_eq!(asked.len(), 4);
     assert!(asked[0].contains("src/price.ts (TypeScript, 4 lines)\n  function formatPrice :1"));
@@ -2317,7 +2229,6 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     assert!(!asked[2].contains("=== vendor/lib.ts ==="));
     assert!(asked[3].contains("=== Prices ==="));
 
-    // Writing again replaces the pages; a failed run keeps them.
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
     api_writer(&mut ada, "bad-key").await;
@@ -2330,7 +2241,6 @@ async fn docs_are_written_in_three_stages_from_the_project_s_own_files() {
     assert_eq!(docs["pages"].as_array().unwrap().len(), 3);
 }
 
-/// The server on a port of its own, for what needs a connection that stays open.
 async fn listening(state: &AppState) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap().to_string();
@@ -2341,7 +2251,6 @@ async fn listening(state: &AppState) -> String {
 
 type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// Opens a WebSocket at `path` with one header, or gives the status it was refused with.
 async fn socket(
     address: &str,
     path: &str,
@@ -2350,7 +2259,6 @@ async fn socket(
     socket_from("http://weacon.test", address, path, header).await
 }
 
-/// The same, from a page at `origin`, as a browser says where a page came from.
 async fn socket_from(
     origin: &str,
     address: &str,
@@ -2370,7 +2278,6 @@ async fn socket_from(
     }
 }
 
-/// The next message of a socket as JSON, or `None` once it is closed.
 async fn heard(socket: &mut Socket) -> Option<Value> {
     let patience = std::time::Duration::from_secs(10);
     loop {
@@ -2388,7 +2295,6 @@ async fn said(socket: &mut Socket, message: Value) {
     socket.send(text).await.unwrap();
 }
 
-/// Stands in for a core: connects with a machine's token and says what agents it has.
 async fn core(address: &str, token: &str, ready: &str) -> Result<Socket, StatusCode> {
     let bearer = (AUTHORIZATION, format!("Bearer {token}"));
     let mut socket = socket(address, "/api/machines/connect", &bearer).await?;
@@ -2398,7 +2304,6 @@ async fn core(address: &str, token: &str, ready: &str) -> Result<Socket, StatusC
     Ok(socket)
 }
 
-/// Pairs a machine for whoever the client is, and returns its token.
 async fn paired(client: &mut Client, name: &str) -> String {
     let (status, code) = client.post("/api/machines/codes", Value::Null).await;
     assert_eq!(status, StatusCode::OK);
@@ -2411,7 +2316,6 @@ async fn paired(client: &mut Client, name: &str) -> String {
     machine["token"].as_str().unwrap().to_owned()
 }
 
-/// The client's machines, once the first of them is connected or not, and its first agent ready or not, as asked.
 async fn machines(client: &mut Client, connected: bool, ready: Option<&str>) -> Value {
     for _ in 0..200 {
         let (_, machines) = client.get("/api/machines").await;
@@ -2440,7 +2344,6 @@ async fn a_machine_is_paired_with_a_code_once_and_is_only_its_owner_s() {
     let (status, machine) = nobody.post("/api/machines", pairing.clone()).await;
     assert_eq!(status, StatusCode::OK);
     let token = machine["token"].as_str().unwrap().to_owned();
-    // A code works once, and for ten minutes.
     let (status, _) = nobody.post("/api/machines", pairing).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let old = sqlx::query!(
@@ -2464,7 +2367,6 @@ async fn a_machine_is_paired_with_a_code_once_and_is_only_its_owner_s() {
     let machine = format!("/api/machines/{}", laptop["id"].as_str().unwrap());
     assert_eq!(marco.delete(&machine).await, StatusCode::NOT_FOUND);
 
-    // A core gets a code for its own machine's owner, which is how it sets up a server of theirs.
     let request = Request::post("/api/machines/codes")
         .header(AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -2480,7 +2382,6 @@ async fn a_machine_is_paired_with_a_code_once_and_is_only_its_owner_s() {
     let (_, listed) = ada.get("/api/machines").await;
     assert_eq!(listed[1]["name"], "ada-box");
 
-    // A code a machine asked for goes with that machine.
     let request = Request::post("/api/machines/codes")
         .header(AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
@@ -2522,7 +2423,6 @@ async fn a_core_connects_says_what_it_has_and_is_seen_until_it_leaves() {
     let listed = machines(&mut ada, false, None).await;
     assert!(listed[0]["seen_at"].is_i64());
 
-    // A removed machine's core is cut off, and refused when it comes back.
     let mut connected = core(&address, &token, "signed_in").await.unwrap();
     machines(&mut ada, true, None).await;
     let machine = format!("/api/machines/{}", listed[0]["id"].as_str().unwrap());
@@ -2534,7 +2434,6 @@ async fn a_core_connects_says_what_it_has_and_is_seen_until_it_leaves() {
     );
 }
 
-/// Answers what a stand-in core is asked, as the docs writer's answers go.
 fn answered(ask: &Value) -> Value {
     let plan = json!({
         "left_out": [], "works": [],
@@ -2555,7 +2454,6 @@ async fn docs_are_written_on_a_machine_of_whoever_starts_the_run() {
     ada.put(&ada.team("/writer"), json!({"kind": "claude_code"}))
         .await;
 
-    // Without a machine nothing is asked of anyone.
     let docs = written_docs(&mut ada).await;
     assert_eq!(docs["state"], "failed");
     assert_eq!(
@@ -2585,7 +2483,6 @@ async fn docs_are_written_on_a_machine_of_whoever_starts_the_run() {
         (&json!("ask"), &json!("claude"))
     );
 
-    // The core goes away before it answers. Back again, it is asked the same and its answer is taken.
     laptop.close(None).await.unwrap();
     machines(&mut ada, false, None).await;
     let mut laptop = core(&address, &token, "signed_in").await.unwrap();
@@ -2621,7 +2518,6 @@ async fn what_is_asked_of_a_machine_is_its_own_and_ends_with_it() {
     let hers = paired(&mut eve, "Eve's laptop").await;
     let address = listening(&state).await;
 
-    // A core that connects a second time takes the connection, and the first is told to stop.
     let mut first = core(&address, &token, "signed_in").await.unwrap();
     machines(&mut ada, true, Some("signed_in")).await;
     let mut laptop = core(&address, &token, "signed_in").await.unwrap();
@@ -2638,7 +2534,6 @@ async fn what_is_asked_of_a_machine_is_its_own_and_ends_with_it() {
         StatusCode::ACCEPTED
     );
     let ask = heard(&mut laptop).await.unwrap();
-    // Someone else's core can't answer for Ada's, even knowing what was asked.
     let mut other = core(&address, &hers, "signed_in").await.unwrap();
     said(&mut other, answered(&ask)).await;
     assert_eq!(
@@ -2648,7 +2543,6 @@ async fn what_is_asked_of_a_machine_is_its_own_and_ends_with_it() {
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     assert_eq!(docs["state"], "running");
 
-    // Removing the machine ends the run at once, with nothing left waiting for it.
     let listed = ada.get("/api/machines").await.1;
     let machine = format!("/api/machines/{}", listed[0]["id"].as_str().unwrap());
     assert_eq!(ada.delete(&machine).await, StatusCode::NO_CONTENT);
@@ -2672,7 +2566,6 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
     );
     let hers = (COOKIE, ada.cookie.clone().unwrap());
 
-    // Not while the machine is away, not for someone else, and not for an agent there isn't.
     assert_eq!(
         socket(&address, &terminal, &hers).await.err(),
         Some(StatusCode::UNPROCESSABLE_ENTITY)
@@ -2684,7 +2577,6 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
         socket(&address, &terminal, &his).await.err(),
         Some(StatusCode::NOT_FOUND)
     );
-    // Not from a page of another site, though the browser sends her cookie along.
     let elsewhere = socket_from("http://evil.test", &address, &terminal, &hers).await;
     assert_eq!(elsewhere.err(), Some(StatusCode::FORBIDDEN));
     let shell = terminal.replace("claude", "bash");
@@ -2716,7 +2608,6 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
     let seen = json!({"type": "data", "data": "T3BlbiB0aGlzIGxpbms="});
     assert_eq!(heard(&mut browser).await.unwrap(), seen);
 
-    // The sign-in's command ends, and so does the terminal; the core is told it is closed.
     said(
         &mut laptop,
         json!({"type": "terminal.close", "agent": "claude"}),
@@ -2728,7 +2619,6 @@ async fn a_sign_in_s_terminal_is_passed_between_the_owner_s_browser_and_the_core
     drop(socket(&address, &terminal, &hers).await.unwrap());
 }
 
-/// The chat at `path`, once its turn is running or not, as asked.
 async fn chat(client: &mut Client, path: &str, running: bool) -> Value {
     for _ in 0..200 {
         let (_, chat) = client.get(path).await;
@@ -2740,7 +2630,6 @@ async fn chat(client: &mut Client, path: &str, running: bool) -> Value {
     panic!("the chat never became running: {running}");
 }
 
-/// Waits until the chat at `path` shows events of these kinds.
 async fn shows(client: &mut Client, path: &str, expected: &[&str]) {
     for _ in 0..200 {
         let (_, chat) = client.get(path).await;
@@ -2774,7 +2663,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     paired(&mut marco, "Marco's laptop").await;
     let his = marco.get("/api/machines").await.1[0]["id"].clone();
 
-    // A chat needs a machine of one's own, a mapped branch and something to do.
     let start = |machine: &Value, branch: &str, text: &str| json!({"agent": "claude", "machine_id": machine, "branch": branch, "text": text});
     let chats = ada.project("/chats");
     for refused in [
@@ -2786,7 +2674,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    // Started while the machine is away, the turn waits for it.
     let text = "Add a returns link\nto the footer";
     let (status, started) = ada.post(&chats, start(&machine, "main", text)).await;
     assert_eq!(status, StatusCode::OK);
@@ -2806,7 +2693,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     assert_eq!(tools["url"], "http://weacon.test/api/tools");
     assert_eq!(tools["token"].as_str().unwrap().len(), 64);
 
-    // What the machine tells is kept in its order: one that comes early or twice is left out.
     let event = |number: u64, event: Value| json!({"type": "event", "chat": id, "number": number, "event": event});
     let reading = json!({"kind": "did", "deed": "read", "what": "src/Footer.tsx"});
     said(&mut laptop, event(2, reading.clone())).await;
@@ -2821,7 +2707,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     said(&mut laptop, event(2, reading.clone())).await;
     said(&mut laptop, event(2, reading)).await;
     let writing = json!({"type": "event", "chat": id, "number": 1, "event": {"kind": "said", "text": "Not mine."}});
-    // Another person's machine can't write into the chat.
     let mut other = core(
         &address,
         &paired(&mut marco, "Marco's server").await,
@@ -2830,13 +2715,10 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     .await;
     said(other.as_mut().unwrap(), writing).await;
 
-    // While the agent works, nothing more can be asked.
     let more = ada.team(&format!("/chats/{id}/messages"));
     let (status, _) = ada.post(&more, json!({"text": "And in the menu"})).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // A core that comes back is told how much the server has, so it can tell the rest. It goes
-    // once the server has what it said, since a socket closed with unread messages loses them.
     shows(&mut ada, &path, &["asked", "said", "did"]).await;
     drop(laptop);
     machines(&mut ada, false, None).await;
@@ -2861,12 +2743,10 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
         (&json!(true), &json!(true))
     );
     assert_eq!(shown["events"][3]["changed"][0]["added"], 12);
-    // The web app asks for what came after the last event it has.
     let second = shown["events"][1]["id"].as_str().unwrap();
     let (_, later) = ada.get(&format!("{path}?after={second}")).await;
     assert_eq!(kinds(&later), ["did", "done"]);
 
-    // The next turn goes on with the agent's own conversation.
     let (status, _) = ada.post(&more, json!({"text": "And in the menu"})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let next = heard(&mut laptop).await.unwrap();
@@ -2875,7 +2755,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
         (&json!("s-1"), &json!("And in the menu"), &json!(3))
     );
 
-    // The team reads the chat, and only its owner writes in it or stops it.
     let listed = marco.get(&ada.team("/chats")).await.1;
     assert_eq!(
         (&listed[0]["id"], &listed[0]["user"]),
@@ -2907,7 +2786,6 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     let shown = chat(&mut ada, &path, false).await;
     assert_eq!(shown["events"][5]["why"], "Stopped");
 
-    // A chat whose machine is removed ends its turn, and can be read and not gone on with.
     ada.post(&more, json!({"text": "Once more"})).await;
     heard(&mut laptop).await.unwrap();
     let removed = format!("/api/machines/{}", machine.as_str().unwrap());
@@ -2943,14 +2821,12 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     let (diff, push) = (format!("{path}/diff"), format!("{path}/push"));
     heard(&mut laptop).await.unwrap();
 
-    // Nothing is pushed in the middle of a turn.
     let commit = json!({"text": "Add a returns link\n\nTo the footer."});
     assert_eq!(
         ada.post(&push, commit.clone()).await.0,
         StatusCode::CONFLICT
     );
 
-    // A turn's end brings the diff of the whole chat, which is kept apart from its events.
     let done = |number: u64, diff: &str| {
         let changed = json!([{"path": "src/Footer.tsx", "added": 1, "removed": 0}]);
         let event = json!({"kind": "done", "session": "s-1", "changed": changed, "diff": diff});
@@ -2961,7 +2837,6 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     assert_eq!(shown["events"][1]["diff"], Value::Null);
     assert_eq!(shown["pull_url"], Value::Null);
     assert_eq!(marco.get(&diff).await.1, json!({"diff": "+a link"}));
-    // The next turn's diff takes its place.
     ada.post(&format!("{path}/messages"), json!({"text": "And another"}))
         .await;
     heard(&mut laptop).await.unwrap();
@@ -2972,7 +2847,6 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     eve.sign_in("eve@example.com", Some("Eve")).await;
     assert_eq!(eve.get(&diff).await.0, StatusCode::NOT_FOUND);
 
-    // Only the chat's owner pushes it, with a message, and only an app that may write.
     assert_eq!(
         marco.post(&push, commit.clone()).await.0,
         StatusCode::FORBIDDEN
@@ -2985,7 +2859,6 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     assert!(why["error"].as_str().unwrap().contains("may only read"));
     repo.0.lock().unwrap().reads_only = false;
 
-    // The machine commits and pushes with a token of its own, and the server opens a draft pull request.
     let mut pushed = async |commit: &str| {
         let asked = heard(&mut laptop).await.unwrap();
         let answer = json!({"type": "answer", "id": asked["id"], "answer": {"Ok": commit}});
@@ -3022,7 +2895,6 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
         (&json!(12), &json!(address))
     );
 
-    // Later work is pushed to the same branch, and the pull request is the one there is.
     let ((status, pull), _) = tokio::join!(ada.post(&push, commit.clone()), pushed("def456"));
     assert_eq!(
         (status, &pull["commit"], &pull["number"]),
@@ -3030,7 +2902,6 @@ async fn a_chat_s_diff_is_read_by_the_team_and_its_work_becomes_a_pull_request()
     );
     assert_eq!(repo.0.lock().unwrap().pulls.len(), 1);
 
-    // What the machine couldn't do is said, and a machine that is away is not asked.
     let failed = async {
         let asked = heard(&mut laptop).await.unwrap();
         let answer = json!({"type": "answer", "id": asked["id"], "answer": {"Err": "rejected"}});
@@ -3070,7 +2941,6 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     let hosts = format!("{path}/hosts");
     assert_eq!(heard(&mut laptop).await.unwrap()["hosts"], json!([]));
 
-    // A command was refused a host, which the chat shows, and the turn ends.
     let event = |number: u64, event: Value| json!({"type": "event", "chat": id, "number": number, "event": event});
     said(
         &mut laptop,
@@ -3086,7 +2956,6 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     assert_eq!(kinds(&shown), ["asked", "wants", "done"]);
     assert_eq!(shown["hosts"], json!([]));
 
-    // Only the chat's owner allows a host, and only an exact name.
     let host = |host: &str| json!({"host": host});
     let wanted = host("registry.npmjs.org");
     assert_eq!(
@@ -3096,7 +2965,6 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     let (status, _) = ada.post(&hosts, host("*.npmjs.org")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    // An allowed host is the chat's from then on, and the agent is told in a next turn to try again.
     assert_eq!(ada.post(&hosts, wanted).await.0, StatusCode::ACCEPTED);
     let next = heard(&mut laptop).await.unwrap();
     assert_eq!(next["hosts"], json!(["registry.npmjs.org"]));
@@ -3112,7 +2980,6 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     );
     assert_eq!(shown["events"][3]["host"], "registry.npmjs.org");
 
-    // One allowed while a turn runs waits for the next turn.
     assert_eq!(
         ada.post(&hosts, host("cdn.example.com")).await.0,
         StatusCode::ACCEPTED
@@ -3120,7 +2987,6 @@ async fn a_chat_s_commands_reach_the_hosts_its_owner_allows() {
     let both = json!(["cdn.example.com", "registry.npmjs.org"]);
     assert_eq!(ada.get(&path).await.1["hosts"], both);
 
-    // A host is taken off again, by the owner alone.
     let one = format!("{hosts}/cdn.example.com");
     assert_eq!(marco.delete(&one).await, StatusCode::FORBIDDEN);
     assert_eq!(ada.delete(&one).await, StatusCode::NO_CONTENT);
@@ -3145,7 +3011,6 @@ async fn a_project_s_key_is_its_own_in_its_team() {
     }
     ada.post(&projects, named("Another", "AN")).await;
 
-    // A project keeps its own key, takes a free one and not another's.
     for (key, status) in [
         ("SF", StatusCode::NO_CONTENT),
         ("AN", StatusCode::UNPROCESSABLE_ENTITY),
@@ -3158,7 +3023,6 @@ async fn a_project_s_key_is_its_own_in_its_team() {
     assert_eq!(listed[1]["key"], "SHOP1");
 }
 
-/// The titles of a project's tasks of one status, in their order.
 async fn titles(client: &mut Client, tasks: &str, status: &str) -> Vec<String> {
     let (_, listed) = client.get(tasks).await;
     let of_status = listed.as_array().unwrap().iter();
@@ -3194,7 +3058,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
     ));
     let tasks = ada.project("/tasks");
 
-    // A task needs a title, and its owner is of the team.
     for refused in [
         json!({"text": "No title"}),
         json!({"title": " "}),
@@ -3221,7 +3084,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
     );
     let returns = format!("{tasks}/{}", made["id"].as_str().unwrap());
 
-    // Each project counts its own, a new task goes on top, and a number isn't given twice.
     let (_, gone) = ada.post(&tasks, json!({"title": "Gone"})).await;
     let gone = format!("{tasks}/{}", gone["id"].as_str().unwrap());
     assert_eq!(ada.delete(&gone).await, StatusCode::NO_CONTENT);
@@ -3234,7 +3096,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
     );
     assert_eq!(ada.get(&elsewhere).await.1[0]["number"], 1);
 
-    // Only what is sent changes.
     let ticked = json!({"checks": [{"text": "A link in the footer", "done": true}]});
     assert_eq!(ada.put(&returns, ticked).await, StatusCode::NO_CONTENT);
     let given = json!({"owner_id": his, "docs": []});
@@ -3267,12 +3128,10 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     }
 
-    // A deleted page leaves the task without it.
     let page = ada.project(&format!("/docs/pages/{}", page.as_str().unwrap()));
     ada.delete(&page).await;
     assert_eq!(ada.get(&tasks).await.1[1]["docs"], json!([]));
 
-    // A status is given its tasks in their order; another project's task stays where it is.
     for title in ["Wishlist", "Gift wrap"] {
         ada.post(&tasks, json!({"title": title})).await;
     }
@@ -3300,7 +3159,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
         titles(&mut ada, &tasks, "doing").await[..2],
         ["Wishlist", "Size guide"]
     );
-    // A task whose status is changed goes to the end of its new one, and stays where it is in its own.
     ada.put(&returns, json!({"status": "doing"})).await;
     assert_eq!(
         titles(&mut ada, &tasks, "doing").await,
@@ -3315,7 +3173,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
         StatusCode::UNPROCESSABLE_ENTITY
     );
 
-    // A task is its project's and its team's.
     let misplaced = format!("{elsewhere}/{}", made["id"].as_str().unwrap());
     assert_eq!(
         ada.put(&misplaced, json!({"title": "Moved"})).await,
@@ -3327,7 +3184,6 @@ async fn a_team_s_tasks_are_made_changed_ordered_and_deleted() {
         StatusCode::NOT_FOUND
     );
 
-    // Only who asked for a task, or the team's owner, deletes it.
     let hers = format!("{tasks}/{}", id("Wishlist").as_str().unwrap());
     assert_eq!(marco.delete(&hers).await, StatusCode::FORBIDDEN);
     assert_eq!(marco.delete(&returns).await, StatusCode::NO_CONTENT);
@@ -3370,7 +3226,6 @@ async fn a_chat_is_for_a_task_of_its_project() {
     );
 }
 
-/// What the server's tools answer a request that comes with `token`.
 async fn tool(state: &AppState, token: &str, request: Value) -> (StatusCode, Value) {
     let request = Request::builder()
         .method(Method::POST)
@@ -3405,7 +3260,6 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
     let turn = heard(&mut laptop).await.unwrap();
     let token = turn["tools"]["token"].as_str().unwrap();
 
-    // The program says hello, asks what there is, and lets us know things; nothing without the token.
     let ask = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
     let hello = ask(1, "initialize", json!({"protocolVersion": "2025-06-18"}));
     assert_eq!(
@@ -3441,7 +3295,6 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         (&json!(3), &json!(-32601))
     );
 
-    // Each tool answers in words, or says why not.
     let call = async |name: &str, given: Value| {
         let (_, answer) = tool(
             &state,
@@ -3493,7 +3346,6 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
     let (failed, read) = call("doc", json!({"title": "Nothing"})).await;
     assert!(failed && read.contains("Buy; "), "{read}");
 
-    // What the agent wrote is there at once, for the chat's owner, and the chat says so.
     let (_, listed) = ada.get(&tasks).await;
     assert_eq!(
         (&listed[0]["status"], &listed[0]["checks"][0]["done"]),
@@ -3519,7 +3371,6 @@ async fn a_chat_s_agent_reads_and_writes_its_project_s_tasks_while_its_turn_runs
         .collect();
     assert_eq!(json!(events), told);
 
-    // The token ends with its turn, and the next turn has another.
     let done = json!({"kind": "done", "session": "s-1", "changed": [], "diff": ""});
     said(
         &mut laptop,
@@ -3570,7 +3421,6 @@ async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_pers
     let (_, docs) = ada.get(&ada.project("/docs")).await;
     let buy = &docs["pages"][1];
 
-    // A proposal needs all three, and something to change.
     let same = json!({"title": "Buy", "markdown": buy["markdown"], "reason": "None."});
     assert_eq!(
         propose(same).await,
@@ -3585,7 +3435,6 @@ async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_pers
         )
     );
 
-    // A page's title proposes its new text; one no page has proposes a new page.
     let change = json!({"title": "buy", "markdown": "# Buy\n\nBuying, corrected.", "reason": "The link moved."});
     let told = "Proposed. \"Buy\" changes when a person of the team accepts it on the docs page.";
     assert_eq!(propose(change).await, (json!(false), json!(told)));
@@ -3620,7 +3469,6 @@ async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_pers
         (&Value::Null, &json!("works"), &json!("Refunds"))
     );
 
-    // The chat says what its agent proposed.
     let events = self::chat(&mut ada, &path, true).await;
     let events = events["events"].as_array().unwrap();
     let said = &events[events.len() - 2];
@@ -3629,7 +3477,6 @@ async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_pers
         (&json!("proposal"), &json!("Buy"), &json!(false))
     );
 
-    // A run drops the writer's own proposals of the run before, and never an agent's.
     written_docs(&mut ada).await;
     let docs = written_docs(&mut ada).await;
     let whose: Vec<&Value> = docs["proposals"]
@@ -3640,7 +3487,6 @@ async fn a_chat_s_agent_proposes_changes_to_the_docs_that_a_run_keeps_and_a_pers
         .collect();
     assert_eq!(json!(whose), json!(["claude", "claude", null, null]));
 
-    // Accepted, it is the page's text.
     let accept = ada.project(&format!(
         "/docs/proposals/{}",
         changed["id"].as_str().unwrap()
@@ -3690,7 +3536,6 @@ async fn a_task_is_offered_the_pages_of_the_docs_that_are_about_it() {
     let task = format!("{tasks}/{}", task["id"].as_str().unwrap());
     let offered = format!("{task}/docs");
 
-    // Up to three pages, the nearest first, and none the task has already.
     let (status, pages) = ada.get(&offered).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -3704,7 +3549,6 @@ async fn a_task_is_offered_the_pages_of_the_docs_that_are_about_it() {
         "{pages}"
     );
 
-    // A page is found by its text as it is now.
     ada.put(&task, json!({"title": "A parcel is late", "text": "It left the warehouse a week ago.", "docs": []}))
         .await;
     assert_eq!(ada.get(&offered).await.1[0], json!(shipping));
@@ -3741,7 +3585,6 @@ async fn a_chat_is_deleted_once_its_machine_has_removed_its_folder() {
     let tasks = ada.project("/tasks");
     let (_, task) = ada.post(&tasks, json!({"title": "Returns link"})).await;
 
-    // A chat whose turn has ended, as its page's address.
     let ended = async |ada: &mut Client, laptop: &mut Socket| {
         let start = json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Do it", "task_id": task["id"]});
         let (_, started) = ada.post(&ada.project("/chats"), start).await;
@@ -3761,7 +3604,6 @@ async fn a_chat_is_deleted_once_its_machine_has_removed_its_folder() {
     let (id, path) = ended(&mut ada, &mut laptop).await;
     assert_eq!(marco.delete(&path).await, StatusCode::FORBIDDEN);
 
-    // The machine is asked to remove the folder, and the chat goes only once it has.
     let forgot = async |laptop: &mut Socket, answer: Value| {
         let asked = heard(laptop).await.unwrap();
         said(
@@ -3785,10 +3627,8 @@ async fn a_chat_is_deleted_once_its_machine_has_removed_its_folder() {
         json!({"type": "forget", "id": asked["id"], "chat": id})
     );
     assert_eq!(ada.get(&path).await.0, StatusCode::NOT_FOUND);
-    // The task it was for stays.
     assert_eq!(ada.get(&tasks).await.1[0]["title"], "Returns link");
 
-    // A machine that is away can't be asked; one that was removed has no folder to reach.
     let (_, path) = ended(&mut ada, &mut laptop).await;
     drop(laptop);
     machines(&mut ada, false, None).await;
@@ -3832,7 +3672,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
         .await;
     let groups = ada.team("/groups");
 
-    // A group's members are of its team, and so is its project.
     for refused in [
         json!({"members": [outsider]}),
         json!({"members": [id("Marco")], "project_id": hers["id"]}),
@@ -3867,7 +3706,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
         ])
     );
 
-    // What one writes the others read, in order, and a group is unread until its page is asked for.
     let write = |text: &str| json!({"text": text});
     let (status, _) = ada.post(&format!("{direct}/messages"), write(" ")).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -3891,7 +3729,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
             .map(named)
             .collect::<Vec<_>>()
     };
-    // The one written in last comes first.
     assert_eq!(
         unread(&mut marco).await,
         [("direct".to_owned(), true), ("Gift wrap".to_owned(), false)]
@@ -3924,7 +3761,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
         .collect();
     assert_eq!(texts, ["A fixed wait, I think"]);
 
-    // Someone of the team who isn't in a group neither reads it, writes in it nor sees it.
     assert_eq!(lena.get(&direct).await.0, StatusCode::NOT_FOUND);
     let (status, _) = lena
         .post(&format!("{direct}/messages"), write("Hello"))
@@ -3933,7 +3769,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
     assert_eq!(unread(&mut lena).await, [("Gift wrap".to_owned(), false)]);
     assert_eq!(zoe.get(&groups).await.0, StatusCode::NOT_FOUND);
 
-    // Someone added reads what came before; a group is renamed, and given a project once.
     let joining = json!({"user_id": id("Lena")});
     assert_eq!(
         marco.post(&format!("{direct}/members"), joining).await.0,
@@ -3966,7 +3801,6 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
         (&json!("Flaky tests"), &json!("Storefront"))
     );
 
-    // Who leaves reads nothing more, and who is removed from the team leaves its groups.
     assert_eq!(
         lena.delete(&format!("{direct}/members/me")).await,
         StatusCode::NO_CONTENT
@@ -3976,10 +3810,8 @@ async fn a_team_s_people_write_to_each_other_in_groups_only_their_members_read()
     assert_eq!(ada.delete(&removed).await, StatusCode::NO_CONTENT);
     let (_, shown) = ada.get(&direct).await;
     assert_eq!(shown["members"], people(&["Ada"]));
-    // What they wrote stays, under their name.
     assert_eq!(shown["messages"][1]["user"], "Marco");
 
-    // A group nobody is in any more is gone.
     ada.delete(&format!("{direct}/members/me")).await;
     ada.delete(&format!("{wrap}/members/me")).await;
     assert_eq!(unread(&mut ada).await, []);
@@ -4021,7 +3853,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
     let write = |text: &str| json!({"text": text});
     let texts = |turn: &Value| turn["prompt"].as_str().unwrap().to_owned();
 
-    // A tag is written either way, and says why nothing runs.
     let (_, bare) = ada.post(&groups, json!({"members": [his]})).await;
     let bare = format!("{groups}/{}", bare["id"].as_str().unwrap());
     let (status, answer) = ada
@@ -4059,7 +3890,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
         json!({"refused": []})
     );
 
-    // The first tag starts a chat of who wrote it, told what the group said and whom it works for.
     assert_eq!(
         ada.post(&messages, write("Why, @claude?")).await.1,
         json!({"refused": []})
@@ -4093,7 +3923,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
         json!({"refused": ["Your Claude Code is still working on what you last asked it here"]})
     );
 
-    // Its last words are posted in the group when the turn ends.
     let event = |number: u64, event: Value| json!({"type": "event", "chat": chat, "number": number, "event": event});
     said(
         &mut laptop,
@@ -4129,8 +3958,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
     );
     assert_eq!(shown["working"], json!([]));
 
-    // The next tag is that chat's next turn, with what was written since it was last told, the tag
-    // that wasn't followed too, and without its own answer.
     marco.post(&messages, write("Thanks")).await;
     ada.post(&messages, write("@claude fix it")).await;
     let turn = heard(&mut laptop).await.unwrap();
@@ -4157,7 +3984,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
         "It couldn't answer: Not signed in"
     );
 
-    // Another person's tag calls their own agent, on their own machine, which hears of the first one's answer.
     let token = paired(&mut marco, "Marco's laptop").await;
     let mut desktop = core(&address, &token, "signed_in").await.unwrap();
     machines(&mut marco, true, Some("signed_in")).await;
@@ -4174,7 +4000,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
     );
     assert!(texts(&turn).contains("You work for Marco, "));
 
-    // Such a chat is read by the group's members alone, and written to in the group only.
     assert_eq!(marco.get(&path).await.0, StatusCode::OK);
     assert_eq!(marco.get(&format!("{path}/diff")).await.0, StatusCode::OK);
     assert_eq!(lena.get(&path).await.0, StatusCode::NOT_FOUND);
@@ -4189,9 +4014,6 @@ async fn a_person_s_own_agent_answers_in_a_group_when_they_tag_it() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
-/// Starts an Anthropic API for the team's own agent, and keeps what it was sent. It asks for
-/// a task to be made, then says what it was told of that; with the key `loop-key` it asks for
-/// the tasks for ever, and with `slow-key` it waits until "continue" is among what it keeps.
 async fn fake_model() -> (String, Arc<Mutex<Vec<Value>>>) {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let api = Router::new()
@@ -4240,7 +4062,6 @@ async fn fake_model() -> (String, Arc<Mutex<Vec<Value>>>) {
     (address, sent)
 }
 
-/// The group's last message once the team's agent has stopped working there.
 async fn weacon_said(client: &mut Client, group: &str) -> Value {
     for _ in 0..500 {
         let (_, shown) = client.get(group).await;
@@ -4276,7 +4097,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     let write = |text: &str| json!({"text": text});
     let key = ada.team("/key");
 
-    // A tag is written either way, and says why nothing runs: no project, then no key.
     let (_, bare) = ada.post(&groups, json!({"members": [his]})).await;
     let bare = format!("{groups}/{}/messages", bare["id"].as_str().unwrap());
     assert_eq!(
@@ -4295,7 +4115,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         json!({"refused": ["This team has no API key for @weacon. Its owner saves one in Team settings"]})
     );
 
-    // With a key it is told what the group said and whom it works for, and given the tools.
     ada.put(&key, json!({"key": "good-key"})).await;
     assert_eq!(
         marco
@@ -4335,7 +4154,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     assert_eq!(tools[2]["name"], "new_task");
     assert_eq!(tools[2]["input_schema"]["required"], json!(["title"]));
 
-    // A tool it asks for is run for the group's project and for who called it, and it is told the result.
     let second = sent.lock().unwrap()[1].clone();
     assert_eq!(second["messages"][1]["content"][1]["name"], "new_task");
     assert_eq!(
@@ -4348,7 +4166,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         (&json!("Fix the price"), &json!("Marco"), &Value::Null)
     );
 
-    // The next call is told its own answer too, as the team's agent's.
     sent.lock().unwrap().clear();
     ada.post(&messages, write("@weacon thanks")).await;
     weacon_said(&mut ada, &group).await;
@@ -4360,7 +4177,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     );
     assert!(told.contains("You work for Ada, "));
 
-    // What it proposes for the docs is for who called it, and has no chat.
     ada.post(&messages, write("@weacon fix the docs")).await;
     weacon_said(&mut ada, &group).await;
     let (_, docs) = ada.get(&ada.project("/docs")).await;
@@ -4374,7 +4190,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         (&json!("weacon"), &json!("Ada"), &Value::Null)
     );
 
-    // One call at a time in a group, which shows that it works.
     ada.put(&key, json!({"key": "slow-key"})).await;
     ada.post(&messages, write("@weacon slowly")).await;
     assert_eq!(
@@ -4388,7 +4203,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     sent.lock().unwrap().push(json!("continue"));
     weacon_said(&mut ada, &group).await;
 
-    // A call that fails posts why: a key refused, and tools asked for without end.
     ada.put(&key, json!({"key": "bad-key"})).await;
     ada.post(&messages, write("@weacon again")).await;
     assert_eq!(
@@ -4403,7 +4217,6 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
     );
 }
 
-// On a database file, which a second server opens as after a restart.
 #[tokio::test]
 async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
     let file = std::env::temp_dir().join(format!("weacon-test-{:x}.db", rand::random::<u64>()));
@@ -4432,7 +4245,6 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
     ada.post(&messages, json!({"text": "@weacon slowly"})).await;
     assert_eq!(ada.get(&group).await.1["working"], json!([["", "weacon"]]));
 
-    // The model never answers that call; the server restarts on the same file.
     let state = AppState {
         pool: db::open(&file).await.unwrap(),
         ..state
@@ -4452,7 +4264,6 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
         )
     );
 
-    // A new tag runs.
     ada.put(&ada.team("/key"), json!({"key": "good-key"})).await;
     assert_eq!(
         ada.post(&messages, json!({"text": "@weacon again"}))
@@ -4466,13 +4277,11 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
     );
 }
 
-/// A browser's socket for what changes, opened as the client.
 async fn live(address: &str, client: &Client) -> Socket {
     let cookie = (COOKIE, client.cookie.clone().unwrap());
     socket(address, "/api/live", &cookie).await.unwrap()
 }
 
-/// The kind of thing a browser's socket is told next.
 async fn told(socket: &mut Socket) -> String {
     let patience = std::time::Duration::from_secs(10);
     loop {
@@ -4507,7 +4316,6 @@ async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
     let mut laptop = core(&address, &token, "signed_in").await.unwrap();
     machines(&mut ada, true, Some("signed_in")).await;
 
-    // Only a signed-in person's browser listens, from Weacon's own pages.
     let nobody = (COOKIE, "weacon_session=none".to_owned());
     assert_eq!(
         socket(&address, "/api/live", &nobody).await.err(),
@@ -4525,7 +4333,6 @@ async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
     let mut lenas = live(&address, &lena).await;
     let mut zoes = live(&address, &zoe).await;
 
-    // A group's news is its members' alone: Lena, of the same team, hears nothing of it.
     let with = json!({"members": [marco.user_id]});
     let (_, group) = ada.post(&ada.team("/groups"), with).await;
     let group = ada.team(&format!("/groups/{}", group["id"].as_str().unwrap()));
@@ -4537,7 +4344,6 @@ async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
         assert_eq!(told(socket).await, "groups");
     }
 
-    // A chat's start and what its machine tells of it are the team's news.
     let start =
         json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Do it"});
     let (_, chat) = ada.post(&ada.project("/chats"), start).await;
@@ -4550,7 +4356,6 @@ async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
         assert_eq!(told(socket).await, "chats");
     }
 
-    // So is a task its agent makes, which the chat notes.
     let params = json!({"name": "new_task", "arguments": {"title": "A link in the footer"}});
     let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
     let token = turn["tools"]["token"].as_str().unwrap();
@@ -4560,12 +4365,10 @@ async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
         assert_eq!(told(socket).await, "chats");
     }
 
-    // Another team heard none of it.
     zoe.post(&zoe.team("/projects"), json!({"name": "Hers", "key": "HE"}))
         .await;
     assert_eq!(told(&mut zoes).await, "projects");
 
-    // A machine that goes away is its owner's news.
     drop(laptop);
     assert_eq!(told(&mut adas).await, "machines");
 }

@@ -51,7 +51,6 @@ fn env_or(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_owned())
 }
 
-/// The folder of uploaded files which, like the database, is for the server's account only.
 fn private_folder(path: &Path) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(path)?;
     #[cfg(unix)]

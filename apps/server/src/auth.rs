@@ -1,5 +1,3 @@
-//! Who is asking: the signed-in user, read from the session cookie, and what they may do.
-
 use axum::extract::FromRequestParts;
 use axum::http::header::{AUTHORIZATION, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
@@ -10,7 +8,6 @@ use crate::error::{ApiError, Result};
 use crate::{AppState, db, now};
 
 const COOKIE_NAME: &str = "weacon_session";
-/// Counted from the session's last renewal.
 pub const SESSION_SECONDS: i64 = 365 * 24 * 60 * 60;
 
 impl FromRequestParts<AppState> for User {
@@ -23,7 +20,6 @@ impl FromRequestParts<AppState> for User {
     }
 }
 
-/// The owner of the server, who alone sets up its mail.
 pub struct ServerOwner(pub User);
 
 impl FromRequestParts<AppState> for ServerOwner {
@@ -39,7 +35,6 @@ impl FromRequestParts<AppState> for ServerOwner {
 }
 
 impl User {
-    /// A team the user isn't in looks like one that doesn't exist.
     pub fn member_of(&self, team_id: &str) -> Result<&Membership> {
         let team = self.teams.iter().find(|team| team.id == team_id);
         team.ok_or_else(ApiError::not_found)
@@ -65,8 +60,6 @@ pub async fn session_user(state: &AppState, token: &str) -> sqlx::Result<Option<
     db::users::by_session(&state.pool, token, now() - SESSION_SECONDS).await
 }
 
-/// Refuses a WebSocket opened from another site's page. A browser sends the cookie along
-/// from any page of the same site, so the page itself must be Weacon's own.
 pub fn own_page(state: &AppState, headers: &HeaderMap) -> Result<()> {
     let origin = headers.get(ORIGIN);
     if origin.is_some_and(|origin| origin.as_bytes() == state.url.as_bytes()) {
@@ -86,7 +79,6 @@ pub fn session_token(headers: &HeaderMap) -> Option<&str> {
         .find_map(|cookie| cookie.strip_prefix(COOKIE_NAME)?.strip_prefix('='))
 }
 
-/// What a machine's core or a chat's agent sends instead of a cookie.
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(AUTHORIZATION)?
@@ -95,7 +87,6 @@ pub fn bearer(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
-/// A `max_age` of 0 removes the cookie.
 pub fn session_cookie(state: &AppState, token: &str, max_age: i64) -> [(HeaderName, String); 1] {
     let secure = if state.url.starts_with("https://") {
         "; Secure"

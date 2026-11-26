@@ -8,12 +8,10 @@ use crate::error::ApiError;
 #[folder = "../web/dist"]
 struct Dist;
 
-/// Falls back to `index.html` so client-side routes load.
 pub async fn serve(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let (path, file) = match Dist::get(path) {
         Some(file) => (path, file),
-        // Only an address of the web app's own pages falls back to it.
         None if path.starts_with("assets/") => {
             return ApiError::not_found().into_response();
         }

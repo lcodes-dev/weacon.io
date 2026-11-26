@@ -57,10 +57,8 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { api, type DocsPage } from "../api"
 import { Diff } from "./Diff"
 
-// A command has its key only once an editor is made, so the key is read when the command is called.
 type Command = { key: Parameters<typeof callCommand>[0] }
 
-/** What the toolbar offers, in its order. Those with `block` are also slash commands. */
 const tools: { name: string; icon: LucideIcon; group: number; block?: true; commands?: [Command, unknown?][] }[] = [
   { name: "Bold", icon: BoldIcon, group: 0, commands: [[toggleStrongCommand]] },
   { name: "Italic", icon: ItalicIcon, group: 0, commands: [[toggleEmphasisCommand]] },
@@ -69,7 +67,6 @@ const tools: { name: string; icon: LucideIcon; group: number; block?: true; comm
   { name: "Link", icon: LinkIcon, group: 0 },
   { name: "Heading", icon: Heading2Icon, group: 1, block: true, commands: [[wrapInHeadingCommand, 2]] },
   { name: "Small heading", icon: Heading3Icon, group: 1, block: true, commands: [[wrapInHeadingCommand, 3]] },
-  // A list only wraps plain text, so a heading is turned into text first.
   { name: "Bulleted list", icon: ListIcon, group: 1, block: true, commands: [[turnIntoTextCommand], [wrapInBulletListCommand]] },
   { name: "Numbered list", icon: ListOrderedIcon, group: 1, block: true, commands: [[turnIntoTextCommand], [wrapInOrderedListCommand]] },
   { name: "Quote", icon: QuoteIcon, group: 1, block: true, commands: [[wrapInBlockquoteCommand]] },
@@ -86,10 +83,8 @@ const images = "image/png,image/jpeg,image/gif,image/webp"
 
 const size = (bytes: number) => (bytes < 1e6 ? `${Math.ceil(bytes / 1e3)} kB` : `${(bytes / 1e6).toFixed(1)} MB`)
 
-/** Lets UI SDK's trigger menu read and write the editor. An offset is a position in the document. */
 function adapter(view: EditorView): TextEditorAdapter {
   const listeners = new Set<(change: EditorChange) => void>()
-  // Every change to the editor goes through its dispatch, so that is where to listen.
   const prior = view.props.dispatchTransaction
   view.setProps({
     dispatchTransaction(tr) {
@@ -112,7 +107,6 @@ function adapter(view: EditorView): TextEditorAdapter {
       if ($from.parent.type.spec.code) return null
       const offset = Math.max($from.start(), $from.pos - length)
       const text = view.state.doc.textBetween(offset, $from.pos, undefined, "￼")
-      // A block's start reads as a line's start, so that "/" opens the menu there.
       return offset === $from.start() ? { text: `\n${text}`, offset: offset - 1 } : { text, offset }
     },
     selection: () => (view.hasFocus() ? { start: view.state.selection.from, end: view.state.selection.to } : null),
@@ -137,19 +131,15 @@ function adapter(view: EditorView): TextEditorAdapter {
   }
 }
 
-/** A page edited as it reads, and saved as Markdown after its changes are shown. `path` is the project's API path. */
 export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage; onDone: () => void }) {
   const queryClient = useQueryClient()
   const root = useRef<HTMLDivElement>(null)
   const file = useRef<HTMLInputElement>(null)
-  // The Markdown the editor writes for the page untouched, which tells whether anything was typed.
   const untouched = useRef("")
   const [editor, setEditor] = useState<Editor>()
   const [title, setTitle] = useState(page.title)
-  // The Markdown about to be saved, while its changes are shown.
   const [written, setWritten] = useState<string>()
   const [failed, setFailed] = useState<Error>()
-  // The version this edit started from. The page moving past it means someone else saved meanwhile.
   const [base] = useState(page.version)
   const moved = page.version !== base
   const refetch = () => queryClient.invalidateQueries({ queryKey: ["docs"] })
@@ -158,9 +148,7 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
     onSuccess: () => refetch().then(onDone),
     onError: refetch,
   })
-  // In a page an image is `image:{id}`; in the editor it is the address the browser fetches.
   const files = `/api${path}/files/`
-  /** Keeps a file for the project and answers with what to put in the page: the image, or a link to the attachment. */
   const keep = async (file: File, schema: Schema) => {
     try {
       const kept = await api<{ id: string; image: boolean }>("POST", `${path}/files?name=${encodeURIComponent(file.name)}`, file)
@@ -170,7 +158,6 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
       setFailed(error as Error)
     }
   }
-  // The editor writes an empty paragraph as a line break in HTML, which a page would show as text.
   const markdown = (editor: Editor) =>
     editor
       .action(getMarkdown())
@@ -178,8 +165,6 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
       .replaceAll(`(${files}`, "(image:")
       .replace(/(!\[[^\]]*\]\()unloaded:/g, "$1")
       .trimEnd()
-  // An image on another host would be fetched on sight, telling it who edits what, so its
-  // address is made one a browser doesn't fetch until the page is saved.
   const loaded = page.markdown.replaceAll("(image:", `(${files}`).replace(/(!\[[^\]]*\]\()(?=https?:)/g, "$1unloaded:")
 
   useEffect(() => {
@@ -188,7 +173,6 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
       .config((ctx) => {
         ctx.set(rootCtx, root.current)
         ctx.set(defaultValueCtx, loaded)
-        // Write lists and dividers the way the docs writer does, so that a save changes less.
         ctx.update(remarkStringifyOptionsCtx, (options) => ({ ...options, bullet: "-" as const, rule: "-" as const }))
         ctx.update(uploadConfig.key, (config) => ({
           ...config,
@@ -234,7 +218,6 @@ export function DocEditor({ path, page, onDone }: { path: string; page: DocsPage
     const now = markdown(editor!)
     if (now === untouched.current && title === page.title) return onDone()
     setFailed(undefined)
-    // With only the title changed, the text is saved as it was and not as the editor would write it.
     setWritten(now === untouched.current ? page.markdown : now)
   }
   const error = failed ?? (moved ? null : save.error)

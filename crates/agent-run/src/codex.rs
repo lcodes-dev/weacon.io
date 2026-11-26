@@ -1,5 +1,3 @@
-//! Codex: how its program is started for a turn, and what it prints.
-
 use core_link::{Deed, Event};
 use serde_json::{Value, json};
 
@@ -22,7 +20,6 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
         "--json",
         "--config",
         r#"sandbox_mode="workspace-write""#,
-        // The network is there, behind a proxy that knows the hosts and names the one it refuses.
         "--config",
         "sandbox_workspace_write.network_access=true",
         "--config",
@@ -31,14 +28,12 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
         &hosts,
         "--config",
         &cache,
-        // It follows the repository's AGENTS.md by itself, and this file where there is none.
         "--config",
         r#"project_doc_fallback_filenames=["CLAUDE.md"]"#,
         "--config",
         &tools,
         "--config",
         &token,
-        // Nobody can be asked in a chat, so our tools are called without asking.
         "--config",
         r#"mcp_servers.weacon.default_tools_approval_mode="approve""#,
         "--ignore-user-config",
@@ -49,7 +44,6 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
     args.into_iter().map(str::to_owned).collect()
 }
 
-/// One line of `codex exec --json`.
 pub fn read(
     printed: &Value,
     folder: &str,
@@ -65,7 +59,6 @@ pub fn read(
             said(&item["text"], folder).into_iter().for_each(tell);
         }
         (Some("item.started"), Some("command_execution")) => {
-            // It runs a command through a shell of its own, which the chat needn't show.
             let command = text(&item["command"]).unwrap_or_default();
             let shell = ["/bin/zsh -lc ", "/bin/bash -lc ", "/bin/sh -lc "];
             let bare = shell.iter().find_map(|shell| command.strip_prefix(shell));
@@ -74,7 +67,6 @@ pub fn read(
                 .into_iter()
                 .for_each(tell);
         }
-        // The sandbox's proxy says in the command's output which host it refused.
         (Some("item.completed"), Some("command_execution")) => {
             let output = item["aggregated_output"].as_str().unwrap_or_default();
             wanted(output, "Network access to \"", '"', tell);
@@ -87,7 +79,6 @@ pub fn read(
             }
         }
         (Some("turn.completed"), _) => return Some(Ok(())),
-        // `error` comes before `turn.failed`, and alone when the turn couldn't start.
         (Some("turn.failed" | "error"), _) => {
             let why = text(&printed["error"]["message"]).or(text(&printed["message"]));
             return Some(Err(why.unwrap_or("Codex failed").to_owned()));

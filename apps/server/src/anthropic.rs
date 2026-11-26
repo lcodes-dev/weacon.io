@@ -1,5 +1,3 @@
-//! The Anthropic API, which the team's key pays for.
-
 use std::time::Duration;
 
 use serde_json::Value;
@@ -7,17 +5,14 @@ use serde_json::Value;
 use crate::AppState;
 use crate::error::{ApiError, Result};
 
-/// A page can take minutes to write.
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
 
-/// The model a team chose, or the cheap default.
 pub fn model(chosen: Option<&str>) -> &str {
     chosen
         .filter(|model| !model.is_empty())
         .unwrap_or("claude-haiku-5-5")
 }
 
-/// Sends one request to the Messages API, and gives its answer.
 pub async fn send(state: &AppState, key: &str, body: &Value) -> Result<Value> {
     let request = reqwest::Client::new()
         .post(format!("{}/v1/messages", state.anthropic_api))
@@ -38,7 +33,6 @@ pub async fn send(state: &AppState, key: &str, body: &Value) -> Result<Value> {
     Ok(answer)
 }
 
-/// The words in an answer.
 pub fn text(answer: &Value) -> String {
     let blocks = answer["content"].as_array().into_iter().flatten();
     blocks.filter_map(|block| block["text"].as_str()).collect()

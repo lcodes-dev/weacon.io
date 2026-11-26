@@ -2,7 +2,6 @@ import { hierarchy, pack, type HierarchyCircularNode } from "d3-hierarchy"
 import { useEffect, useMemo, useRef, useState } from "react"
 import type { MapFile } from "../api"
 
-/** A folder holds folders and files; a file is a leaf. */
 type Node = { name: string; path: string; file?: MapFile; children: Node[] }
 
 function tree(files: MapFile[]): Node {
@@ -27,9 +26,7 @@ const width = 900
 const height = 700
 type Circle = HierarchyCircularNode<Node>
 
-/** Every file placed once, in its folder's circle. Nothing moves afterwards but the view. */
 function layout(files: MapFile[], uses: [string, string][]) {
-  // Sizes are kept close, so that a long file doesn't crowd out its neighbors.
   const size = (file: MapFile) => (file.language ? Math.max(Math.min(file.lines, 400), 30) : 14)
   const sized = hierarchy(tree(files)).sum((node) => (node.file ? size(node.file) : 0))
   const root = pack<Node>().size([width, height]).padding((node) => (node.depth === 0 ? 14 : 5))(sized)
@@ -37,14 +34,12 @@ function layout(files: MapFile[], uses: [string, string][]) {
   const links = uses.flatMap(([from, to]) => {
     const [a, b] = [at.get(from), at.get(to)]
     if (!a || !b) return []
-    // The line bends toward the innermost folder that holds both ends, which gathers lines into bundles.
     const shared = a.path(b).reduce((top, circle) => (circle.depth < top.depth ? circle : top))
     return { from, to, d: `M${a.x},${a.y}Q${shared.x},${shared.y} ${b.x},${b.y}` }
   })
   return { root, at, links }
 }
 
-/** The map as a graph: files are dots inside their folders' circles, and a line joins a file to one it uses. */
 export function CodeGraph(props: {
   files: MapFile[]
   uses: [string, string][]
@@ -58,18 +53,15 @@ export function CodeGraph(props: {
   const { root, at, links } = useMemo(() => layout(files, uses), [files, uses])
   const focus = at.get(folder) ?? root
   const svg = useRef<SVGSVGElement>(null)
-  // The picture is drawn scaled by `zoom` and then moved by `x` and `y`. `glide` animates the change.
   const fit = (circle: Circle) => {
     const zoom = Math.min(width, height) / (circle.r * 2 + 8)
     return { zoom, x: width / 2 - circle.x * zoom, y: height / 2 - circle.y * zoom, glide: true }
   }
   const [view, setView] = useState(() => fit(focus))
   const { zoom } = view
-  // A drag must not also count as a click on what it ended over.
   const dragged = useRef(false)
   useEffect(() => setView(fit(focus)), [focus])
 
-  // The wheel zooms around the pointer. React's own wheel event can't stop the page from scrolling.
   useEffect(() => {
     const element = svg.current!
     const wheel = (event: WheelEvent) => {
@@ -97,7 +89,6 @@ export function CodeGraph(props: {
   const click = (circle: Circle) => {
     if (dragged.current) return
     if (circle.data.file) return onSelect(circle.data.path === selected ? "" : circle.data.path)
-    // One level at a time: the folder just inside the one in view, or back out.
     const step = circle.ancestors().find((ancestor) => ancestor.parent === focus)
     onEnter((step ?? focus.parent ?? root).data.path)
   }
@@ -105,7 +96,6 @@ export function CodeGraph(props: {
     const { name, file } = circle.data
     const room = onScreen(circle) / 6.2
     if (file) return room >= 5 ? (name.length > room ? `${name.slice(0, room - 1)}…` : name) : ""
-    // A folder is named while its name fits and it isn't larger than the picture.
     return name.length <= room && onScreen(circle) < width ? name : ""
   }
 
@@ -158,7 +148,6 @@ export function CodeGraph(props: {
               stroke={mine ? "var(--ink)" : "var(--ink3)"}
               strokeOpacity={mine ? 0.9 : selected ? 0.05 : 0.18}
               strokeWidth={mine ? 1.6 : 1}
-              // Solid for what the selected file uses, dashed for what uses it.
               strokeDasharray={mine && link.to === selected ? "4 3" : undefined}
               vectorEffect="non-scaling-stroke"
               pointerEvents="none"

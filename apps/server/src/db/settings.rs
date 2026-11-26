@@ -1,6 +1,3 @@
-//! The owner's mail settings, and each team's GitHub App, docs writer and API key. The
-//! secrets among them are sealed here, so that every other part of the server sees them plain.
-
 use sqlx::SqlitePool;
 
 use crate::github::GithubApp;
@@ -12,7 +9,6 @@ const SMTP_PASSWORD: &str = "config.smtp_password";
 const GITHUB_PRIVATE_KEY: &str = "github_private_key";
 const API_KEY: &str = "writer_key";
 
-/// Where a team's secret is kept, which its sealed value is bound to.
 fn team_secret(column: &str, team_id: &str) -> String {
     format!("teams.{column} {team_id}")
 }
@@ -42,7 +38,6 @@ pub async fn smtp(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Result<Opt
     Ok(Some(smtp))
 }
 
-/// `None` clears the SMTP settings.
 pub async fn save_smtp(
     pool: &SqlitePool,
     server_key: &ServerKey,
@@ -89,7 +84,6 @@ pub async fn github_app(
     Ok(Some(app))
 }
 
-/// `None` forgets the team's app.
 pub async fn save_github_app(
     pool: &SqlitePool,
     server_key: &ServerKey,
@@ -134,7 +128,6 @@ pub async fn writer(
     Ok(Some(writer))
 }
 
-/// `None` forgets the team's writer.
 pub async fn save_writer(
     pool: &SqlitePool,
     team_id: &str,
@@ -151,7 +144,6 @@ pub async fn save_writer(
     Ok(())
 }
 
-/// The team's API key, with the model chosen for it, which is the docs' while the API writes them.
 pub async fn api_key(
     pool: &SqlitePool,
     server_key: &ServerKey,
@@ -171,7 +163,6 @@ pub async fn api_key(
     Ok(Some((key, saved.model)))
 }
 
-/// `None` forgets the team's API key.
 pub async fn save_api_key(
     pool: &SqlitePool,
     server_key: &ServerKey,
@@ -190,7 +181,6 @@ pub async fn save_api_key(
     Ok(())
 }
 
-/// Whether an older server's plain secrets have been sealed.
 pub async fn secrets_sealed(pool: &SqlitePool) -> sqlx::Result<bool> {
     let sealed = sqlx::query_scalar!("SELECT secrets_sealed FROM config")
         .fetch_one(pool)
@@ -198,7 +188,6 @@ pub async fn secrets_sealed(pool: &SqlitePool) -> sqlx::Result<bool> {
     Ok(sealed != 0)
 }
 
-/// Every secret as it is stored, with where it is kept.
 pub async fn secrets(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String)>> {
     let password = sqlx::query_scalar!("SELECT smtp_password FROM config")
         .fetch_one(pool)
@@ -224,7 +213,6 @@ pub async fn secrets(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String)>> {
     Ok(secrets)
 }
 
-/// Seals the secrets an older server kept as plain text, once for the database.
 pub async fn seal_secrets(pool: &SqlitePool, server_key: &ServerKey) -> sqlx::Result<()> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let config = sqlx::query!("SELECT secrets_sealed, smtp_password FROM config")

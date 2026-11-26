@@ -1,5 +1,3 @@
-//! The team's API key, which pays for its own agent and, if chosen, for its docs.
-
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

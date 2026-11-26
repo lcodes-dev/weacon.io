@@ -12,10 +12,8 @@ use crate::db::users::User;
 use crate::error::Result;
 use crate::live::News;
 
-/// How often a socket is checked to still have its session.
 const PING: Duration = Duration::from_secs(30);
 
-/// A browser's WebSocket, which hears the topics that changed for its user.
 pub async fn connect(
     State(state): State<AppState>,
     user: User,
@@ -23,7 +21,6 @@ pub async fn connect(
     socket: WebSocketUpgrade,
 ) -> Result<Response> {
     auth::own_page(&state, &headers)?;
-    // Listened to from now, so that nothing is missed while the socket opens.
     let news = state.live.subscribe();
     Ok(socket.on_upgrade(move |socket| serve(state, headers, user.id, socket, news)))
 }
@@ -38,7 +35,6 @@ async fn serve(
     let mut still = tokio::time::interval(PING);
     loop {
         let send = tokio::select! {
-            // The socket ends with the session it was opened in.
             _ = still.tick() => match auth::signed_in(&state, &headers).await {
                 Ok(Some(_)) => Message::Ping(Default::default()),
                 _ => break,
@@ -46,7 +42,6 @@ async fn serve(
             told = news.recv() => match told {
                 Ok((people, topic)) if people.contains(&user) => Message::Text(topic.name().into()),
                 Ok(_) => continue,
-                // It fell behind, and asks for everything again when it connects anew.
                 Err(_) => break,
             },
             message = socket.recv() => match message {

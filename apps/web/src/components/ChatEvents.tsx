@@ -8,16 +8,13 @@ import { safeUrl } from "./DocPages"
 
 const icons = { read: FileTextIcon, edit: PencilIcon, command: TerminalIcon, other: WrenchIcon }
 
-/** A request that changes the chat at `path`, after which the chat is read again. */
 export function useChatChange<T = void>(path: string, change: (input: T) => Promise<unknown>) {
   const queryClient = useQueryClient()
   return useMutation({ mutationFn: change, onSuccess: () => queryClient.invalidateQueries({ queryKey: ["chat", path] }) })
 }
 
-/** What was asked in a chat and what its agent said and did, oldest first. */
 export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
   const { events, hosts, mine, machine, running, user, project_id } = chat
-  // The chat's files as its last finished turn left them, which is what the diff is of.
   const done = events.filter((event) => event.kind === "done").at(-1)
   const diff = useQuery({
     queryKey: ["chat-diff", path, done?.id],
@@ -25,7 +22,6 @@ export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
     enabled: done !== undefined && done.changed.length > 0,
   })
   const allow = useChatChange(path, (host: string) => api("POST", `${path}/hosts`, { host }))
-  // A host is allowed where it was last wanted, once the turn that wanted it has ended.
   const wanted = new Map(events.flatMap((event) => (event.kind === "wants" ? [[event.host, event]] : [])))
   const allowable = (event: ChatEvent) =>
     event.kind === "wants" && mine && machine && !running && !hosts.includes(event.host) && wanted.get(event.host) === event
@@ -49,11 +45,9 @@ export function ChatEvents({ chat, path }: { chat: OpenChat; path: string }) {
   )
 }
 
-/** Markdown someone or an agent wrote, with nothing in it fetched from another host or run. */
 export function Said({ text }: { text: string }) {
   return (
     <div className="prose">
-      {/* An image on another host would be fetched on sight, so it is shown as a link. */}
       <Markdown
         options={{
           disableParsingRawHTML: true,
@@ -61,7 +55,6 @@ export function Said({ text }: { text: string }) {
           sanitizer: safeUrl,
           overrides: {
             img: ({ src, alt }: { src?: string; alt?: string }) => <a href={src}>{alt || src}</a>,
-            // An agent links to files in its folder, which aren't pages here.
             a: ({ href, children }: { href?: string; children?: ReactNode }) =>
               /^(https?|mailto):/.test(href ?? "") ? <a href={href}>{children}</a> : <>{children}</>,
           },
@@ -132,7 +125,6 @@ function Event({ event, user, project, diff }: { event: ChatEvent; user: string;
 
 type File = { path: string; added: number; removed: number }
 
-/** The files a turn left changed. With the chat's `diff`, each opens to its changed lines. */
 function Changed({ files, diff }: { files: File[]; diff?: string }) {
   if (!files.length) return <p className="lbl">Done · no file changed</p>
   return (
@@ -172,14 +164,11 @@ function Changed({ files, diff }: { files: File[]; diff?: string }) {
   )
 }
 
-/** How a line of a diff is shown, by the character it starts with. */
 const colors: Record<string, string> = { "+": "bg-ok/10 text-ok", "-": "bg-acc/10 text-acc", "@": "text-ink2" }
 
-/** One file's part of a diff, without git's own lines above the first changed place. */
 function lines(diff: string, path: string) {
   const file = diff.split(/^diff --git /m).find((file) => file.split("\n", 1)[0].endsWith(` b/${path}`))
   const all = file?.split("\n").slice(1, -1) ?? []
   const first = all.findIndex((line) => line.startsWith("@@"))
-  // A file that isn't text has no changed place, only a line saying so.
   return first < 0 ? all.slice(-1) : all.slice(first)
 }

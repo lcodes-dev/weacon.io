@@ -7,15 +7,12 @@ import { DocNotes } from "./DocNotes"
 
 const blocks = (text: string) => (text.trim() ? text.trim().split(/\n{2,}/) : [])
 
-/** A change the docs writer or an agent suggests, shown block by block against the page as it is. `page` is the page it changes, and `path` the project's API path. `onDone` is told what was rejected. */
 export function DocProposal(props: { path: string; proposal: Proposal; page?: DocsPage; onDone: (rejected?: Proposal) => void }) {
   const { path, proposal, page } = props
   const queryClient = useQueryClient()
-  // The changes left out, by their place.
   const [left, setLeft] = useState<number[]>([])
   const done = (rejected?: Proposal) => queryClient.invalidateQueries({ queryKey: ["docs"] }).then(() => props.onDone(rejected))
   const accept = useMutation({
-    // The server refuses when the page is no longer at the version shown here.
     mutationFn: (markdown?: string) => api("POST", `${path}/docs/proposals/${proposal.id}`, { markdown, version: page?.version }),
     onSuccess: () => done(),
     onError: () => queryClient.invalidateQueries({ queryKey: ["docs"] }),
@@ -24,7 +21,6 @@ export function DocProposal(props: { path: string; proposal: Proposal; page?: Do
     mutationFn: () => api("DELETE", `${path}/docs/proposals/${proposal.id}`),
     onSuccess: () => done(proposal),
   })
-  // Each change is the blocks it takes out and the blocks it puts in; between changes are the blocks that stay.
   const changes: { same?: string[]; removed: string[]; added: string[] }[] = []
   for (const part of diffArrays(blocks(page?.markdown ?? ""), blocks(proposal.markdown ?? ""))) {
     const last = changes.at(-1)
@@ -66,7 +62,6 @@ export function DocProposal(props: { path: string; proposal: Proposal; page?: Do
         <p className="text-acc">The page was edited after this proposal was written. Taking a change may undo a later edit.</p>
       )}
       {changes.map((change, place) => (
-        // A diff is worked out anew each time, so a change has no name but its place.
         <div key={place} className="flex flex-col gap-2">
           {change.same?.map((block, at) => (
             <pre key={at} className="font-sans whitespace-pre-wrap text-ink2">

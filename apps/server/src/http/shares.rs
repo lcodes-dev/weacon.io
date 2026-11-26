@@ -1,5 +1,3 @@
-//! Public links to a copy of a project's user docs, which anyone who has one may read.
-
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

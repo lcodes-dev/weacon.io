@@ -10,7 +10,6 @@ use crate::error::{ApiError, Result};
 use crate::live::{self, Topic};
 use crate::{AppState, db};
 
-/// Checks a page a person just saved against the code, and keeps the writer's notes on it.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CheckPage {
     pub team_id: String,
@@ -31,7 +30,6 @@ impl CheckPage {
         let Some(page) = pages.iter().find(|page| page.id == self.doc_id) else {
             return Ok(());
         };
-        // A check that fails ends with no notes, rather than as the job's failure.
         let (files, notes) = match self.check(state, page).await {
             Ok((files, notes)) => (Some(files), Some(notes)),
             Err(error) => {
@@ -59,9 +57,7 @@ impl CheckPage {
         live::project(state, &self.project_id, Topic::Docs).await;
     }
 
-    /// The files the page is about and the writer's notes on it, both as JSON lists.
     async fn check(&self, state: &AppState, page: &Doc) -> Result<(String, String)> {
-        // A text that is all the writer's own holds no person's words to check.
         if page.written.as_ref() == Some(&page.markdown) {
             return Ok((page.files.clone(), "[]".to_owned()));
         }
@@ -72,7 +68,6 @@ impl CheckPage {
         let mut files: Vec<String> = serde_json::from_str(&page.files).unwrap_or_default();
         files.retain(|path| sources.texts.contains_key(path));
         let shown = format!("The page, {}:\n{}", page.title, page.markdown);
-        // A page a person made has no files yet, so the writer says which it is about.
         if files.is_empty() {
             let prompt = format!("{shown}\n\nRepository outline:\n{}", sources.outline);
             let answer = writer.ask(state, FILES, &prompt).await?;

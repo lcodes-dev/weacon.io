@@ -5,7 +5,6 @@ use serde_json::json;
 
 pub type Result<T, E = ApiError> = std::result::Result<T, E>;
 
-/// What a request is answered with when it fails: a status, and a message for people.
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -38,7 +37,6 @@ impl ApiError {
         Self::new(StatusCode::CONFLICT, message)
     }
 
-    /// Another service, such as GitHub or a mail server, failed.
     pub fn bad_gateway(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_GATEWAY, message)
     }

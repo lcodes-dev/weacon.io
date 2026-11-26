@@ -1,6 +1,3 @@
-//! The handlers of the API's requests, one file for each thing the web app works with.
-//! `routes.rs` says which request goes to which.
-
 pub mod api_key;
 pub mod chats;
 pub mod docs;

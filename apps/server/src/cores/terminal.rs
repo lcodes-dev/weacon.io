@@ -1,6 +1,3 @@
-//! The sign-in terminals: what an agent's own sign-in shows on a machine, handed on to the
-//! browser that opened it and back, and kept nowhere.
-
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -12,10 +9,8 @@ use tokio::sync::mpsc;
 
 use crate::{AppState, auth};
 
-/// How often the terminal is checked to still have its session.
 const PING: Duration = Duration::from_secs(30);
 
-/// What a browser sends to a terminal.
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum Typed {
@@ -38,7 +33,6 @@ pub async fn relay(
     let mut still = tokio::time::interval(PING);
     loop {
         tokio::select! {
-            // The terminal ends with the session it was opened in.
             _ = still.tick() => {
                 if !matches!(auth::signed_in(&state, &headers).await, Ok(Some(_))) {
                     break;
@@ -51,7 +45,6 @@ pub async fn relay(
                         break;
                     }
                 }
-                // The sign-in ended, or the core went away.
                 _ => break,
             },
             message = socket.recv() => match message {

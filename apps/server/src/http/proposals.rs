@@ -1,5 +1,3 @@
-//! Changes to a project's docs that the writer or an agent proposed, for a person to accept or reject.
-
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -12,13 +10,10 @@ use crate::{AppState, db};
 
 #[derive(Deserialize)]
 pub struct Accepted {
-    /// The version of the proposal's page that the person looked at; none for a new page.
     version: Option<String>,
-    /// The text they made of the proposal's, when they took only some of its changes.
     markdown: Option<String>,
 }
 
-/// Does what a proposal suggests.
 pub async fn accept(
     State(state): State<AppState>,
     user: User,

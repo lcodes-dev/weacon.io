@@ -3,8 +3,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::Result;
 use crate::{AppState, db, maps};
 
-/// Notes each tracked branch's latest commit, then maps the branches that are behind. It runs
-/// every minute, and when a project's branches change.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct MapBranches;
 

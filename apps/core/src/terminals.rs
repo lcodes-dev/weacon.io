@@ -1,7 +1,3 @@
-//! An agent's own sign-in, run in a terminal nobody sees here, which the server hands on to
-//! the browser that opened it. Which command it is comes from the agent alone: nothing the
-//! server sends can start anything else.
-
 use std::io::{Read, Write};
 
 use base64::Engine;
@@ -13,10 +9,8 @@ use crate::agents;
 use crate::link::{Shared, Work};
 
 pub struct Terminal {
-    /// Tells this sign-in from one opened for the same agent after it.
     number: u64,
     pty: Box<dyn MasterPty + Send>,
-    /// To the thread that writes what is typed, so that a terminal that doesn't read holds nothing else up.
     typed: std::sync::mpsc::Sender<Vec<u8>>,
     sign_in: Box<dyn ChildKiller + Send + Sync>,
 }
@@ -37,7 +31,6 @@ pub fn open(
     let mut writer = pair.master.take_writer()?;
     let (typed, typing) = std::sync::mpsc::channel::<Vec<u8>>();
     std::thread::spawn(move || {
-        // Ends when the terminal is forgotten, which drops the sender.
         for typed in typing {
             if writer.write_all(&typed).is_err() {
                 break;
@@ -59,9 +52,7 @@ pub fn open(
         work.opened
     };
     let work = work.clone();
-    // A terminal is read as it comes, which only a thread of its own can wait for.
     std::thread::spawn(move || {
-        // A sign-in that was closed or replaced says nothing more, so that it can't speak for its successor.
         let current = |work: &Work| {
             work.terminals
                 .get(&agent)
@@ -83,7 +74,6 @@ pub fn open(
                 out.send(FromCore::TerminalClose { agent }).ok();
             }
         }
-        // Someone may be signed in now.
         work.changed.notify_one();
     });
     Ok(())
@@ -108,7 +98,6 @@ pub fn close(work: &Shared, agent: Agent) {
     }
 }
 
-/// A sign-in can't go on without whoever was looking at it.
 pub fn close_all(work: &mut Work) {
     for (_, mut terminal) in work.terminals.drain() {
         terminal.sign_in.kill().ok();

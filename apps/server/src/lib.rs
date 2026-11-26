@@ -1,6 +1,3 @@
-//! The Weacon server: one program that keeps the data in SQLite, answers the web app's
-//! requests and talks to the core on each person's machine.
-
 mod anthropic;
 mod auth;
 mod chats;
@@ -34,22 +31,16 @@ pub use routes::router;
 #[derive(Clone)]
 pub struct AppState {
     pub pool: SqlitePool,
-    /// The address people open in their browser, for links in mail.
     pub url: String,
-    /// `https://api.github.com`, or a fake one in tests.
     pub github_api: String,
-    /// `https://api.anthropic.com`, or a fake one in tests.
     pub anthropic_api: String,
     pub cores: Arc<cores::Cores>,
     pub live: live::Live,
-    /// The folder that holds the files uploaded for docs.
     pub files: PathBuf,
-    /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
     pub embed: search::Embed,
     pub server_key: secrets::ServerKey,
 }
 
-/// Seconds since 1970.
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

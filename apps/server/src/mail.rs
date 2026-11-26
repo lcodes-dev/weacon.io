@@ -17,7 +17,6 @@ pub struct Smtp {
     pub username: Option<String>,
     #[serde(skip_serializing)]
     pub password: Option<String>,
-    /// Such as `Weacon <weacon@example.com>`.
     pub from: String,
 }
 
@@ -30,17 +29,13 @@ pub enum Security {
     None,
 }
 
-/// `apps/web/public/logo.svg` as a PNG, because mail clients don't show SVG.
 const LOGO: &[u8] = include_bytes!("../assets/logo.png");
 const FOOTER: &str = "Sent by Weacon. If you didn't ask for this mail, ignore it.";
 
 pub struct Mail<'a> {
     pub subject: &'a str,
-    /// Paragraphs, separated by blank lines.
     pub text: &'a str,
-    /// Shown large, after the text.
     pub code: Option<&'a str>,
-    /// A label and the address it opens.
     pub button: Option<(&'a str, &'a str)>,
 }
 
@@ -125,12 +120,10 @@ pub fn is_address(email: &str) -> bool {
     email.parse::<Address>().is_ok()
 }
 
-/// Whether a connection can be made from these settings.
 pub fn check(smtp: &Smtp) -> Result<(), Error> {
     connection(smtp).map(drop)
 }
 
-/// Sends through the saved SMTP settings, or prints the mail to the log while there are none.
 pub async fn send(state: &AppState, to: &str, mail: &Mail<'_>) -> Result<(), Error> {
     let (subject, text) = (mail.subject, mail.text());
     let Some(smtp) = db::settings::smtp(&state.pool, &state.server_key).await? else {

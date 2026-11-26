@@ -13,7 +13,6 @@ pub async fn show(State(state): State<AppState>, _: ServerOwner) -> Result<Json<
     Ok(Json(json!({"smtp": smtp})))
 }
 
-/// A missing password keeps the saved one.
 pub async fn update(
     State(state): State<AppState>,
     _: ServerOwner,

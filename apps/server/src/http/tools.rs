@@ -1,6 +1,3 @@
-//! The tools a chat's agent calls while its turn runs, as the Model Context Protocol has it:
-//! one JSON-RPC request in and one answer out.
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
@@ -23,7 +20,6 @@ pub async fn call(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let (id, params) = (&request["id"], &request["params"]);
-    // Something the program only lets us know.
     if id.is_null() {
         return StatusCode::ACCEPTED.into_response();
     }

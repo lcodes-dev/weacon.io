@@ -3,26 +3,20 @@ use sqlx::SqlitePool;
 
 use super::{as_json, as_optional_json, new_id};
 
-/// A change the writer or an agent suggests.
 #[derive(Serialize)]
 pub struct Proposal {
     pub id: String,
-    /// The page it changes or removes, or `None` for a new page.
     pub page: Option<String>,
-    /// The page's version it was written against.
     pub base: Option<String>,
     pub section: String,
     pub title: String,
-    /// `None` to remove the page.
     pub markdown: Option<String>,
     #[serde(serialize_with = "as_optional_json")]
     pub notes: Option<String>,
-    /// A JSON list of the files the writer had no room to read.
     #[serde(serialize_with = "as_json")]
     pub unread: String,
     pub reason: String,
     pub request: Option<String>,
-    /// For an agent's: which agent, whom it works for, and its chat if the team may read it.
     pub agent: Option<String>,
     pub user: Option<String>,
     pub chat_id: Option<String>,
@@ -44,8 +38,6 @@ pub async fn list(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<Propo
     .await
 }
 
-/// Keeps what an agent proposes for the docs of its project: a new text for the page `doc`, or
-/// a new page in `section`.
 pub async fn propose(
     pool: &SqlitePool,
     caller: &super::chats::Caller,
@@ -57,7 +49,6 @@ pub async fn propose(
 ) -> sqlx::Result<()> {
     let id = new_id();
     let (doc_id, base) = doc.map(|doc| (&doc.id, &doc.version)).unzip();
-    // A changed page keeps what it was written from; a new one has nothing yet.
     let files = doc.map_or("[]", |doc| &doc.files);
     let unread = doc.map_or("[]", |doc| &doc.unread);
     let commit = doc.and_then(|doc| doc.commit.as_ref());
@@ -85,11 +76,6 @@ pub async fn propose(
     Ok(())
 }
 
-/// Does what a proposal suggests and deletes it. `seen` is the version of its page that the
-/// person accepting it looked at. `markdown` is the text they made of the proposal's, saved
-/// under their name; without it the proposal's own is saved as the writer's.
-/// `None` when the team's project has no such proposal, false when the page has changed
-/// since `seen`, which leaves the proposal as it was.
 pub async fn accept(
     pool: &SqlitePool,
     team_id: &str,
@@ -116,7 +102,6 @@ pub async fn accept(
     if let Some(doc_id) = &proposal.doc_id {
         let current =
             sqlx::query_scalar!("SELECT MAX(id) FROM doc_versions WHERE doc_id = ?", doc_id);
-        // Leaving here undoes the deletion above with the rest of the transaction.
         if current.fetch_one(&mut *tx).await?.as_deref() != seen {
             return Ok(Some(false));
         }

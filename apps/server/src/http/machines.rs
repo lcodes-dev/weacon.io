@@ -14,7 +14,6 @@ use crate::error::{ApiError, Result};
 use crate::live::{self, Topic};
 use crate::{AppState, chats, cores, db, now};
 
-/// How long a pairing code works, in seconds.
 const CODE_SECONDS: i64 = 600;
 
 #[derive(Serialize)]
@@ -33,8 +32,6 @@ pub async fn list(State(state): State<AppState>, user: User) -> Result<Json<Vec<
     Ok(Json(listed.collect()))
 }
 
-/// A pairing code for the person signed in, or for the owner of the machine whose core asks,
-/// whose code then goes with that machine.
 pub async fn code(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>> {
     let asker = match bearer(&headers) {
         Some(token) => db::machines::by_token(&state.pool, token)
@@ -47,7 +44,6 @@ pub async fn code(State(state): State<AppState>, headers: HeaderMap) -> Result<J
     let (user_id, machine_id) = asker.ok_or_else(|| ApiError::unauthorized("Sign in first"))?;
     let code = random_token();
     db::machines::add_code(&state.pool, &code, &user_id, machine_id.as_deref()).await?;
-    // The address the core is given is the one people open, which the server was told at startup.
     Ok(Json(json!({"code": code, "server": state.url})))
 }
 
@@ -58,7 +54,6 @@ pub struct Pairing {
     os: String,
 }
 
-/// Trades a pairing code for the token a core connects with.
 pub async fn pair(
     State(state): State<AppState>,
     Json(pairing): Json<Pairing>,
@@ -88,14 +83,12 @@ pub async fn delete(
     if !db::machines::delete(&state.pool, &user.id, &machine_id).await? {
         return Err(ApiError::not_found());
     }
-    // Its core is refused when it connects again, and forgets its token.
     state.cores.end(&machine_id, "The machine was removed");
     chats::end_orphaned_turns(&state).await;
     live::user(&state, &user.id, Topic::Machines);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// A core's WebSocket.
 pub async fn connect(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -109,7 +102,6 @@ pub async fn connect(
     Ok(socket.on_upgrade(move |socket| cores::serve(state, machine, socket)))
 }
 
-/// A browser's WebSocket to the terminal in which an agent's own sign-in runs on a machine.
 pub async fn sign_in(
     State(state): State<AppState>,
     user: User,

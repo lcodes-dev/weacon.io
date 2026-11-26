@@ -1,7 +1,3 @@
-//! The tools an agent has for its project's tasks and docs, which it reads and proposes
-//! changes to. A chat's agent calls them over `/api/tools`; for the team's own agent the
-//! server runs them itself.
-
 use serde_json::{Value, json};
 
 use crate::db::chats::Caller;
@@ -10,7 +6,6 @@ use crate::error::{ApiError, Result};
 use crate::live::{self, Topic};
 use crate::{AppState, db, search, tasks};
 
-/// What each tool is called, what it does and what it takes.
 pub fn list() -> Value {
     let text = json!({"type": "string"});
     let name = json!({"type": "string", "description": "As SF-12. Left out, it is the task your chat is for, if it is for one."});
@@ -89,7 +84,6 @@ pub async fn call(state: &AppState, caller: &Caller, name: &str, given: &Value) 
     }
 }
 
-/// The tools, as they are run for one agent.
 struct Tools<'a> {
     state: &'a AppState,
     caller: &'a Caller,
@@ -182,7 +176,6 @@ impl Tools<'_> {
         let page = docs
             .iter()
             .find(|doc| doc.title.eq_ignore_ascii_case(title));
-        // The doc tool shows a page under its title, which isn't part of its text.
         let headed = markdown.split_once('\n').filter(|(first, _)| {
             let first = first.strip_prefix("# ").unwrap_or_default().trim();
             first.eq_ignore_ascii_case(title)
@@ -209,7 +202,6 @@ impl Tools<'_> {
     async fn search_docs(&self, about: &str) -> Result<String> {
         let parts = search::search(self.state, &self.caller.project_id, about).await?;
         let shown = parts.iter().take(5).map(|part| {
-            // A part's first line is its page's title.
             let text = part.text.split_once('\n').map_or("", |(_, text)| text);
             format!(
                 "# {}{}\n\n{}",
@@ -225,7 +217,6 @@ impl Tools<'_> {
         (&self.caller.team_id, &self.caller.project_id)
     }
 
-    /// As SF-12.
     fn name(&self, task: &Task) -> String {
         format!("{}-{}", self.caller.key, task.number)
     }
@@ -235,7 +226,6 @@ impl Tools<'_> {
         Ok(db::tasks::list(&self.state.pool, team_id, project_id).await?)
     }
 
-    /// The task named in `name`, as SF-12 or 12, or the chat's own.
     fn named<'t>(&self, tasks: &'t [Task], name: &Value) -> Result<&'t Task> {
         let found = match name.as_str() {
             Some(name) => {
@@ -255,7 +245,6 @@ impl Tools<'_> {
         })
     }
 
-    /// Says in the agent's chat what it did to a task, and answers the agent.
     async fn wrote(&self, id: &str, number: i64, title: &str, made: bool) -> Result<String> {
         let name = format!("{}-{number}", self.caller.key);
         let named = format!("{name} {title}");
@@ -264,7 +253,6 @@ impl Tools<'_> {
         Ok(format!("{} {name}.", if made { "Made" } else { "Changed" }))
     }
 
-    /// Adds to the agent's chat, if it has one, what a tool did.
     async fn note(&self, body: &Value) -> Result<()> {
         if let Some(chat) = &self.caller.chat_id {
             db::chats::note(&self.state.pool, chat, body).await?;
@@ -274,8 +262,6 @@ impl Tools<'_> {
     }
 }
 
-/// What an agent gave for a task, read as a person's request is. An agent gives a task to
-/// nobody and doesn't say which pages it touches.
 fn fields(given: &Value) -> Result<TaskFields> {
     let read = serde_json::from_value::<TaskFields>(given.clone());
     let fields =
@@ -291,7 +277,6 @@ fn nobody(owner: &Option<String>) -> &str {
     owner.as_deref().unwrap_or("nobody")
 }
 
-/// The files a page was written from, which is where the code it describes is; `files` is their JSON list.
 fn written_from(files: &str) -> String {
     let files: Vec<String> = serde_json::from_str(files).unwrap_or_default();
     if files.is_empty() {

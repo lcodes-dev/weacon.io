@@ -15,14 +15,12 @@ export function TeamSettings({ team, user }: { team: Team; user: User }) {
   const owner = team.role === "owner"
   const path = `/teams/${team.id}`
   const details = useTeamDetails(team)
-  // The session first: after leaving, this team is gone and must not be fetched again.
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["session"] })
     await queryClient.invalidateQueries({ queryKey: ["team", team.id] })
   }
 
   const rename = useMutation({ mutationFn: () => api("PUT", path, { name }), onSuccess: refresh })
-  // Sending to an invited address again renews its link and its 7 days.
   const invite = useMutation({
     mutationFn: (emails: string[]) => api("POST", `${path}/invites`, { emails }),
     onSuccess: refresh,

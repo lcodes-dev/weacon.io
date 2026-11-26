@@ -9,23 +9,19 @@ import { useProjects, useTeamDetails } from "../queries"
 
 type Part = { group: OpenGroup; path: string; team: Team }
 
-/** The page at `/groups/{id}`: what its members wrote to each other, and a box to write in. */
 export function GroupPage({ team, user }: { team: Team; user: User }) {
   const path = `/teams/${team.id}/groups/${useParams().id}`
   const queryClient = useQueryClient()
   const group = useQuery({
     queryKey: ["group", path],
-    // Only what came after the last message this page has is asked for.
     queryFn: async () => {
       const had = queryClient.getQueryData<OpenGroup>(["group", path])?.messages ?? []
       const now = await api<OpenGroup>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
-      // Asking marked these read, so the sidebar's list, asked at the same time, may still show them unread.
       if (now.messages.length) queryClient.invalidateQueries({ queryKey: ["groups", team.id] })
       return { ...now, messages: [...had, ...now.messages] }
     },
   })
 
-  // The newest message stays in view.
   const end = useRef<HTMLDivElement>(null)
   const written = group.data?.messages.length
   useEffect(() => {
@@ -70,7 +66,6 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
                 </Link>
               )}
             </span>
-            {/* A call to an agent stands out. */}
             <Said text={message.text.replace(/(^|\s)(@(?:claude|codex|weacon))\b/gi, "$1**$2**")} />
           </div>
         ))}
@@ -88,7 +83,6 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
   )
 }
 
-/** A request that changes the group at `path`, after which it and the sidebar's list are read again. */
 function useGroupChange<T = void>({ path, team }: Pick<Part, "path" | "team">, change: (input: T) => Promise<unknown>) {
   const queryClient = useQueryClient()
   return useMutation({
@@ -97,7 +91,6 @@ function useGroupChange<T = void>({ path, team }: Pick<Part, "path" | "team">, c
   })
 }
 
-/** Its name, its project while it has none, who else joins, and leaving. */
 function Settings({ group, path, team }: Part) {
   const navigate = useNavigate()
   const [name, setName] = useState(group.name ?? "")
@@ -163,7 +156,6 @@ function Settings({ group, path, team }: Part) {
 function Write({ group, path, team }: Part) {
   const [text, setText] = useState("")
   const details = useTeamDetails(team)
-  // Why an agent the message called doesn't run, if one doesn't.
   const [refused, setRefused] = useState<string[]>([])
   const write = useGroupChange({ path, team }, () =>
     api<{ refused: string[] }>("POST", `${path}/messages`, { text }).then((answer) => {
@@ -191,7 +183,6 @@ function Write({ group, path, team }: Part) {
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
-          // Enter sends, and Shift with it makes a new line.
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault()
             event.currentTarget.form?.requestSubmit()

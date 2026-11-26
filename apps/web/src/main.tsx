@@ -8,7 +8,6 @@ import { Shell } from "./components/Shell"
 import { Invite } from "./routes/Invite"
 import { SignIn } from "./routes/SignIn"
 
-// A public link's page shares little with the rest, so it is fetched when one is opened.
 const Shared = lazy(() => import("./routes/Shared").then((module) => ({ default: module.Shared })))
 
 function App() {

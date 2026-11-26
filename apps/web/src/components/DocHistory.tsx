@@ -3,10 +3,8 @@ import { useState } from "react"
 import { api, type DocsPage, type DocVersion } from "../api"
 import { Counts, Diff } from "./Diff"
 
-/** A page's revisions, newest first: what each changed, and an older one restored. `path` is the project's API path. */
 export function DocHistory({ path, page, onDone }: { path: string; page: DocsPage; onDone: () => void }) {
   const queryClient = useQueryClient()
-  // The revision that is open, compared with the one before it or with the page as it is now.
   const [open, setOpen] = useState<{ id: string; against: "before" | "now" }>()
   const versions = useQuery({
     queryKey: ["docs", "versions", page.id, page.version],

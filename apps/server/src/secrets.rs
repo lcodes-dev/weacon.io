@@ -1,5 +1,3 @@
-//! The server's key, kept outside the database, which seals the secrets the database holds.
-
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -18,7 +16,6 @@ impl ServerKey {
         ServerKey(rand::random())
     }
 
-    /// `place` names where the value is kept, so that it opens nowhere else.
     pub fn seal(&self, place: &str, value: &str) -> String {
         let nonce: [u8; NONCE_LEN] = rand::random();
         let mut sealed = value.as_bytes().to_vec();
@@ -49,8 +46,6 @@ impl ServerKey {
     }
 }
 
-/// Reads the key from `path`, or makes it there while no sealed secret needs the old one;
-/// then seals any secret still plain, and checks that the key opens them all.
 pub async fn load(
     pool: &SqlitePool,
     path: &Path,

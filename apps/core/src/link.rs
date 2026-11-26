@@ -1,5 +1,3 @@
-//! The core's one connection to its Weacon: what it says, and what it does when asked.
-
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,41 +13,25 @@ use tokio_tungstenite::tungstenite::{Error, Message};
 use crate::terminals::{self, Terminal};
 use crate::{Paired, agents, chats, fail, home};
 
-/// How often the core looks again at its agents.
 const LOOK: Duration = Duration::from_secs(5 * 60);
-/// The server pings every 30 seconds, so a connection this quiet is dead, as after a laptop slept.
 const SILENCE: Duration = Duration::from_secs(75);
-/// How long connecting, or sending one message, may take.
 const SLOW: Duration = Duration::from_secs(20);
 
-/// What outlives a connection: the work asked for, and where to say things while connected.
 #[derive(Default)]
 pub struct Work {
-    /// The way to the server, while there is one.
     pub out: Option<mpsc::UnboundedSender<FromCore>>,
-    /// The chats whose turn is running, each with what stops it.
     pub chats: HashMap<String, Arc<Notify>>,
-    /// The asks an agent is answering now.
     answering: HashSet<String>,
-    /// The answers the server hasn't said it has.
     answers: HashMap<String, Result<String, String>>,
-    /// The sign-ins open in a terminal here.
     pub terminals: HashMap<Agent, Terminal>,
-    /// Told when the agents may have changed, as after a sign-in.
     pub changed: Arc<Notify>,
-    /// Whether the agents are being looked at now, so that it is done one at a time.
     looking: bool,
-    /// How many sign-ins were opened, which numbers them.
     pub opened: u64,
 }
 
-/// Why a connection ended.
 enum Ended {
-    /// It was lost, or never made: dial again.
     Lost(String),
-    /// The machine was removed in Weacon.
     Refused,
-    /// Another core connected as this machine.
     Replaced,
 }
 
@@ -61,7 +43,6 @@ fn say(work: &Shared, message: FromCore) {
     }
 }
 
-/// Looks at the agents on the side and tells the server, unless that is being done already.
 fn look_at_agents(work: &Shared) {
     if std::mem::replace(&mut work.lock().unwrap().looking, true) {
         return;
@@ -74,9 +55,7 @@ fn look_at_agents(work: &Shared) {
     });
 }
 
-/// Connects, and connects again whenever the connection is lost, for as long as the machine is paired.
 pub async fn stay_connected(paired: Paired) {
-    // Two cores on one pairing would take the connection from each other, and answer twice.
     let lock = std::fs::File::create(home().join("core.lock"));
     let lock =
         lock.unwrap_or_else(|error| fail(format!("The core's folder can't be written: {error}")));
@@ -89,7 +68,6 @@ pub async fn stay_connected(paired: Paired) {
         match connected(&paired, &work).await {
             Ended::Lost(why) => eprintln!("Not connected to {}: {why}", paired.server),
             Ended::Refused => {
-                // Only the token this core started with is forgotten: the machine may have been paired anew.
                 if crate::paired().is_some_and(|now| now.token == paired.token) {
                     std::fs::remove_file(home().join("core.json")).ok();
                 }
@@ -104,7 +82,6 @@ pub async fn stay_connected(paired: Paired) {
     }
 }
 
-/// One connection, from its start to its end.
 async fn connected(paired: &Paired, work: &Shared) -> Ended {
     let address = format!("{}{CONNECT}", paired.server.replacen("http", "ws", 1));
     let lost = |error: &dyn std::fmt::Display| Ended::Lost(error.to_string());
@@ -129,7 +106,6 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
     let (out, mut outgoing) = mpsc::unbounded_channel();
     {
         let mut work = work.lock().unwrap();
-        // What was answered while away, or never taken, is said again.
         for (id, answer) in &work.answers {
             let (id, answer) = (id.clone(), answer.clone());
             out.send(FromCore::Answer { id, answer }).ok();
@@ -141,7 +117,6 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
     let mut heard = Instant::now();
     let ended = loop {
         tokio::select! {
-            // The first tick comes at once, so the server hears of the agents on connecting.
             _ = look.tick() => look_at_agents(work),
             _ = changed.notified() => look_at_agents(work),
             _ = tokio::time::sleep_until(heard + SILENCE) => break lost(&"the server went quiet"),
@@ -164,7 +139,6 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
                     },
                     Some(Ok(Message::Close(_))) | None => break lost(&"the server closed the connection"),
                     Some(Err(error)) => break lost(&error),
-                    // A ping, which is answered by itself.
                     Some(Ok(_)) => {}
                 }
             }
@@ -176,7 +150,6 @@ async fn connected(paired: &Paired, work: &Shared) -> Ended {
     ended
 }
 
-/// Answers what the server asked under an id, once, however often the server repeats it.
 fn answer(
     work: &Shared,
     id: String,
@@ -187,7 +160,6 @@ fn answer(
         drop(known);
         return say(work, FromCore::Answer { id, answer });
     }
-    // An ask the server repeats after a lost connection is already being answered.
     if !known.answering.insert(id.clone()) {
         return;
     }
@@ -204,7 +176,6 @@ fn answer(
     });
 }
 
-/// Does what the server asked.
 fn asked(work: &Shared, message: ToCore) {
     match message {
         ToCore::Ask {
@@ -241,7 +212,6 @@ fn asked(work: &Shared, message: ToCore) {
         ToCore::TerminalClose { agent } => terminals::close(work, agent),
         ToCore::Turn(turn) => chats::turn(work, turn),
         ToCore::Stop { chat } => chats::stop(work, &chat),
-        // Taken care of where the connection is held.
         ToCore::Replaced => {}
     }
 }

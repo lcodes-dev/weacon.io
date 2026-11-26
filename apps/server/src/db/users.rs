@@ -4,7 +4,6 @@ use sqlx::{SqliteConnection, SqlitePool};
 use super::new_id;
 
 const CODE_TRIES: i64 = 5;
-/// Seconds before another sign-in code can be asked for.
 const CODE_WAIT: i64 = 60;
 
 #[derive(Serialize)]
@@ -16,12 +15,10 @@ pub struct User {
     pub teams: Vec<Membership>,
 }
 
-/// A team as one of its members sees it.
 #[derive(Serialize)]
 pub struct Membership {
     pub id: String,
     pub name: String,
-    /// `owner` or `member`.
     pub role: String,
 }
 
@@ -40,7 +37,6 @@ pub async fn exists(pool: &SqlitePool, email: &str) -> sqlx::Result<bool> {
     .await
 }
 
-/// The user of a session renewed after `since`.
 pub async fn by_session(pool: &SqlitePool, token: &str, since: i64) -> sqlx::Result<Option<User>> {
     let user = sqlx::query!(
         r#"SELECT u.id, u.email, u.name, u.is_owner AS "is_owner: bool"
@@ -73,8 +69,6 @@ pub async fn by_session(pool: &SqlitePool, token: &str, since: i64) -> sqlx::Res
     }))
 }
 
-/// False when the address asked for a code less than a minute ago, whose code then stands.
-/// Wrong tries stay counted while the earlier code is live, so asking again buys no guesses.
 pub async fn save_code(
     pool: &SqlitePool,
     email: &str,
@@ -101,7 +95,6 @@ pub async fn save_code(
     Ok(saved.rows_affected() > 0)
 }
 
-/// Lets a code be asked for again at once, as when its mail couldn't be sent.
 pub async fn end_code_wait(pool: &SqlitePool, email: &str) -> sqlx::Result<()> {
     sqlx::query!(
         "UPDATE sign_in_codes SET expires_at = expires_at - ? WHERE email = ?",
@@ -113,8 +106,6 @@ pub async fn end_code_wait(pool: &SqlitePool, email: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Whether the code was right, which starts the session `token`. A registration's code also
-/// creates the account and its team.
 pub async fn sign_in(
     pool: &SqlitePool,
     email: &str,
@@ -161,7 +152,6 @@ pub async fn sign_in(
     Ok(true)
 }
 
-/// The first account on a server is its owner, and every account starts with a team of its own.
 async fn register(
     tx: &mut SqliteConnection,
     email: &str,
@@ -197,7 +187,6 @@ async fn register(
     Ok(user_id)
 }
 
-/// Starts the session's year again, unless that was done after `before`. Whether it was.
 pub async fn renew_session(
     pool: &SqlitePool,
     token: &str,

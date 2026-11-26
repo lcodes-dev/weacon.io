@@ -1,6 +1,5 @@
 import { defineConfig, devices } from "@playwright/test"
 
-// The built server, on a port of its own and a fresh database in target/, serves the built web app.
 export default defineConfig({
   testDir: "e2e",
   use: { ...devices["iPhone 13"], defaultBrowserType: "chromium", baseURL: "http://127.0.0.1:8091" },

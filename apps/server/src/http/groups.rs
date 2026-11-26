@@ -24,7 +24,6 @@ pub async fn list(
 
 #[derive(Deserialize)]
 pub struct NewGroup {
-    /// The others in it: who makes it is in it too.
     members: Vec<String>,
     name: Option<String>,
     project_id: Option<String>,
@@ -47,7 +46,6 @@ pub async fn create(
     Ok(Json(json!({"id": id})))
 }
 
-/// The group and its messages, or those after one, which the person has then read.
 pub async fn show(
     State(state): State<AppState>,
     user: User,
@@ -55,7 +53,6 @@ pub async fn show(
     Query(after): Query<After>,
 ) -> Result<Json<Value>> {
     let group = found(&state, &user, &team_id, &group_id).await?;
-    // Asked first, so that an answer is never missed between the two.
     let mut working = db::groups::working(&state.pool, &group_id).await?;
     if db::jobs::exists(&state.pool, &AnswerAsWeacon::key(&group_id)).await? {
         working.push((String::new(), group_calls::WEACON.into()));
@@ -74,7 +71,6 @@ pub struct Changes {
     project_id: Option<String>,
 }
 
-/// Names the group, and gives it its project while it has none.
 pub async fn update(
     State(state): State<AppState>,
     user: User,
@@ -126,8 +122,6 @@ pub struct Message {
     text: String,
 }
 
-/// Writes a message, and has each agent it tags answer: the writer's own, and the team's.
-/// What it gives back is why a tagged agent doesn't run, for each that doesn't.
 pub async fn write(
     State(state): State<AppState>,
     user: User,
@@ -145,7 +139,6 @@ pub async fn write(
     Ok(Json(json!({"refused": refused})))
 }
 
-/// A group the person is in. One they aren't in looks like one that doesn't exist.
 async fn found(state: &AppState, user: &User, team_id: &str, group_id: &str) -> Result<Group> {
     user.member_of(team_id)?;
     let groups = db::groups::list(&state.pool, team_id, &user.id).await?;
@@ -163,7 +156,6 @@ async fn check_members(state: &AppState, team_id: &str, people: &[String]) -> Re
     Ok(())
 }
 
-/// The project, if one is named, must be the team's.
 async fn check_project(state: &AppState, team_id: &str, project_id: Option<&str>) -> Result<()> {
     let projects = db::projects::list(&state.pool, team_id).await?;
     if !project_id.is_none_or(|id| projects.iter().any(|project| project.id == id)) {
@@ -172,7 +164,6 @@ async fn check_project(state: &AppState, team_id: &str, project_id: Option<&str>
     Ok(())
 }
 
-/// A name as it is kept: none when nothing is written.
 fn named(name: &Option<String>) -> Option<&str> {
     name.as_deref()
         .map(str::trim)

@@ -6,13 +6,11 @@ import { ChatEvents, useChatChange } from "../components/ChatEvents"
 
 type Part = { chat: OpenChat; path: string }
 
-/** The page at `/chats/{id}`: what was asked, what the agent said and did, and a box to ask for more. */
 export function ChatPage({ team }: { team: Team }) {
   const path = `/teams/${team.id}/chats/${useParams().id}`
   const queryClient = useQueryClient()
   const chat = useQuery({
     queryKey: ["chat", path],
-    // Only what came after the last event this page has is asked for.
     queryFn: async () => {
       const had = queryClient.getQueryData<OpenChat>(["chat", path])?.events ?? []
       const now = await api<OpenChat>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
@@ -20,7 +18,6 @@ export function ChatPage({ team }: { team: Team }) {
     },
   })
 
-  // The newest event stays in view as the agent works.
   const end = useRef<HTMLDivElement>(null)
   const told = chat.data?.events.length
   useEffect(() => {
@@ -47,13 +44,11 @@ export function ChatPage({ team }: { team: Team }) {
   )
 }
 
-/** What the chat is, where it runs, and the hosts its commands may reach. */
 function Header({ chat, path, team }: Part & { team: Team }) {
   const { title, project, branch, agent, machine, connected, mine, running, user, hosts, pull_number, pull_url, task } = chat
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const forget = useChatChange(path, (host: string) => api("DELETE", `${path}/hosts/${host}`))
-  // Its folder on the machine goes with it, and what it changed there and never pushed.
   const remove = useMutation({
     mutationFn: () => api("DELETE", path),
     onSuccess: async () => {
@@ -121,7 +116,6 @@ function Header({ chat, path, team }: Part & { team: Team }) {
   )
 }
 
-/** Commits what the chat changed and pushes it, which opens the chat's pull request the first time. */
 function Push({ chat, path }: Part) {
   const [message, setMessage] = useState(chat.title)
   const push = useChatChange(path, () => api("POST", `${path}/push`, { text: message }))
@@ -147,7 +141,6 @@ function Push({ chat, path }: Part) {
   )
 }
 
-/** The box to ask the agent for more, which stops it while it works. */
 function Ask({ chat, path }: Part) {
   const [text, setText] = useState("")
   const say = useChatChange(path, () => api("POST", `${path}/messages`, { text }).then(() => setText("")))
@@ -169,7 +162,6 @@ function Ask({ chat, path }: Part) {
         value={text}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={(event) => {
-          // Enter sends, and Shift with it makes a new line.
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault()
             event.currentTarget.form?.requestSubmit()

@@ -1,18 +1,13 @@
-//! Claude Code: how its program is started for a turn, and what it prints.
-
 use core_link::{Deed, Event};
 use serde_json::{Value, json};
 
 use crate::{Ended, TOKEN, did, said, text, wanted};
 
-/// What makes it follow the repository's instructions, which it would otherwise leave out
-/// with the person's own setup. A repository's settings and hooks stay out.
 const INSTRUCTIONS: &str = "This repository's own instructions are in CLAUDE.md at its root, \
     or in AGENTS.md where there is no CLAUDE.md. Read that file before anything else, with \
     the files it names, and follow them. Where there is neither, go on without.";
 
 pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> Vec<String> {
-    // Its own sandbox for commands, with nothing let out of it.
     let sandbox = json!({"sandbox": {
         "enabled": true,
         "autoAllowBashIfSandboxed": true,
@@ -21,7 +16,6 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
         "filesystem": {"allowWrite": [cache]},
     }});
     let sandbox = sandbox.to_string();
-    // It puts the token in itself, from its environment.
     let bearer = format!("Bearer ${{{TOKEN}}}");
     let tools = json!({"mcpServers": {"weacon": {
         "type": "http", "url": tools, "headers": {"Authorization": bearer},
@@ -32,7 +26,6 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
         "--output-format",
         "stream-json",
         "--verbose",
-        // None of the person's or the repository's own setup is loaded, and no tools but ours.
         "--setting-sources",
         "",
         "--strict-mcp-config",
@@ -40,10 +33,8 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
         &tools,
         "--permission-mode",
         "acceptEdits",
-        // What would ask a person is refused, and the agent is told.
         "--permission-prompts",
         "none",
-        // Every command is allowed, since every command is in the sandbox, and so are our tools.
         "--allowedTools",
         "Bash",
         "mcp__weacon",
@@ -58,8 +49,6 @@ pub fn args(session: Option<&str>, hosts: &[&str], cache: &str, tools: &str) -> 
     args.into_iter().map(str::to_owned).collect()
 }
 
-/// One line of `claude --output-format stream-json`. What a sub-agent says and does is its
-/// own, and isn't shown yet.
 pub fn read(
     printed: &Value,
     folder: &str,
@@ -85,7 +74,6 @@ pub fn read(
                             .or(input["notebook_path"].as_str());
                         did(Deed::Edit, &path.into(), folder)
                     }
-                    // What our tools write, the server says in the chat itself; looking a tool up says nothing.
                     (Some("tool_use"), Some(name))
                         if name.starts_with("mcp__weacon__") || name == "ToolSearch" =>
                     {
@@ -97,7 +85,6 @@ pub fn read(
                 event.into_iter().for_each(&mut *tell);
             }
         }
-        // A command's result, where the sandbox lists the hosts it refused, each with its port.
         Some("user") if own => {
             for part in parts {
                 let result = part["content"].to_string();

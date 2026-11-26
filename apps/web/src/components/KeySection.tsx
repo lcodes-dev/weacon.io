@@ -4,7 +4,6 @@ import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { api, type Team } from "../api"
 
-/** The team's API key, in team settings. It is saved and removed, never shown. */
 export function KeySection({ team, saved }: { team: Team; saved: boolean }) {
   const queryClient = useQueryClient()
   const [key, setKey] = useState("")

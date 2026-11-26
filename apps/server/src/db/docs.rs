@@ -3,14 +3,11 @@ use sqlx::SqlitePool;
 
 use super::{as_json, as_optional_json, new_id};
 
-/// Where a project's docs stand, and what they were written from.
 pub struct DocsStatus {
-    /// `idle`, `running` or `failed`.
     pub state: String,
     pub message: Option<String>,
     pub branch: Option<String>,
     pub commit: Option<String>,
-    /// A JSON list of folders.
     pub left_out: Option<String>,
 }
 
@@ -20,32 +17,24 @@ pub struct Doc {
     pub section: String,
     pub title: String,
     pub markdown: String,
-    /// The id of its newest version, which an edit names as what it started from.
     pub version: String,
-    /// JSON lists: the files it was written from, and those the writer had no room to read.
     #[serde(serialize_with = "as_json")]
     pub files: String,
     #[serde(serialize_with = "as_json")]
     pub unread: String,
-    /// The commit its text was written from, which its citations point into.
     pub commit: Option<String>,
-    /// The text the docs writer last gave it, which tells a person's words from the writer's own.
     #[serde(skip)]
     pub written: Option<String>,
-    /// A JSON list of the writer's notes on a person's words, once it has checked them.
     #[serde(serialize_with = "as_optional_json")]
     pub notes: Option<String>,
     pub checking: bool,
 }
 
-/// A page as a run wrote it, or a change to one.
 pub struct Written {
-    /// The page to change or, without `markdown`, to remove. `None` for a new page.
     pub doc: Option<(String, String)>,
     pub section: String,
     pub title: String,
     pub markdown: Option<String>,
-    /// JSON lists.
     pub files: String,
     pub unread: String,
     pub notes: String,
@@ -65,7 +54,6 @@ impl Written {
     }
 }
 
-/// A page's text with what it was written from.
 pub(super) struct Text<'a> {
     pub(super) section: &'a str,
     pub(super) title: &'a str,
@@ -80,12 +68,10 @@ pub struct DocVersion {
     pub id: String,
     pub title: String,
     pub markdown: String,
-    /// The name of who wrote it, or `None` for the docs writer.
     pub author: Option<String>,
     pub created_at: i64,
 }
 
-/// `None` when the team has no such project.
 pub async fn status(
     pool: &SqlitePool,
     team_id: &str,
@@ -119,7 +105,6 @@ pub async fn list(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<Doc>>
     .await
 }
 
-/// Marks the project's docs as being written by `run`. False when a run already holds it.
 pub async fn claim_run(pool: &SqlitePool, project_id: &str, run: i64) -> sqlx::Result<bool> {
     let claimed = sqlx::query!(
         "UPDATE projects SET docs_state = 'running', docs_message = NULL, docs_run = ?
@@ -132,7 +117,6 @@ pub async fn claim_run(pool: &SqlitePool, project_id: &str, run: i64) -> sqlx::R
     Ok(claimed.rows_affected() > 0)
 }
 
-/// False, and nothing changes, when `run` no longer holds the project.
 pub async fn set_state(
     pool: &SqlitePool,
     project_id: &str,
@@ -152,11 +136,6 @@ pub async fn set_state(
     Ok(set.rows_affected() > 0)
 }
 
-/// Ends `run` with what it wrote, and does nothing unless it still holds the project.
-/// `commit` is what it was all written from. `from` is the branch and the left out folders of
-/// a run over the whole project, which drops the writer's proposals nobody answered; a request
-/// has none. A project without pages gets the pages themselves, and one with pages gets them
-/// as proposals.
 pub async fn save_written(
     pool: &SqlitePool,
     project_id: &str,
@@ -186,7 +165,6 @@ pub async fn save_written(
         return Ok(());
     }
     if from.is_some() {
-        // An agent's proposal waits for a person.
         sqlx::query!(
             "DELETE FROM proposals WHERE project_id = ? AND agent IS NULL",
             project_id
@@ -229,8 +207,6 @@ pub async fn save_written(
     tx.commit().await
 }
 
-/// The branch a page is checked against: the one the docs were last written from, or else
-/// the first of the project's branches that is mapped.
 pub async fn check_branch(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Option<String>> {
     sqlx::query_scalar!(
         r#"SELECT COALESCE(p.docs_branch, MIN(b.name)) AS "branch: String"
@@ -249,7 +225,6 @@ pub async fn start_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Ends the check of a page cut short, whatever version it was of.
 pub async fn stop_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
     sqlx::query!("UPDATE docs SET checking = 0 WHERE id = ?", doc_id)
         .execute(pool)
@@ -257,8 +232,6 @@ pub async fn stop_check(pool: &SqlitePool, doc_id: &str) -> sqlx::Result<()> {
     Ok(())
 }
 
-/// Ends the check of a page's `version` with its notes, or with none when the check failed.
-/// Does nothing when the page has been saved again since, which started a check of its own.
 pub async fn end_check(
     pool: &SqlitePool,
     doc_id: &str,
@@ -279,7 +252,6 @@ pub async fn end_check(
     Ok(())
 }
 
-/// Takes the note at `index` off a page. False when the team's project has no such page.
 pub async fn dismiss_note(
     pool: &SqlitePool,
     team_id: &str,
@@ -349,7 +321,6 @@ pub(super) async fn add_version(
     Ok(())
 }
 
-/// Adds an empty page at the end and returns its id. `None` when the team has no such project.
 pub async fn add(
     pool: &SqlitePool,
     team_id: &str,
@@ -384,12 +355,9 @@ pub async fn add(
 pub struct DocEdit {
     pub title: String,
     pub markdown: String,
-    /// The version the edit started from.
     pub version: String,
 }
 
-/// Saves a person's edit as the page's new version. `None` when the project has no such page,
-/// false when the page is no longer at the version the edit started from.
 pub async fn save(
     pool: &SqlitePool,
     team_id: &str,
@@ -431,7 +399,6 @@ pub async fn save(
     Ok(Some(true))
 }
 
-/// Returns whether the project had such a page.
 pub async fn delete(
     pool: &SqlitePool,
     team_id: &str,
@@ -472,7 +439,6 @@ pub async fn order(
     tx.commit().await
 }
 
-/// A page's versions, newest first. Empty when the project has no such page.
 pub async fn versions(
     pool: &SqlitePool,
     team_id: &str,

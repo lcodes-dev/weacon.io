@@ -1,6 +1,3 @@
-//! Agents called in a group by tagging them: a person's own agent, which answers in that
-//! person's chat for the group, and the team's own, `@weacon`.
-
 use core_link::Agent;
 use serde_json::Value;
 
@@ -15,7 +12,6 @@ use crate::{AppState, chats, db};
 pub const WEACON: &str = "weacon";
 const NO_PROJECT: &str = "This group has no project for an agent to work on";
 
-/// Has each agent a message tags answer in the group. Gives why, for each that doesn't run.
 pub async fn call_tagged(
     state: &AppState,
     user: &User,
@@ -36,15 +32,12 @@ pub async fn call_tagged(
     Ok(refused)
 }
 
-/// Whether a message calls the agent of this name: it is written in it after an `@`.
 fn tags(text: &str, name: &str) -> bool {
     let tag = format!("@{name}");
     text.split(|c: char| !c.is_alphanumeric() && c != '@')
         .any(|word| word.eq_ignore_ascii_case(&tag))
 }
 
-/// Has the person's own agent answer: the first time it starts their chat with it for the
-/// group, later that chat's next turn.
 async fn call_agent(
     state: &AppState,
     user: &User,
@@ -85,7 +78,6 @@ async fn call_agent(
         agents.iter().any(ready)
     };
     let mut ready: Vec<&Machine> = machines.iter().filter(signed_in).collect();
-    // One that is connected before one that is away, where the turn would wait.
     ready.sort_by_key(|machine| !state.cores.connected(&machine.id));
     let Some(machine) = ready.first() else {
         return Ok(Some(format!("None of your machines has {name} signed in")));
@@ -105,7 +97,6 @@ async fn call_agent(
     Ok(None)
 }
 
-/// Has the team's own agent answer, unless it is answering here already.
 async fn call_weacon(
     state: &AppState,
     user: &User,
@@ -144,9 +135,6 @@ async fn call_weacon(
     Ok(None)
 }
 
-/// What an agent is told when a person calls it in a group: what was `written` there that
-/// it wasn't told yet, each message with who wrote it, and whom it works for. Its own
-/// answers, in the chat `own`, it knows already.
 pub fn told(group: &Group, user: &User, own: Option<&str>, written: &[GroupMessage]) -> String {
     let others = group.members.iter().filter(|member| member.id != user.id);
     let others: Vec<&str> = others.map(|member| member.name.as_str()).collect();
@@ -169,7 +157,6 @@ pub fn told(group: &Group, user: &User, own: Option<&str>, written: &[GroupMessa
         format!("{}: {}", agent.as_deref().unwrap_or(person), message.text)
     });
     let mut lines: Vec<String> = lines.collect();
-    // An agent that wasn't told of a long group gets the end of it.
     lines.drain(..lines.len().saturating_sub(50));
     let name = &user.name;
     format!(

@@ -1,5 +1,3 @@
-//! What a project needs done, made and changed alike by people and by the agents working for them.
-
 use crate::db::tasks::TaskFields;
 use crate::error::{ApiError, Result};
 use crate::live::{self, Topic};
@@ -7,8 +5,6 @@ use crate::{AppState, db};
 
 pub const STATUSES: [&str; 3] = ["todo", "doing", "done"];
 
-/// Makes a task in a team's project for a person, from a request of theirs or through the
-/// agent of their chat `chat_id`, and gives its id and number.
 pub async fn create(
     state: &AppState,
     (team_id, project_id): (&str, &str),
@@ -25,7 +21,6 @@ pub async fn create(
     Ok(task)
 }
 
-/// Changes what `fields` gives of a task of a team's project, and gives them as they were kept.
 pub async fn update(
     state: &AppState,
     (team_id, project_id): (&str, &str),

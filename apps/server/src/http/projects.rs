@@ -14,17 +14,12 @@ use crate::{AppState, db, github, now};
 #[derive(Deserialize)]
 pub struct Fields {
     name: String,
-    /// What the project's tasks are named by: two to five letters or digits.
     key: String,
-    /// `owner/name`; missing or empty for a project with no repository.
     repo: Option<String>,
-    /// The branches to map.
     #[serde(default)]
     branches: Vec<String>,
 }
 
-/// The fields as they are kept: a trimmed name, a key no other project of the team has, and a
-/// repository the team's GitHub App reaches, whose branches are mapped.
 struct Checked<'a> {
     name: &'a str,
     key: String,
@@ -33,7 +28,6 @@ struct Checked<'a> {
 }
 
 impl Fields {
-    /// `project_id` is the project being changed, if any.
     async fn checked(
         &self,
         state: &AppState,
@@ -148,7 +142,6 @@ pub async fn delete(
     for file in db::projects::delete(&state.pool, &team_id, &project_id).await? {
         tokio::fs::remove_file(state.files.join(file)).await.ok();
     }
-    // Its chats go with it.
     live::team(&state, &team_id, Topic::Projects).await;
     live::team(&state, &team_id, Topic::Chats).await;
     Ok(StatusCode::NO_CONTENT)

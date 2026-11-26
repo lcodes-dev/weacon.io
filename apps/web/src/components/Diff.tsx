@@ -1,9 +1,7 @@
 import { diffLines } from "diff"
 
-/** The lines of a change from one text to another, each with its number in the old text, the new, or both. */
 function changes(from: string, to: string) {
   let [old, now] = [0, 0]
-  // A last line with and without its line end would count as changed.
   return diffLines(`${from.trimEnd()}\n`, `${to.trimEnd()}\n`).flatMap(({ value, added, removed }) =>
     value
       .replace(/\n$/, "")
@@ -12,7 +10,6 @@ function changes(from: string, to: string) {
   )
 }
 
-/** How many lines a change puts in and takes out. */
 export function Counts({ from, to }: { from: string; to: string }) {
   const lines = changes(from, to)
   return (
@@ -23,7 +20,6 @@ export function Counts({ from, to }: { from: string; to: string }) {
   )
 }
 
-/** What changed from one text to another, line by line. */
 export function Diff({ from, to, title }: { from: string; to: string; title: string }) {
   const lines = changes(from, to)
   return (
@@ -34,7 +30,6 @@ export function Diff({ from, to, title }: { from: string; to: string; title: str
       </div>
       {lines.every((line) => !line.added && !line.removed) && <p className="px-3 py-2 font-sans text-ink2">Nothing changes in the text.</p>}
       {lines.map(({ text, added, removed, old, now }, place) => (
-        // A diff is worked out anew each time, so a line has no name but its place.
         <div key={place} className={`flex ${added ? "bg-ok/15" : removed ? "bg-acc/15" : "text-ink2"}`}>
           <span className="w-9 shrink-0 pr-2 text-right text-ink3 select-none">{old}</span>
           <span className="w-9 shrink-0 pr-2 text-right text-ink3 select-none">{now}</span>

@@ -11,7 +11,6 @@ const colors: Record<string, string> = {
   PHP: "var(--lang-5)",
 }
 
-/** A branch's map: the graph, the trail of the folder in view, and a panel for the selected file. */
 export function CodeMap({ team, project }: { team: Team; project: Project }) {
   const mapped = project.branches.filter((branch) => branch.commit_sha)
   const [chosen, setChosen] = useState("")
@@ -19,7 +18,6 @@ export function CodeMap({ team, project }: { team: Team; project: Project }) {
   const [selected, setSelected] = useState("")
   const branch = mapped.find((branch) => branch.name === chosen) ?? mapped[0]
   const map = useQuery({
-    // The commit is in the key so that the picture follows the branch.
     queryKey: ["map", project.id, branch?.name, branch?.commit_sha],
     queryFn: () => api<Map>("GET", `/teams/${team.id}/projects/${project.id}/map?branch=${encodeURIComponent(branch.name)}`),
     enabled: !!branch,
@@ -98,7 +96,6 @@ export function CodeMap({ team, project }: { team: Team; project: Project }) {
               </div>
               {file.symbols.map((symbol, index) => (
                 <a
-                  // A minified file defines the same name many times on one line.
                   key={index}
                   className="flex gap-2 hover:underline"
                   href={`https://github.com/${project.repo}/blob/${map.data.commit}/${file.path}#L${symbol.line}`}

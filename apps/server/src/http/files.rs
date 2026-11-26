@@ -1,6 +1,3 @@
-//! The files a project's docs show or link to: uploaded by its team, read by its team or,
-//! for the pages behind a public link, by anyone who has the link.
-
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
@@ -26,7 +23,6 @@ pub struct Named {
     name: String,
 }
 
-/// Keeps the request's body as a file of the project, and answers with its id and whether it is an image.
 pub async fn create(
     State(state): State<AppState>,
     user: User,
@@ -42,7 +38,6 @@ pub async fn create(
     if bytes.len() > MAX_BYTES {
         return Err(ApiError::invalid("A file can be 20 MB at most"));
     }
-    // The name goes into a header when the file is downloaded, so it is kept plain.
     let plain = |c: &char| c.is_ascii_alphanumeric() || " .-_()".contains(*c);
     let name: String = name.chars().filter(plain).take(200).collect();
     let id = uuid::Uuid::now_v7().to_string();
@@ -78,7 +73,6 @@ pub async fn show(
     served(&state, &file_id, kept, &asked).await
 }
 
-/// A file of a public link, when one of its pages shows or links to it.
 pub async fn shared(
     State(state): State<AppState>,
     Path((token, file_id)): Path<(String, String)>,
@@ -88,7 +82,6 @@ pub async fn shared(
     served(&state, &file_id, kept, &asked).await
 }
 
-/// The file `id`, which the database said exists and the asker may have.
 async fn served(
     state: &AppState,
     id: &str,
@@ -96,8 +89,6 @@ async fn served(
     asked: &HeaderMap,
 ) -> Result<Response> {
     let Kept { kind, name } = kept.ok_or_else(ApiError::not_found)?;
-    // A browser asks before it uses its copy, so that a file it may no longer have isn't shown
-    // from there. A file never changes, so its id says whether the copy is good.
     let tag = format!("\"{id}\"");
     let caching = [
         (CACHE_CONTROL, "private, no-cache".to_owned()),
@@ -125,7 +116,6 @@ async fn served(
     Ok((caching, headers, bytes).into_response())
 }
 
-/// The image the bytes are, whatever the upload called itself. SVG is left out: it can carry scripts.
 fn image_kind(bytes: &[u8]) -> Option<&'static str> {
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),

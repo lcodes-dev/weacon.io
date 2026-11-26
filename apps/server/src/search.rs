@@ -1,16 +1,11 @@
-//! Searching a project's docs by what a text is about. The `doc-search` crate cuts the pages,
-//! embeds and scores; this keeps each page's parts and brings them up to date when asked.
-
 use doc_search::MODEL;
 
 use crate::db::search::DocPart;
 use crate::error::{ApiError, Result};
 use crate::{AppState, db};
 
-/// What turns texts into embeddings: the crate's own, or a test's stand-in.
 pub type Embed = fn(&[String]) -> Result<Vec<Vec<f32>>, String>;
 
-/// The embeddings of `texts`, worked out off the threads that answer requests.
 async fn embedded(state: &AppState, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
     let embed = state.embed;
     let done = tokio::task::spawn_blocking(move || embed(&texts)).await;
@@ -18,9 +13,6 @@ async fn embedded(state: &AppState, texts: Vec<String>) -> Result<Vec<Vec<f32>>>
     done.map_err(ApiError::bad_gateway)
 }
 
-/// The parts of a project's docs in the order they answer `question`, the best first. A page
-/// that changed since it was last searched, or was embedded by another model, is cut and
-/// embedded first, so nothing has to be done when a page is saved.
 pub async fn search(state: &AppState, project_id: &str, question: &str) -> Result<Vec<DocPart>> {
     for page in db::search::unsearched(&state.pool, project_id, MODEL).await? {
         let texts = doc_search::parts(&page.title, &page.markdown);

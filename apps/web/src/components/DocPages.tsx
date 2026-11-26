@@ -7,7 +7,6 @@ export type DocPage = { id: string; title: string; markdown: string }
 
 type Rendering = {
   code?: ComponentType<{ children?: ReactNode }>
-  /** The address of one of the project's own files: an image written `image:{id}` in a page, or an attachment written `file:{id}`. */
   file: (id: string) => string
 }
 
@@ -20,9 +19,7 @@ export function safeUrl(value: string) {
   }
 }
 
-/** A page's title and its Markdown, rendered. */
 export function DocArticle({ title, markdown, code, file }: { title: string; markdown: string } & Rendering) {
-  // An image on another host would be fetched on sight, telling it who reads what; a link waits for a click.
   const img = ({ src, alt }: { src?: string; alt?: string }) =>
     src?.startsWith("image:") ? <img src={file(src.slice(6))} alt={alt ?? ""} /> : <a href={src}>{alt || src}</a>
   const a = ({ href, children }: { href?: string; children?: ReactNode }) =>
@@ -51,7 +48,6 @@ export function DocArticle({ title, markdown, code, file }: { title: string; mar
   )
 }
 
-/** A list of docs pages beside the open one. `note` sits under the list, and `children` draws the open page in place of its article. With `onOrder`, the pages can be dragged into another order. */
 export function DocPages<Page extends DocPage>(
   props: {
     pages: Page[]

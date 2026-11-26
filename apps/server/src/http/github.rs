@@ -10,7 +10,6 @@ use crate::error::{ApiError, Result};
 use crate::github::{self, GithubApp, Status};
 use crate::{AppState, db};
 
-/// What the team's GitHub App can reach.
 pub async fn show(
     State(state): State<AppState>,
     user: User,
@@ -22,11 +21,9 @@ pub async fn show(
 
 #[derive(Deserialize)]
 pub struct Registration {
-    /// From GitHub, after the owner confirmed the app.
     code: String,
 }
 
-/// Keeps the app GitHub made for the team from its manifest.
 pub async fn create(
     State(state): State<AppState>,
     user: User,
@@ -60,7 +57,6 @@ struct Repo {
     default_branch: String,
 }
 
-/// The repository's branches, for choosing which to track.
 pub async fn branches(
     State(state): State<AppState>,
     user: User,
@@ -68,7 +64,6 @@ pub async fn branches(
     Query(of): Query<OfRepo>,
 ) -> Result<Json<Value>> {
     user.member_of(&team_id)?;
-    // The name goes into GitHub's address, so it must be nothing but `owner/name`.
     let plain = |part: &str| {
         part.chars()
             .all(|c| c.is_alphanumeric() || "-_.".contains(c))

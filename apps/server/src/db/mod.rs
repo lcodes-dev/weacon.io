@@ -1,5 +1,3 @@
-//! Every query the server makes, one file per area. sqlx checks each against the schema at build time.
-
 pub mod chats;
 pub mod docs;
 pub mod files;
@@ -20,12 +18,10 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 
-/// A UUIDv7, which starts with the time it was made, so ids sort by age.
 fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Opens the database file, making it if it is missing, and runs the migrations.
 pub async fn open(path: &str) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
         .filename(path)
@@ -39,7 +35,6 @@ pub async fn open(path: &str) -> sqlx::Result<SqlitePool> {
     migrated(SqlitePool::connect_with(options).await?).await
 }
 
-/// For tests. One connection, because each in-memory connection is a database of its own.
 pub async fn memory() -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -64,7 +59,6 @@ async fn migrated(pool: SqlitePool) -> sqlx::Result<SqlitePool> {
     Ok(pool)
 }
 
-/// The database holds sessions, keys and source code, so only the server's account may read it.
 #[cfg(unix)]
 fn keep_private(path: &str) -> std::io::Result<()> {
     use std::fs::{OpenOptions, Permissions, set_permissions};
@@ -75,7 +69,6 @@ fn keep_private(path: &str) -> std::io::Result<()> {
         .append(true)
         .mode(0o600)
         .open(path)?;
-    // SQLite gives its two side files the database's own permissions.
     for file in [
         path.to_owned(),
         format!("{path}-wal"),
@@ -88,7 +81,6 @@ fn keep_private(path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Serializes a column holding a JSON list as that list, not as a string.
 fn as_json<S: serde::Serializer>(json: &str, to: S) -> Result<S::Ok, S::Error> {
     let value: serde_json::Value = serde_json::from_str(json).map_err(serde::ser::Error::custom)?;
     value.serialize(to)

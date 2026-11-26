@@ -6,7 +6,6 @@ import { useSearchParams } from "react-router"
 import { api, type Team } from "../api"
 import { useGithub } from "../queries"
 
-/** The team's own GitHub App, in team settings. GitHub sends the owner back to this page. */
 export function GithubSection({ team }: { team: Team }) {
   const queryClient = useQueryClient()
   const [params, setParams] = useSearchParams()
@@ -18,7 +17,6 @@ export function GithubSection({ team }: { team: Team }) {
   const register = useMutation({ mutationFn: (code: string) => api("POST", path, { code }), onSuccess: refresh })
   const forget = useMutation({ mutationFn: () => api("DELETE", path), onSuccess: refresh })
 
-  // Back from GitHub with a code. The state proves this tab started the registration, and for this team.
   useEffect(() => {
     const code = params.get("code")
     if (!code) return
@@ -35,7 +33,6 @@ export function GithubSection({ team }: { team: Team }) {
     redirect_url: `${origin}/settings/team`,
     setup_url: `${origin}/settings/team`,
     public: false,
-    // Writing is for a chat's branch and its pull request; everything else asks for a token that only reads.
     default_permissions: { contents: "write", pull_requests: "write" },
   }
   const owner = organization ? `organizations/${organization}/` : ""

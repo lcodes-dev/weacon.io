@@ -1,8 +1,5 @@
-//! One small made-up repository per language: the lines the map must draw, and so also those it must not.
-
 use code_map::{File, link, read};
 
-/// The lines between the files given as path and text, each as "user -> used".
 fn lines(files: &[(&str, &str)]) -> Vec<String> {
     let read: Vec<File> = files
         .iter()
@@ -44,7 +41,6 @@ fn php() {
             "app/Http/Both.php",
             "<?php\nnamespace App\\Http;\nuse App\\Models\\{User, Team};\nclass Both extends Show {}",
         ),
-        // The same class a second time, where its namespace does not lead, and a method that only shares a name.
         (
             "Models/User.php",
             "<?php\nnamespace App\\Models;\nclass User {}",
@@ -103,7 +99,6 @@ fn javascript_typescript_vue_and_svelte() {
         ),
         ("src/Shell.tsx", "export function Shell() { return null }"),
         ("src/logo.svg", "<svg />"),
-        // Defines names the others call, and is imported by none of them.
         (
             "vendor/vue.js",
             "export function post() {}\nexport function fetch() {}",
@@ -317,7 +312,6 @@ fn ruby() {
             "require_relative \"price\"\nrequire \"json\"\nclass Cart\n  def total; format(1); end\nend",
         ),
         ("bin/run.rb", "require \"shop/cart\"\nCart.new.total"),
-        // Rails finds a class by its name alone.
         ("app/models/user.rb", "class User < Record\nend"),
         (
             "app/models/record.rb",

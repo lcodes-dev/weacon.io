@@ -4,7 +4,6 @@ use sqlx::types::Json;
 
 use super::new_id;
 
-/// What a task is done when.
 #[derive(Serialize, Deserialize)]
 pub struct Check {
     pub text: String,
@@ -24,23 +23,18 @@ pub struct Task {
     pub asker_id: Option<String>,
     pub asker: Option<String>,
     pub created_at: i64,
-    /// The chat whose agent made it, if one did.
     pub chat_id: Option<String>,
-    /// The pages of the project's docs it touches.
     pub docs: Json<Vec<String>>,
 }
 
-/// What a task is made from or changed to: only what is given changes.
 #[derive(Deserialize)]
 pub struct TaskFields {
     pub title: Option<String>,
     pub text: Option<String>,
     pub checks: Option<Json<Vec<Check>>>,
-    /// Given as `null`, nobody owns it.
     #[serde(default, deserialize_with = "given")]
     pub owner_id: Option<Option<String>>,
     pub docs: Option<Vec<String>>,
-    /// A task goes to the end of a status it is new to. One being made is to do.
     pub status: Option<String>,
 }
 
@@ -48,7 +42,6 @@ fn given<'de, D: serde::Deserializer<'de>>(from: D) -> Result<Option<Option<Stri
     Option::deserialize(from).map(Some)
 }
 
-/// A project's tasks, each status in its order.
 pub async fn list(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<Vec<Task>> {
     sqlx::query_as!(
         Task,
@@ -66,7 +59,6 @@ pub async fn list(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::R
     .await
 }
 
-/// The new task's id and number, at the top of To do. `chat_id` is the chat whose agent makes it, for its owner.
 pub async fn create(
     pool: &SqlitePool,
     project_id: &str,
@@ -151,7 +143,6 @@ pub async fn change(
     tx.commit().await
 }
 
-/// Makes those of `docs` that are pages of the project the pages a task touches.
 async fn set_docs(
     tx: &mut sqlx::SqliteConnection,
     project_id: &str,
@@ -174,7 +165,6 @@ async fn set_docs(
     Ok(())
 }
 
-/// Puts the project's tasks named in `order` in `status`, in that order.
 pub async fn order(
     pool: &SqlitePool,
     project_id: &str,

@@ -1,5 +1,3 @@
-//! Keeping the core running in the background: a launch agent on macOS, a user service on Linux.
-
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -7,8 +5,6 @@ use crate::{fail, printed};
 
 const NAME: &str = "io.weacon.core";
 
-/// The environment variables the core needs in the background, as it has them now: where
-/// the agents are found, and where they and the core keep their own files.
 fn kept() -> Vec<(String, String)> {
     let names = [
         "PATH",
@@ -33,7 +29,6 @@ fn ran(program: &str, args: &[&str]) -> bool {
     ended.is_ok_and(|ended| ended.success())
 }
 
-/// Runs a command whose failing is expected and whose complaint would only puzzle.
 fn tried(program: &str, args: &[&str]) {
     let quiet = std::process::Stdio::null();
     Command::new(program).args(args).stderr(quiet).status().ok();
@@ -47,13 +42,11 @@ fn written(file: &PathBuf, text: &str) {
     }
 }
 
-/// A value as a property list's text takes it.
 fn xml(value: &str) -> String {
     let value = value.replace('&', "&amp;").replace('<', "&lt;");
     value.replace('>', "&gt;")
 }
 
-/// A value as systemd takes it between double quotes.
 fn quoted(value: &str) -> String {
     let value = value.replace('\\', "\\\\").replace('"', "\\\"");
     value.replace('%', "%%")
@@ -94,7 +87,6 @@ pub fn install() {
         let file = launch_agent();
         written(&file, &plist);
         let user = format!("gui/{}", printed("id", &["-u"]).unwrap_or_default());
-        // Loading again what is loaded fails, so what was there is taken out first.
         tried("launchctl", &["bootout", &format!("{user}/{NAME}")]);
         if !ran("launchctl", &["bootstrap", &user, &file.to_string_lossy()]) {
             fail("The launch agent was written but couldn't be started.");
@@ -115,7 +107,6 @@ pub fn install() {
     );
     written(&user_service(), &unit);
     if !ran("systemctl", &["--user", "daemon-reload"]) {
-        // WSL runs without systemd unless it is turned on.
         fail(
             "The service was written, but this system has no systemd for your user.\nIn WSL, add these two lines to /etc/wsl.conf, then run `wsl --shutdown` in Windows and try again:\n  [boot]\n  systemd=true\nUntil then, run `weacon-core` in a terminal to connect.",
         );
@@ -125,7 +116,6 @@ pub fn install() {
             "The service was written but couldn't be started. `systemctl --user status weacon-core` says why.",
         );
     }
-    // Without this the service stops when the person logs out.
     let user = std::env::var("USER").unwrap_or_default();
     if !ran("loginctl", &["enable-linger", &user]) {
         println!(
@@ -154,7 +144,6 @@ pub fn uninstall() {
 mod tests {
     use super::{quoted, xml};
 
-    // No request reaches the service files in the server's tests.
     #[test]
     fn values_are_written_the_way_each_file_asks() {
         assert_eq!(

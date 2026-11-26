@@ -1,6 +1,3 @@
-//! The core: the program on a person's own machine that pairs with their Weacon, stays
-//! connected to it, and runs their agents there on their own sign-in.
-
 mod agents;
 mod chats;
 mod link;
@@ -21,14 +18,12 @@ weacon-core install                start with this computer and run in the backg
 weacon-core uninstall              undo that
 weacon-core add <user@host>        set up a server of yours over SSH and pair it";
 
-/// Which Weacon this machine is paired with, and the token it connects with.
 #[derive(Deserialize, Serialize)]
 struct Paired {
     server: String,
     token: String,
 }
 
-/// The folder the core keeps its one file in.
 fn home() -> PathBuf {
     let chosen = std::env::var_os("WEACON_CORE_HOME").map(PathBuf::from);
     let home = std::env::var_os("HOME")
@@ -42,13 +37,10 @@ fn paired() -> Option<Paired> {
     serde_json::from_str(&text).ok()
 }
 
-/// Whether what is sent to a server's address is encrypted on its way, or never leaves this
-/// computer. The token is sent with every connection, so nothing else will do.
 fn private(server: &str) -> bool {
     let Some(address) = server.strip_prefix("http://") else {
         return server.starts_with("https://");
     };
-    // The host ends where a path begins, or a port: after the bracket of an IPv6 address.
     let host = address.split('/').next().unwrap_or_default();
     let host = match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
@@ -59,7 +51,6 @@ fn private(server: &str) -> bool {
 
 const PLAIN: &str = "Weacon's address must start with https://, so that this machine's token can't be read on its way. Only an address on this computer itself may be plain.";
 
-/// What a command printed, when it ran and ended well.
 fn printed(program: &str, args: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
         .args(args)
@@ -69,7 +60,6 @@ fn printed(program: &str, args: &[&str]) -> Option<String> {
     output.status.success().then_some(text)
 }
 
-/// Ends with what went wrong, said to the person at the terminal.
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1)
@@ -108,7 +98,6 @@ async fn main() {
 mod tests {
     use super::private;
 
-    // No request reaches the core's own checks in the server's tests.
     #[test]
     fn only_an_address_on_this_computer_may_be_plain() {
         for server in [

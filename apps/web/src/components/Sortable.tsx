@@ -6,7 +6,6 @@ type Options = {
   onValueChange?: (value: string[], details: ChangeDetails<ReorderReason>) => void
 }
 
-/** A list whose items are put in order by dragging a handle, or with the keyboard on it. */
 const sortable = definePrimitive({
   name: "sortable",
   options: { value: "list", onValueChange: "callback" },

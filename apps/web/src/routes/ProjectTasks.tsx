@@ -10,7 +10,6 @@ import { useChats, useProjects, useTasks, useTeamDetails } from "../queries"
 
 const statusKeys = Object.keys(statuses) as Status[]
 
-/** The page at `/projects/{id}/tasks`: the project's tasks as a list or a board, and the one picked beside it. */
 export function TasksPage({ team, user }: { team: Team; user: User }) {
   const { id } = useParams()
   const [params] = useSearchParams()
@@ -24,7 +23,6 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
     mutationFn: (order: { status: string; tasks: string[] }) => api("PUT", path, order),
     onSettled: refresh,
   })
-  // A task is made at once and then filled in, as a page of the docs is.
   const create = useMutation({
     mutationFn: () => api<{ id: string }>("POST", path, { title: "New task" }),
     onSuccess: async ({ id }) => {
@@ -42,7 +40,6 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
   const name = (task: Task) => `${project.key}-${task.number}`
   const byId = new Map(tasks.data.map((task) => [task.id, task]))
   const lists = Object.fromEntries(statusKeys.map((status) => [status, tasks.data.filter((task) => task.status === status).map((task) => task.id)]))
-  // The card stays where it was dropped while the server is told.
   const place = (lists: Record<string, string[]>, { to }: { to: string }) => {
     const moved = statusKeys.flatMap((status) => lists[status].flatMap((id) => (byId.has(id) ? [{ ...byId.get(id)!, status }] : [])))
     queryClient.setQueryData(["tasks", id], moved)
@@ -117,7 +114,6 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
                       <tr key={task.id} aria-current={task.id === picked ? "true" : undefined} className="relative border-t border-line hover:bg-hov aria-[current]:bg-vio-soft">
                         <td className="px-3 py-2.5 font-mono text-[12px] text-ink3">{name(task)}</td>
                         <td className="px-3 font-medium">
-                          {/* The link covers the row, so the whole row opens the task. */}
                           <Link to={to(task.id)} className="flex min-h-10 items-center after:absolute after:inset-0 phone:min-h-11">
                             {task.title}
                           </Link>
@@ -166,7 +162,6 @@ function StatusChip({ status }: { status: Status }) {
 
 type PanelProps = { team: Team; user: User; project: Project; task: Task; name: string; path: string; close: string }
 
-/** One task: what it is, changed in place, and the chats that work on it. */
 function Panel({ team, user, project, task, name, path, close }: PanelProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -176,7 +171,6 @@ function Panel({ team, user, project, task, name, path, close }: PanelProps) {
   const details = useTeamDetails(team)
   const docs = useQuery({ queryKey: ["docs", project.id], queryFn: () => api<Docs>("GET", `/teams/${team.id}/projects/${project.id}/docs`) })
   const chats = useChats(team)
-  // The pages its title and text are about, which the server finds by meaning.
   const offered = useQuery({
     queryKey: ["task-docs", task.id, task.title, task.text, task.docs],
     queryFn: () => api<string[]>("GET", `${path}/docs`),

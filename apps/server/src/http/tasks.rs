@@ -49,11 +49,9 @@ pub async fn update(
 #[derive(Deserialize)]
 pub struct Order {
     status: String,
-    /// The tasks of that status, in their order.
     tasks: Vec<String>,
 }
 
-/// Puts tasks in a status, in the order given. A task of another project is left as it is.
 pub async fn order(
     State(state): State<AppState>,
     user: User,
@@ -67,8 +65,6 @@ pub async fn order(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Up to three pages of the docs that the task's title and text are about, and that it
-/// doesn't touch yet, for a person to pick from.
 pub async fn docs(
     State(state): State<AppState>,
     user: User,
@@ -86,7 +82,6 @@ pub async fn docs(
     Ok(Json(pages))
 }
 
-/// Only who asked for a task, or the team's owner, deletes it.
 pub async fn delete(
     State(state): State<AppState>,
     user: User,
@@ -101,7 +96,6 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The project must be one of a team the person is in.
 async fn project(state: &AppState, user: &User, team_id: &str, project_id: &str) -> Result<()> {
     user.member_of(team_id)?;
     let projects = db::projects::list(&state.pool, team_id).await?;

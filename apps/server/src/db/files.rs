@@ -1,13 +1,11 @@
 use sqlx::SqlitePool;
 
-/// A file kept for a project's docs.
 pub struct File<'a> {
     pub id: &'a str,
     pub kind: &'a str,
     pub name: &'a str,
 }
 
-/// False when the team has no such project.
 pub async fn add(
     pool: &SqlitePool,
     team_id: &str,
@@ -30,13 +28,11 @@ pub async fn add(
     Ok(added.rows_affected() > 0)
 }
 
-/// A file's media type and name.
 pub struct Kept {
     pub kind: String,
     pub name: String,
 }
 
-/// One of the project's files.
 pub async fn find(
     pool: &SqlitePool,
     team_id: &str,
@@ -55,7 +51,6 @@ pub async fn find(
     .await
 }
 
-/// A file that a page behind the public link `token` shows or links to.
 pub async fn shared(pool: &SqlitePool, token: &str, id: &str) -> sqlx::Result<Option<Kept>> {
     sqlx::query_as!(
         Kept,

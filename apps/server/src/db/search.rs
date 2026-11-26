@@ -1,6 +1,5 @@
 use sqlx::SqlitePool;
 
-/// A page whose parts are of an older text or of another model.
 pub struct Unsearched {
     pub id: String,
     pub title: String,
@@ -27,7 +26,6 @@ pub async fn unsearched(
     .await
 }
 
-/// Makes `parts`, each a text and its embedding, the parts of a page as it is at `version`.
 pub async fn set_parts(
     pool: &SqlitePool,
     doc_id: &str,
@@ -62,11 +60,9 @@ pub async fn set_parts(
     tx.commit().await
 }
 
-/// A part of a page, with the page it is of.
 pub struct DocPart {
     pub doc_id: String,
     pub title: String,
-    /// JSON: the files the page was written from.
     pub files: String,
     pub text: String,
     pub embedding: Vec<u8>,

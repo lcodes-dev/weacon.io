@@ -1,5 +1,3 @@
-//! GitHub, reached through each team's own GitHub App.
-
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::LazyLock;
@@ -15,22 +13,17 @@ use serde_json::{Value, json};
 use crate::error::{ApiError, Result};
 use crate::{AppState, db, now};
 
-/// A team's own GitHub App.
 #[derive(Deserialize)]
 pub struct GithubApp {
     pub id: i64,
     pub slug: String,
-    /// The private key that signs the app's tokens.
     pub pem: String,
 }
 
-/// What a team's GitHub App can reach. All empty when the team has no app.
 #[derive(Default, Serialize)]
 pub struct Status {
     app: Option<String>,
-    /// The account it is installed on, once the owner has chosen repositories.
     account: Option<String>,
-    /// As `owner/name`.
     pub repos: Vec<String>,
 }
 
@@ -60,10 +53,8 @@ struct Repository {
     full_name: String,
 }
 
-/// Larger archives are refused, since one is held in memory while it is read.
 const MAX_ARCHIVE: usize = 200_000_000;
 
-/// The time limits keep one stalled call from holding up the map's worker.
 static CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
         .user_agent("weacon")
@@ -85,7 +76,6 @@ fn failed(error: impl Display) -> ApiError {
 pub async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
     let answer = request.send().await.map_err(failed)?;
     if !answer.status().is_success() {
-        // GitHub says why in the body, which is what tells one refusal from another.
         let (status, url) = (answer.status(), answer.url().clone());
         let said = answer.text().await.unwrap_or_default();
         return Err(failed(format!("{status} for {url}: {said}")));
@@ -93,7 +83,6 @@ pub async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
     answer.json().await.map_err(failed)
 }
 
-/// Signs the short-lived token that proves the server is the app.
 fn app_token(app: &GithubApp) -> Result<String> {
     // GitHub asks for a start in the past, against clock drift, and at most 10 minutes.
     let claims = json!({"iss": app.id.to_string(), "iat": now() - 60, "exp": now() + 300});
@@ -102,8 +91,6 @@ fn app_token(app: &GithubApp) -> Result<String> {
         .map_err(failed)
 }
 
-/// The account the app is installed on and a token to act there, once it is installed.
-/// The token may do what `may` says and no more, in `only` one repository if that is given.
 async fn installation(
     state: &AppState,
     app: &GithubApp,
@@ -113,19 +100,16 @@ async fn installation(
     let app_token = app_token(app)?;
     let installations = request(state, Method::GET, "/app/installations").bearer_auth(&app_token);
     let installations: Vec<Installation> = answer(installations).await?;
-    // A private app installs only on the account that owns it, so there is at most one.
     let Some(installation) = installations.into_iter().next() else {
         return Ok(None);
     };
     let mut scope = json!({"permissions": may});
     if let Some(repo) = only {
-        // GitHub wants the name without its owner.
         scope["repositories"] = json!([repo.rsplit('/').next()]);
     }
     let path = format!("/app/installations/{}/access_tokens", installation.id);
     let tokens = request(state, Method::POST, &path).bearer_auth(&app_token);
     let token = tokens.json(&scope).send().await.map_err(failed)?;
-    // GitHub's answer to asking for more than the app was given.
     if token.status() == StatusCode::UNPROCESSABLE_ENTITY {
         let said = token.text().await.unwrap_or_default();
         tracing::error!("GitHub gave no token for {scope}: {said}");
@@ -139,13 +123,10 @@ async fn installation(
     Ok(Some((installation.account.login, token.token)))
 }
 
-/// What a token may do when it only reads files.
 pub fn reading() -> Value {
     json!({"contents": "read"})
 }
 
-/// A token for the team's repositories, or `only` one of them, that may do what `may`
-/// says. GitHub ends it after an hour.
 pub async fn token(
     state: &AppState,
     team_id: &str,
@@ -166,7 +147,6 @@ pub struct Pull {
     pub html_url: String,
 }
 
-/// Opens a pull request from the branch `head` into `base`, as a draft where the repository has those.
 pub async fn open_pull(
     state: &AppState,
     token: &str,
@@ -230,7 +210,6 @@ struct Commit {
     sha: String,
 }
 
-/// Every branch of the repository with its latest commit.
 pub async fn branches(
     state: &AppState,
     token: &str,
@@ -254,7 +233,6 @@ pub async fn branches(
 #[derive(Deserialize)]
 struct Tree {
     tree: Vec<Entry>,
-    /// GitHub cut the list short.
     #[serde(default)]
     truncated: bool,
 }
@@ -262,12 +240,10 @@ struct Tree {
 #[derive(Deserialize)]
 struct Entry {
     path: String,
-    /// `blob` for a file.
     r#type: String,
     sha: String,
 }
 
-/// Every file of the commit, as its path and git's id of its content.
 pub async fn files(
     state: &AppState,
     token: &str,
@@ -285,11 +261,9 @@ pub async fn files(
     Ok(files.map(|entry| (entry.path, entry.sha)).collect())
 }
 
-/// The commit's files as a gzipped tar archive.
 pub async fn archive(state: &AppState, token: &str, repo: &str, commit: &str) -> Result<Vec<u8>> {
     let path = format!("/repos/{repo}/tarball/{commit}");
     let request = request(state, Method::GET, &path).bearer_auth(token);
-    // The client's own limit starts again with every byte that arrives.
     let response = request.timeout(Duration::from_secs(600)).send().await;
     let mut response = response
         .and_then(reqwest::Response::error_for_status)

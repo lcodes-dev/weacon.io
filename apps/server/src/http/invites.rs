@@ -32,7 +32,6 @@ pub async fn create(
         .collect();
     emails.sort();
     emails.dedup();
-    // Every address is checked before any mail goes out.
     for email in &emails {
         if !mail::is_address(email) {
             return Err(ApiError::invalid(format!("{email} isn't an email address")));
@@ -81,7 +80,6 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// What the person opening an invite link sees, signed in or not.
 pub async fn show(
     State(state): State<AppState>,
     Path(token): Path<String>,
@@ -99,7 +97,6 @@ pub async fn accept(
         let message = format!("This invite is for {}", invitation.email);
         return Err(ApiError::forbidden(message));
     }
-    // Revoked or used since the check above.
     let team_id = db::teams::accept_invite(&state.pool, &token, &user.id).await?;
     let team_id = team_id.ok_or_else(gone)?;
     Ok(Json(json!({"team_id": team_id})))

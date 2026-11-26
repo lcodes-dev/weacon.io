@@ -4,7 +4,6 @@ use sqlx::SqlitePool;
 #[derive(Serialize)]
 pub struct Share {
     pub token: String,
-    /// The name of who made it.
     pub created_by: String,
     pub created_at: i64,
 }
@@ -22,7 +21,6 @@ pub struct SharedPage {
     pub markdown: String,
 }
 
-/// Keeps `pages`, each a title and its Markdown, behind `token`. False when the team has no such project.
 pub async fn share(
     pool: &SqlitePool,
     team_id: &str,
@@ -76,7 +74,6 @@ pub async fn list(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::R
     .await
 }
 
-/// Returns whether the project had such a share.
 pub async fn end(
     pool: &SqlitePool,
     team_id: &str,

@@ -13,7 +13,6 @@ import { DocArticle, DocPages } from "../components/DocPages"
 import { DocProposal } from "../components/DocProposal"
 import { useProjects } from "../queries"
 
-// The editor is large, so it is fetched when a page is first edited.
 const DocEditor = lazy(() => import("../components/DocEditor").then((module) => ({ default: module.DocEditor })))
 
 export function DocsPage({ team }: { team: Team }) {
@@ -21,9 +20,7 @@ export function DocsPage({ team }: { team: Team }) {
   const queryClient = useQueryClient()
   const [chosen, setChosen] = useState("")
   const [params, setParams] = useSearchParams()
-  // The page being edited or whose history is open.
   const [view, setView] = useState<{ page: string; mode: "edit" | "history" }>()
-  // The proposal that is open, and the request whose proposal was last rejected, for the next request to do better.
   const [proposed, setProposed] = useState("")
   const [rejected, setRejected] = useState<Proposal>()
   const [asked, setAsked] = useState("")
@@ -34,7 +31,6 @@ export function DocsPage({ team }: { team: Team }) {
     queryKey: ["docs", id],
     queryFn: () => api<Docs>("GET", `${path}/docs`),
   })
-  // The map says which files exist, so that only true citations become links.
   const map = useQuery({
     queryKey: ["map", id, docs.data?.branch, docs.data?.commit],
     queryFn: () => api<CodeMap>("GET", `${path}/map?branch=${encodeURIComponent(docs.data!.branch!)}`),
@@ -54,7 +50,6 @@ export function DocsPage({ team }: { team: Team }) {
   })
   const order = useMutation({
     mutationFn: (ids: string[]) => api("PUT", `${path}/docs/pages`, ids),
-    // The list shows the new order at once, and the server's when it answers.
     onMutate: (ids) =>
       queryClient.setQueryData<Docs>(["docs", id], (docs) => docs && { ...docs, pages: ids.flatMap((id) => docs.pages.find((page) => page.id === id) ?? []) }),
     onSettled: changed.onSuccess,
@@ -71,7 +66,6 @@ export function DocsPage({ team }: { team: Team }) {
       return changed.onSuccess()
     },
   })
-  // A run over existing docs that ends without a proposal would otherwise end without a word.
   const [unchanged, setUnchanged] = useState(false)
   const before = useRef(docs.data)
   useEffect(() => {
@@ -92,12 +86,9 @@ export function DocsPage({ team }: { team: Team }) {
   const open = tab.pages.find((page) => page.id === params.get("page")) ?? tab.pages[0]
   const file = (file: string) => `/api${path}/files/${file}`
   const error = start.error ?? add.error ?? order.error ?? remove.error ?? ask.error
-  // From the click until the server says the run is on, the page already shows it as started.
   const running = state === "running" || start.isPending || ask.isPending
   const stale = commit && docs.data.branch === branch?.name && commit !== branch.commit_sha
   const lines = new Map(map.data?.files.map((file) => [file.path, file.lines]))
-  // `path:line` or `path:line-line` in backticks links to GitHub, when the map has those lines.
-  // The link goes to the commit the page was written from, which a later run doesn't change.
   const citing = (from: string | null) => ({ children }: { children?: React.ReactNode }) => {
     const cited = /^(.+):(\d+)(?:-(\d+))?$/.exec(String(children))
     const [first, last] = cited ? [Number(cited[2]), Number(cited[3] ?? cited[2])] : [0, 0]
@@ -106,7 +97,6 @@ export function DocsPage({ team }: { team: Team }) {
       const href = `https://github.com/${project.repo}/blob/${from}/${cited[1]}#L${cited[2]}${to}`
       return (
         <a href={href} target="_blank" rel="noreferrer" title={cited[1]}>
-          {/* The file's name is enough to read; the whole path is in the tooltip and the link. */}
           <code>
             {cited[1].split("/").pop()}:{cited[2]}
             {cited[3] && `-${cited[3]}`}
@@ -116,7 +106,6 @@ export function DocsPage({ team }: { team: Team }) {
     }
     return <code>{children}</code>
   }
-  // Leaving an open editor loses what was typed, so it asks first.
   const leave = async () => {
     if (view?.mode !== "edit") return true
     const sure = await confirm({
@@ -249,7 +238,6 @@ export function DocsPage({ team }: { team: Team }) {
                   pages={tab.pages}
                   open={params.get("page")}
                   onOpen={async (page) => (await leave()) && setParams({ tab: tab.value, page })}
-                  // The other tab's pages keep their order, ahead of this tab's.
                   onOrder={(ids) => order.mutate([...pages.filter((page) => !tab.pages.includes(page)).map((page) => page.id), ...ids])}
                   file={file}
                   note={
@@ -320,7 +308,6 @@ export function DocsPage({ team }: { team: Team }) {
   )
 }
 
-/** The project's public links to its user docs, in a panel that "Share" opens. `empty` says there are no pages to share. */
 function Shares({ path, empty }: { path: string; empty: boolean }) {
   const queryClient = useQueryClient()
   const [copied, setCopied] = useState("")

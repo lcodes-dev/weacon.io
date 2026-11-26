@@ -2,10 +2,8 @@
 
 @import "tailwindcss";
 
-/* Below this width the sidebar becomes a drawer. */
 @custom-variant phone (@media (width < 720px));
 
-/* The reference's colors. */
 :root {
   color-scheme: light dark;
   --bg: #fbfaf7;
@@ -31,7 +29,6 @@
   --pri: #1f1d1a;
   --pri-text: #ffffff;
   --pri-hover: #38342f;
-  /* The code map's languages, in a fixed order. */
   --lang-1: #2a78d6;
   --lang-2: #eb6834;
   --lang-3: #1baf7a;
@@ -99,40 +96,33 @@
 }
 
 body {
-  /* No grey flash when a link is tapped on a phone. */
   -webkit-tap-highlight-color: transparent;
   background: var(--bg);
   color: var(--ink);
   font: 13px/1.4 -apple-system, system-ui, "Helvetica Neue", Helvetica, Arial, sans-serif;
 }
 
-/* UI SDK's parts are unstyled; these style each by its data-slot. */
 @layer components {
   .btn {
     @apply inline-flex h-[30px] shrink-0 items-center rounded-lg border border-fld px-3 font-medium whitespace-nowrap hover:bg-hov disabled:opacity-50 phone:h-11 phone:px-4;
   }
 
-  /* A row of the sidebar; the open page's row is raised. */
   .nav {
     @apply flex min-h-8 w-full items-center gap-2.5 rounded-[7px] border border-transparent px-2 py-[5px] text-left hover:bg-hov aria-[current=page]:border-line aria-[current=page]:bg-sur aria-[current=page]:font-semibold phone:min-h-11;
   }
 
-  /* A section's name in the sidebar. */
   .sec {
     @apply block px-2 pt-3.5 pb-1 font-mono text-[10.5px] font-medium tracking-[0.06em] text-ink3 uppercase;
   }
 
-  /* The grey second line of a row. */
   .sub {
     @apply truncate text-[11px] leading-snug font-normal text-ink3;
   }
 
-  /* The bar along the top of a page, with its title and actions. */
   .bar {
     @apply flex min-h-[52px] shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-[18px] py-2;
   }
 
-  /* Links that switch between views, drawn as one segmented control. */
   .segs {
     @apply flex rounded-lg bg-sur2 p-0.5;
   }
@@ -141,7 +131,6 @@ body {
     @apply flex h-[26px] items-center rounded-md px-2.5 text-[12.5px] text-ink2 hover:text-ink aria-[current]:bg-sur aria-[current]:font-semibold aria-[current]:text-ink aria-[current]:shadow-sm phone:h-11;
   }
 
-  /* The box at the bottom of a chat or a group, to write in. */
   .composer {
     @apply flex flex-wrap items-end gap-2 rounded-xl border border-fld bg-sur p-2.5 focus-within:border-ink3;
   }
@@ -154,7 +143,6 @@ body {
     @apply ml-auto;
   }
 
-  /* Initials in a small square, for a person or a team. */
   .initials {
     @apply flex size-7 shrink-0 items-center justify-center rounded-lg font-mono text-[9.5px] font-semibold text-white;
   }
@@ -163,7 +151,6 @@ body {
     @apply h-6 rounded-md px-2 text-[12px] phone:h-11 phone:px-3;
   }
 
-  /* A button that is only an icon. */
   .icb {
     @apply flex size-7 shrink-0 items-center justify-center rounded-md text-ink2 hover:bg-hov hover:text-ink phone:size-11;
   }
@@ -172,7 +159,6 @@ body {
     @apply size-4;
   }
 
-  /* A small label in capitals. */
   .lbl {
     @apply font-mono text-[10px] tracking-wider text-ink3 uppercase;
   }
@@ -193,7 +179,6 @@ body {
     @apply pt-3 font-semibold;
   }
 
-  /* Generated docs: Markdown rendered to plain elements. */
   .prose {
     @apply flex max-w-[720px] flex-col gap-3 text-[14px] leading-relaxed;
   }
@@ -263,7 +248,6 @@ body {
     @apply border-l-2 border-fld pl-3 text-ink2;
   }
 
-  /* The docs editor lays its blocks out as a page does. */
   .editor .ProseMirror {
     @apply flex min-h-[320px] flex-col gap-3 outline-none;
   }
@@ -330,7 +314,6 @@ body {
     @apply fixed top-1/2 left-1/2 z-20 flex w-[400px] max-w-[calc(100vw-2rem)] -translate-1/2 flex-col gap-2 rounded-xl border border-fld bg-sur p-5 shadow-xl outline-none backdrop:bg-black/40;
   }
 
-  /* The row of answers that `confirm()` draws. */
   [data-slot="alert-dialog-content"] > div {
     @apply flex justify-end gap-2 pt-3;
   }
@@ -357,7 +340,6 @@ body {
     @apply border-pri;
   }
 
-  /* Where a dragged card would land, while its copy follows the pointer. */
   [data-slot="board-card"][data-dragging] {
     @apply opacity-40;
   }
@@ -379,7 +361,6 @@ body {
   }
 }
 
-/* iOS zooms into a field whose text is under 16px. */
 @media (width < 720px) {
   input:not([type="checkbox"], [type="radio"]),
   select,

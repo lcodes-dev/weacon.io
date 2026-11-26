@@ -39,7 +39,6 @@ pub struct FromBranch {
     branch: String,
 }
 
-/// Has the team's writer write the project's docs from a branch.
 pub async fn write(
     State(state): State<AppState>,
     user: User,
@@ -59,7 +58,6 @@ pub async fn write(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// Has the team's writer answer a person's request with one proposal.
 pub async fn ask(
     State(state): State<AppState>,
     user: User,
@@ -82,7 +80,6 @@ pub async fn ask(
     Ok(StatusCode::ACCEPTED)
 }
 
-/// A run that holds the project while the docs are written from `branch`, or why none can start.
 async fn start_run(
     state: &AppState,
     user: &User,

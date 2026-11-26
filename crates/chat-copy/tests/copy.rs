@@ -1,5 +1,3 @@
-//! A chat's copy, against a repository made in a temporary folder.
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,7 +14,6 @@ fn git(folder: &Path, args: &[&str]) -> String {
     String::from_utf8(run.stdout).unwrap().trim().to_owned()
 }
 
-/// A repository with one commit on `main`, and an empty folder for a chat.
 fn made(name: &str) -> (PathBuf, Repository) {
     let root = std::env::temp_dir().join(format!("chat-copy-{name}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
@@ -58,13 +55,11 @@ async fn a_copy_is_fetched_and_says_what_changed_in_it() {
         "one\ntwo\n"
     );
     assert_eq!(chat_copy::changes(&chat).await, (vec![], String::new()));
-    // The agent's own git reads the copy.
     assert_eq!(git(&copy, &["status", "--porcelain"]), "");
 
     std::fs::write(copy.join("kept.txt"), "one\nthree\n").unwrap();
     std::fs::write(copy.join("new file.txt"), "new\n").unwrap();
     std::fs::remove_file(copy.join("gone.txt")).unwrap();
-    // Fetching again leaves the copy as it is.
     chat_copy::fetch(&chat, &repository).await.unwrap();
     let (files, diff) = chat_copy::changes(&chat).await;
     let expected = [
@@ -102,7 +97,6 @@ async fn a_copy_is_committed_and_pushed_to_a_branch() {
         git(&origin, &["rev-parse", &format!("{first}^")]),
         git(&origin, &["rev-parse", "main"])
     );
-    // The person's own git names the author where it knows them, and what was given otherwise.
     let own = |key| {
         let known = Command::new("git")
             .args(["config", "--global", "--get", key])
@@ -123,10 +117,8 @@ async fn a_copy_is_committed_and_pushed_to_a_branch() {
         by
     );
 
-    // With nothing new it pushes the same commit again.
     let again = chat_copy::push(&chat, &repository, "weacon/a-change", "Nothing", author);
     assert_eq!(again.await.unwrap(), first);
-    // What the chat changed is still told against where it started.
     assert_eq!(chat_copy::changes(&chat).await.0, [file("kept.txt", 1, 1)]);
 
     std::fs::write(copy.join("more.txt"), "more\n").unwrap();
@@ -144,7 +136,6 @@ async fn what_an_agent_writes_into_the_copy_s_git_is_not_run() {
     let ran = chat.join("ran");
     let script = format!("#!/bin/sh\ntouch '{}'\n", ran.display());
     std::fs::write(copy.join("hook.sh"), &script).unwrap();
-    // In place of the pointer, a folder with hooks, and settings that name a program.
     std::fs::remove_file(copy.join(".git")).unwrap();
     git(&copy, &["init", "--quiet"]);
     let program = copy.join("hook.sh");
@@ -164,7 +155,6 @@ async fn what_an_agent_writes_into_the_copy_s_git_is_not_run() {
     let pushed = chat_copy::push(&chat, &repository, "weacon/hooks", "A hook", author);
     pushed.await.unwrap();
     assert!(!ran.exists());
-    // The same git, left to find the folder by itself, would have run them.
     git(&copy, &["status"]);
     assert!(ran.exists());
 }

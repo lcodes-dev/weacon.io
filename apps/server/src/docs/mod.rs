@@ -1,7 +1,3 @@
-//! Writing a project's docs from its map: what the three docs jobs share. Each page is
-//! written from the files it covers, and comes back with why and with notes on any sentence
-//! of a person's that the code shows to be wrong.
-
 pub mod prompts;
 
 use std::collections::HashMap;
@@ -18,14 +14,10 @@ use crate::writer::Writer;
 use crate::{AppState, db};
 use prompts::{BUILT, TAIL, UPDATING, WORKS, WRITING};
 
-/// How much code one page may read, in characters.
 const PAGE_CHARS: usize = 150_000;
-/// A repository whose outline is longer than this is refused.
 const OUTLINE_CHARS: usize = 400_000;
-/// More symbols than this in one file say little, as in a minified bundle.
 const SYMBOLS_PER_FILE: usize = 40;
 
-/// The team's writer, writing for `user_id`, on whose machine an agent then runs.
 pub async fn writer(state: &AppState, team_id: &str, user_id: &str) -> Result<Writer> {
     let writer = db::settings::writer(&state.pool, &state.server_key, team_id).await?;
     let mut writer =
@@ -34,7 +26,6 @@ pub async fn writer(state: &AppState, team_id: &str, user_id: &str) -> Result<Wr
     Ok(writer)
 }
 
-/// A branch as its map has it: the outline of its files, their text, and its commit.
 pub struct Sources {
     pub outline: String,
     pub texts: HashMap<String, String>,
@@ -73,7 +64,6 @@ impl Sources {
         readme.map_or("(none)", |(_, text)| text)
     }
 
-    /// The files with numbered lines, as far as they fit, and the paths that didn't.
     pub fn numbered(&self, paths: &[String]) -> (String, Vec<String>) {
         let (mut code, mut unread) = (String::new(), Vec::new());
         for path in paths {
@@ -91,7 +81,6 @@ impl Sources {
     }
 }
 
-/// Every file with its language and length, and the first symbols of the files we parse.
 fn outline(files: &[MapFile]) -> String {
     let mut outline = String::new();
     for file in files {
@@ -109,7 +98,6 @@ fn outline(files: &[MapFile]) -> String {
     outline
 }
 
-/// A page to write: its set, what it must cover, and the page it replaces, if any.
 pub struct Brief<'a> {
     pub section: &'a str,
     pub title: &'a str,
@@ -120,7 +108,6 @@ pub struct Brief<'a> {
     pub request: Option<&'a str>,
 }
 
-/// Asks the writer for one page, from the files that fit.
 pub async fn write_page(
     state: &AppState,
     writer: &Writer,
@@ -159,7 +146,6 @@ pub async fn write_page(
             None => prompt.push_str("\n\nA person wrote the whole page."),
         }
     }
-    // The first run on a project has nothing to compare with, so its pages come as they are.
     let tailed = brief.current.is_some() || brief.request.is_some();
     if tailed {
         write!(system, "\n\n{TAIL}").ok();
@@ -184,7 +170,6 @@ pub async fn write_page(
     })
 }
 
-/// Tells where a run is, and stops a run that lost its project before it asks the writer for more.
 pub async fn progress(state: &AppState, project_id: &str, run: i64, message: &str) -> Result<()> {
     let held = db::docs::set_state(&state.pool, project_id, run, "running", Some(message)).await?;
     live::project(state, project_id, Topic::Docs).await;
@@ -194,21 +179,18 @@ pub async fn progress(state: &AppState, project_id: &str, run: i64, message: &st
     Ok(())
 }
 
-/// Ends a run that failed with why, unless another run holds the project by now.
 pub async fn fail_run(state: &AppState, project_id: &str, run: i64, why: &str) {
     let failed = db::docs::set_state(&state.pool, project_id, run, "failed", Some(why));
     failed.await.ok();
     live::project(state, project_id, Topic::Docs).await;
 }
 
-/// The JSON in an answer, which a writer may wrap in a sentence or a code fence.
 pub fn json_in(answer: &str, open: char, close: char) -> &str {
     let ends = answer.find(open).zip(answer.rfind(close));
     ends.filter(|(from, to)| from < to)
         .map_or("", |(from, to)| &answer[from..=to])
 }
 
-/// Where the writer finds a person's sentence at odds with the code.
 #[derive(Deserialize, Serialize)]
 struct Note {
     quote: String,
@@ -218,7 +200,6 @@ struct Note {
     instead: Option<String>,
 }
 
-/// The writer's notes as a JSON list, empty when they can't be read.
 pub fn notes(answer: &str) -> String {
     let notes: Vec<Note> = serde_json::from_str(json_in(answer, '[', ']')).unwrap_or_default();
     json!(notes).to_string()

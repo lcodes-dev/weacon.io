@@ -1,6 +1,3 @@
-//! The cores of people's machines that are connected now, and what is asked of them. This
-//! lives in memory only: a core connects again after the server restarts.
-
 mod asks;
 mod connection;
 pub mod terminal;
@@ -24,13 +21,9 @@ pub struct Cores(Mutex<Connected>);
 
 #[derive(Default)]
 struct Connected {
-    /// The way to each connected machine's core, with a number that tells one connection from the next.
     cores: HashMap<String, (u64, mpsc::UnboundedSender<ToCore>)>,
-    /// When a machine's core went away, until it is back.
     left: HashMap<String, Instant>,
-    /// What was asked and not yet answered, by the ask's id, with its machine and where the answer goes.
     asks: HashMap<String, (String, ToCore, oneshot::Sender<Answer>)>,
-    /// The sign-in terminals open in a browser.
     terminals: HashMap<(String, Agent), mpsc::UnboundedSender<FromCore>>,
     connections: u64,
 }
@@ -46,15 +39,12 @@ impl Cores {
         self.lock().cores.contains_key(machine)
     }
 
-    /// Sends to a machine's core, and says whether it is connected.
     pub fn send(&self, machine: &str, message: ToCore) -> bool {
         let cores = self.lock();
         let core = cores.cores.get(machine);
         core.is_some_and(|(_, core)| core.send(message).is_ok())
     }
 
-    /// Ends everything a removed machine was part of: its connection, its sign-ins, and what
-    /// was asked of it, which is answered with `why` so that nothing waits for it.
     pub fn end(&self, machine: &str, why: &str) {
         let mut cores = self.lock();
         cores.cores.remove(machine);
@@ -65,7 +55,6 @@ impl Cores {
         }
     }
 
-    /// Where a machine's core sends what its sign-in terminal shows.
     pub fn open_terminal(
         &self,
         machine: &str,

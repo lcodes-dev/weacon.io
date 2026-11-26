@@ -1,6 +1,3 @@
-//! A repository's code map: what each file defines, and which file uses which.
-//! `read` takes one file and `link` takes all of them; neither knows where the files came from.
-
 use std::collections::{BTreeSet, HashSet};
 use std::sync::LazyLock;
 
@@ -11,37 +8,24 @@ mod link;
 
 pub use link::{File, link};
 
-/// The languages whose files are components: see `scripts`.
 const COMPONENTS: [&str; 2] = ["Vue", "Svelte"];
 
-/// A file with a line longer than this is minified or generated, and is not read either.
 const MAX_LINE: usize = 5_000;
 
-/// Folders that hold other people's code, whose files are listed in the map and not read.
 const FOREIGN: [&str; 2] = ["vendor", "node_modules"];
 
-/// What stands between a name and the thing it belongs to: `user.save`, `$user->save`, `User::find`.
 const MEMBER: [&str; 6] = [".", "->", "::", "?.", "?->", "&."];
 
 pub struct Language {
     pub name: &'static str,
-    /// Languages whose files import one another, such as TypeScript and Vue.
     family: &'static str,
     extensions: &'static [&'static str],
-    /// What separates the parts of an import: `App\Models\User`, `a.b.c`, `crate::db`.
     separator: &'static str,
-    /// The file that stands for its folder, without its extension: `index`, `__init__`, `mod`.
     index: &'static str,
     grammar: tree_sitter::Language,
     query: Query,
 }
 
-/// Adding a language is one grammar in Cargo.toml, one entry here and one file in `queries/`.
-/// A query marks definitions as `@definition.{kind}` and mentions as `@reference.{kind}`, each
-/// with its `@name`, as the queries shipped with the grammars do. Ours add `@mention` for a
-/// name by itself, `@scope`, `@import`, `@import.name` for a name imported from it, and
-/// `@import.line` where a grammar gives an import only as a whole line.
-// One line per language reads better than what the formatter makes of them.
 #[rustfmt::skip]
 static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
     use {
@@ -65,20 +49,15 @@ static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
         Language { name, family, extensions, separator, index, grammar, query }
     };
     let (ts, tsx) = (typescript::LANGUAGE_TYPESCRIPT, typescript::LANGUAGE_TSX);
-    // TypeScript's query only adds to JavaScript's, and C++'s to C's.
     let js = [javascript::TAGS_QUERY, ours!("jsx"), ours!("javascript")];
     let typescript = [js[0], typescript::TAGS_QUERY, ours!("typescript"), js[2]];
     let tsx_queries = [&typescript[..], &js[1..2]].concat();
     let cpp_queries = [c::TAGS_QUERY, cpp::TAGS_QUERY, ours!("c")];
-    // C#'s query names one capture in a way no reader takes.
     let c_sharp_tags = c_sharp::TAGS_QUERY.replace(") @module", ") @definition.module");
-    // The columns: name, family, extensions, what separates an import's parts, the file that
-    // stands for its folder, grammar, queries.
     vec![
         language("JavaScript", "js", &["js", "jsx", "mjs", "cjs"], "/", "index", javascript::LANGUAGE.into(), &js),
         language("TypeScript", "js", &["ts", "mts", "cts"], "/", "index", ts.into(), &typescript),
         language("TypeScript", "js", &["tsx"], "/", "index", tsx.into(), &tsx_queries),
-        // Only the scripts of these two are read, as TypeScript: see `scripts`.
         language("Vue", "js", &["vue"], "/", "index", ts.into(), &typescript),
         language("Svelte", "js", &["svelte"], "/", "index", ts.into(), &typescript),
         language("Rust", "rust", &["rs"], "::", "mod", rust::LANGUAGE.into(), &[rust::TAGS_QUERY, ours!("rust")]),
@@ -86,7 +65,6 @@ static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
         language("PHP", "php", &["php"], "\\", "", php::LANGUAGE_PHP.into(), &[php::TAGS_QUERY, ours!("php")]),
         language("Go", "go", &["go"], "/", "", go::LANGUAGE.into(), &[go::TAGS_QUERY, ours!("go")]),
         language("Java", "jvm", &["java"], ".", "", java::LANGUAGE.into(), &[java::TAGS_QUERY, ours!("java")]),
-        // A header named `.h` may be C++, and is read as C all the same.
         language("C", "c", &["c", "h"], "/", "", c::LANGUAGE.into(), &[c::TAGS_QUERY, ours!("c")]),
         language("C++", "c", &["cpp", "cc", "cxx", "hpp", "hh", "hxx"], "/", "", cpp::LANGUAGE.into(), &cpp_queries),
         language("C#", "c#", &["cs"], ".", "", c_sharp::LANGUAGE.into(), &[&c_sharp_tags, ours!("c_sharp")]),
@@ -105,29 +83,21 @@ static LANGUAGES: LazyLock<Vec<Language>> = LazyLock::new(|| {
 #[derive(Serialize)]
 pub struct Symbol {
     pub name: String,
-    /// Such as `function`, `method` or `class`.
     pub kind: String,
     pub line: i64,
     pub end_line: i64,
 }
 
-/// What the map keeps about one content.
 #[derive(Default)]
 pub struct Reading {
     pub lines: i64,
     pub symbols: Vec<Symbol>,
-    /// The name its definitions live under, when it declares one: a namespace or a package.
     pub scope: Option<String>,
-    /// What it says it needs, as written.
     pub imports: BTreeSet<String>,
-    /// The names it mentions without defining them, each with whether it is written after
-    /// a dot, an arrow or the like, as a member of something else.
     pub mentions: BTreeSet<(String, bool)>,
-    /// The content itself, when it is text worth reading.
     pub text: Option<String>,
 }
 
-/// The language a file is read as, by its name.
 pub fn language(path: &str) -> Option<&'static Language> {
     let extension = path.rsplit('.').next().unwrap_or_default();
     LANGUAGES
@@ -135,7 +105,6 @@ pub fn language(path: &str) -> Option<&'static Language> {
         .find(|language| language.extensions.contains(&extension))
 }
 
-/// What a content is kept under: git's id of it, with what of the file's name changes how it is read.
 pub fn key(path: &str, blob: &str) -> String {
     let name = path.rsplit('/').next().unwrap_or(path);
     if foreign(path) {
@@ -153,13 +122,11 @@ fn foreign(path: &str) -> bool {
     folders.split('/').any(|folder| FOREIGN.contains(&folder))
 }
 
-/// Blanks that keep every line and position of what follows where it was.
 fn blank(text: &str) -> impl Iterator<Item = char> {
     text.bytes()
         .map(|byte| if byte == b'\n' { '\n' } else { ' ' })
 }
 
-/// A Vue or Svelte file with its comments blanked.
 fn uncommented(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
@@ -174,7 +141,6 @@ fn uncommented(text: &str) -> String {
     kept + rest
 }
 
-/// A Vue or Svelte file with all but its scripts blanked.
 fn scripts(text: &str) -> String {
     let mut kept = String::with_capacity(text.len());
     let mut rest = text;
@@ -190,7 +156,6 @@ fn scripts(text: &str) -> String {
     kept
 }
 
-/// Reads one file: its symbols, scope, imports and mentions.
 pub fn read(path: &str, bytes: &[u8]) -> Reading {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return Reading::default();
@@ -217,7 +182,6 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
     };
 
     let said = |node: Node| source[node.byte_range()].to_owned();
-    // An import is written with or without quotes, or between angle brackets.
     let bare = |node: Node| {
         let quotes: &[char] = &['"', '\'', '`', '<', '>'];
         said(node).trim_matches(quotes).to_owned()
@@ -256,7 +220,6 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
         }
         if let Some(import) = import {
             for name in imported {
-                // `from . import a` already ends in what separates its parts.
                 let between = if import.ends_with(language.separator) {
                     ""
                 } else {
@@ -269,7 +232,6 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
     }
 
     if component {
-        // The file is the component, named as other files write its tag.
         let file = path.rsplit('/').next().unwrap_or(path);
         reading.symbols.push(Symbol {
             name: file.split('.').next().unwrap_or(file).to_owned(),
@@ -288,7 +250,6 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
             .mentions
             .extend(components.map(|name| (name.to_owned(), false)));
     }
-    // Two patterns of a query can match one definition.
     let mut seen = HashSet::new();
     reading
         .symbols
@@ -300,13 +261,10 @@ pub fn read(path: &str, bytes: &[u8]) -> Reading {
     reading
 }
 
-/// A whole line that imports, as Scala's `import a.b.{C, D => E}`, taken apart into what is
-/// imported from and the names in its braces.
 fn line(import: &str) -> (Option<String>, Vec<String>) {
     let import = import.trim_start_matches("import").trim();
     let (from, names) = import.split_once('{').unwrap_or((import, ""));
     let names = names.trim_end_matches('}').split(',');
-    // A name may be given another: `D => E`, `D as E`.
     let names = names.filter_map(|name| name.split_whitespace().next());
     let from = from.trim_end_matches('.').to_owned();
     (Some(from), names.map(str::to_owned).collect())
@@ -319,7 +277,6 @@ fn mention(reading: &mut Reading, node: Node, name: String) {
     reading.mentions.insert((name, member));
 }
 
-/// How a file's grammar parses it, for whoever writes a query.
 pub fn tree(path: &str, text: &str) -> String {
     let mut parser = Parser::new();
     let language = language(path).expect("a language we read");

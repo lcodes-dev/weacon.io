@@ -1,5 +1,3 @@
-//! A project's docs pages, as people edit them by hand.
-
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -47,7 +45,6 @@ pub async fn create(
     Ok(Json(json!({"id": id})))
 }
 
-/// Saves a person's edit, and has the team's writer, if it has one, check it against the code.
 pub async fn update(
     State(state): State<AppState>,
     user: User,
@@ -99,7 +96,6 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Puts the pages in the order of the ids given.
 pub async fn order(
     State(state): State<AppState>,
     user: User,
@@ -125,7 +121,6 @@ pub async fn versions(
     Ok(Json(versions))
 }
 
-/// Takes one of the writer's notes off a page.
 pub async fn dismiss_note(
     State(state): State<AppState>,
     user: User,

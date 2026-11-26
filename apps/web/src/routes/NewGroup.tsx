@@ -6,7 +6,6 @@ import { useNavigate } from "react-router"
 import { api, type Team, type User } from "../api"
 import { useProjects, useTeamDetails } from "../queries"
 
-/** The page at `/groups/new`: who is in the group, and optionally its name and the project it is about. */
 export function NewGroup({ team, user }: { team: Team; user: User }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()

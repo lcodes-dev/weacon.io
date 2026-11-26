@@ -1,5 +1,3 @@
-//! A turn of each agent, with a stand-in that prints what the real program printed.
-
 use std::path::{Path, PathBuf};
 
 use agent_run::{Turn, turn};
@@ -31,7 +29,6 @@ fn folder(name: &str, agent: Agent) -> PathBuf {
     folder
 }
 
-/// A turn in a new folder: what it told, how it ended, and what the program was started with.
 async fn ran(
     agent: Agent,
     session: Option<&str>,
@@ -49,13 +46,11 @@ async fn ran(
     };
     let ended = turn(asked, never, tell).await;
     let read = |file: &str| std::fs::read_to_string(folder.join(file)).unwrap_or_default();
-    // A tool that downloads packages is told to keep them in the chat's cache.
     let (started, cache) = (read("started"), read("cache"));
     assert!(
         started.is_empty() || cache == "/the/chat's cache/npm\n",
         "{cache}"
     );
-    // The token for the server's tools is in the program's environment, not in how it is started.
     assert!(started.is_empty() || read("token") == "the-turn's-token\n");
     assert!(!started.contains("the-turn's-token"), "{started}");
     std::fs::remove_dir_all(&folder).ok();
@@ -79,7 +74,6 @@ async fn claude_code_s_turn_is_told_in_common_words() {
     let (told, ended, started) = ran(Agent::Claude, None, "Add double").await;
     assert_eq!(ended.unwrap(), "6519d1c4-62a2-4f52-b380-8edfefe39125");
     assert!(started.contains("--permission-prompts none") && !started.contains("--resume"));
-    // Nothing of the person's or the repository's setup, and the server's tools alone.
     assert!(
         started.contains("--setting-sources  --strict-mcp-config --mcp-config"),
         "{started}"
@@ -89,7 +83,6 @@ async fn claude_code_s_turn_is_told_in_common_words() {
         started.contains(tools) && started.contains("--allowedTools Bash mcp__weacon"),
         "{started}"
     );
-    // Its sandbox is told the hosts that are exact names, and no other.
     assert!(
         started.contains(r#""allowedDomains":["example.com"]"#),
         "{started}"
@@ -98,11 +91,9 @@ async fn claude_code_s_turn_is_told_in_common_words() {
         started.contains(r#""allowWrite":["/the/chat's cache"]"#),
         "{started}"
     );
-    // It is told of the repository's instructions, which it would otherwise leave out.
     let told_of = "--append-system-prompt This repository's own instructions are in CLAUDE.md";
     assert!(started.contains(told_of), "{started}");
     assert!(said(&told[0]).starts_with("I'll start by checking the repo"));
-    // What a sub-agent said is left out, and a file is named from the folder.
     let deeds: Vec<&Event> = told
         .iter()
         .filter(|event| matches!(event, Event::Did { .. }))
@@ -131,7 +122,6 @@ async fn claude_code_s_turn_is_told_in_common_words() {
         }));
     assert!(said(told.last().unwrap()).starts_with("I added `double` and its assert"));
 
-    // A later turn goes on with the conversation.
     let (_, _, started) = ran(Agent::Claude, Some("the-session"), "And triple").await;
     assert!(started.ends_with("--resume the-session\n"));
 }
@@ -178,7 +168,6 @@ async fn codex_s_turn_is_told_in_the_same_words() {
             ),
         ]
     );
-    // A link to a file doesn't give the folder away either.
     let last = said(told.last().unwrap());
     assert!(last.contains("[calc.py](calc.py)"), "{last}");
 
@@ -210,7 +199,6 @@ async fn a_stopped_turn_ends_its_program_and_what_it_was_running() {
     let folder = std::env::temp_dir().join(format!("agent-run-{}-stop", std::process::id()));
     std::fs::create_dir_all(&folder).unwrap();
     let (mut told, started) = (Vec::new(), std::time::Instant::now());
-    // Stopped once the program has said its first words, while its command still runs.
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let mut stop = Some(stop);
     let tell = |event| {
@@ -223,7 +211,6 @@ async fn a_stopped_turn_ends_its_program_and_what_it_was_running() {
     assert_eq!(ended.unwrap_err(), "Stopped");
     assert_eq!(told.len(), 1);
     assert!(started.elapsed() < std::time::Duration::from_secs(4));
-    // The program wrote this when it was interrupted, after ending its command.
     assert!(folder.join("cleaned-up").exists());
     std::fs::remove_dir_all(&folder).ok();
 }

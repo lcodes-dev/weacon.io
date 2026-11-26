@@ -8,12 +8,9 @@ use crate::db::machines::Machine;
 use crate::error::{ApiError, Result};
 use crate::{AppState, db};
 
-/// An agent can take minutes to answer.
 const PATIENCE: Duration = Duration::from_secs(15 * 60);
-/// How long an answer is waited for from a core that went away.
 const AWAY: Duration = Duration::from_secs(10 * 60);
 
-/// Has an agent on one of a person's machines answer a prompt, on that person's own sign-in.
 pub async fn ask(
     state: &AppState,
     user_id: &str,
@@ -51,8 +48,6 @@ pub async fn ask(
     answered(state, (&machine.id, &machine.name), &slow, message).await
 }
 
-/// Sends a machine what `message` makes of a new id, and waits for its answer under that
-/// id. `slow` is what to say when none comes.
 pub async fn answered(
     state: &AppState,
     (machine, name): (&str, &str),

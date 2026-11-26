@@ -1,4 +1,3 @@
-//! Prints how a grammar parses a file and what is read from it: `cargo run -p code-map --example tree -- file.php`.
 fn main() {
     let path = std::env::args().nth(1).expect("a file to parse");
     let text = std::fs::read_to_string(&path).expect("a readable file");

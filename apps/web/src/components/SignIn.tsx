@@ -2,10 +2,8 @@ import { FitAddon, init, Terminal } from "ghostty-web"
 import { useEffect, useRef, useState } from "react"
 import type { Agent, Machine } from "../api"
 
-/** The terminal in which an agent's own sign-in runs on a machine. It shows and types, and keeps nothing. */
 export function SignIn({ machine, agent, onDone }: { machine: Machine; agent: Agent; onDone: () => void }) {
   const place = useRef<HTMLDivElement>(null)
-  // How the terminal ended: after showing something, or without ever opening.
   const [ended, setEnded] = useState<"done" | "refused">()
   useEffect(() => {
     let leave = () => {}
@@ -27,7 +25,6 @@ export function SignIn({ machine, agent, onDone }: { machine: Machine; agent: Ag
         terminal.write(Uint8Array.from(atob(JSON.parse(event.data).data), (byte) => byte.charCodeAt(0)))
       }
       socket.onclose = () => setEnded(shown ? "done" : "refused")
-      // What is typed or pasted goes as bytes, whatever its letters.
       terminal.onData((typed) => say({ type: "data", data: btoa(String.fromCharCode(...new TextEncoder().encode(typed))) }))
       terminal.onResize(({ cols, rows }) => say({ type: "size", cols, rows }))
       fit.observeResize()
