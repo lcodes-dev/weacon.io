@@ -6,6 +6,7 @@ mod chats;
 mod link;
 mod service;
 mod setup;
+mod terminals;
 
 use std::path::PathBuf;
 

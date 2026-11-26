@@ -45,7 +45,9 @@ async fn server() -> AppState {
 /// Maps the tracked branches now, as the server does every minute.
 async fn map_branches(state: &AppState) {
     jobs_done(state).await;
-    jobs::dispatch(state, Job::MapBranches(MapBranches)).await.unwrap();
+    jobs::dispatch(state, Job::MapBranches(MapBranches))
+        .await
+        .unwrap();
     jobs_done(state).await;
 }
 
