@@ -4305,7 +4305,7 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
         pool: db::open(&file).await.unwrap(),
         ..state
     };
-    db::end_interrupted_weacon(&state.pool).await.unwrap();
+    db::end_interrupted_weacon_calls(&state.pool).await.unwrap();
     let mut marco = marco;
     (ada.state, marco.state) = (state.clone(), state.clone());
     let (_, shown) = marco.get(&group).await;

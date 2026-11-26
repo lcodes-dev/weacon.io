@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         embed: doc_search::embed,
     };
     db::fail_interrupted_docs(&state.pool).await?;
-    db::end_interrupted_weacon(&state.pool).await?;
+    db::end_interrupted_weacon_calls(&state.pool).await?;
     tokio::spawn(map::worker(state.clone()));
     axum::serve(listener, router(state)).await?;
     Ok(())
