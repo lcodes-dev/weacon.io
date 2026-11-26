@@ -48,8 +48,7 @@ pub async fn map_branch(state: &AppState, branch: &Waiting) {
         let (repo, name) = (&branch.repo, &branch.name);
         tracing::error!("mapping {repo} {name} failed: {}", error.message);
         let failed = Some(error.message.as_str());
-        let saved = db::set_branch_head(&state.pool, &branch.project_id, name, None, failed);
-        saved.await.ok();
+        db::set_branch_head(&state.pool, &branch.project_id, name, None, failed).await.ok();
         live::team(state, &branch.team_id, Topic::Projects).await;
     }
 }

@@ -5,8 +5,7 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::db;
-use super::db::{Invitation, Membership, User};
+use super::db::{self, Invitation, Membership, User};
 use crate::auth::{
     SESSION_SECONDS, normalized, random_token, session_cookie, session_token, session_user, signed_in,
 };

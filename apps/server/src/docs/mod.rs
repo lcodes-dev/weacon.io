@@ -158,8 +158,7 @@ pub async fn progress(state: &AppState, project_id: &str, run: i64, message: &st
 }
 
 pub async fn fail_run(state: &AppState, project_id: &str, run: i64, why: &str) {
-    let failed = db::set_state(&state.pool, project_id, run, "failed", Some(why));
-    failed.await.ok();
+    db::set_state(&state.pool, project_id, run, "failed", Some(why)).await.ok();
     live::project(state, project_id, Topic::Docs).await;
 }
 

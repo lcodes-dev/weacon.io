@@ -71,8 +71,7 @@ async fn fail(state: &AppState, chat_id: &str, why: &str) {
 }
 
 pub async fn hear(state: &AppState, machine_id: &str, chat_id: &str, number: u64, event: Event) {
-    let heard = db::hear(&state.pool, machine_id, chat_id, number as i64, &event);
-    heard.await.ok();
+    db::hear(&state.pool, machine_id, chat_id, number as i64, &event).await.ok();
     live::chat(state, chat_id).await;
 }
 

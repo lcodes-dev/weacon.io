@@ -7,8 +7,7 @@ use core_link::Agent;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::db;
-use super::db::Machine;
+use super::db::{self, Machine};
 use crate::accounts::db::User;
 use crate::auth::{bearer, random_token};
 use crate::error::{ApiError, Result};

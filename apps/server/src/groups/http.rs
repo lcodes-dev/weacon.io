@@ -5,8 +5,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::AnswerAsWeacon;
-use super::db;
-use super::db::Group;
+use super::db::{self, Group};
 use crate::accounts::db::User;
 use crate::chats::http::After;
 use crate::error::{ApiError, Result};

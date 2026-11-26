@@ -4,8 +4,7 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::db;
-use super::db::{Task, TaskFields};
+use super::db::{self, Task, TaskFields};
 use crate::accounts::db::User;
 use crate::error::{ApiError, Result};
 use crate::live::Topic;

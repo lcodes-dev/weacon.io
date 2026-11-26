@@ -88,8 +88,7 @@ pub async fn turn(
             _ = &mut stop => {
                 // Interrupted as Ctrl-C would, each program ends its commands before itself. Killed, it leaves them running.
                 if let Some(id) = child.id() {
-                    let interrupt = Command::new("kill").args(["-INT", &id.to_string()]).status();
-                    interrupt.await.ok();
+                    Command::new("kill").args(["-INT", &id.to_string()]).status().await.ok();
                 }
                 if tokio::time::timeout(GRACE, child.wait()).await.is_err() {
                     child.kill().await.ok();

@@ -1,7 +1,6 @@
 use serde_json::{Value, json};
 
-use super::db;
-use super::db::Caller;
+use super::db::{self, Caller};
 use crate::error::{ApiError, Result};
 use crate::live::Topic;
 use crate::tasks::db::{Task, TaskFields};

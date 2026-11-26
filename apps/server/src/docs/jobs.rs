@@ -3,8 +3,7 @@ use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::db;
-use super::db::{Doc, Written};
+use super::db::{self, Doc, Written};
 use super::prompts::{CHECK, FILES, OUTLINE, OVERVIEW, REQUEST, UPDATING, WRITING};
 use super::{Brief, Sources, json_in};
 use crate::error::{ApiError, Result};
