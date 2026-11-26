@@ -11,11 +11,11 @@ use sqlx::SqlitePool;
 use crate::db;
 
 #[derive(Clone)]
-pub struct Key([u8; 32]);
+pub struct ServerKey([u8; 32]);
 
-impl Key {
+impl ServerKey {
     pub fn random() -> Self {
-        Key(rand::random())
+        ServerKey(rand::random())
     }
 
     /// `place` names where the value is kept, so that it opens nowhere else.
@@ -54,29 +54,33 @@ impl Key {
 pub async fn load(
     pool: &SqlitePool,
     path: &Path,
-) -> Result<Key, Box<dyn std::error::Error + Send + Sync>> {
-    let shown = path.display();
+) -> Result<ServerKey, Box<dyn std::error::Error + Send + Sync>> {
+    let key_file = path.display();
     let key = match std::fs::read(path) {
-        Ok(bytes) => Key(bytes
-            .try_into()
-            .map_err(|_| format!("{shown} doesn't hold a key of 32 bytes"))?),
+        Ok(bytes) => ServerKey(
+            bytes
+                .try_into()
+                .map_err(|_| format!("{key_file} doesn't hold a key of 32 bytes"))?,
+        ),
         Err(error) if error.kind() == ErrorKind::NotFound => {
             if db::secrets_sealed(pool).await? && !db::secrets(pool).await?.is_empty() {
                 return Err(format!(
-                    "{shown} is missing, and the database's secrets were sealed with the key it held"
+                    "{key_file} is missing, and the database's secrets were sealed with the key it held"
                 )
                 .into());
             }
-            let key = Key::random();
-            write_private(path, &key.0).map_err(|error| format!("{shown}: {error}"))?;
+            let key = ServerKey::random();
+            write_private(path, &key.0).map_err(|error| format!("{key_file}: {error}"))?;
             key
         }
-        Err(error) => return Err(format!("{shown}: {error}").into()),
+        Err(error) => return Err(format!("{key_file}: {error}").into()),
     };
     db::seal_secrets(pool, &key).await?;
     for (place, sealed) in db::secrets(pool).await? {
         if key.open(&place, &sealed).is_none() {
-            return Err(format!("the key in {shown} doesn't open the database's secrets").into());
+            return Err(
+                format!("the key in {key_file} doesn't open the database's secrets").into(),
+            );
         }
     }
     Ok(key)

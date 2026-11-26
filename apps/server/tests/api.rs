@@ -39,7 +39,7 @@ async fn server() -> AppState {
         weacon: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
-        server_key: secrets::Key::random(),
+        server_key: secrets::ServerKey::random(),
     }
 }
 

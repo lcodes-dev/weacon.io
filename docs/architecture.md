@@ -280,7 +280,7 @@ A team has at most one key, for the Anthropic API, saved and removed by its owne
 
 ## Mail
 
-`mail.rs` has one way to send: `mail::send(pool, key, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
+`mail.rs` has one way to send: `mail::send(pool, server_key, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
 
 - Each mail reads the saved SMTP settings and connects with them, so there is no connection to keep in step with the settings. With none saved, the mail is printed to the log.
 

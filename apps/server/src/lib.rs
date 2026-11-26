@@ -58,7 +58,7 @@ pub struct AppState {
     /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
     pub embed: search::Embed,
     /// Seals the secrets the database holds.
-    pub server_key: secrets::Key,
+    pub server_key: secrets::ServerKey,
 }
 
 /// Seconds since 1970.
