@@ -19,7 +19,6 @@ pub async fn list_chats(
     user: User,
     Path(team_id): Path<String>,
 ) -> Result<Json<Vec<Chat>>> {
-    user.member_of(&team_id)?;
     Ok(Json(db::list(&state.pool, &team_id, &user.id, None).await?))
 }
 
@@ -38,7 +37,6 @@ pub async fn create_chat(
     Path((team_id, project_id)): Path<(String, String)>,
     Json(start): Json<Start>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let projects = projects::db::list(&state.pool, &team_id).await?;
     let project = projects.iter().find(|project| project.id == project_id);
     let project = project.ok_or_else(ApiError::not_found)?;
@@ -283,7 +281,6 @@ pub async fn push(
 }
 
 async fn readable(state: &AppState, user: &User, team_id: &str, chat_id: &str) -> Result<Chat> {
-    user.member_of(team_id)?;
     let chats = db::list(&state.pool, team_id, &user.id, Some(chat_id)).await?;
     chats.into_iter().next().ok_or_else(ApiError::not_found)
 }

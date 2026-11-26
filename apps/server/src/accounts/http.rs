@@ -146,9 +146,7 @@ pub async fn remove_member(
     user: User,
     Path((team_id, user_id)): Path<(String, String)>,
 ) -> Result<StatusCode> {
-    if user_id == user.id {
-        user.member_of(&team_id)?;
-    } else {
+    if user_id != user.id {
         user.owner_of(&team_id)?;
     }
     if !db::remove_member(&state.pool, &team_id, &user_id).await? {

@@ -17,7 +17,6 @@ pub async fn list_groups(
     user: User,
     Path(team_id): Path<String>,
 ) -> Result<Json<Vec<Group>>> {
-    user.member_of(&team_id)?;
     Ok(Json(db::list(&state.pool, &team_id, &user.id).await?))
 }
 
@@ -34,7 +33,6 @@ pub async fn create_group(
     Path(team_id): Path<String>,
     Json(mut group): Json<NewGroup>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     group.members.push(user.id.clone());
     check_members(&state, &team_id, &group.members).await?;
     let about = group.project_id.as_deref();
@@ -139,7 +137,6 @@ pub async fn write(
 }
 
 async fn found(state: &AppState, user: &User, team_id: &str, group_id: &str) -> Result<Group> {
-    user.member_of(team_id)?;
     let groups = db::list(&state.pool, team_id, &user.id).await?;
     let group = groups.into_iter().find(|group| group.id == group_id);
     group.ok_or_else(ApiError::not_found)

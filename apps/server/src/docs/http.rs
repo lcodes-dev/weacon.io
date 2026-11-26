@@ -21,10 +21,8 @@ use crate::{AppState, jobs, live, now, projects, settings};
 
 pub async fn show_docs(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let status = db::status(&state.pool, &team_id, &project_id).await?;
     let status = status.ok_or_else(ApiError::not_found)?;
     let pages = db::list(&state.pool, &project_id).await?;
@@ -53,7 +51,6 @@ pub async fn write_docs(
     Path((team_id, project_id)): Path<(String, String)>,
     Json(FromBranch { branch }): Json<FromBranch>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     let run = start_run(&state, &user, &team_id, &project_id, &branch).await?;
     let job = WriteDocs {
         team_id,
@@ -72,7 +69,6 @@ pub async fn ask_docs(
     Path((team_id, project_id)): Path<(String, String)>,
     Json(request): Json<Request>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     if request.text.trim().is_empty() {
         return Err(ApiError::invalid("Say what to change"));
     }
@@ -122,7 +118,6 @@ pub async fn create_page(
     Path((team_id, project_id)): Path<(String, String)>,
     Json(page): Json<NewPage>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     if !["works", "built"].contains(&page.section.as_str()) {
         let message = "A page is added to the user docs or the technical docs";
         return Err(ApiError::invalid(message));
@@ -148,7 +143,6 @@ pub async fn update_page(
     Path((team_id, project_id, page_id)): PagePath,
     Json(edit): Json<DocEdit>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     titled(&edit.title)?;
     let saved = db::save(
         &state.pool,
@@ -182,10 +176,8 @@ pub async fn update_page(
 
 pub async fn delete_page(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, page_id)): PagePath,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     if !db::delete(&state.pool, &team_id, &project_id, &page_id).await? {
         return Err(ApiError::not_found());
     }
@@ -195,11 +187,9 @@ pub async fn delete_page(
 
 pub async fn order_pages(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id)): Path<(String, String)>,
     Json(ids): Json<Vec<String>>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     db::order(&state.pool, &team_id, &project_id, &ids).await?;
     live::team(&state, &team_id, Topic::Docs).await;
     Ok(StatusCode::NO_CONTENT)
@@ -207,10 +197,8 @@ pub async fn order_pages(
 
 pub async fn page_versions(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, page_id)): PagePath,
 ) -> Result<Json<Vec<DocVersion>>> {
-    user.member_of(&team_id)?;
     let versions = db::versions(&state.pool, &team_id, &project_id, &page_id).await?;
     if versions.is_empty() {
         return Err(ApiError::not_found());
@@ -220,10 +208,8 @@ pub async fn page_versions(
 
 pub async fn dismiss_note(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, page_id, index)): Path<(String, String, String, i64)>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     if !db::dismiss_note(&state.pool, &team_id, &project_id, &page_id, index).await? {
         return Err(ApiError::not_found());
     }
@@ -251,7 +237,6 @@ pub async fn accept_proposal(
     Path((team_id, project_id, proposal_id)): Path<(String, String, String)>,
     Json(accepted): Json<Accepted>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     let accepted = db::accept_proposal(
         &state.pool,
         &team_id,
@@ -271,10 +256,8 @@ pub async fn accept_proposal(
 
 pub async fn delete_proposal(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, proposal_id)): Path<(String, String, String)>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     if !db::delete_proposal(&state.pool, &team_id, &project_id, &proposal_id).await? {
         return Err(ApiError::not_found());
     }
@@ -298,7 +281,6 @@ pub async fn upload_file(
     Query(Named { name }): Query<Named>,
     bytes: Bytes,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let image = image_kind(&bytes);
     if image.is_some() && bytes.len() > MAX_IMAGE_BYTES {
         return Err(ApiError::invalid("An image can be 5 MB at most"));
@@ -332,11 +314,9 @@ pub async fn upload_file(
 
 pub async fn show_file(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, file_id)): Path<(String, String, String)>,
     asked: HeaderMap,
 ) -> Result<Response> {
-    user.member_of(&team_id)?;
     let kept = db::find_file(&state.pool, &team_id, &project_id, &file_id).await?;
     served(&state, &file_id, kept, &asked).await
 }
@@ -410,10 +390,8 @@ fn image_kind(bytes: &[u8]) -> Option<&'static str> {
 
 pub async fn list_shares(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Vec<Share>>> {
-    user.member_of(&team_id)?;
     Ok(Json(
         db::list_shares(&state.pool, &team_id, &project_id).await?,
     ))
@@ -424,7 +402,6 @@ pub async fn create_share(
     user: User,
     Path((team_id, project_id)): Path<(String, String)>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let pages = db::list(&state.pool, &project_id).await?;
     let pages: Vec<(&str, &str)> = pages
         .iter()
@@ -452,10 +429,8 @@ pub async fn create_share(
 
 pub async fn delete_share(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id, token)): Path<(String, String, String)>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     if !db::end_share(&state.pool, &team_id, &project_id, &token).await? {
         return Err(ApiError::not_found());
     }

@@ -1,9 +1,11 @@
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Request};
+use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post, put};
 use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
+use crate::auth::team_member;
 use crate::error::ApiError;
 use crate::{
     AppState, accounts, chats, docs, groups, live, machines, projects, settings, tasks, web,
@@ -119,7 +121,8 @@ pub fn router(state: AppState) -> Router {
                 .route(
                     "/chats/{chat_id}/hosts/{host}",
                     delete(chats::http::forget_host),
-                ),
+                )
+                .route_layer(from_fn_with_state(state.clone(), team_member)),
         )
         .nest(
             project,
@@ -130,13 +133,13 @@ pub fn router(state: AppState) -> Router {
                     "/tasks",
                     get(tasks::http::list_tasks)
                         .post(tasks::http::create_task)
-                        .put(tasks::http::order),
+                        .put(tasks::http::order_tasks),
                 )
                 .route(
                     "/tasks/{task_id}",
                     put(tasks::http::update_task).delete(tasks::http::delete_task),
                 )
-                .route("/tasks/{task_id}/docs", get(tasks::http::docs))
+                .route("/tasks/{task_id}/docs", get(tasks::http::suggested_docs))
                 .route(
                     "/docs",
                     get(docs::http::show_docs).post(docs::http::write_docs),
@@ -173,7 +176,8 @@ pub fn router(state: AppState) -> Router {
                     "/shares",
                     get(docs::http::list_shares).post(docs::http::create_share),
                 )
-                .route("/shares/{token}", delete(docs::http::delete_share)),
+                .route("/shares/{token}", delete(docs::http::delete_share))
+                .route_layer(from_fn_with_state(state.clone(), team_member)),
         )
         .fallback(async || ApiError::not_found())
         .layer(log)

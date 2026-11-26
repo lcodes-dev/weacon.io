@@ -82,20 +82,16 @@ impl Fields {
 
 pub async fn list_projects(
     State(state): State<AppState>,
-    user: User,
     Path(team_id): Path<String>,
 ) -> Result<Json<Vec<Project>>> {
-    user.member_of(&team_id)?;
     Ok(Json(db::list(&state.pool, &team_id).await?))
 }
 
 pub async fn create_project(
     State(state): State<AppState>,
-    user: User,
     Path(team_id): Path<String>,
     Json(fields): Json<Fields>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let project = fields.checked(&state, &team_id, None).await?;
     let id = db::create(
         &state.pool,
@@ -114,11 +110,9 @@ pub async fn create_project(
 
 pub async fn update_project(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id)): Path<(String, String)>,
     Json(fields): Json<Fields>,
 ) -> Result<StatusCode> {
-    user.member_of(&team_id)?;
     let project = fields.checked(&state, &team_id, Some(&project_id)).await?;
     let changed = db::update(
         &state.pool,
@@ -158,21 +152,17 @@ pub struct Which {
 
 pub async fn show_map(
     State(state): State<AppState>,
-    user: User,
     Path((team_id, project_id)): Path<(String, String)>,
     Query(which): Query<Which>,
 ) -> Result<Json<Map>> {
-    user.member_of(&team_id)?;
     let map = db::find_map(&state.pool, &team_id, &project_id, &which.branch).await?;
     Ok(Json(map.ok_or_else(ApiError::not_found)?))
 }
 
 pub async fn show_github(
     State(state): State<AppState>,
-    user: User,
     Path(team_id): Path<String>,
 ) -> Result<Json<Status>> {
-    user.member_of(&team_id)?;
     Ok(Json(github::team_status(&state, &team_id).await?))
 }
 
@@ -216,11 +206,9 @@ struct Repo {
 
 pub async fn repo_branches(
     State(state): State<AppState>,
-    user: User,
     Path(team_id): Path<String>,
     Query(of): Query<OfRepo>,
 ) -> Result<Json<Value>> {
-    user.member_of(&team_id)?;
     let plain = |part: &str| {
         part.chars()
             .all(|c| c.is_alphanumeric() || "-_.".contains(c))

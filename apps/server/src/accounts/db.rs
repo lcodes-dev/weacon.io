@@ -7,7 +7,7 @@ use crate::groups;
 const CODE_TRIES: i64 = 5;
 const CODE_WAIT: i64 = 60;
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct User {
     pub id: String,
     pub email: String,
@@ -16,7 +16,7 @@ pub struct User {
     pub teams: Vec<Membership>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Membership {
     pub id: String,
     pub name: String,

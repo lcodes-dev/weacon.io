@@ -39,6 +39,16 @@ pub struct Waiting {
     pub head_sha: String,
 }
 
+pub async fn exists(pool: &SqlitePool, team_id: &str, project_id: &str) -> sqlx::Result<bool> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM projects WHERE id = ? AND team_id = ?) AS "found: bool""#,
+        project_id,
+        team_id
+    )
+    .fetch_one(pool)
+    .await
+}
+
 pub async fn list(pool: &SqlitePool, team_id: &str) -> sqlx::Result<Vec<Project>> {
     let projects = sqlx::query!(
         "SELECT id, name, key, repo FROM projects WHERE team_id = ? ORDER BY name",

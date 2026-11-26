@@ -1,11 +1,15 @@
-use axum::extract::FromRequestParts;
+use std::collections::HashMap;
+
+use axum::extract::{FromRequestParts, Path, Request, State};
 use axum::http::header::{AUTHORIZATION, COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName};
+use axum::middleware::Next;
+use axum::response::Response;
 
 use crate::accounts::db::{Membership, User};
 use crate::error::{ApiError, Result};
-use crate::{AppState, accounts, now};
+use crate::{AppState, accounts, now, projects};
 
 const COOKIE_NAME: &str = "weacon_session";
 pub const SESSION_SECONDS: i64 = 365 * 24 * 60 * 60;
@@ -14,10 +18,31 @@ impl FromRequestParts<AppState> for User {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self> {
+        if let Some(user) = parts.extensions.get::<User>() {
+            return Ok(user.clone());
+        }
         signed_in(state, &parts.headers)
             .await?
             .ok_or_else(|| ApiError::unauthorized("Sign in first"))
     }
+}
+
+pub async fn team_member(
+    State(state): State<AppState>,
+    Path(path): Path<HashMap<String, String>>,
+    user: User,
+    mut request: Request,
+    next: Next,
+) -> Result<Response> {
+    let team_id = &path["team_id"];
+    user.member_of(team_id)?;
+    if let Some(project_id) = path.get("project_id")
+        && !projects::db::exists(&state.pool, team_id, project_id).await?
+    {
+        return Err(ApiError::not_found());
+    }
+    request.extensions_mut().insert(user);
+    Ok(next.run(request).await)
 }
 
 pub struct ServerOwner(pub User);
