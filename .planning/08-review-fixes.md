@@ -100,7 +100,7 @@ Built as planned, with these differences:
 
 - SQLite went to `libsqlite3-sys` 0.40, the newest SQLx 0.9.1 accepts.
 - Codex was checked by hand. Asked to print the first line of `/etc/hosts` and an environment variable, it printed the line as it ran before, and answered that it can't with `--disable shell_tool --disable unified_exec --ignore-user-config --ignore-rules` and a trimmed environment. A real docs run with those options wrote 15 pages: the overview, 7 flows and 7 technical pages.
-- Claude Code is the unticked step: `claude` on this computer still isn't signed in outside the desktop app, so `--safe-mode` and the trimmed environment were accepted up to the sign-in check and no further.
+- Claude Code was checked by hand on 26 November, with the core's own flags and trimmed environment: it answered that it can't read files or the environment, and printed neither `/etc/hosts` nor a planted variable. A real docs run with it as the writer proposed changes for all 15 pages.
 - A citation of several lines, `path:10-20`, is now a link too. The first real docs had more of those than of single lines, and none was linked.
 - After five wrong tries the code request keeps counting them until ten minutes pass with no new code, so the message for a refused code now also says "or was tried too often".
 - The time limits on GitHub calls and the two 200 MB limits have no test: each would need a fake GitHub that stalls or sends 200 MB.

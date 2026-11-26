@@ -79,7 +79,7 @@ That the real agents propose something worth accepting is checked by hand.
 - [x] Docs: `docs/architecture.md`
 - [x] Checked by hand on ContentWrite: a chat's agent changes code and proposes the page's change; `@weacon` proposes a correction in a group; both accepted from the diff
 
-## Outcome so far
+## Outcome
 
 Built as planned, with these differences:
 
@@ -90,4 +90,4 @@ Built as planned, with these differences:
 
 - **Tests:** 64 on the server, one of them new, for a chat's agent; the test of `@weacon` has it propose a page too.
 - **Checked by hand** on ContentWrite with the real Claude Code on this machine: asked to add a section to a page, it read the page and the code, and proposed the change; the chat said so with a link to the docs, and the docs page showed the diff under "Proposed by Ada Dorn's Claude Code · Open its chat". That proposal was then rejected.
-- **Not checked by hand:** `@weacon` proposing in a group, which spends the team's real key, and accepting an agent's proposal in the browser. The tests cover both.
+- **Checked by hand** on 26 November: `@weacon`, asked in a group to correct a page that said 7 days for 48 hours, proposed the fix under "Proposed by Weacon for Ada Dorn", and the sentence was accepted from the diff. An agent's proposal was also accepted from the diff in two browsers, the second seeing it arrive at once.

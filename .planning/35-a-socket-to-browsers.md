@@ -81,7 +81,7 @@ That a second browser shows a message at once, and that a page catches up after 
 - [x] Docs: `docs/architecture.md`
 - [x] Checked by hand in two browsers: a group's message and an agent's turn show at once; a restart of the server is caught up with
 
-## Outcome so far
+## Outcome
 
 Built as planned, with these differences:
 
@@ -94,4 +94,4 @@ Built as planned, with these differences:
 
 - **Tests:** 65 on the server, one of them new: who hears what of a group, a chat, a machine's event, an agent's task and a machine going away, and who is refused the socket.
 - **Checked by hand** in one browser: the dot is green with the socket open; a message posted to a group from outside the page showed on the open page within a second; the machine in the sidebar went to connected by itself; an idle page made no request in twenty seconds; a page loaded while the server was still starting opened its socket once it was up.
-- **Not checked by hand:** two browsers side by side, and an agent's turn showing as it runs.
+- **Checked by hand** on 26 November in two browsers: a group's message showed in the other within about 100 ms, and a member outside the group asked nothing; an agent's turn showed in a second browser within 80 ms; after a restart of the server an open page caught up within a second, without a reload. This found an open group keeping its unread dot, fixed in the group's page.
