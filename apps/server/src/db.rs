@@ -3056,9 +3056,46 @@ pub async fn group_messages(
     .await
 }
 
-/// Posts in a group what the team's own agent answered `user_id`.
+/// Starts a call to the team's own agent in a group, unless one is running there.
+pub async fn start_weacon(pool: &SqlitePool, group_id: &str, user_id: &str) -> sqlx::Result<bool> {
+    let started = sqlx::query!(
+        "INSERT OR IGNORE INTO weacon_calls (group_id, user_id, created_at)
+         VALUES (?, ?, unixepoch())",
+        group_id,
+        user_id
+    )
+    .execute(pool)
+    .await?;
+    Ok(started.rows_affected() > 0)
+}
+
+pub async fn weacon_working(pool: &SqlitePool, group_id: &str) -> sqlx::Result<bool> {
+    let working = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM weacon_calls WHERE group_id = ?) AS "working!: bool""#,
+        group_id
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(working)
+}
+
+/// Posts in a group what the team's own agent answered `user_id`, which ends its call there.
 pub async fn answer_as_weacon(
     pool: &SqlitePool,
+    id: &str,
+    user_id: &str,
+    text: &str,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    post_as_weacon(&mut tx, id, user_id, text).await?;
+    sqlx::query!("DELETE FROM weacon_calls WHERE group_id = ?", id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
+async fn post_as_weacon(
+    tx: &mut sqlx::SqliteConnection,
     id: &str,
     user_id: &str,
     text: &str,
@@ -3072,9 +3109,25 @@ pub async fn answer_as_weacon(
         user_id,
         text
     )
-    .execute(pool)
+    .execute(tx)
     .await?;
     Ok(())
+}
+
+/// A call can't outlive the server, so one left at startup was cut short: its group is told.
+pub async fn end_interrupted_weacon(pool: &SqlitePool) -> sqlx::Result<()> {
+    let text = "It stopped when the server restarted. Tag @weacon to ask again.";
+    let mut tx = pool.begin().await?;
+    let calls = sqlx::query!("SELECT group_id, user_id FROM weacon_calls")
+        .fetch_all(&mut *tx)
+        .await?;
+    for call in calls {
+        post_as_weacon(&mut tx, &call.group_id, &call.user_id, text).await?;
+    }
+    sqlx::query!("DELETE FROM weacon_calls")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
 }
 
 /// Notes that a member has read a group up to its newest message.

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM weacon_calls",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "34a8d2cce65300ff2845a61924112c3fd85990788bd85a13a63a8e939a587942"
+}
