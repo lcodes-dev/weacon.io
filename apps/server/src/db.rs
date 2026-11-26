@@ -1306,8 +1306,9 @@ pub async fn fail_interrupted_docs(pool: &SqlitePool) -> sqlx::Result<()> {
 
 /// Ends `run` with what it wrote, and does nothing unless it still holds the project.
 /// `commit` is what it was all written from. `from` is the branch and the left out folders of
-/// a run over the whole project, which drops the writer's proposals nobody answered; a request has none. A project without pages gets
-/// the pages themselves, and one with pages gets them as proposals.
+/// a run over the whole project, which drops the writer's proposals nobody answered; a request
+/// has none. A project without pages gets the pages themselves, and one with pages gets them
+/// as proposals.
 pub async fn save_written(
     pool: &SqlitePool,
     project_id: &str,

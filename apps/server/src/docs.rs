@@ -521,9 +521,7 @@ async fn generate(
     let left_out = json!(plan.left_out).to_string();
     let (commit, from) = (&sources.commit, Some((branch, left_out.as_str())));
     let saved = db::save_written(&state.pool, project_id, run, commit, from, None, &pages);
-    saved.await.map_err(broken)?;
-    live::project(state, project_id, "docs").await;
-    Ok(())
+    saved.await.map_err(broken)
 }
 
 /// Does `work` in the background as the project's `run`, and marks the run failed if it fails.
@@ -535,13 +533,16 @@ fn background(
 ) {
     tokio::spawn(async move {
         // A run that crashes must not stay marked as running.
-        let message = match tokio::spawn(work).await {
-            Ok(Ok(())) => return,
-            Ok(Err(message)) => message,
-            Err(_) => "Something went wrong".into(),
+        let failure = match tokio::spawn(work).await {
+            Ok(Ok(())) => None,
+            Ok(Err(message)) => Some(message),
+            Err(_) => Some("Something went wrong".into()),
         };
-        let failed = db::set_docs_state(&state.pool, &project_id, run, "failed", Some(&message));
-        failed.await.ok();
+        if let Some(message) = failure {
+            let failed =
+                db::set_docs_state(&state.pool, &project_id, run, "failed", Some(&message));
+            failed.await.ok();
+        }
         live::project(&state, &project_id, "docs").await;
     });
 }
@@ -567,7 +568,7 @@ async fn claim(
     if !db::claim_docs_run(&state.pool, project_id, run).await? {
         return Err(refused("The docs are already being written"));
     }
-    live::team(state, team_id, "docs").await;
+    live::project(state, project_id, "docs").await;
     Ok((writer, run))
 }
 
@@ -676,9 +677,7 @@ async fn answer(
     }
     let (commit, asked, pages) = (&sources.commit, Some(request.text.trim()), [page]);
     let saved = db::save_written(&state.pool, project_id, run, commit, None, asked, &pages);
-    saved.await.map_err(broken)?;
-    live::project(state, project_id, "docs").await;
-    Ok(())
+    saved.await.map_err(broken)
 }
 
 /// Checks a page a person just saved against the code, and keeps the writer's notes on it.
@@ -733,7 +732,7 @@ pub async fn check(
     };
     let ended = db::end_check(&state.pool, &doc_id, &doc.version, files, notes);
     ended.await.ok();
-    live::team(&state, &team_id, "docs").await;
+    live::project(&state, &project_id, "docs").await;
 }
 
 pub async fn show(

@@ -239,7 +239,7 @@ async fn serve(state: AppState, machine: Machine, mut socket: WebSocket) {
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(message) = serde_json::from_str(&text) {
-                            heard(&state, (&machine, &owner), message).await;
+                            heard(&state, &machine, &owner, message).await;
                         }
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
@@ -272,7 +272,7 @@ async fn serve(state: AppState, machine: Machine, mut socket: WebSocket) {
 }
 
 /// Takes in what a core said.
-async fn heard(state: &AppState, (machine, owner): (&str, &str), message: FromCore) {
+async fn heard(state: &AppState, machine: &str, owner: &str, message: FromCore) {
     match message {
         FromCore::Agents { agents } => {
             let agents = json!(agents).to_string();

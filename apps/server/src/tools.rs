@@ -1,6 +1,7 @@
-//! The tools an agent has for its project's tasks and docs, which it reads and proposes changes to. The program of a chat's agent
-//! calls them here while its turn runs, as the Model Context Protocol has it, one JSON-RPC request
-//! in and one answer out. For the team's own agent the server runs them itself.
+//! The tools an agent has for its project's tasks and docs, which it reads and proposes
+//! changes to. The program of a chat's agent calls them here while its turn runs, as the
+//! Model Context Protocol has it, one JSON-RPC request in and one answer out. For the team's
+//! own agent the server runs them itself.
 
 use axum::Json;
 use axum::extract::State;
