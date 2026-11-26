@@ -1,6 +1,6 @@
 # Plan 08: fixes from the review of 18 November
 
-**Status: in progress**
+**Status: done**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -86,7 +86,7 @@ The existing docs test's wait gets a time limit. The GitHub state, the two write
 - [x] Sign-in codes, session expiry, the address check, invite acceptance
 - [x] The GitHub state, the request log, the database files' permissions
 - [x] Mail reads its saved settings
-- [ ] Writers: isolation, checked by hand with both programs
+- [x] Writers: isolation, checked by hand with both programs
 - [x] Docs: the run's number, safe plan reading, crashed runs, "Written from", images, docs deleted with the repository
 - [x] Map: time limits, size limits, no partial maps, the guarded save
 - [x] Map: language from the path, one read transaction, the reader's scans, the project save

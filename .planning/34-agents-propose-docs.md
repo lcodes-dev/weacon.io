@@ -1,6 +1,6 @@
 # Plan 34: an agent proposes a change to the docs
 
-**Status: in progress**
+**Status: done**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -77,7 +77,7 @@ That the real agents propose something worth accepting is checked by hand.
 - [x] Server: the tool, for a chat's agent and for `@weacon`, with their tests
 - [x] Web app: who proposed it on the docs page, and the line in the chat
 - [x] Docs: `docs/architecture.md`
-- [ ] Checked by hand on ContentWrite: a chat's agent changes code and proposes the page's change; `@weacon` proposes a correction in a group; both accepted from the diff
+- [x] Checked by hand on ContentWrite: a chat's agent changes code and proposes the page's change; `@weacon` proposes a correction in a group; both accepted from the diff
 
 ## Outcome so far
 
