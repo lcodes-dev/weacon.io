@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT secrets_sealed FROM config",
+  "describe": {
+    "columns": [
+      {
+        "name": "secrets_sealed",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "secrets_sealed"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5fd042389394a95b9d75ee61901d93081e6a8ca6606c6fb14c3eb323019348be"
+}

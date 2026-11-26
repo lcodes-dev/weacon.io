@@ -32,7 +32,7 @@ pub async fn called(
     let Some(project) = projects.iter().find(|project| Some(&*project.id) == about) else {
         return Ok(Some(chats::NO_PROJECT.into()));
     };
-    let Some((key, model)) = db::api_key(&state.pool, team_id).await? else {
+    let Some((key, model)) = db::api_key(&state.pool, &state.server_key, team_id).await? else {
         let why = "This team has no API key for @weacon. Its owner saves one in Team settings";
         return Ok(Some(why.into()));
     };

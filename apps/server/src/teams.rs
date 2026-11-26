@@ -38,9 +38,11 @@ pub async fn team(
     let team = membership(&user, &team_id)?;
     let members = db::members(&state.pool, &team_id).await?;
     let invites = db::invites(&state.pool, &team_id).await?;
-    let writer = db::writer(&state.pool, &team_id).await?;
+    let writer = db::writer(&state.pool, &state.server_key, &team_id).await?;
     let writer = writer.map(|writer| writer.public());
-    let has_key = db::api_key(&state.pool, &team_id).await?.is_some();
+    let has_key = db::api_key(&state.pool, &state.server_key, &team_id)
+        .await?
+        .is_some();
     Ok(Json(json!({
         "name": team.name, "members": members, "invites": invites, "writer": writer,
         "has_key": has_key,
@@ -123,7 +125,7 @@ async fn send_invite(
         code: None,
         button: Some(("Join the team", &link)),
     };
-    mail::send(&state.pool, email, &mail)
+    mail::send(&state.pool, &state.server_key, email, &mail)
         .await
         .map_err(|error| {
             tracing::error!("mail to {email} failed: {error}");

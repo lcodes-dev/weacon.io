@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
 use tower::ServiceExt;
-use weacon_server::{AppState, db, map, router};
+use weacon_server::{AppState, db, map, router, secrets};
 
 /// Keeps the session cookie, as a browser does.
 struct Client {
@@ -38,6 +38,7 @@ async fn server() -> AppState {
         live: Default::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
+        server_key: secrets::ServerKey::random(),
     }
 }
 
@@ -387,7 +388,7 @@ async fn the_owner_saves_and_clears_smtp() {
     without.as_object_mut().unwrap().remove("password");
     owner.put("/api/config/mail", without).await;
     assert_eq!(
-        db::smtp(&state.pool)
+        db::smtp(&state.pool, &state.server_key)
             .await
             .unwrap()
             .unwrap()
@@ -412,6 +413,103 @@ async fn the_owner_saves_and_clears_smtp() {
         owner.post("/api/config/mail/test", Value::Null).await.0,
         StatusCode::NO_CONTENT
     );
+}
+
+#[tokio::test]
+async fn secrets_are_sealed_with_a_key_outside_the_database() {
+    let folder = std::env::temp_dir().join(format!("weacon-key-{:x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let pool = db::memory().await;
+    let key_file = folder.join("weacon.key");
+    let server_key = secrets::load(&pool, &key_file).await.unwrap();
+    let state = AppState {
+        pool,
+        server_key,
+        ..server().await
+    };
+    let mut ada = Client::new(&state);
+    ada.sign_in("ada@example.com", Some("Ada")).await;
+    let mut bob = Client::new(&state);
+    bob.sign_in("bob@example.com", Some("Bob")).await;
+    let smtp = json!({
+        "host": "127.0.0.1", "port": 1, "security": "none",
+        "username": "ada", "password": "smtp-secret", "from": "Weacon <weacon@example.com>",
+    });
+    ada.put("/api/config/mail", smtp).await;
+    ada.put(&ada.team("/key"), json!({"key": "sk-ant-secret"}))
+        .await;
+
+    let stored: (String, String) = sqlx::query_as(
+        "SELECT smtp_password, writer_key FROM config, teams WHERE writer_key IS NOT NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .unwrap();
+    assert!(!stored.0.contains("smtp-secret") && !stored.1.contains("sk-ant-secret"));
+    let smtp = db::smtp(&state.pool, &state.server_key).await.unwrap();
+    assert_eq!(smtp.unwrap().password.as_deref(), Some("smtp-secret"));
+    let api_key = db::api_key(&state.pool, &state.server_key, &ada.team_id).await;
+    assert_eq!(api_key.unwrap().unwrap().0, "sk-ant-secret");
+
+    // A sealed value opens only where it was sealed.
+    sqlx::query("UPDATE teams SET writer_key = ? WHERE id = ?")
+        .bind(&stored.1)
+        .bind(&bob.team_id)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    assert!(
+        db::api_key(&state.pool, &state.server_key, &bob.team_id)
+            .await
+            .is_err()
+    );
+    db::save_api_key(&state.pool, &state.server_key, &bob.team_id, None)
+        .await
+        .unwrap();
+
+    // The same key opens them again at the next start; a missing or another key stops it.
+    assert!(secrets::load(&state.pool, &key_file).await.is_ok());
+    let missing = folder.join("missing.key");
+    let error = secrets::load(&state.pool, &missing).await.err().unwrap();
+    assert!(error.to_string().contains("is missing"), "{error}");
+    assert!(!missing.exists());
+    let other = folder.join("other.key");
+    std::fs::write(&other, rand::random::<[u8; 32]>()).unwrap();
+    let error = secrets::load(&state.pool, &other).await.err().unwrap();
+    assert!(error.to_string().contains("doesn't open"), "{error}");
+    std::fs::remove_dir_all(&folder).unwrap();
+}
+
+#[tokio::test]
+async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
+    let folder = std::env::temp_dir().join(format!("weacon-key-{:x}", rand::random::<u64>()));
+    std::fs::create_dir_all(&folder).unwrap();
+    let pool = db::memory().await;
+    sqlx::query(
+        "UPDATE config SET smtp_host = '127.0.0.1', smtp_port = 1, smtp_security = 'none',
+                           smtp_password = 'smtp-secret', mail_from = 'weacon@example.com'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let key = secrets::load(&pool, &folder.join("weacon.key"))
+        .await
+        .unwrap();
+    let stored: String = sqlx::query_scalar("SELECT smtp_password FROM config")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_ne!(stored, "smtp-secret");
+    let smtp = db::smtp(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
+    // A second start seals nothing twice.
+    let key = secrets::load(&pool, &folder.join("weacon.key"))
+        .await
+        .unwrap();
+    let smtp = db::smtp(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
+    std::fs::remove_dir_all(&folder).unwrap();
 }
 
 /// Ada, who owns team 1, and Marco, who has joined it.

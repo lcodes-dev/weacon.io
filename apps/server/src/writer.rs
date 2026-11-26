@@ -126,7 +126,7 @@ pub async fn save(
     Json(writer): Json<Writer>,
 ) -> Result<StatusCode, ApiError> {
     owned(&user, &team_id)?;
-    let key = db::api_key(&state.pool, &team_id).await?;
+    let key = db::api_key(&state.pool, &state.server_key, &team_id).await?;
     if writer.kind == Kind::ClaudeApi && key.is_none() {
         return Err(refused("Save the team's API key first"));
     }
@@ -161,7 +161,7 @@ pub async fn save_key(
     if key.is_empty() {
         return Err(refused("An API key is needed"));
     }
-    db::save_api_key(&state.pool, &team_id, Some(key)).await?;
+    db::save_api_key(&state.pool, &state.server_key, &team_id, Some(key)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -171,12 +171,12 @@ pub async fn forget_key(
     Path(team_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     owned(&user, &team_id)?;
-    let writer = db::writer(&state.pool, &team_id).await?;
+    let writer = db::writer(&state.pool, &state.server_key, &team_id).await?;
     if writer.is_some_and(|writer| writer.kind == Kind::ClaudeApi) {
         return Err(refused(
             "The team's docs are written with this key. Choose another writer first",
         ));
     }
-    db::save_api_key(&state.pool, &team_id, None).await?;
+    db::save_api_key(&state.pool, &state.server_key, &team_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }

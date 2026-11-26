@@ -146,7 +146,7 @@ pub async fn token(
     only: Option<&str>,
     may: Value,
 ) -> Result<String, ApiError> {
-    let installed = match db::github_app(&state.pool, team_id).await? {
+    let installed = match db::github_app(&state.pool, &state.server_key, team_id).await? {
         Some(app) => installation(state, &app, only, may).await?,
         None => None,
     };
@@ -193,7 +193,7 @@ async fn get<T: DeserializeOwned>(
 }
 
 pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status, ApiError> {
-    let Some(app) = db::github_app(&state.pool, team_id).await? else {
+    let Some(app) = db::github_app(&state.pool, &state.server_key, team_id).await? else {
         return Ok(Status::default());
     };
     let installed = installation(state, &app, None, reading()).await?;
@@ -369,7 +369,7 @@ pub async fn register(
     owned(&user, &team_id)?;
     let path = format!("/app-manifests/{}/conversions", registration.code);
     let app: GithubApp = answer(request(&state, Method::POST, &path)).await?;
-    db::save_github_app(&state.pool, &team_id, Some(&app)).await?;
+    db::save_github_app(&state.pool, &state.server_key, &team_id, Some(&app)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -379,6 +379,6 @@ pub async fn forget(
     Path(team_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     owned(&user, &team_id)?;
-    db::save_github_app(&state.pool, &team_id, None).await?;
+    db::save_github_app(&state.pool, &state.server_key, &team_id, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }

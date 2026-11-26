@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT secrets_sealed, smtp_password FROM config",
+  "describe": {
+    "columns": [
+      {
+        "name": "secrets_sealed",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "secrets_sealed"
+          }
+        }
+      },
+      {
+        "name": "smtp_password",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "config",
+            "name": "smtp_password"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "26f1fbd96bd2fe8bf381ad55b38422e8a80c9ad826cd66d2c72e5167554f6f55"
+}

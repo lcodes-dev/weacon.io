@@ -132,9 +132,14 @@ pub fn check(smtp: &Smtp) -> Result<(), Error> {
 }
 
 /// Sends through the saved SMTP settings, or prints the mail to the log while there are none.
-pub async fn send(pool: &SqlitePool, to: &str, mail: &Mail<'_>) -> Result<(), Error> {
+pub async fn send(
+    pool: &SqlitePool,
+    server_key: &crate::secrets::ServerKey,
+    to: &str,
+    mail: &Mail<'_>,
+) -> Result<(), Error> {
     let (subject, text) = (mail.subject, mail.text());
-    let Some(smtp) = db::smtp(pool).await? else {
+    let Some(smtp) = db::smtp(pool, server_key).await? else {
         tracing::info!(
             "no SMTP, so this mail is only logged\nto: {to}\nsubject: {subject}\n\n{text}\n"
         );

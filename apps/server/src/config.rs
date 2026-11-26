@@ -13,7 +13,7 @@ fn bad_settings(error: impl std::fmt::Display) -> ApiError {
 }
 
 pub async fn mail(State(state): State<AppState>, _: Owner) -> Result<Json<Value>, ApiError> {
-    let smtp = db::smtp(&state.pool).await?;
+    let smtp = db::smtp(&state.pool, &state.server_key).await?;
     Ok(Json(json!({"smtp": smtp})))
 }
 
@@ -24,17 +24,17 @@ pub async fn save_mail(
     Json(mut smtp): Json<Smtp>,
 ) -> Result<StatusCode, ApiError> {
     if smtp.password.is_none() {
-        smtp.password = db::smtp(&state.pool)
+        smtp.password = db::smtp(&state.pool, &state.server_key)
             .await?
             .and_then(|saved| saved.password);
     }
     mail::check(&smtp).map_err(bad_settings)?;
-    db::save_smtp(&state.pool, Some(&smtp)).await?;
+    db::save_smtp(&state.pool, &state.server_key, Some(&smtp)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn clear_mail(State(state): State<AppState>, _: Owner) -> Result<StatusCode, ApiError> {
-    db::save_smtp(&state.pool, None).await?;
+    db::save_smtp(&state.pool, &state.server_key, None).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -48,7 +48,7 @@ pub async fn test_mail(
         code: None,
         button: None,
     };
-    mail::send(&state.pool, &user.email, &mail)
+    mail::send(&state.pool, &state.server_key, &user.email, &mail)
         .await
         .map_err(|error| ApiError(StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(StatusCode::NO_CONTENT)

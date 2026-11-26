@@ -59,6 +59,7 @@ There are no unit tests inside `src/`. One is added only for something no reques
 - At startup the server makes the file, and SQLite's two side files, readable by its own account only: it holds sessions, keys and source code.
 - **Keys.** A row with an id of its own (a user, team, project, invite or docs page) has a UUIDv7 made by the server, stored as text. It starts with the time it was made, so ids sort by age and are never given out twice; in the API and in addresses an id is that text. A table whose rows are already named by something unique is keyed by that: a session by its token, a branch by its project and name, a file's content by its project and git's id.
 - **A transaction that reads before it writes starts as a writer,** with `BEGIN IMMEDIATE`. Started the usual way, SQLite refuses its write when another request wrote in between, and the request fails. `update_project` is the only one.
+- **Three secrets are sealed** with a key kept outside the database (see Secrets).
 - **Links do the clean-up.** A branch's files go with the branch, what was read from a content goes with the content, and everything of a project goes with the project.
 - **Indexes.** Each query finds its rows through a key or an index; `EXPLAIN QUERY PLAN` in `sqlite3` shows how a new one runs. Small tables keyed by text are `WITHOUT ROWID`, so the key is the table and not a second tree beside it.
 - Migrations are plain `.sql` files in `apps/server/migrations/`, embedded in the binary and run at startup. A schema change is a new numbered file; a file that has been committed is never edited.
@@ -263,13 +264,23 @@ A group is some members of a team and what they write to each other; a direct ch
 - **Such a chat** is read by its group's members and not by the rest of the team, since it holds what was written in the group; it is written to from the group only, though its owner can still allow a host there, commit and push, and delete it; and it goes with its group.
 - **The web app** lists a person's groups in the sidebar, the one written in last first, with a dot on an unread one. A group's page asks for the messages after the last one it has, and the sidebar for its list, each time the socket says `groups`. Nothing reaches a person outside Weacon.
 
+## Secrets
+
+The SMTP password, a team's GitHub App private key and a team's API key are stored sealed, so that a copy of the database alone gives none of them away.
+
+- **The key** is 32 random bytes in a file, `weacon.key` beside the database or wherever `WEACON_KEY_FILE` says, readable by the server's account only. A host can keep it on another disk or in its secrets mount, away from the database and its backups.
+- **The first start makes it,** but only while the database holds no sealed secret. With sealed secrets, a missing key or one that doesn't open them all stops the start with an error naming the file, rather than a new key that opens nothing. Losing the key loses only those three secrets, which the owners enter again.
+- **Sealing** is AES-256-GCM from `aws-lc-rs`, with a random nonce for each value, stored as base64 in the same `TEXT` columns. Each value is bound to where it is kept, its column and team, so a value copied to another row doesn't open.
+- **`secrets.rs`** holds the key, `seal`, `open` and `load`, which `main.rs` calls at startup. The functions in `db.rs` that save and read the three secrets seal and open them, so the code that sends mail or calls GitHub or the API sees them plain.
+- **An older database** has `config.secrets_sealed` at `0`: the next start seals its plain secrets in one transaction, and sets it to `1`.
+
 ## The team's API key
 
 A team has at most one key, for the Anthropic API, saved and removed by its owner in "Team settings" and never read back. It pays for what the server itself asks a model: `@weacon` in the team's groups, and the docs while the API is their writer. It is kept whoever writes the docs, and can't be removed while the API does. `writer.rs` holds its requests and the one function that calls the API. The model is the one chosen for the docs while the API writes them, and the cheap default otherwise. This is the team's half of the rule under Machines: a key is the team's and used on the server; a subscription is a person's and used on their own machines.
 
 ## Mail
 
-`mail.rs` has one way to send: `mail::send(pool, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
+`mail.rs` has one way to send: `mail::send(pool, server_key, to, mail)`, where a `Mail` is a subject, some text, an optional code to show large and an optional button that opens an address.
 
 - Each mail reads the saved SMTP settings and connects with them, so there is no connection to keep in step with the settings. With none saved, the mail is printed to the log.
 

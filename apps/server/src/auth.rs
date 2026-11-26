@@ -135,7 +135,7 @@ pub async fn request_code(
         code: Some(&code),
         button: None,
     };
-    if let Err(error) = mail::send(&state.pool, &email, &mail).await {
+    if let Err(error) = mail::send(&state.pool, &state.server_key, &email, &mail).await {
         tracing::error!("mail to {email} failed: {error}");
         db::forget_code_wait(&state.pool, &email).await?;
         let message = "The mail could not be sent";
