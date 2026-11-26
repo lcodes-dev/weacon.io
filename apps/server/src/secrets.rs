@@ -63,7 +63,9 @@ pub async fn load(
                 .map_err(|_| format!("{key_file} doesn't hold a key of 32 bytes"))?,
         ),
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            if db::secrets_sealed(pool).await? && !db::secrets(pool).await?.is_empty() {
+            if db::settings::secrets_sealed(pool).await?
+                && !db::settings::secrets(pool).await?.is_empty()
+            {
                 return Err(format!(
                     "{key_file} is missing, and the database's secrets were sealed with the key it held"
                 )
@@ -75,8 +77,8 @@ pub async fn load(
         }
         Err(error) => return Err(format!("{key_file}: {error}").into()),
     };
-    db::seal_secrets(pool, &key).await?;
-    for (place, sealed) in db::secrets(pool).await? {
+    db::settings::seal_secrets(pool, &key).await?;
+    for (place, sealed) in db::settings::secrets(pool).await? {
         if key.open(&place, &sealed).is_none() {
             return Err(
                 format!("the key in {key_file} doesn't open the database's secrets").into(),

@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite};
 use tower::ServiceExt;
-use weacon_server::{AppState, db, map, router, secrets};
+use weacon_server::jobs::{self, Job, MapBranches};
+use weacon_server::{AppState, db, router, secrets};
 
 /// Keeps the session cookie, as a browser does.
 struct Client {
@@ -32,7 +33,6 @@ async fn server() -> AppState {
         pool: db::memory().await,
         url: "http://weacon.test".into(),
         github_api: "http://127.0.0.1:1".into(),
-        map_wake: Arc::default(),
         anthropic_api: "http://127.0.0.1:1".into(),
         cores: Arc::default(),
         live: Default::default(),
@@ -40,6 +40,24 @@ async fn server() -> AppState {
         embed: by_words,
         server_key: secrets::ServerKey::random(),
     }
+}
+
+/// Maps the tracked branches now, as the server does every minute.
+async fn map_branches(state: &AppState) {
+    jobs_done(state).await;
+    jobs::dispatch(state, Job::MapBranches(MapBranches)).await.unwrap();
+    jobs_done(state).await;
+}
+
+/// Waits until every queued job has run.
+async fn jobs_done(state: &AppState) {
+    for _ in 0..500 {
+        if db::jobs::all(&state.pool).await.unwrap().is_empty() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the jobs never finished");
 }
 
 /// Stands in for the model that embeds docs: texts that share words come out alike.
@@ -388,7 +406,7 @@ async fn the_owner_saves_and_clears_smtp() {
     without.as_object_mut().unwrap().remove("password");
     owner.put("/api/config/mail", without).await;
     assert_eq!(
-        db::smtp(&state.pool, &state.server_key)
+        db::settings::smtp(&state.pool, &state.server_key)
             .await
             .unwrap()
             .unwrap()
@@ -446,9 +464,11 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
     .await
     .unwrap();
     assert!(!stored.0.contains("smtp-secret") && !stored.1.contains("sk-ant-secret"));
-    let smtp = db::smtp(&state.pool, &state.server_key).await.unwrap();
+    let smtp = db::settings::smtp(&state.pool, &state.server_key)
+        .await
+        .unwrap();
     assert_eq!(smtp.unwrap().password.as_deref(), Some("smtp-secret"));
-    let api_key = db::api_key(&state.pool, &state.server_key, &ada.team_id).await;
+    let api_key = db::settings::api_key(&state.pool, &state.server_key, &ada.team_id).await;
     assert_eq!(api_key.unwrap().unwrap().0, "sk-ant-secret");
 
     // A sealed value opens only where it was sealed.
@@ -459,11 +479,11 @@ async fn secrets_are_sealed_with_a_key_outside_the_database() {
         .await
         .unwrap();
     assert!(
-        db::api_key(&state.pool, &state.server_key, &bob.team_id)
+        db::settings::api_key(&state.pool, &state.server_key, &bob.team_id)
             .await
             .is_err()
     );
-    db::save_api_key(&state.pool, &state.server_key, &bob.team_id, None)
+    db::settings::save_api_key(&state.pool, &state.server_key, &bob.team_id, None)
         .await
         .unwrap();
 
@@ -501,13 +521,13 @@ async fn plain_secrets_of_an_older_server_are_sealed_at_the_first_start() {
         .await
         .unwrap();
     assert_ne!(stored, "smtp-secret");
-    let smtp = db::smtp(&pool, &key).await.unwrap().unwrap();
+    let smtp = db::settings::smtp(&pool, &key).await.unwrap().unwrap();
     assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
     // A second start seals nothing twice.
     let key = secrets::load(&pool, &folder.join("weacon.key"))
         .await
         .unwrap();
-    let smtp = db::smtp(&pool, &key).await.unwrap().unwrap();
+    let smtp = db::settings::smtp(&pool, &key).await.unwrap().unwrap();
     assert_eq!(smtp.password.as_deref(), Some("smtp-secret"));
     std::fs::remove_dir_all(&folder).unwrap();
 }
@@ -1140,7 +1160,7 @@ async fn mapped_project(files: &[(&str, &str)]) -> (AppState, Client, Repo) {
     let (status, project) = ada.post(&ada.team("/projects"), project).await;
     assert_eq!(status, StatusCode::OK);
     ada.project_id = project["id"].as_str().unwrap().to_owned();
-    map::round(&state).await;
+    map_branches(&state).await;
     (state, ada, repo)
 }
 
@@ -1214,7 +1234,7 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
     assert_eq!(repo.archives(), 1);
 
     // Nothing moved, so nothing is mapped.
-    map::round(&state).await;
+    map_branches(&state).await;
     assert_eq!(repo.archives(), 1);
 
     // A commit that only moves a file brings no new content.
@@ -1223,14 +1243,14 @@ async fn a_new_commit_reads_only_the_content_that_is_new() {
         "c2",
         &[("app.ts", APP_TS), ("src/price.ts", PRICE_TS)],
     );
-    map::round(&state).await;
+    map_branches(&state).await;
     assert_eq!(repo.archives(), 1);
     let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["commit"], "c2");
     assert_eq!(symbols(&map, "app.ts"), ["Cart", "total"]);
 
     repo.push("main", "c3", &[("app.ts", "export function start() {}\n")]);
-    map::round(&state).await;
+    map_branches(&state).await;
     assert_eq!(repo.archives(), 2);
     let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"].as_array().unwrap().len(), 1);
@@ -1250,7 +1270,7 @@ async fn a_file_s_language_follows_its_name() {
     assert_eq!(map["files"][0]["language"], Value::Null);
 
     repo.push("main", "c2", &[("notes.rs", "fn start() {}\n")]);
-    map::round(&state).await;
+    map_branches(&state).await;
     let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
     assert_eq!(map["files"][0]["language"], "Rust");
     // The content is the same, and is read again as what it now is.
@@ -1403,7 +1423,7 @@ async fn a_commit_that_can_t_be_read_whole_keeps_the_old_map() {
             let mut repo = repo.0.lock().unwrap();
             (repo.truncated, repo.broken) = (truncated, broken);
         }
-        map::round(&state).await;
+        map_branches(&state).await;
         let (_, map) = ada.get(&ada.project("/map?branch=main")).await;
         let (_, projects) = ada.get(&ada.team("/projects")).await;
         let error = projects[0]["branches"][0]["error"].as_str();
@@ -1439,7 +1459,7 @@ async fn each_tracked_branch_has_its_own_map() {
         "name": "Storefront", "key": "SF", "repo": "northwind/storefront", "branches": ["main", "dev", "gone"],
     });
     ada.put(&ada.project(""), project.clone()).await;
-    map::round(&state).await;
+    map_branches(&state).await;
 
     let (_, main) = ada.get(&ada.project("/map?branch=main")).await;
     let (_, dev) = ada.get(&ada.project("/map?branch=dev")).await;
@@ -2009,7 +2029,7 @@ async fn a_run_over_existing_docs_proposes_changes_and_replaces_nothing() {
 
     // A page whose files left the repository is proposed for removal, and a rejected proposal changes nothing.
     repo.push("main", "c2", &[("src/app.ts", APP_TS)]);
-    map::round(&state).await;
+    map_branches(&state).await;
     let docs = written_docs(&mut ada).await;
     let proposals = docs["proposals"].as_array().unwrap();
     let removal = proposals
@@ -2718,6 +2738,18 @@ async fn chat(client: &mut Client, path: &str, running: bool) -> Value {
     panic!("the chat never became running: {running}");
 }
 
+/// Waits until the chat at `path` shows events of these kinds.
+async fn shows(client: &mut Client, path: &str, expected: &[&str]) {
+    for _ in 0..200 {
+        let (_, chat) = client.get(path).await;
+        if kinds(&chat) == expected {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("the chat never showed {expected:?}");
+}
+
 fn kinds(chat: &Value) -> Vec<&str> {
     let events = chat["events"].as_array().unwrap().iter();
     events
@@ -2801,7 +2833,9 @@ async fn a_chat_s_turns_run_on_its_owner_s_machine_and_the_team_reads_them() {
     let (status, _) = ada.post(&more, json!({"text": "And in the menu"})).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    // A core that comes back is told how much the server has, so it can tell the rest.
+    // A core that comes back is told how much the server has, so it can tell the rest. It goes
+    // once the server has what it said, since a socket closed with unread messages loses them.
+    shows(&mut ada, &path, &["asked", "said", "did"]).await;
     drop(laptop);
     machines(&mut ada, false, None).await;
     let mut laptop = core(&address, &token, "signed_in").await.unwrap();
@@ -4401,7 +4435,7 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
         pool: db::open(&file).await.unwrap(),
         ..state
     };
-    db::end_interrupted_weacon_calls(&state.pool).await.unwrap();
+    jobs::resume(&state).await.unwrap();
     let mut marco = marco;
     (ada.state, marco.state) = (state.clone(), state.clone());
     let (_, shown) = marco.get(&group).await;
@@ -4412,7 +4446,7 @@ async fn a_call_to_the_team_s_agent_cut_short_by_a_restart_says_so() {
         (
             &json!("weacon"),
             &json!("Ada"),
-            &json!("It stopped when the server restarted. Tag @weacon to ask again.")
+            &json!("It couldn't answer: The server restarted")
         )
     );
 

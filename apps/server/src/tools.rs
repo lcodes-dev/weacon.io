@@ -1,20 +1,17 @@
 //! The tools an agent has for its project's tasks and docs, which it reads and proposes
-//! changes to. The program of a chat's agent calls them here while its turn runs, as the
-//! Model Context Protocol has it, one JSON-RPC request in and one answer out. For the team's
-//! own agent the server runs them itself.
+//! changes to. A chat's agent calls them over `/api/tools`; for the team's own agent the
+//! server runs them itself.
 
-use axum::Json;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, header::AUTHORIZATION};
-use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-use crate::db::{self, Caller, Task, TaskFields};
-use crate::teams::refused;
-use crate::{ApiError, AppState, live, search, tasks};
+use crate::db::chats::Caller;
+use crate::db::tasks::{Task, TaskFields};
+use crate::error::{ApiError, Result};
+use crate::live::{self, Topic};
+use crate::{AppState, db, search, tasks};
 
 /// What each tool is called, what it does and what it takes.
-pub fn tools() -> Value {
+pub fn list() -> Value {
     let text = json!({"type": "string"});
     let name = json!({"type": "string", "description": "As SF-12. Left out, it is the task your chat is for, if it is for one."});
     let checks = json!({
@@ -74,50 +71,8 @@ pub fn tools() -> Value {
     ])
 }
 
-pub async fn call(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<Value>,
-) -> Response {
-    let token = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok());
-    let token = token.and_then(|value| value.strip_prefix("Bearer "));
-    let caller = match token {
-        Some(token) => db::caller(&state.pool, token).await.ok().flatten(),
-        None => None,
-    };
-    let Some(caller) = caller else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let (id, params) = (&request["id"], &request["params"]);
-    // Something the program only lets us know.
-    if id.is_null() {
-        return StatusCode::ACCEPTED.into_response();
-    }
-    let mut answer = match request["method"].as_str() {
-        Some("initialize") => json!({"result": {
-            "protocolVersion": params["protocolVersion"],
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "weacon", "version": env!("CARGO_PKG_VERSION")},
-        }}),
-        Some("tools/list") => json!({"result": {"tools": tools()}}),
-        Some("tools/call") => {
-            let name = params["name"].as_str().unwrap_or_default();
-            let done = tool(&state, &caller, name, &params["arguments"]).await;
-            let failed = done.is_err();
-            let text = done.unwrap_or_else(|ApiError(_, why)| why);
-            json!({"result": {"content": [{"type": "text", "text": text}], "isError": failed}})
-        }
-        _ => json!({"error": {"code": -32601, "message": "Method not found"}}),
-    };
-    answer["jsonrpc"] = "2.0".into();
-    answer["id"] = id.clone();
-    Json(answer).into_response()
-}
-
 /// The task named in `name`, as SF-12 or 12, or the chat's own.
-fn named<'a>(tasks: &'a [Task], caller: &Caller, name: &Value) -> Result<&'a Task, ApiError> {
+fn named<'a>(tasks: &'a [Task], caller: &Caller, name: &Value) -> Result<&'a Task> {
     let found = match name.as_str() {
         Some(name) => {
             let number = name
@@ -131,16 +86,17 @@ fn named<'a>(tasks: &'a [Task], caller: &Caller, name: &Value) -> Result<&'a Tas
             .find(|task| Some(&task.id) == caller.task_id.as_ref()),
     };
     found.ok_or_else(|| match name.as_str() {
-        Some(name) => refused(format!("This project has no task {name}")),
-        None => refused("Name the task, as the tasks tool lists them"),
+        Some(name) => ApiError::invalid(format!("This project has no task {name}")),
+        None => ApiError::invalid("Name the task, as the tasks tool lists them"),
     })
 }
 
 /// What an agent gave for a task, read as a person's request is. An agent gives a task to
 /// nobody and doesn't say which pages it touches.
-fn fields(given: &Value) -> Result<TaskFields, ApiError> {
+fn fields(given: &Value) -> Result<TaskFields> {
     let read = serde_json::from_value::<TaskFields>(given.clone());
-    let fields = read.map_err(|error| refused(format!("That can't be read as a task: {error}")))?;
+    let fields =
+        read.map_err(|error| ApiError::invalid(format!("That can't be read as a task: {error}")))?;
     Ok(TaskFields {
         owner_id: None,
         docs: None,
@@ -148,22 +104,17 @@ fn fields(given: &Value) -> Result<TaskFields, ApiError> {
     })
 }
 
-pub async fn tool(
-    state: &AppState,
-    caller: &Caller,
-    name: &str,
-    given: &Value,
-) -> Result<String, ApiError> {
+pub async fn call(state: &AppState, caller: &Caller, name: &str, given: &Value) -> Result<String> {
     let pool = &state.pool;
     let place = (caller.team_id.as_str(), caller.project_id.as_str());
-    let tasks = async || db::tasks(pool, place.0, place.1).await;
+    let tasks = async || db::tasks::list(pool, place.0, place.1).await;
     // Says in the agent's chat, if it has one, what it did to a task, and answers the agent.
     let wrote = async |id: &str, number: i64, title: &str, made: bool| {
         let name = format!("{}-{number}", caller.key);
         let body =
             json!({"kind": "task", "task_id": id, "name": format!("{name} {title}"), "made": made});
         if let Some(chat) = &caller.chat_id {
-            db::note_chat(pool, chat, &body).await?;
+            db::chats::note(pool, chat, &body).await?;
             live::chat(state, chat).await;
         }
         Ok(format!("{} {name}.", if made { "Made" } else { "Changed" }))
@@ -188,7 +139,7 @@ pub async fn tool(
         "task" => {
             let tasks = tasks().await?;
             let task = named(&tasks, caller, &given["name"])?;
-            let docs = db::docs(pool, place.1).await?;
+            let docs = db::docs::list(pool, place.1).await?;
             let pages = docs.iter().filter(|doc| task.docs.contains(&doc.id));
             let pages = pages.map(|doc| format!("{}{}", doc.title, written_from(&doc.files)));
             let checks = task.checks.iter().enumerate().map(|(place, check)| {
@@ -214,7 +165,7 @@ pub async fn tool(
         "new_task" => {
             let fields = fields(given)?;
             let title = fields.title.clone().unwrap_or_default();
-            let (id, number) = tasks::made(
+            let (id, number) = tasks::create(
                 state,
                 place,
                 &caller.user_id,
@@ -227,7 +178,7 @@ pub async fn tool(
         "change_task" => {
             let tasks = tasks().await?;
             let task = named(&tasks, caller, &given["name"])?;
-            let fields = tasks::changed(state, place, &task.id, fields(given)?).await?;
+            let fields = tasks::update(state, place, &task.id, fields(given)?).await?;
             let title = fields.title.as_ref().unwrap_or(&task.title);
             wrote(&task.id, task.number, title, false).await
         }
@@ -247,7 +198,7 @@ pub async fn tool(
             Ok(shown.collect::<Vec<_>>().join("\n\n---\n\n"))
         }
         "doc" => {
-            let docs = db::docs(pool, place.1).await?;
+            let docs = db::docs::list(pool, place.1).await?;
             let title = given["title"].as_str().unwrap_or_default().trim();
             match docs
                 .iter()
@@ -256,7 +207,7 @@ pub async fn tool(
                 Some(doc) => Ok(format!("# {}\n\n{}", doc.title, doc.markdown)),
                 None => {
                     let titles: Vec<&str> = docs.iter().map(|doc| doc.title.as_str()).collect();
-                    Err(refused(format!(
+                    Err(ApiError::invalid(format!(
                         "No page is called that. The pages are: {}",
                         titles.join("; ")
                     )))
@@ -267,11 +218,11 @@ pub async fn tool(
             let said = |name: &str| given[name].as_str().unwrap_or_default().trim();
             let (title, markdown, reason) = (said("title"), said("markdown"), said("reason"));
             if title.is_empty() || markdown.is_empty() || reason.is_empty() {
-                return Err(refused(
+                return Err(ApiError::invalid(
                     "A proposal needs the page's title, its text and why",
                 ));
             }
-            let docs = db::docs(pool, place.1).await?;
+            let docs = db::docs::list(pool, place.1).await?;
             let page = docs
                 .iter()
                 .find(|doc| doc.title.eq_ignore_ascii_case(title));
@@ -282,7 +233,7 @@ pub async fn tool(
             });
             let markdown = headed.map_or(markdown, |(_, text)| text.trim());
             if page.is_some_and(|page| page.markdown.trim() == markdown) {
-                return Err(refused("That is the page's text already"));
+                return Err(ApiError::invalid("That is the page's text already"));
             }
             let section = match (page, said("section")) {
                 (Some(page), _) => &page.section,
@@ -290,18 +241,18 @@ pub async fn tool(
                 (None, _) => "built",
             };
             let title = page.map_or(title, |page| &page.title);
-            db::propose(pool, caller, page, section, title, markdown, reason).await?;
-            live::team(state, place.0, "docs").await;
+            db::proposals::propose(pool, caller, page, section, title, markdown, reason).await?;
+            live::team(state, place.0, Topic::Docs).await;
             if let Some(chat) = &caller.chat_id {
                 let body = json!({"kind": "proposal", "title": title, "new": page.is_none()});
-                db::note_chat(pool, chat, &body).await?;
+                db::chats::note(pool, chat, &body).await?;
                 live::chat(state, chat).await;
             }
             Ok(format!(
                 "Proposed. \"{title}\" changes when a person of the team accepts it on the docs page."
             ))
         }
-        _ => Err(refused("There is no such tool")),
+        _ => Err(ApiError::invalid("There is no such tool")),
     }
 }
 

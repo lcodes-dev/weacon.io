@@ -3,9 +3,8 @@ use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
 
-use crate::db;
+use crate::{AppState, db};
 
 type Transport = AsyncSmtpTransport<Tokio1Executor>;
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -132,14 +131,9 @@ pub fn check(smtp: &Smtp) -> Result<(), Error> {
 }
 
 /// Sends through the saved SMTP settings, or prints the mail to the log while there are none.
-pub async fn send(
-    pool: &SqlitePool,
-    server_key: &crate::secrets::ServerKey,
-    to: &str,
-    mail: &Mail<'_>,
-) -> Result<(), Error> {
+pub async fn send(state: &AppState, to: &str, mail: &Mail<'_>) -> Result<(), Error> {
     let (subject, text) = (mail.subject, mail.text());
-    let Some(smtp) = db::smtp(pool, server_key).await? else {
+    let Some(smtp) = db::settings::smtp(&state.pool, &state.server_key).await? else {
         tracing::info!(
             "no SMTP, so this mail is only logged\nto: {to}\nsubject: {subject}\n\n{text}\n"
         );

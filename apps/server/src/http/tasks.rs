@@ -1,0 +1,125 @@
+use axum::Json;
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use crate::db::tasks::{Task, TaskFields};
+use crate::db::users::User;
+use crate::error::{ApiError, Result};
+use crate::live::{self, Topic};
+use crate::{AppState, db, search, tasks};
+
+type TaskPath = Path<(String, String, String)>;
+
+pub async fn list(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id)): Path<(String, String)>,
+) -> Result<Json<Vec<Task>>> {
+    user.member_of(&team_id)?;
+    Ok(Json(
+        db::tasks::list(&state.pool, &team_id, &project_id).await?,
+    ))
+}
+
+pub async fn create(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id)): Path<(String, String)>,
+    Json(fields): Json<TaskFields>,
+) -> Result<Json<Value>> {
+    project(&state, &user, &team_id, &project_id).await?;
+    let place = (team_id.as_str(), project_id.as_str());
+    let (id, _) = tasks::create(&state, place, &user.id, None, fields).await?;
+    Ok(Json(json!({"id": id})))
+}
+
+pub async fn update(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id, task_id)): TaskPath,
+    Json(fields): Json<TaskFields>,
+) -> Result<StatusCode> {
+    found(&state, &user, &team_id, &project_id, &task_id).await?;
+    tasks::update(&state, (&team_id, &project_id), &task_id, fields).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct Order {
+    status: String,
+    /// The tasks of that status, in their order.
+    tasks: Vec<String>,
+}
+
+/// Puts tasks in a status, in the order given. A task of another project is left as it is.
+pub async fn order(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id)): Path<(String, String)>,
+    Json(order): Json<Order>,
+) -> Result<StatusCode> {
+    project(&state, &user, &team_id, &project_id).await?;
+    tasks::check_status(&order.status)?;
+    db::tasks::order(&state.pool, &project_id, &order.status, &order.tasks).await?;
+    live::team(&state, &team_id, Topic::Tasks).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Up to three pages of the docs that the task's title and text are about, and that it
+/// doesn't touch yet, for a person to pick from.
+pub async fn docs(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id, task_id)): TaskPath,
+) -> Result<Json<Vec<String>>> {
+    let task = found(&state, &user, &team_id, &project_id, &task_id).await?;
+    let question = format!("{}\n{}", task.title, task.text);
+    let mut pages: Vec<String> = Vec::new();
+    for part in search::search(&state, &project_id, &question).await? {
+        if !task.docs.contains(&part.doc_id) && !pages.contains(&part.doc_id) {
+            pages.push(part.doc_id);
+        }
+    }
+    pages.truncate(3);
+    Ok(Json(pages))
+}
+
+/// Only who asked for a task, or the team's owner, deletes it.
+pub async fn delete(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, project_id, task_id)): TaskPath,
+) -> Result<StatusCode> {
+    let task = found(&state, &user, &team_id, &project_id, &task_id).await?;
+    if task.asker_id.as_deref() != Some(&user.id) {
+        user.owner_of(&team_id)?;
+    }
+    db::tasks::delete(&state.pool, &project_id, &task_id).await?;
+    live::team(&state, &team_id, Topic::Tasks).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// The project must be one of a team the person is in.
+async fn project(state: &AppState, user: &User, team_id: &str, project_id: &str) -> Result<()> {
+    user.member_of(team_id)?;
+    let projects = db::projects::list(&state.pool, team_id).await?;
+    if !projects.iter().any(|project| project.id == project_id) {
+        return Err(ApiError::not_found());
+    }
+    Ok(())
+}
+
+async fn found(
+    state: &AppState,
+    user: &User,
+    team_id: &str,
+    project_id: &str,
+    task_id: &str,
+) -> Result<Task> {
+    user.member_of(team_id)?;
+    let tasks = db::tasks::list(&state.pool, team_id, project_id).await?;
+    let task = tasks.into_iter().find(|task| task.id == task_id);
+    task.ok_or_else(ApiError::not_found)
+}

@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS (SELECT 1 FROM team_members WHERE team_id = ? AND user_id = ?) AS \"found: bool\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "found: bool",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "85971e146d4b26446bad1391b6fa00b453452c6fde3cfc0d7256980fed0207ac"
+}

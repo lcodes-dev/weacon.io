@@ -1,10 +1,10 @@
+//! GitHub, reached through each team's own GitHub App.
+
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use axum::Json;
-use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use reqwest::{Client, Method, RequestBuilder};
@@ -12,9 +12,17 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::db::{self, GithubApp, User};
-use crate::teams::{membership, owned};
-use crate::{ApiError, AppState, now};
+use crate::error::{ApiError, Result};
+use crate::{AppState, db, now};
+
+/// A team's own GitHub App.
+#[derive(Deserialize)]
+pub struct GithubApp {
+    pub id: i64,
+    pub slug: String,
+    /// The private key that signs the app's tokens.
+    pub pem: String,
+}
 
 /// What a team's GitHub App can reach. All empty when the team has no app.
 #[derive(Default, Serialize)]
@@ -66,17 +74,16 @@ static CLIENT: LazyLock<Client> = LazyLock::new(|| {
         .unwrap()
 });
 
-fn request(state: &AppState, method: Method, path: &str) -> RequestBuilder {
+pub fn request(state: &AppState, method: Method, path: &str) -> RequestBuilder {
     CLIENT.request(method, format!("{}{path}", state.github_api))
 }
 
 fn failed(error: impl Display) -> ApiError {
     tracing::error!("GitHub call failed: {error}");
-    let message = "GitHub refused. Check that the team's GitHub App still exists.";
-    ApiError(StatusCode::BAD_GATEWAY, message.into())
+    ApiError::bad_gateway("GitHub refused. Check that the team's GitHub App still exists.")
 }
 
-async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T, ApiError> {
+pub async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T> {
     let answer = request.send().await.map_err(failed)?;
     if !answer.status().is_success() {
         // GitHub says why in the body, which is what tells one refusal from another.
@@ -88,7 +95,7 @@ async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> Result<T, ApiEr
 }
 
 /// Signs the short-lived token that proves the server is the app.
-fn app_token(app: &GithubApp) -> Result<String, ApiError> {
+fn app_token(app: &GithubApp) -> Result<String> {
     // GitHub asks for a start in the past, against clock drift, and at most 10 minutes.
     let claims = json!({"iss": app.id.to_string(), "iat": now() - 60, "exp": now() + 300});
     EncodingKey::from_rsa_pem(app.pem.as_bytes())
@@ -103,7 +110,7 @@ async fn installation(
     app: &GithubApp,
     only: Option<&str>,
     may: Value,
-) -> Result<Option<(String, String)>, ApiError> {
+) -> Result<Option<(String, String)>> {
     let app_token = app_token(app)?;
     let installations = request(state, Method::GET, "/app/installations").bearer_auth(&app_token);
     let installations: Vec<Installation> = answer(installations).await?;
@@ -126,7 +133,7 @@ async fn installation(
         let message = "The team's GitHub App may only read. Its owner has to let it write \
             contents and pull requests, in the app's settings on GitHub, and accept the \
             change where the app is installed.";
-        return Err(ApiError(StatusCode::UNPROCESSABLE_ENTITY, message.into()));
+        return Err(ApiError::invalid(message));
     }
     let token = async { token.error_for_status()?.json::<Token>().await };
     let token = token.await.map_err(failed)?;
@@ -145,8 +152,8 @@ pub async fn token(
     team_id: &str,
     only: Option<&str>,
     may: Value,
-) -> Result<String, ApiError> {
-    let installed = match db::github_app(&state.pool, &state.server_key, team_id).await? {
+) -> Result<String> {
+    let installed = match db::settings::github_app(&state.pool, &state.server_key, team_id).await? {
         Some(app) => installation(state, &app, only, may).await?,
         None => None,
     };
@@ -167,7 +174,7 @@ pub async fn open_pull(
     repo: &str,
     (head, base): (&str, &str),
     (title, body): (&str, &str),
-) -> Result<Pull, ApiError> {
+) -> Result<Pull> {
     let path = format!("/repos/{repo}/pulls");
     let pull = |draft: bool| {
         let pull =
@@ -184,16 +191,12 @@ pub async fn open_pull(
     }
 }
 
-async fn get<T: DeserializeOwned>(
-    state: &AppState,
-    token: &str,
-    path: &str,
-) -> Result<T, ApiError> {
+pub async fn get<T: DeserializeOwned>(state: &AppState, token: &str, path: &str) -> Result<T> {
     answer(request(state, Method::GET, path).bearer_auth(token)).await
 }
 
-pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status, ApiError> {
-    let Some(app) = db::github_app(&state.pool, &state.server_key, team_id).await? else {
+pub async fn team_status(state: &AppState, team_id: &str) -> Result<Status> {
+    let Some(app) = db::settings::github_app(&state.pool, &state.server_key, team_id).await? else {
         return Ok(Status::default());
     };
     let installed = installation(state, &app, None, reading()).await?;
@@ -233,7 +236,7 @@ pub async fn branches(
     state: &AppState,
     token: &str,
     repo: &str,
-) -> Result<HashMap<String, String>, ApiError> {
+) -> Result<HashMap<String, String>> {
     let mut heads = HashMap::new();
     for page in 1.. {
         let path = format!("/repos/{repo}/branches?per_page=100&page={page}");
@@ -271,24 +274,20 @@ pub async fn files(
     token: &str,
     repo: &str,
     commit: &str,
-) -> Result<Vec<(String, String)>, ApiError> {
+) -> Result<Vec<(String, String)>> {
     let path = format!("/repos/{repo}/git/trees/{commit}?recursive=1");
     let tree: Tree = get(state, token, &path).await?;
     if tree.truncated {
-        let message = "This repository has too many files to map yet";
-        return Err(ApiError(StatusCode::BAD_GATEWAY, message.into()));
+        return Err(ApiError::bad_gateway(
+            "This repository has too many files to map yet",
+        ));
     }
     let files = tree.tree.into_iter().filter(|entry| entry.r#type == "blob");
     Ok(files.map(|entry| (entry.path, entry.sha)).collect())
 }
 
 /// The commit's files as a gzipped tar archive.
-pub async fn archive(
-    state: &AppState,
-    token: &str,
-    repo: &str,
-    commit: &str,
-) -> Result<Vec<u8>, ApiError> {
+pub async fn archive(state: &AppState, token: &str, repo: &str, commit: &str) -> Result<Vec<u8>> {
     let path = format!("/repos/{repo}/tarball/{commit}");
     let request = request(state, Method::GET, &path).bearer_auth(token);
     // The client's own limit starts again with every byte that arrives.
@@ -300,85 +299,10 @@ pub async fn archive(
     while let Some(chunk) = response.chunk().await.map_err(failed)? {
         archive.extend_from_slice(&chunk);
         if archive.len() > MAX_ARCHIVE {
-            let message = "This repository is too large to map yet";
-            return Err(ApiError(StatusCode::BAD_GATEWAY, message.into()));
+            return Err(ApiError::bad_gateway(
+                "This repository is too large to map yet",
+            ));
         }
     }
     Ok(archive)
-}
-
-#[derive(Deserialize)]
-pub struct OfRepo {
-    repo: String,
-}
-
-#[derive(Deserialize)]
-struct Repo {
-    default_branch: String,
-}
-
-/// The repository's branches, for choosing which to track.
-pub async fn repo_branches(
-    State(state): State<AppState>,
-    user: User,
-    Path(team_id): Path<String>,
-    Query(of): Query<OfRepo>,
-) -> Result<Json<Value>, ApiError> {
-    membership(&user, &team_id)?;
-    // The name goes into GitHub's address, so it must be nothing but `owner/name`.
-    let plain = |part: &str| {
-        part.chars()
-            .all(|c| c.is_alphanumeric() || "-_.".contains(c))
-    };
-    if of.repo.split('/').count() != 2 || !of.repo.split('/').all(plain) {
-        return Err(crate::not_found());
-    }
-    let token = token(&state, &team_id, None, reading()).await?;
-    let repo: Repo = get(&state, &token, &format!("/repos/{}", of.repo)).await?;
-    let mut names: Vec<String> = branches(&state, &token, &of.repo)
-        .await?
-        .into_keys()
-        .collect();
-    names.sort();
-    Ok(Json(
-        json!({"default": repo.default_branch, "branches": names}),
-    ))
-}
-
-pub async fn status(
-    State(state): State<AppState>,
-    user: User,
-    Path(team_id): Path<String>,
-) -> Result<Json<Status>, ApiError> {
-    membership(&user, &team_id)?;
-    Ok(Json(team_status(&state, &team_id).await?))
-}
-
-#[derive(Deserialize)]
-pub struct Registration {
-    /// From GitHub, after the owner confirmed the app.
-    code: String,
-}
-
-pub async fn register(
-    State(state): State<AppState>,
-    user: User,
-    Path(team_id): Path<String>,
-    Json(registration): Json<Registration>,
-) -> Result<StatusCode, ApiError> {
-    owned(&user, &team_id)?;
-    let path = format!("/app-manifests/{}/conversions", registration.code);
-    let app: GithubApp = answer(request(&state, Method::POST, &path)).await?;
-    db::save_github_app(&state.pool, &state.server_key, &team_id, Some(&app)).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn forget(
-    State(state): State<AppState>,
-    user: User,
-    Path(team_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    owned(&user, &team_id)?;
-    db::save_github_app(&state.pool, &state.server_key, &team_id, None).await?;
-    Ok(StatusCode::NO_CONTENT)
 }
