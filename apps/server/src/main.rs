@@ -1,6 +1,6 @@
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use weacon_server::{AppState, db, map, router};
+use weacon_server::{AppState, db, map, router, secrets};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -20,7 +20,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&files, std::fs::Permissions::from_mode(0o700))?;
     }
-    match db::smtp(&pool).await? {
+    let key_file = std::env::var("WEACON_KEY_FILE").map_or_else(
+        |_| std::path::Path::new(&database).with_extension("key"),
+        std::path::PathBuf::from,
+    );
+    let server_key = secrets::load(&pool, &key_file).await?;
+    match db::smtp(&pool, &server_key).await? {
         Some(smtp) => info!("mail goes through {}", smtp.host),
         None => info!("mail is printed to this log until the owner saves SMTP settings"),
     }
@@ -37,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         weacon: Default::default(),
         files,
         embed: doc_search::embed,
+        server_key,
     };
     db::fail_interrupted_docs(&state.pool).await?;
     tokio::spawn(map::worker(state.clone()));

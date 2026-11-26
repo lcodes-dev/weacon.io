@@ -560,7 +560,7 @@ async fn claim(
     if commit.ok_or_else(crate::not_found)?.is_none() {
         return Err(refused("This branch isn't mapped yet"));
     }
-    let Some(mut writer) = db::writer(&state.pool, team_id).await? else {
+    let Some(mut writer) = db::writer(&state.pool, &state.server_key, team_id).await? else {
         return Err(refused("Choose a docs writer in Team settings first"));
     };
     writer.asker = user.id.clone();

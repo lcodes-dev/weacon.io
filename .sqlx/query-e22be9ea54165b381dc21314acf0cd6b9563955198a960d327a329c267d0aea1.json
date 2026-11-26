@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE teams SET github_private_key = ?, writer_key = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "e22be9ea54165b381dc21314acf0cd6b9563955198a960d327a329c267d0aea1"
+}

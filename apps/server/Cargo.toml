@@ -8,7 +8,9 @@ publish = false
 unsafe_code = "forbid"
 
 [dependencies]
+aws-lc-rs = "1.19.0"
 axum = { version = "0.8.9", features = ["ws"] }
+base64 = "0.22.1"
 code-map = { path = "../../crates/code-map" }
 core-link = { path = "../../crates/core-link" }
 doc-search = { path = "../../crates/doc-search" }

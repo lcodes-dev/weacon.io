@@ -31,6 +31,7 @@ The result is `target/release/weacon-server`, with the web app inside it.
 | --- | --- | --- |
 | `WEACON_ADDR` | `127.0.0.1:8080` | Where the server listens |
 | `WEACON_DB` | `weacon.db` | The database file, created if missing |
+| `WEACON_KEY_FILE` | `weacon.key` beside the database | The key that seals the SMTP password and the teams' GitHub and API keys, made on the first start. Back it up apart from the database: without it those three must be entered again |
 | `WEACON_URL` | `http://localhost:8080` | The address people open in their browser, used for links in mail |
 | `RUST_LOG` | `info` | How much the server logs; `debug` adds every SQL query and SMTP exchange |
 

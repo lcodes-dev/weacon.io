@@ -12,6 +12,7 @@ pub mod map;
 mod pages;
 mod projects;
 pub mod search;
+pub mod secrets;
 mod tasks;
 mod teams;
 mod tools;
@@ -56,6 +57,8 @@ pub struct AppState {
     pub files: PathBuf,
     /// What embeds the docs for searching: `doc_search::embed`, or a stand-in in tests.
     pub embed: search::Embed,
+    /// Seals the secrets the database holds.
+    pub server_key: secrets::Key,
 }
 
 /// Seconds since 1970.
