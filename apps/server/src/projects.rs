@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, Project, User};
 use crate::teams::{membership, owned, refused};
-use crate::{ApiError, AppState, github, now};
+use crate::{ApiError, AppState, github, live, now};
 
 #[derive(Deserialize)]
 pub struct Fields {
@@ -80,6 +80,7 @@ pub async fn create(
     let branches = fields.branches(repo);
     let id = db::create_project(&state.pool, &team_id, name, &key, repo, branches, now()).await?;
     state.map_wake.notify_one();
+    live::team(&state, &team_id, "projects").await;
     Ok(Json(json!({"id": id})))
 }
 
@@ -105,6 +106,7 @@ pub async fn update(
     if changed.ok_or_else(crate::not_found)? {
         state.map_wake.notify_one();
     }
+    live::team(&state, &team_id, "projects").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -116,6 +118,10 @@ pub async fn delete(
     owned(&user, &team_id)?;
     for file in db::delete_project(&state.pool, &team_id, &project_id).await? {
         tokio::fs::remove_file(state.files.join(file)).await.ok();
+    }
+    // Its chats go with it.
+    for kind in ["projects", "chats"] {
+        live::team(&state, &team_id, kind).await;
     }
     Ok(StatusCode::NO_CONTENT)
 }

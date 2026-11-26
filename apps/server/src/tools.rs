@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, Caller, Task, TaskFields};
 use crate::teams::refused;
-use crate::{ApiError, AppState, search, tasks};
+use crate::{ApiError, AppState, live, search, tasks};
 
 /// What each tool is called, what it does and what it takes.
 pub fn tools() -> Value {
@@ -163,6 +163,7 @@ pub async fn tool(
             json!({"kind": "task", "task_id": id, "name": format!("{name} {title}"), "made": made});
         if let Some(chat) = &caller.chat_id {
             db::note_chat(pool, chat, &body).await?;
+            live::chat(state, chat).await;
         }
         Ok(format!("{} {name}.", if made { "Made" } else { "Changed" }))
     };
@@ -289,9 +290,11 @@ pub async fn tool(
             };
             let title = page.map_or(title, |page| &page.title);
             db::propose(pool, caller, page, section, title, markdown, reason).await?;
+            live::team(state, place.0, "docs").await;
             if let Some(chat) = &caller.chat_id {
                 let body = json!({"kind": "proposal", "title": title, "new": page.is_none()});
                 db::note_chat(pool, chat, &body).await?;
+                live::chat(state, chat).await;
             }
             Ok(format!(
                 "Proposed. \"{title}\" changes when a person of the team accepts it on the docs page."

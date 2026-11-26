@@ -2,7 +2,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
 import { lazy, Suspense, useState } from "react"
 import { Link, Route, Routes } from "react-router"
-import { agents, api, groupName, type Chat, type Group, type Health, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { agents, api, groupName, type Chat, type Group, type Machine, type MailConfig, type Project, type Team, type User } from "../api"
+import { useLive } from "../live"
 import { ChatPage } from "../routes/Chat"
 import { GroupPage } from "../routes/Group"
 import { Machines } from "../routes/Machines"
@@ -19,6 +20,7 @@ const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ 
 export function Shell({ user }: { user: User }) {
   const [teamId, setTeamId] = useState(() => localStorage.getItem("team"))
   const team = user.teams.find((team) => team.id === teamId) ?? user.teams[0]
+  const live = useLive()
   const openTeam = (id: string) => {
     localStorage.setItem("team", id)
     setTeamId(id)
@@ -30,7 +32,7 @@ export function Shell({ user }: { user: User }) {
           <Link to="/" className="text-[15px] font-semibold">
             weacon
           </Link>
-          <ServerStatus />
+          <ServerStatus up={live} />
         </div>
         <Link to="/chats/new" className="rounded-md bg-pri py-1.5 text-center font-medium text-pri-text hover:bg-pri-hover">
           New chat
@@ -100,7 +102,6 @@ function Groups({ team, user }: { team: Team; user: User }) {
   const groups = useQuery({
     queryKey: ["groups", team.id],
     queryFn: () => api<Group[]>("GET", `/teams/${team.id}/groups`),
-    refetchInterval: 5000,
   })
   return (
     <nav className="flex flex-col">
@@ -123,7 +124,6 @@ function Chats({ team, user }: { team: Team; user: User }) {
   const chats = useQuery({
     queryKey: ["chats", team.id],
     queryFn: () => api<Chat[]>("GET", `/teams/${team.id}/chats`),
-    refetchInterval: 5000,
   })
   const list = (title: string, chats: Chat[], whose: boolean) => (
     <nav className="flex flex-col">
@@ -153,7 +153,7 @@ function Chats({ team, user }: { team: Team; user: User }) {
 
 /** Your machines, each with whether its core is connected and the agents ready on it. */
 function YourMachines() {
-  const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines"), refetchInterval: 5000 })
+  const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines") })
   return (
     <nav className="flex flex-col">
       <h2 className="px-2 pt-2 pb-1 font-mono text-[10px] tracking-wider text-ink3 uppercase">Machines</h2>
@@ -176,14 +176,7 @@ function YourMachines() {
   )
 }
 
-function ServerStatus() {
-  const health = useQuery({
-    queryKey: ["health"],
-    queryFn: () => api<Health>("GET", "/health"),
-    refetchInterval: 5000,
-    retry: false,
-  })
-  const up = health.isSuccess
+function ServerStatus({ up }: { up: boolean }) {
   return (
     <span
       title={up ? "Server connected" : "Server unreachable"}

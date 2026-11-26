@@ -1,6 +1,6 @@
 # Plan 35: a WebSocket to browsers
 
-**Status: planned**
+**Status: in progress**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -75,8 +75,23 @@ That a second browser shows a message at once, and that a page catches up after 
 
 ## Steps
 
-- [ ] Server: the channel and the socket, with groups and chats saying what changed, and their tests
-- [ ] Web app: the socket, and the chat's, the group's and the sidebar's timers removed
-- [ ] Server and web app: tasks, docs, projects and machines, and the remaining timers removed
-- [ ] Docs: `docs/architecture.md`
+- [x] Server: the channel and the socket, with groups and chats saying what changed, and their tests
+- [x] Web app: the socket, and the chat's, the group's and the sidebar's timers removed
+- [x] Server and web app: tasks, docs, projects and machines, and the remaining timers removed
+- [x] Docs: `docs/architecture.md`
 - [ ] Checked by hand in two browsers: a group's message and an agent's turn show at once; a restart of the server is caught up with
+
+## Outcome so far
+
+Built as planned, with these differences:
+
+- **Six kinds, not eight.** A chat and the chats were always told together, and so were a group and the groups, so each pair is one word: `chats`, `groups`, `tasks`, `docs`, `projects`, `machines`.
+- **Whom to tell is always a list of people,** read when the change is told: a team's members, a group's, or a machine's owner. So a socket knows only its person, and one rule covers every case.
+- **A chat called in a group is told to the group's members only,** as only they may read it.
+- **A machine that comes or goes is told to its owner as `machines` and `chats`,** since their chats on it show it too.
+- **Built in one step,** not two: no page was left on a timer in between.
+- **Question 74 was built with its default:** all ten timers are gone.
+
+- **Tests:** 65 on the server, one of them new: who hears what of a group, a chat, a machine's event, an agent's task and a machine going away, and who is refused the socket.
+- **Checked by hand** in one browser: the dot is green with the socket open; a message posted to a group from outside the page showed on the open page within a second; the machine in the sidebar went to connected by itself; an idle page made no request in twenty seconds; a page loaded while the server was still starting opened its socket once it was up.
+- **Not checked by hand:** two browsers side by side, and an agent's turn showing as it runs.

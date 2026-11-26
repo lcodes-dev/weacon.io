@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::Json;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, State};
-use axum::http::header::{AUTHORIZATION, ORIGIN};
+use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use core_link::{Agent, Found, FromCore, Ready, ToCore};
@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use crate::db::{self, Machine, User};
 use crate::teams::refused;
-use crate::{ApiError, AppState, chats, not_found};
+use crate::{ApiError, AppState, chats, live, not_found};
 
 /// How long a pairing code works, in seconds.
 const CODE_SECONDS: i64 = 600;
@@ -152,11 +152,12 @@ pub async fn pair(
     let token = format!("{:032x}", rand::random::<u128>());
     let since = crate::now() - CODE_SECONDS;
     let paired = db::pair_machine(&state.pool, &pairing.code, since, name, &pairing.os, &token);
-    if !paired.await? {
+    let Some(owner) = paired.await? else {
         return Err(refused(
             "This code doesn't work any more. Ask Weacon for a new one",
         ));
-    }
+    };
+    live::tell(&state, vec![owner], "machines");
     Ok(Json(json!({"token": token})))
 }
 
@@ -171,6 +172,7 @@ pub async fn remove(
     // Its core is refused when it connects again, and forgets its token.
     state.cores.end(&id, "The machine was removed");
     chats::orphaned(&state).await;
+    live::tell(&state, vec![user.id], "machines");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -186,10 +188,18 @@ pub async fn connect(
     };
     let unknown = || ApiError(StatusCode::UNAUTHORIZED, "This machine isn't paired".into());
     let machine = machine.ok_or_else(unknown)?;
-    Ok(socket.on_upgrade(move |socket| serve(state, machine.id, socket)))
+    Ok(socket.on_upgrade(move |socket| serve(state, machine, socket)))
 }
 
-async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
+/// Tells a machine's owner that it came or went, which their chats on it show too.
+fn told(state: &AppState, owner: &str) {
+    for kind in ["machines", "chats"] {
+        live::tell(state, vec![owner.to_owned()], kind);
+    }
+}
+
+async fn serve(state: AppState, machine: Machine, mut socket: WebSocket) {
+    let (machine, owner) = (machine.id, machine.user_id);
     let (to_core, mut outgoing) = mpsc::unbounded_channel();
     let connection = {
         let mut cores = state.cores.lock();
@@ -210,6 +220,7 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
         connection
     };
     drop(to_core);
+    told(&state, &owner);
     chats::resume(&state, &machine).await;
     let mut alive = tokio::time::interval(PING);
     let mut last_heard = Instant::now();
@@ -228,7 +239,7 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(message) = serde_json::from_str(&text) {
-                            heard(&state, &machine, message).await;
+                            heard(&state, (&machine, &owner), message).await;
                         }
                     }
                     Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
@@ -257,16 +268,18 @@ async fn serve(state: AppState, machine: String, mut socket: WebSocket) {
         }
     }
     db::see_machine(&state.pool, &machine, None).await.ok();
+    told(&state, &owner);
 }
 
 /// Takes in what a core said.
-async fn heard(state: &AppState, machine: &str, message: FromCore) {
+async fn heard(state: &AppState, (machine, owner): (&str, &str), message: FromCore) {
     match message {
         FromCore::Agents { agents } => {
             let agents = json!(agents).to_string();
             db::see_machine(&state.pool, machine, Some(&agents))
                 .await
                 .ok();
+            live::tell(state, vec![owner.to_owned()], "machines");
         }
         FromCore::Answer { id, answer } => {
             let mut cores = state.cores.lock();
@@ -383,15 +396,7 @@ pub async fn sign_in(
     headers: HeaderMap,
     socket: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    // A browser sends the cookie along from any page of the same site, so the page itself
-    // must be Weacon's own.
-    if headers
-        .get(ORIGIN)
-        .is_none_or(|origin| origin.as_bytes() != state.url.as_bytes())
-    {
-        let message = "A sign-in is opened from Weacon's own pages";
-        return Err(ApiError(StatusCode::FORBIDDEN, message.into()));
-    }
+    crate::auth::own_page(&state, &headers)?;
     let machines = db::machines(&state.pool, &user.id).await?;
     let owned = machines.iter().any(|machine| machine.id == id);
     let agent = Agent::named(&agent)

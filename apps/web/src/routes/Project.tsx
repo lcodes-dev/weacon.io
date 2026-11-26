@@ -12,8 +12,6 @@ export function ProjectPage({ team }: { team: Team }) {
   const projects = useQuery({
     queryKey: ["projects", team.id],
     queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
-    // Watch for the worker to finish a waiting branch; otherwise look for new commits as often as it does.
-    refetchInterval: (query) => (query.state.data?.some((project) => project.branches.some(waiting)) ? 3000 : 60_000),
   })
   if (!projects.data) return null
   const project = projects.data.find((project) => project.id === id)

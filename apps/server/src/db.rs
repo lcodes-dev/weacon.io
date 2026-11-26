@@ -713,8 +713,8 @@ pub async fn set_branch_head(
     name: &str,
     head_sha: Option<&str>,
     error: Option<&str>,
-) -> sqlx::Result<()> {
-    sqlx::query!(
+) -> sqlx::Result<bool> {
+    let changed = sqlx::query!(
         "UPDATE branches SET head_sha = COALESCE(?1, head_sha), error = ?2
          WHERE project_id = ?3 AND name = ?4
            AND (head_sha IS NOT COALESCE(?1, head_sha) OR error IS NOT ?2)",
@@ -725,7 +725,7 @@ pub async fn set_branch_head(
     )
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(changed.rows_affected() > 0)
 }
 
 pub async fn waiting_branches(pool: &SqlitePool) -> sqlx::Result<Vec<Waiting>> {
@@ -2131,8 +2131,8 @@ pub async fn add_machine_code(
     Ok(())
 }
 
-/// Uses up a pairing code made after `since` for a new machine of whoever asked for the code.
-/// False when the code is unknown, used or older.
+/// Uses up a pairing code made after `since` for a new machine of whoever asked for the code,
+/// and gives who that is. None when the code is unknown, used or older.
 pub async fn pair_machine(
     pool: &SqlitePool,
     code: &str,
@@ -2140,7 +2140,7 @@ pub async fn pair_machine(
     name: &str,
     os: &str,
     token: &str,
-) -> sqlx::Result<bool> {
+) -> sqlx::Result<Option<String>> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let asked = sqlx::query!(
         "DELETE FROM machine_codes WHERE code = ? RETURNING user_id, created_at",
@@ -2165,7 +2165,7 @@ pub async fn pair_machine(
     }
     // An old code is used up all the same; a machine that couldn't be saved leaves its code.
     tx.commit().await?;
-    Ok(asked.is_some())
+    Ok(asked.map(|asked| asked.user_id))
 }
 
 pub async fn delete_machine(pool: &SqlitePool, user_id: &str, id: &str) -> sqlx::Result<bool> {
@@ -3162,4 +3162,42 @@ pub async fn group_working(
         .into_iter()
         .map(|chat| (chat.name, chat.agent))
         .collect())
+}
+
+/// The members of a project's team.
+pub async fn project_people(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar!(
+        "SELECT m.user_id FROM projects p JOIN team_members m ON m.team_id = p.team_id
+         WHERE p.id = ?",
+        project_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+pub async fn group_people(pool: &SqlitePool, group_id: &str) -> sqlx::Result<Vec<String>> {
+    sqlx::query_scalar!(
+        "SELECT user_id FROM group_members WHERE group_id = ?",
+        group_id
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Who may read a chat, and whether that is its group: its group's members if it has one,
+/// else its team's.
+pub async fn chat_people(pool: &SqlitePool, chat_id: &str) -> sqlx::Result<(Vec<String>, bool)> {
+    let chat = sqlx::query!(
+        "SELECT group_id, project_id FROM chats WHERE id = ?",
+        chat_id
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(match chat {
+        Some(chat) => match chat.group_id {
+            Some(group) => (group_people(pool, &group).await?, true),
+            None => (project_people(pool, &chat.project_id).await?, false),
+        },
+        None => Default::default(),
+    })
 }

@@ -156,6 +156,8 @@ pub async fn remove_member(
     if !db::remove_member(&state.pool, &team_id, &user_id).await? {
         return Err(refused("The team's owner can't leave"));
     }
+    // Who left is out of the team's groups too.
+    crate::live::team(&state, &team_id, "groups").await;
     Ok(StatusCode::NO_CONTENT)
 }
 

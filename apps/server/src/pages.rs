@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, DocEdit, DocVersion, File, Kept, User};
 use crate::teams::{membership, refused};
-use crate::{ApiError, AppState, docs, not_found};
+use crate::{ApiError, AppState, docs, live, not_found};
 
 const IMAGE_BYTES: usize = 5_000_000;
 pub const FILE_BYTES: usize = 20_000_000;
@@ -54,6 +54,7 @@ pub async fn add(
         &user.id,
     );
     let id = added.await?.ok_or_else(not_found)?;
+    live::team(&state, &team_id, "docs").await;
     Ok(Json(json!({"id": id})))
 }
 
@@ -81,8 +82,10 @@ pub async fn save(
     if let Some(mut writer) = db::writer(&state.pool, &team_id).await? {
         writer.asker = user.id.clone();
         db::start_check(&state.pool, &page_id).await?;
+        let (state, team_id) = (state.clone(), team_id.clone());
         tokio::spawn(docs::check(state, writer, team_id, project_id, page_id));
     }
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -115,6 +118,7 @@ pub async fn accept(
         let message = "The page changed after this proposal was shown. Look at it again";
         return Err(ApiError(StatusCode::CONFLICT, message.into()));
     }
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -127,6 +131,7 @@ pub async fn reject(
     if !db::delete_proposal(&state.pool, &team_id, &project_id, &proposal_id).await? {
         return Err(not_found());
     }
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -140,6 +145,7 @@ pub async fn dismiss(
     if !db::dismiss_note(&state.pool, &team_id, &project_id, &page_id, index).await? {
         return Err(not_found());
     }
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -152,6 +158,7 @@ pub async fn remove(
     if !db::delete_doc(&state.pool, &team_id, &project_id, &page_id).await? {
         return Err(not_found());
     }
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -164,6 +171,7 @@ pub async fn order(
 ) -> Result<StatusCode, ApiError> {
     membership(&user, &team_id)?;
     db::order_docs(&state.pool, &team_id, &project_id, &ids).await?;
+    live::team(&state, &team_id, "docs").await;
     Ok(StatusCode::NO_CONTENT)
 }
 

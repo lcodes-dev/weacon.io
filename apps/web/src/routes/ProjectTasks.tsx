@@ -15,7 +15,6 @@ export function useTasks(team: Team, project?: string) {
     queryKey: ["tasks", project],
     queryFn: () => api<Task[]>("GET", `/teams/${team.id}/projects/${project}/tasks`),
     enabled: !!project,
-    refetchInterval: 5000,
   })
 }
 

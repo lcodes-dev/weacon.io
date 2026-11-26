@@ -5,6 +5,7 @@ pub mod db;
 mod docs;
 mod github;
 mod groups;
+mod live;
 mod machines;
 pub mod mail;
 pub mod map;
@@ -47,6 +48,8 @@ pub struct AppState {
     pub anthropic_api: String,
     /// The cores of people's machines that are connected now.
     pub cores: Arc<machines::Cores>,
+    /// What tells the browsers that something changed.
+    pub live: live::Live,
     /// The groups the team's own agent is answering in now.
     pub weacon: Arc<Mutex<HashSet<String>>>,
     /// The folder that holds the files uploaded for docs.
@@ -191,6 +194,7 @@ pub fn router(state: AppState) -> Router {
             "/teams/{id}/chats/{chat_id}/hosts/{host}",
             delete(chats::forget_host),
         )
+        .route("/live", get(live::socket))
         .route("/machines", get(machines::list).post(machines::pair))
         .route("/machines/codes", post(machines::code))
         .route("/machines/connect", get(machines::connect))

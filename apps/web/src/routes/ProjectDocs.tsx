@@ -36,8 +36,6 @@ export function DocsPage({ team }: { team: Team }) {
   const docs = useQuery({
     queryKey: ["docs", id],
     queryFn: () => api<Docs>("GET", `${path}/docs`),
-    // While a run is on or a page is being checked, watch for its end.
-    refetchInterval: ({ state: { data } }) => (data?.state === "running" || data?.pages.some((page) => page.checking) ? 2000 : false),
   })
   // The map says which files exist, so that only true citations become links.
   const map = useQuery({

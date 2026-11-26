@@ -20,7 +20,6 @@ export function GroupPage({ team, user }: { team: Team; user: User }) {
       const now = await api<OpenGroup>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
       return { ...now, messages: [...had, ...now.messages] }
     },
-    refetchInterval: 2000,
   })
 
   // The newest message stays in view.

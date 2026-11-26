@@ -6,12 +6,11 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::SqlitePool;
 
 use crate::db::{self, Doc, MapFile, User, Written};
 use crate::teams::{membership, refused};
 use crate::writer::Writer;
-use crate::{ApiError, AppState, now};
+use crate::{ApiError, AppState, live, now};
 
 /// At most this many pages in each of "How it works" and "How it's built".
 const PAGES: usize = 8;
@@ -380,6 +379,7 @@ async fn progress(
 ) -> Result<(), String> {
     let saved = db::set_docs_state(&state.pool, project_id, run, "running", Some(&message));
     let held = saved.await.map_err(broken)?;
+    live::project(state, project_id, "docs").await;
     held.then_some(()).ok_or("The project changed".to_owned())
 }
 
@@ -521,12 +521,14 @@ async fn generate(
     let left_out = json!(plan.left_out).to_string();
     let (commit, from) = (&sources.commit, Some((branch, left_out.as_str())));
     let saved = db::save_written(&state.pool, project_id, run, commit, from, None, &pages);
-    saved.await.map_err(broken)
+    saved.await.map_err(broken)?;
+    live::project(state, project_id, "docs").await;
+    Ok(())
 }
 
 /// Does `work` in the background as the project's `run`, and marks the run failed if it fails.
 fn background(
-    pool: SqlitePool,
+    state: AppState,
     project_id: String,
     run: i64,
     work: impl Future<Output = Result<(), String>> + Send + 'static,
@@ -538,8 +540,9 @@ fn background(
             Ok(Err(message)) => message,
             Err(_) => "Something went wrong".into(),
         };
-        let failed = db::set_docs_state(&pool, &project_id, run, "failed", Some(&message));
+        let failed = db::set_docs_state(&state.pool, &project_id, run, "failed", Some(&message));
         failed.await.ok();
+        live::project(&state, &project_id, "docs").await;
     });
 }
 
@@ -564,6 +567,7 @@ async fn claim(
     if !db::claim_docs_run(&state.pool, project_id, run).await? {
         return Err(refused("The docs are already being written"));
     }
+    live::team(state, team_id, "docs").await;
     Ok((writer, run))
 }
 
@@ -581,7 +585,7 @@ pub async fn start(
 ) -> Result<StatusCode, ApiError> {
     membership(&user, &team_id)?;
     let (writer, run) = claim(&state, &user, &team_id, &project_id, &start.branch).await?;
-    background(state.pool.clone(), project_id.clone(), run, async move {
+    background(state.clone(), project_id.clone(), run, async move {
         generate(&state, &writer, &team_id, &project_id, run, &start.branch).await
     });
     Ok(StatusCode::ACCEPTED)
@@ -610,7 +614,7 @@ pub async fn ask(
         return Err(refused("Say what to change"));
     }
     let (writer, run) = claim(&state, &user, &team_id, &project_id, &request.branch).await?;
-    background(state.pool.clone(), project_id.clone(), run, async move {
+    background(state.clone(), project_id.clone(), run, async move {
         answer(&state, &writer, &team_id, &project_id, run, &request).await
     });
     Ok(StatusCode::ACCEPTED)
@@ -672,7 +676,9 @@ async fn answer(
     }
     let (commit, asked, pages) = (&sources.commit, Some(request.text.trim()), [page]);
     let saved = db::save_written(&state.pool, project_id, run, commit, None, asked, &pages);
-    saved.await.map_err(broken)
+    saved.await.map_err(broken)?;
+    live::project(state, project_id, "docs").await;
+    Ok(())
 }
 
 /// Checks a page a person just saved against the code, and keeps the writer's notes on it.
@@ -727,6 +733,7 @@ pub async fn check(
     };
     let ended = db::end_check(&state.pool, &doc_id, &doc.version, files, notes);
     ended.await.ok();
+    live::team(&state, &team_id, "docs").await;
 }
 
 pub async fn show(

@@ -35,6 +35,7 @@ async fn server() -> AppState {
         map_wake: Arc::default(),
         anthropic_api: "http://127.0.0.1:1".into(),
         cores: Arc::default(),
+        live: Default::default(),
         weacon: Arc::default(),
         files: std::env::temp_dir().join(format!("weacon-test-{:x}", rand::random::<u64>())),
         embed: by_words,
@@ -4269,4 +4270,108 @@ async fn the_team_s_own_agent_answers_in_a_group_on_the_team_s_key() {
         weacon_said(&mut ada, &group).await["text"],
         "It couldn't answer: It asked for its tools more than 10 times"
     );
+}
+
+/// A browser's socket for what changes, opened as the client.
+async fn live(address: &str, client: &Client) -> Socket {
+    let cookie = (COOKIE, client.cookie.clone().unwrap());
+    socket(address, "/api/live", &cookie).await.unwrap()
+}
+
+/// The kind of thing a browser's socket is told next.
+async fn told(socket: &mut Socket) -> String {
+    let patience = std::time::Duration::from_secs(10);
+    loop {
+        let message = tokio::time::timeout(patience, socket.next()).await.unwrap();
+        match message.unwrap().unwrap() {
+            tungstenite::Message::Text(kind) => return kind.to_string(),
+            _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_browser_is_told_what_changed_and_only_what_its_person_may_read() {
+    let (state, mut ada) = project_with_docs().await;
+    let mut join = async |email: &str, name: &str| {
+        let invite = ada.invite(email).await;
+        let mut client = Client::new(&state);
+        client.sign_in(email, Some(name)).await;
+        let accept = format!("/api/invites/{invite}/accept");
+        client.post(&accept, Value::Null).await;
+        client
+    };
+    let (mut marco, lena) = (
+        join("marco@example.com", "Marco").await,
+        join("lena@example.com", "Lena").await,
+    );
+    let mut zoe = Client::new(&state);
+    zoe.sign_in("zoe@example.com", Some("Zoe")).await;
+    let token = paired(&mut ada, "Ada's laptop").await;
+    let machine = ada.get("/api/machines").await.1[0]["id"].clone();
+    let address = listening(&state).await;
+    let mut laptop = core(&address, &token, "signed_in").await.unwrap();
+    machines(&mut ada, true, Some("signed_in")).await;
+
+    // Only a signed-in person's browser listens, from Weacon's own pages.
+    let nobody = (COOKIE, "weacon_session=none".to_owned());
+    assert_eq!(
+        socket(&address, "/api/live", &nobody).await.err(),
+        Some(StatusCode::UNAUTHORIZED)
+    );
+    let hers = (COOKIE, ada.cookie.clone().unwrap());
+    assert_eq!(
+        socket_from("http://evil.test", &address, "/api/live", &hers)
+            .await
+            .err(),
+        Some(StatusCode::FORBIDDEN)
+    );
+    let mut adas = live(&address, &ada).await;
+    let mut marcos = live(&address, &marco).await;
+    let mut lenas = live(&address, &lena).await;
+    let mut zoes = live(&address, &zoe).await;
+
+    // A group's news is its members' alone: Lena, of the same team, hears nothing of it.
+    let with = json!({"members": [marco.user_id]});
+    let (_, group) = ada.post(&ada.team("/groups"), with).await;
+    let group = ada.team(&format!("/groups/{}", group["id"].as_str().unwrap()));
+    marco
+        .post(&format!("{group}/messages"), json!({"text": "Hello"}))
+        .await;
+    for socket in [&mut adas, &mut marcos] {
+        assert_eq!(told(socket).await, "groups");
+        assert_eq!(told(socket).await, "groups");
+    }
+
+    // A chat's start and what its machine tells of it are the team's news.
+    let start =
+        json!({"agent": "claude", "machine_id": machine, "branch": "main", "text": "Do it"});
+    let (_, chat) = ada.post(&ada.project("/chats"), start).await;
+    let turn = heard(&mut laptop).await.unwrap();
+    let event = json!({"kind": "said", "text": "On it."});
+    let event = json!({"type": "event", "chat": chat["id"], "number": 1, "event": event});
+    said(&mut laptop, event).await;
+    for socket in [&mut adas, &mut marcos, &mut lenas] {
+        assert_eq!(told(socket).await, "chats");
+        assert_eq!(told(socket).await, "chats");
+    }
+
+    // So is a task its agent makes, which the chat notes.
+    let params = json!({"name": "new_task", "arguments": {"title": "A link in the footer"}});
+    let call = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params});
+    let token = turn["tools"]["token"].as_str().unwrap();
+    assert_eq!(tool(&state, token, call).await.0, StatusCode::OK);
+    for socket in [&mut adas, &mut marcos, &mut lenas] {
+        assert_eq!(told(socket).await, "tasks");
+        assert_eq!(told(socket).await, "chats");
+    }
+
+    // Another team heard none of it.
+    zoe.post(&zoe.team("/projects"), json!({"name": "Hers", "key": "HE"}))
+        .await;
+    assert_eq!(told(&mut zoes).await, "projects");
+
+    // A machine that goes away is its owner's news.
+    drop(laptop);
+    assert_eq!(told(&mut adas).await, "machines");
 }

@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use crate::db::{self, Caller, Group, User};
-use crate::{ApiError, AppState, chats, tools, writer};
+use crate::{ApiError, AppState, chats, live, tools, writer};
 
 /// What its answers are marked with in a group.
 pub const NAME: &str = "weacon";
@@ -58,6 +58,7 @@ pub async fn called(
         // The group may be gone by now.
         let _ = db::answer_as_weacon(&state.pool, &group_id, &caller.user_id, &text).await;
         state.weacon.lock().unwrap().remove(&group_id);
+        live::group(&state, &group_id).await;
     });
     Ok(None)
 }

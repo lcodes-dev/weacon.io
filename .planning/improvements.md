@@ -101,3 +101,6 @@ Things noticed while working that could be better and that nobody has asked for.
 - **An agent's proposals pile up:** a second one for the same page doesn't replace the first, and the list names them alike. *(plan 34)*
 - **An agent's proposal gets none of the writer's notes** on a person's words it changes. *(plan 34)*
 - **An agent's proposal for a new page names no files,** though a chat's agent knows which it read. *(plan 34)*
+- **A teammate reading your chat isn't told when its machine comes or goes,** only you are; their page shows it at the chat's next event. *(plan 35)*
+- **Every event of an agent's turn has each open page ask again,** which can be several requests a second where the timer made one. *(plan 35)*
+- **A browser whose session ended keeps trying to open the socket** every two seconds, with a red dot, until the page is loaded again. *(plan 35)*

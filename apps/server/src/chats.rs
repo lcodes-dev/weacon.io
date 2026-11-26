@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, Chat, Group, GroupMessage, NewChat, Running, User};
 use crate::teams::{membership, refused};
-use crate::{ApiError, AppState, github, not_found};
+use crate::{ApiError, AppState, github, live, not_found};
 
 pub async fn list(
     State(state): State<AppState>,
@@ -183,6 +183,7 @@ pub async fn delete(
         forgotten.map_err(refused)?;
     }
     db::delete_chat(&state.pool, &chat.id).await?;
+    live::team(&state, &team_id, "chats").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -367,6 +368,7 @@ pub async fn forget_host(
 ) -> Result<StatusCode, ApiError> {
     own(&state, &user, &team_id, &id).await?;
     db::forget_chat_host(&state.pool, &id, &host).await?;
+    live::chat(&state, &id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -376,6 +378,7 @@ pub async fn forget_host(
 fn run(state: &AppState, machine: &str, id: &str) {
     let (state, machine, id) = (state.clone(), machine.to_owned(), id.to_owned());
     tokio::spawn(async move {
+        live::chat(&state, &id).await;
         let running = db::running_chats(&state.pool, Some(&machine)).await;
         let mut running = running.unwrap_or_default().into_iter();
         if let Some(chat) = running.find(|chat| chat.id == id) {
@@ -399,6 +402,7 @@ pub async fn orphaned(state: &AppState) {
     for chat in running.unwrap_or_default() {
         let failed = db::fail_chat(&state.pool, &chat.id, "The machine was removed").await;
         failed.ok();
+        live::chat(state, &chat.id).await;
     }
 }
 
@@ -418,7 +422,8 @@ async fn tell(state: &AppState, machine: &str, chat: Running) {
         Ok(found) => found,
         Err(ApiError(_, why)) => {
             let failed = db::fail_chat(&state.pool, &chat.id, &why).await;
-            return failed.unwrap_or_default();
+            failed.ok();
+            return live::chat(state, &chat.id).await;
         }
     };
     let message = ToCore::Turn(core_link::Turn {
@@ -449,6 +454,7 @@ fn repository(repo: &str, branch: String, token: String) -> Repository {
 pub async fn heard(state: &AppState, machine: &str, chat: &str, number: u64, event: Event) {
     let heard = db::hear_chat(&state.pool, machine, chat, number as i64, &event);
     heard.await.ok();
+    live::chat(state, chat).await;
 }
 
 /// Everything a chat changed in its folder, as git writes it.
@@ -526,6 +532,7 @@ pub async fn push(
             github::open_pull(&state, &opening, repo, (&to, &chat.branch), (title, &asker));
         let opened = opened.await?;
         db::set_chat_pull(&state.pool, &chat.id, opened.number, &opened.html_url).await?;
+        live::chat(&state, &chat.id).await;
         pull["number"] = json!(opened.number);
         pull["url"] = json!(opened.html_url);
     }

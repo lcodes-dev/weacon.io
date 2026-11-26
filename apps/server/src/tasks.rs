@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::db::{self, Task, TaskFields, User};
 use crate::teams::{membership, owned, refused};
-use crate::{ApiError, AppState, not_found, search};
+use crate::{ApiError, AppState, live, not_found, search};
 
 type Place = Path<(String, String, String)>;
 
@@ -90,7 +90,9 @@ pub async fn made(
     if fields.title.is_none() {
         return Err(refused("A task needs a title"));
     }
-    Ok(db::create_task(&state.pool, project_id, user_id, chat_id, &fields).await?)
+    let task = db::create_task(&state.pool, project_id, user_id, chat_id, &fields).await?;
+    live::team(state, team_id, "tasks").await;
+    Ok(task)
 }
 
 /// The task at an address, for a member of its team.
@@ -125,6 +127,7 @@ pub async fn changed(
 ) -> Result<TaskFields, ApiError> {
     let fields = checked(state, team_id, fields).await?;
     db::change_task(&state.pool, project_id, task_id, &fields).await?;
+    live::team(state, team_id, "tasks").await;
     Ok(fields)
 }
 
@@ -147,6 +150,7 @@ pub async fn order(
         return Err(refused("A task is todo, doing or done"));
     }
     db::order_tasks(&state.pool, &project_id, &order.status, &order.tasks).await?;
+    live::team(&state, &team_id, "tasks").await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -180,5 +184,6 @@ pub async fn delete(
         owned(&user, &place.0)?;
     }
     db::delete_task(&state.pool, &place.1, &place.2).await?;
+    live::team(&state, &place.0, "tasks").await;
     Ok(StatusCode::NO_CONTENT)
 }

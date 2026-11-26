@@ -18,7 +18,6 @@ export function ChatPage({ team }: { team: Team }) {
       const now = await api<OpenChat>("GET", `${path}?after=${had.at(-1)?.id ?? ""}`)
       return { ...now, events: [...had, ...now.events] }
     },
-    refetchInterval: (query) => (query.state.data?.running ? 1000 : 5000),
   })
 
   // The newest event stays in view as the agent works.

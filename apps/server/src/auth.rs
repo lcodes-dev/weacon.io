@@ -1,6 +1,6 @@
 use axum::Json;
 use axum::extract::{FromRequestParts, State};
-use axum::http::header::{COOKIE, SET_COOKIE};
+use axum::http::header::{COOKIE, ORIGIN, SET_COOKIE};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::IntoResponse;
@@ -47,6 +47,17 @@ pub async fn signed_in(state: &AppState, headers: &HeaderMap) -> Result<Option<U
         Some(token) => Ok(session_user(state, token).await?),
         None => Ok(None),
     }
+}
+
+/// Refuses a WebSocket opened from another site's page. A browser sends the cookie along
+/// from any page of the same site, so the page itself must be Weacon's own.
+pub fn own_page(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let origin = headers.get(ORIGIN);
+    if origin.is_some_and(|origin| origin.as_bytes() == state.url.as_bytes()) {
+        return Ok(());
+    }
+    let message = "This is opened from Weacon's own pages";
+    Err(ApiError(StatusCode::FORBIDDEN, message.into()))
 }
 
 async fn session_user(state: &AppState, token: &str) -> sqlx::Result<Option<User>> {

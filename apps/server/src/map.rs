@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::db::{self, User, Waiting};
 use crate::teams::membership;
-use crate::{ApiError, AppState, github};
+use crate::{ApiError, AppState, github, live};
 
 /// Raise this when what the `code-map` crate reads from a file changes, such as with a new language: every map is then read again.
 const READER: i64 = 7;
@@ -88,10 +88,10 @@ pub async fn round(state: &AppState) {
     for branch in waiting {
         if let Err(ApiError(_, message)) = map(state, &branch).await {
             tracing::error!("mapping {} {} failed: {message}", branch.repo, branch.name);
-            let (project, name) = (branch.project_id, &branch.name);
-            let saved =
-                db::set_branch_head(&state.pool, &project, name, None, Some(&message)).await;
+            let (project, name) = (&branch.project_id, &branch.name);
+            let saved = db::set_branch_head(&state.pool, project, name, None, Some(&message)).await;
             saved.ok();
+            live::team(state, &branch.team_id, "projects").await;
         }
     }
 }
@@ -110,7 +110,9 @@ async fn notice(state: &AppState) -> sqlx::Result<()> {
                 },
                 Err(ApiError(_, message)) => (None, Some(message.as_str())),
             };
-            db::set_branch_head(&state.pool, &project.id, &name, head, error).await?;
+            if db::set_branch_head(&state.pool, &project.id, &name, head, error).await? {
+                live::team(state, &project.team_id, "projects").await;
+            }
         }
     }
     Ok(())
@@ -142,6 +144,7 @@ async fn map(state: &AppState, branch: &Waiting) -> Result<(), ApiError> {
         readings = reading.await.map_err(unread)?.map_err(unread)?;
     }
     db::save_map(&state.pool, branch, &files, &readings).await?;
+    live::team(state, &branch.team_id, "projects").await;
     Ok(())
 }
 

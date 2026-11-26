@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::chats::{self, After};
 use crate::db::{self, Group, User};
 use crate::teams::{membership, refused};
-use crate::{ApiError, AppState, not_found, weacon};
+use crate::{ApiError, AppState, live, not_found, weacon};
 
 pub async fn list(
     State(state): State<AppState>,
@@ -78,6 +78,7 @@ pub async fn create(
     let about = new.project_id.as_deref();
     project(&state, &team_id, about).await?;
     let id = db::create_group(&state.pool, &team_id, named(&new.name), about, &new.members).await?;
+    live::group(&state, &id).await;
     Ok(Json(json!({"id": id})))
 }
 
@@ -122,6 +123,7 @@ pub async fn change(
     }
     project(&state, &team_id, about).await?;
     db::change_group(&state.pool, &id, named(&changed.name), about).await?;
+    live::group(&state, &id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -139,6 +141,7 @@ pub async fn add(
     found(&state, &user, &team_id, &id).await?;
     members(&state, &team_id, std::slice::from_ref(&joining.user_id)).await?;
     db::join_group(&state.pool, &id, &joining.user_id).await?;
+    live::group(&state, &id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -149,6 +152,7 @@ pub async fn leave(
 ) -> Result<StatusCode, ApiError> {
     found(&state, &user, &team_id, &id).await?;
     db::leave_groups(&state.pool, &team_id, Some(&id), &user.id).await?;
+    live::group(&state, &id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -181,5 +185,6 @@ pub async fn write(
         refused.extend(weacon::called(&state, &user, &team_id, &group).await?);
     }
     refused.dedup();
+    live::group(&state, &id).await;
     Ok(Json(json!({"refused": refused})))
 }

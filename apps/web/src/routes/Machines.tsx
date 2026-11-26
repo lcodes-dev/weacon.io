@@ -14,8 +14,6 @@ export function Machines() {
   const machines = useQuery({
     queryKey: ["machines"],
     queryFn: () => api<Machine[]>("GET", "/machines"),
-    // A machine comes and goes by itself.
-    refetchInterval: 5000,
   })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["machines"] })
   const code = useMutation({ mutationFn: () => api<{ code: string; server: string }>("POST", "/machines/codes") })

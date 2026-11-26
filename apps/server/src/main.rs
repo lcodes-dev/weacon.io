@@ -33,6 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         map_wake: Default::default(),
         anthropic_api: "https://api.anthropic.com".into(),
         cores: Default::default(),
+        live: Default::default(),
         weacon: Default::default(),
         files,
         embed: doc_search::embed,

@@ -1,5 +1,3 @@
-export type Health = { status: "ok" }
-
 export type User = {
   id: string
   email: string
