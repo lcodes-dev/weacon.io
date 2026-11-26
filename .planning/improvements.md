@@ -97,3 +97,4 @@ Things noticed while working that could be better and that nobody has asked for.
 - **Every event of an agent's turn has each open page ask again,** which can be several requests a second where the timer made one. *(plan 35)*
 - **A browser whose session ended keeps trying to open the socket** every two seconds, with a red dot, until the page is loaded again. *(plan 35)*
 - **The team's page isn't told of changes:** a member who joins or leaves, or a new invite, shows when the page is loaded again. *(seen reviewing plan 35)*
+- **Some pages start with their own title as a heading,** so the `doc` tool shows the title twice. An agent's proposal then drops one, and the diff shows that heading as removed. The writer could leave the title out of a page's text, or the tool could skip a heading that repeats it. *(seen checking plan 34)*

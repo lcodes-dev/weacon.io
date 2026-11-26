@@ -1,6 +1,6 @@
 # Plan 35: a WebSocket to browsers
 
-**Status: in progress**
+**Status: done**
 
 <!-- Status is one of: planned, in progress, done. Tick each step as it lands; the plan is done when every step is ticked. -->
 
@@ -79,7 +79,7 @@ That a second browser shows a message at once, and that a page catches up after 
 - [x] Web app: the socket, and the chat's, the group's and the sidebar's timers removed
 - [x] Server and web app: tasks, docs, projects and machines, and the remaining timers removed
 - [x] Docs: `docs/architecture.md`
-- [ ] Checked by hand in two browsers: a group's message and an agent's turn show at once; a restart of the server is caught up with
+- [x] Checked by hand in two browsers: a group's message and an agent's turn show at once; a restart of the server is caught up with
 
 ## Outcome so far
 
