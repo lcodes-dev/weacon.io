@@ -46,7 +46,7 @@ In `apps/server/tests/`, through the API, with the key loaded as `main.rs` loads
 | `apps/server/src/secrets.rs` | The key, `seal` and `open` |
 | `apps/server/src/db.rs` | The four functions, and the one-time sealing |
 | `apps/server/src/main.rs`, `lib.rs` | `WEACON_KEY_FILE`, the key in `AppState` |
-| `apps/server/migrations/0021_secrets_sealed.sql` | `config.secrets_sealed` |
+| `apps/server/migrations/0022_secrets_sealed.sql` | `config.secrets_sealed` |
 | `.sqlx/` | The changed queries |
 | `apps/server/tests/api.rs` | The tests above |
 | `docs/architecture.md` | A "Secrets" section, and the key beside the database file |
