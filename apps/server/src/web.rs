@@ -12,7 +12,7 @@ pub async fn serve(uri: Uri) -> Response {
     let (path, file) = match Dist::get(path) {
         Some(file) => (path, file),
         // Only an address of the web app's own pages falls back to it.
-        None if path.starts_with("assets/") || path == "ws" || path.starts_with("ws/") => {
+        None if path.starts_with("assets/") => {
             return crate::not_found().into_response();
         }
         None => match Dist::get("index.html") {

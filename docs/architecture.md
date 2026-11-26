@@ -34,7 +34,7 @@ The root `Cargo.toml` is a workspace, so `cargo` commands run from the root and 
 
 - **axum** on tokio.
 - JSON API under `/api/...`.
-- One WebSocket at `/ws` for live updates.
+- One WebSocket at `/api/live` for live updates.
 - Everything else is the web app (see below).
 
 ## Logging
@@ -83,7 +83,7 @@ There are no unit tests inside `src/`. One is added only for something no reques
 
 | Request | Answer |
 | --- | --- |
-| A path under `/api` or `/ws` that no route matches | JSON 404 |
+| A path under `/api` that no route matches | JSON 404 |
 | A path that matches an embedded file | That file |
 | A path under `/assets/` that matches none | JSON 404 |
 | Anything else | `index.html`, so a client-side route such as `/chats/42` survives a refresh |
@@ -96,8 +96,8 @@ In a debug build `rust-embed` reads `apps/web/dist/` from disk, so the server do
 
 `scripts/dev.sh` does the setup and starts everything. It installs Node and Rust through mise at the versions pinned in `mise.toml`, installs the web app's packages, then starts two processes:
 
-- the server on port 8080, serving `/api` and `/ws`;
-- Vite's dev server on port 5173, with hot reload, proxying `/api` and `/ws` to 8080.
+- the server on port 8080, serving `/api`;
+- Vite's dev server on port 5173, with hot reload, proxying `/api` to 8080.
 
 The browser opens Vite's port, so everything is one origin: no CORS setup, and cookies behave as in production.
 

@@ -186,12 +186,10 @@ async fn unknown_path_serves_the_web_app() {
 }
 
 #[tokio::test]
-async fn a_missing_asset_and_the_reserved_ws_path_are_404() {
-    for path in ["/assets/gone.js", "/ws"] {
-        let request = Request::get(path).body(Body::empty()).unwrap();
-        let response = router(server().await).oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
-    }
+async fn a_missing_asset_is_404() {
+    let request = Request::get("/assets/gone.js").body(Body::empty()).unwrap();
+    let response = router(server().await).oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
