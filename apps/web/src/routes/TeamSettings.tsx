@@ -1,11 +1,12 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
-import { api, type Team, type TeamDetails, type User } from "../api"
+import { api, type Team, type User } from "../api"
 import { GithubSection } from "../components/GithubSection"
 import { KeySection } from "../components/KeySection"
 import { WriterSection } from "../components/WriterSection"
+import { useTeamDetails } from "../queries"
 
 export function TeamSettings({ team, user }: { team: Team; user: User }) {
   const queryClient = useQueryClient()
@@ -13,7 +14,7 @@ export function TeamSettings({ team, user }: { team: Team; user: User }) {
   const [emails, setEmails] = useState("")
   const owner = team.role === "owner"
   const path = `/teams/${team.id}`
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", path) })
+  const details = useTeamDetails(team)
   // The session first: after leaving, this team is gone and must not be fetched again.
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["session"] })

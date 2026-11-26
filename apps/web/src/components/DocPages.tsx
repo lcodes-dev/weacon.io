@@ -6,7 +6,6 @@ import { Sortable, SortableHandle, SortableItem } from "./Sortable"
 export type DocPage = { id: string; title: string; markdown: string }
 
 type Rendering = {
-  /** Renders inline code. */
   code?: ComponentType<{ children?: ReactNode }>
   /** The address of one of the project's own files: an image written `image:{id}` in a page, or an attachment written `file:{id}`. */
   file: (id: string) => string

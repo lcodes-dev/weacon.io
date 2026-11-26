@@ -3,7 +3,6 @@ import { useNavigate, useParams } from "react-router"
 import { api, type Invitation, type User } from "../api"
 import { SignIn } from "./SignIn"
 
-/** The screen an invite link opens. */
 export function Invite({ user }: { user: User | null }) {
   const { token } = useParams()
   const navigate = useNavigate()

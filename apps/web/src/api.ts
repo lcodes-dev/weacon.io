@@ -51,7 +51,6 @@ export type Machine = {
   /** What its core last said of its agents. */
   agents: { agent: Agent; ready: "missing" | "signed_out" | "signed_in" }[]
   seen_at: number | null
-  /** Whether its core is connected now. */
   connected: boolean
 }
 
@@ -88,7 +87,6 @@ export type Group = {
   project_id: string | null
   project: string | null
   members: { id: string; name: string }[]
-  /** Whether it has a message you haven't read. */
   unread: boolean
 }
 
@@ -222,7 +220,6 @@ export type DocVersion = { id: string; title: string; markdown: string; author: 
 /** A public link to a copy of a project's user docs. */
 export type Share = { token: string; created_by: string; created_at: number }
 
-/** What a public link shows. */
 export type Shared = { title: string; created_at: number; pages: { title: string; markdown: string }[] }
 
 export type TeamDetails = {

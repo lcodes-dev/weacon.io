@@ -3,8 +3,9 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useRef, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { api, groupName, type OpenGroup, type Project, type Team, type TeamDetails, type User, who } from "../api"
+import { api, groupName, type OpenGroup, type Team, type User, who } from "../api"
 import { Said } from "../components/ChatEvents"
+import { useProjects, useTeamDetails } from "../queries"
 
 type Part = { group: OpenGroup; path: string; team: Team }
 
@@ -100,8 +101,8 @@ function useGroupChange<T = void>({ path, team }: Pick<Part, "path" | "team">, c
 function Settings({ group, path, team }: Part) {
   const navigate = useNavigate()
   const [name, setName] = useState(group.name ?? "")
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
-  const projects = useQuery({ queryKey: ["projects", team.id], queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`) })
+  const details = useTeamDetails(team)
+  const projects = useProjects(team)
   const change = useGroupChange({ path, team }, (project_id?: string) => api("PUT", path, { name, project_id }))
   const add = useGroupChange({ path, team }, (user_id: string) => api("POST", `${path}/members`, { user_id }))
   const leave = useGroupChange({ path, team }, () => api("DELETE", `${path}/members/me`).then(() => navigate("/")))
@@ -161,7 +162,7 @@ function Settings({ group, path, team }: Part) {
 
 function Write({ group, path, team }: Part) {
   const [text, setText] = useState("")
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
+  const details = useTeamDetails(team)
   // Why an agent the message called doesn't run, if one doesn't.
   const [refused, setRefused] = useState<string[]>([])
   const write = useGroupChange({ path, team }, () =>

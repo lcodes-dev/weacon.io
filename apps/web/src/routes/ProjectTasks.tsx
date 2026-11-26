@@ -4,19 +4,11 @@ import { Input } from "@ui-sdk/react/input"
 import { XIcon } from "lucide-react"
 import { useState } from "react"
 import { Link, useNavigate, useParams, useSearchParams } from "react-router"
-import { agents, api, statuses, type Chat, type Docs, type Project, type Status, type Task, type Team, type TeamDetails, type User } from "../api"
+import { agents, api, statuses, type Docs, type Project, type Status, type Task, type Team, type User } from "../api"
 import { Board, BoardCard, BoardColumn } from "../components/Board"
+import { useChats, useProjects, useTasks, useTeamDetails } from "../queries"
 
 const statusKeys = Object.keys(statuses) as Status[]
-
-/** A project's tasks, which every page that shows one asks for the same way. */
-export function useTasks(team: Team, project?: string) {
-  return useQuery({
-    queryKey: ["tasks", project],
-    queryFn: () => api<Task[]>("GET", `/teams/${team.id}/projects/${project}/tasks`),
-    enabled: !!project,
-  })
-}
 
 /** The page at `/projects/{id}/tasks`: the project's tasks as a list or a board, and the one picked beside it. */
 export function TasksPage({ team, user }: { team: Team; user: User }) {
@@ -24,7 +16,7 @@ export function TasksPage({ team, user }: { team: Team; user: User }) {
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const projects = useQuery({ queryKey: ["projects", team.id], queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`) })
+  const projects = useProjects(team)
   const tasks = useTasks(team, id)
   const path = `/teams/${team.id}/projects/${id}/tasks`
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["tasks", id] })
@@ -181,9 +173,9 @@ function Panel({ team, user, project, task, name, path, close }: PanelProps) {
   const [title, setTitle] = useState(task.title)
   const [text, setText] = useState(task.text)
   const [check, setCheck] = useState("")
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
+  const details = useTeamDetails(team)
   const docs = useQuery({ queryKey: ["docs", project.id], queryFn: () => api<Docs>("GET", `/teams/${team.id}/projects/${project.id}/docs`) })
-  const chats = useQuery({ queryKey: ["chats", team.id], queryFn: () => api<Chat[]>("GET", `/teams/${team.id}/chats`) })
+  const chats = useChats(team)
   // The pages its title and text are about, which the server finds by meaning.
   const offered = useQuery({
     queryKey: ["task-docs", task.id, task.title, task.text, task.docs],

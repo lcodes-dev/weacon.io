@@ -1,9 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useEffect, useState } from "react"
 import { useSearchParams } from "react-router"
-import { api, type Github, type Team } from "../api"
+import { api, type Team } from "../api"
+import { useGithub } from "../queries"
 
 /** The team's own GitHub App, in team settings. GitHub sends the owner back to this page. */
 export function GithubSection({ team }: { team: Team }) {
@@ -12,7 +13,7 @@ export function GithubSection({ team }: { team: Team }) {
   const [organization, setOrganization] = useState("")
   const [state] = useState(() => `${team.id}-${crypto.randomUUID()}`)
   const path = `/teams/${team.id}/github`
-  const github = useQuery({ queryKey: ["github", team.id], queryFn: () => api<Github>("GET", path) })
+  const github = useGithub(team)
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["github", team.id] })
   const register = useMutation({ mutationFn: (code: string) => api("POST", path, { code }), onSuccess: refresh })
   const forget = useMutation({ mutationFn: () => api("DELETE", path), onSuccess: refresh })

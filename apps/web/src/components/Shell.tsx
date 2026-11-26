@@ -1,9 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { OverlayHost } from "@ui-sdk/react/overlays"
 import { CheckIcon, ChevronsUpDownIcon, LogOutIcon, MenuIcon, PlusIcon, SettingsIcon, TextIcon } from "lucide-react"
 import { lazy, Suspense, useEffect, useState } from "react"
 import { Link, NavLink, Route, Routes, useLocation, useMatch } from "react-router"
-import { agents, api, groupName, type Chat, type Group, type Machine, type MailConfig, type Project, type Team, type TeamDetails, type User } from "../api"
+import { agents, api, groupName, type Chat, type Team, type User } from "../api"
 import { useLive } from "../live"
 import { ChatPage } from "../routes/Chat"
 import { GroupPage } from "../routes/Group"
@@ -14,6 +14,7 @@ import { NewGroup } from "../routes/NewGroup"
 import { ProjectPage } from "../routes/Project"
 import { TasksPage } from "../routes/ProjectTasks"
 import { TeamSettings } from "../routes/TeamSettings"
+import { useChats, useGroups, useMachines, useMailConfig, useProjects, useTeamDetails } from "../queries"
 
 // The docs page is the largest, so it is fetched when first opened.
 const DocsPage = lazy(() => import("../routes/ProjectDocs").then((module) => ({ default: module.DocsPage })))
@@ -117,13 +118,6 @@ function Logo() {
   )
 }
 
-function useProjects(team: Team) {
-  return useQuery({
-    queryKey: ["projects", team.id],
-    queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
-  })
-}
-
 /** Tasks and Docs, of the project that is open or else the first. */
 function Modules({ team }: { team: Team }) {
   const projects = useProjects(team)
@@ -169,10 +163,7 @@ function Projects({ team }: { team: Team }) {
 
 /** The groups you are in, the one written in last first, each with a dot while it has something unread. */
 function Groups({ team, user }: { team: Team; user: User }) {
-  const groups = useQuery({
-    queryKey: ["groups", team.id],
-    queryFn: () => api<Group[]>("GET", `/teams/${team.id}/groups`),
-  })
+  const groups = useGroups(team)
   return (
     <nav className="flex flex-col">
       <h2 className="sec">Groups</h2>
@@ -196,10 +187,7 @@ function Groups({ team, user }: { team: Team; user: User }) {
 
 /** The team's chats: your own, then your teammates', which you can read. */
 function Chats({ team, user }: { team: Team; user: User }) {
-  const chats = useQuery({
-    queryKey: ["chats", team.id],
-    queryFn: () => api<Chat[]>("GET", `/teams/${team.id}/chats`),
-  })
+  const chats = useChats(team)
   const list = (title: string, chats: Chat[], whose: boolean) => (
     <nav className="flex flex-col">
       <h2 className="sec">{title}</h2>
@@ -227,9 +215,8 @@ function Chats({ team, user }: { team: Team; user: User }) {
   )
 }
 
-/** Your machines, each with whether its core is connected and the agents ready on it. */
 function YourMachines() {
-  const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines") })
+  const machines = useMachines()
   return (
     <nav className="flex flex-col">
       <h2 className="sec">Machines</h2>
@@ -253,7 +240,6 @@ function YourMachines() {
   )
 }
 
-/** A status dot, in the 24px column where other rows have an icon. */
 function Dot({ className }: { className: string }) {
   return (
     <span className="flex w-6 shrink-0 justify-center">
@@ -274,7 +260,7 @@ function initials(name: string) {
 
 /** The open team, and the switch to another while you are in several. */
 function TeamCard({ user, team, openTeam }: { user: User; team: Team; openTeam: (id: string) => void }) {
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
+  const details = useTeamDetails(team)
   const people = details.data?.members.length
   return (
     <div className="relative flex items-center gap-2.5 rounded-[10px] border border-line bg-sur px-2 py-1.5 has-[select:hover]:bg-hov">
@@ -324,7 +310,7 @@ function Account({ user }: { user: User }) {
 }
 
 function OwnerMail() {
-  const config = useQuery({ queryKey: ["mail-config"], queryFn: () => api<MailConfig>("GET", "/config/mail") })
+  const config = useMailConfig()
   if (!config.data) return null
   if (config.data.smtp) {
     return (

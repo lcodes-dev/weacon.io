@@ -6,16 +6,16 @@ import { Tabs, TabsList, TabsPanel, TabsTab } from "@ui-sdk/react/tabs"
 import { EllipsisIcon, LoaderCircleIcon, PlusIcon } from "lucide-react"
 import { lazy, Suspense, useEffect, useRef, useState } from "react"
 import { Link, useParams, useSearchParams } from "react-router"
-import { api, type CodeMap, type Docs, type Project, type Proposal, type Share, type Team } from "../api"
+import { api, type CodeMap, type Docs, type Proposal, type Share, type Team } from "../api"
 import { DocHistory } from "../components/DocHistory"
 import { PageNotes } from "../components/DocNotes"
 import { DocArticle, DocPages } from "../components/DocPages"
 import { DocProposal } from "../components/DocProposal"
+import { useProjects } from "../queries"
 
 // The editor is large, so it is fetched when a page is first edited.
 const DocEditor = lazy(() => import("../components/DocEditor").then((module) => ({ default: module.DocEditor })))
 
-/** A project's generated docs, at `/projects/{id}/docs`. */
 export function DocsPage({ team }: { team: Team }) {
   const { id } = useParams()
   const queryClient = useQueryClient()
@@ -27,10 +27,7 @@ export function DocsPage({ team }: { team: Team }) {
   const [proposed, setProposed] = useState("")
   const [rejected, setRejected] = useState<Proposal>()
   const [asked, setAsked] = useState("")
-  const projects = useQuery({
-    queryKey: ["projects", team.id],
-    queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
-  })
+  const projects = useProjects(team)
   const project = projects.data?.find((project) => project.id === id)
   const path = `/teams/${team.id}/projects/${id}`
   const docs = useQuery({

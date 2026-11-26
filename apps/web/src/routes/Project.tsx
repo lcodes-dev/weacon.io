@@ -3,16 +3,14 @@ import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { Link, useNavigate, useParams } from "react-router"
-import { api, type Github, type Project, type RepoBranches, type Team } from "../api"
+import { api, type Project, type RepoBranches, type Team } from "../api"
 import { CodeMap } from "../components/CodeMap"
+import { useGithub, useProjects } from "../queries"
 
 /** The page at `/projects/{id}`, where the id `new` makes a project. */
 export function ProjectPage({ team }: { team: Team }) {
   const { id } = useParams()
-  const projects = useQuery({
-    queryKey: ["projects", team.id],
-    queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`),
-  })
+  const projects = useProjects(team)
   if (!projects.data) return null
   const project = projects.data.find((project) => project.id === id)
   if (id !== "new" && !project) return <p className="page text-ink2">This project isn't in {team.name}.</p>
@@ -45,7 +43,7 @@ function Form({ team, project }: { team: Team; project?: Project }) {
   // Unset means the repository's default branch.
   const [chosen, setChosen] = useState(project?.repo ? project.branches.map((branch) => branch.name) : undefined)
   const path = `/teams/${team.id}/projects`
-  const github = useQuery({ queryKey: ["github", team.id], queryFn: () => api<Github>("GET", `/teams/${team.id}/github`) })
+  const github = useGithub(team)
   const repoBranches = useQuery({
     queryKey: ["repo-branches", team.id, repo],
     queryFn: () => api<RepoBranches>("GET", `/teams/${team.id}/github/branches?repo=${repo}`),

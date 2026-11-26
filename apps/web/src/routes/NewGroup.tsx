@@ -1,16 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { Field, FieldControl, FieldLabel } from "@ui-sdk/react/field"
 import { Input } from "@ui-sdk/react/input"
 import { useState } from "react"
 import { useNavigate } from "react-router"
-import { api, type Project, type Team, type TeamDetails, type User } from "../api"
+import { api, type Team, type User } from "../api"
+import { useProjects, useTeamDetails } from "../queries"
 
 /** The page at `/groups/new`: who is in the group, and optionally its name and the project it is about. */
 export function NewGroup({ team, user }: { team: Team; user: User }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const details = useQuery({ queryKey: ["team", team.id], queryFn: () => api<TeamDetails>("GET", `/teams/${team.id}`) })
-  const projects = useQuery({ queryKey: ["projects", team.id], queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`) })
+  const details = useTeamDetails(team)
+  const projects = useProjects(team)
   const [members, setMembers] = useState<string[]>([])
   const [name, setName] = useState("")
   const [project, setProject] = useState("")

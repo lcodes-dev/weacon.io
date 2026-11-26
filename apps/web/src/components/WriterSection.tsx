@@ -7,7 +7,6 @@ import { api, type Team, type Writer } from "../api"
 
 const defaults = { claude_api: "claude-haiku-5-5", claude_code: "claude-haiku-5-5", codex: "gpt-5.6-luna" }
 
-/** Who writes the team's docs, in team settings. */
 export function WriterSection({ team, saved, hasKey }: { team: Team; saved: Writer | null; hasKey: boolean }) {
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<Writer["kind"]>(saved?.kind ?? (hasKey ? "claude_api" : "claude_code"))

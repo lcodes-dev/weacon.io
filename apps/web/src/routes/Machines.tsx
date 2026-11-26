@@ -1,7 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { confirm } from "@ui-sdk/react/alert-dialog"
 import { lazy, Suspense, useState } from "react"
-import { agents, api, type Agent, type Machine } from "../api"
+import { agents, api, type Agent } from "../api"
+import { useMachines } from "../queries"
 
 // The terminal is large, so it is fetched when a sign-in is first opened.
 const SignIn = lazy(() => import("../components/SignIn").then((module) => ({ default: module.SignIn })))
@@ -9,12 +10,8 @@ const SignIn = lazy(() => import("../components/SignIn").then((module) => ({ def
 /** Your own machines, at `/settings/machines`: pairing one, its agents, and signing in to them. */
 export function Machines() {
   const queryClient = useQueryClient()
-  // The sign-in that is open.
   const [signing, setSigning] = useState<{ machine: string; agent: Agent }>()
-  const machines = useQuery({
-    queryKey: ["machines"],
-    queryFn: () => api<Machine[]>("GET", "/machines"),
-  })
+  const machines = useMachines()
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["machines"] })
   const code = useMutation({ mutationFn: () => api<{ code: string; server: string }>("POST", "/machines/codes") })
   const remove = useMutation({ mutationFn: (id: string) => api("DELETE", `/machines/${id}`), onSuccess: refresh })

@@ -1,15 +1,15 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useMutation, useQueryClient } from "@tanstack/react-query"
 import { useState } from "react"
 import { Link, useNavigate, useSearchParams } from "react-router"
-import { agents, api, type Agent, type Machine, type Project, type Team } from "../api"
-import { useTasks } from "./ProjectTasks"
+import { agents, api, type Agent, type Machine, type Team } from "../api"
+import { useMachines, useProjects, useTasks } from "../queries"
 
 /** The page at `/chats/new`: what to ask, of which agent, on which project and machine. */
 export function NewChat({ team }: { team: Team }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const projects = useQuery({ queryKey: ["projects", team.id], queryFn: () => api<Project[]>("GET", `/teams/${team.id}/projects`) })
-  const machines = useQuery({ queryKey: ["machines"], queryFn: () => api<Machine[]>("GET", "/machines") })
+  const projects = useProjects(team)
+  const machines = useMachines()
   const [params] = useSearchParams()
   const [chosen, setChosen] = useState<{ project?: string; branch?: string; agent?: Agent; machine?: string }>({ project: params.get("project") ?? undefined })
   // Unset means what a chat for a task starts with.

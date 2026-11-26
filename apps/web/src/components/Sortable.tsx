@@ -2,7 +2,6 @@ import { createChange, createReorder, definePrimitive, type ChangeDetails, type 
 import { createParts } from "@ui-sdk/react/primitive"
 
 type Options = {
-  /** The items' keys, in order. */
   value?: string[]
   onValueChange?: (value: string[], details: ChangeDetails<ReorderReason>) => void
 }
