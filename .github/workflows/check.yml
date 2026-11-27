@@ -16,13 +16,11 @@ jobs:
   check:
     runs-on: ubuntu-latest
     env:
-      # The check needs no sqlx-cli, which takes minutes to build.
       MISE_DISABLE_TOOLS: cargo:sqlx-cli
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v5
       - uses: Swatinem/rust-cache@v2
-      # The model the docs search's test fetches.
       - uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
