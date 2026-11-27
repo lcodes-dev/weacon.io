@@ -1,8 +1,5 @@
-//! One small made-up repository per language: the lines the map must draw, and so also those it must not.
-
 use code_map::{File, link, read};
 
-/// The lines between the files given as path and text, each as "user -> used".
 fn lines(files: &[(&str, &str)]) -> Vec<String> {
     let read: Vec<File> = files
         .iter()
@@ -11,11 +8,7 @@ fn lines(files: &[(&str, &str)]) -> Vec<String> {
             File {
                 path: path.to_string(),
                 scope: reading.scope,
-                names: reading
-                    .symbols
-                    .into_iter()
-                    .map(|symbol| symbol.name)
-                    .collect(),
+                names: reading.symbols.into_iter().map(|symbol| symbol.name).collect(),
                 imports: reading.imports.into_iter().collect(),
                 mentions: reading.mentions.into_iter().collect(),
             }
@@ -28,10 +21,7 @@ fn lines(files: &[(&str, &str)]) -> Vec<String> {
 #[test]
 fn php() {
     let found = lines(&[
-        (
-            "app/Models/User.php",
-            "<?php\nnamespace App\\Models;\nclass User { public function save() {} }",
-        ),
+        ("app/Models/User.php", "<?php\nnamespace App\\Models;\nclass User { public function save() {} }"),
         (
             "app/Models/Team.php",
             "<?php\nnamespace App\\Models;\nclass Team { function owner(): User { return new User(); } }",
@@ -44,15 +34,8 @@ fn php() {
             "app/Http/Both.php",
             "<?php\nnamespace App\\Http;\nuse App\\Models\\{User, Team};\nclass Both extends Show {}",
         ),
-        // The same class a second time, where its namespace does not lead, and a method that only shares a name.
-        (
-            "Models/User.php",
-            "<?php\nnamespace App\\Models;\nclass User {}",
-        ),
-        (
-            "lib/Str.php",
-            "<?php\nnamespace Lib;\nclass Str { function find() {} }",
-        ),
+        ("Models/User.php", "<?php\nnamespace App\\Models;\nclass User {}"),
+        ("lib/Str.php", "<?php\nnamespace Lib;\nclass Str { function find() {} }"),
     ]);
     assert_eq!(
         found,
@@ -69,22 +52,13 @@ fn php() {
 #[test]
 fn javascript_typescript_vue_and_svelte() {
     let found = lines(&[
-        (
-            "src/price.ts",
-            "export function format(n: number) { return n.toFixed(2) }",
-        ),
-        (
-            "src/lib/api/index.ts",
-            "export const get = () => fetch('/')\nexport function post() {}",
-        ),
+        ("src/price.ts", "export function format(n: number) { return n.toFixed(2) }"),
+        ("src/lib/api/index.ts", "export const get = () => fetch('/')\nexport function post() {}"),
         (
             "src/cart.ts",
             "import { format } from './price'\nimport { get } from '@/lib/api'\nimport vue from 'vue'\nexport const total = () => format(1)",
         ),
-        (
-            "src/old.js",
-            "const price = require('./price.ts')\nexport * from './cart'",
-        ),
+        ("src/old.js", "const price = require('./price.ts')\nexport * from './cart'"),
         (
             "src/Card.vue",
             "<script setup lang=\"ts\">\nimport { total } from './cart'\n</script>\n<template><div /></template>",
@@ -93,21 +67,11 @@ fn javascript_typescript_vue_and_svelte() {
             "src/Page.vue",
             "<script setup>\nimport Card from './Card.vue'\n</script>\n<template><Card /><Missing /></template>",
         ),
-        (
-            "src/Row.svelte",
-            "<script>\nimport { format } from './price'\n</script>\n<p>{format(1)}</p>",
-        ),
-        (
-            "src/App.tsx",
-            "import logo from './logo.svg'\nexport const App = () => <Shell />",
-        ),
+        ("src/Row.svelte", "<script>\nimport { format } from './price'\n</script>\n<p>{format(1)}</p>"),
+        ("src/App.tsx", "import logo from './logo.svg'\nexport const App = () => <Shell />"),
         ("src/Shell.tsx", "export function Shell() { return null }"),
         ("src/logo.svg", "<svg />"),
-        // Defines names the others call, and is imported by none of them.
-        (
-            "vendor/vue.js",
-            "export function post() {}\nexport function fetch() {}",
-        ),
+        ("vendor/vue.js", "export function post() {}\nexport function fetch() {}"),
     ]);
     assert_eq!(
         found,
@@ -130,14 +94,8 @@ fn python() {
     let found = lines(&[
         ("shop/__init__.py", ""),
         ("shop/price.py", "def format(n):\n    return str(n)\n"),
-        (
-            "shop/cart.py",
-            "from .price import format\nimport os\n\ndef total():\n    return format(1)\n",
-        ),
-        (
-            "shop/api/views.py",
-            "from shop import cart\nfrom ..price import format\nimport shop.cart as c\n",
-        ),
+        ("shop/cart.py", "from .price import format\nimport os\n\ndef total():\n    return format(1)\n"),
+        ("shop/api/views.py", "from shop import cart\nfrom ..price import format\nimport shop.cart as c\n"),
         ("tools/run.py", "import shop\nfrom shop.cart import total\n"),
         ("other/price.py", "def format(n):\n    pass\n"),
     ]);
@@ -157,22 +115,13 @@ fn python() {
 #[test]
 fn rust() {
     let found = lines(&[
-        (
-            "src/lib.rs",
-            "mod db;\nmod map;\nmod pages;\npub fn now() -> i64 { 0 }",
-        ),
-        (
-            "src/db.rs",
-            "pub struct Doc;\npub fn docs() -> Vec<Doc> { vec![] }",
-        ),
+        ("src/lib.rs", "mod db;\nmod map;\nmod pages;\npub fn now() -> i64 { 0 }"),
+        ("src/db.rs", "pub struct Doc;\npub fn docs() -> Vec<Doc> { vec![] }"),
         (
             "src/map.rs",
             "use crate::db::{self, Doc};\nuse std::collections::HashMap;\npub fn round() { db::docs(); }",
         ),
-        (
-            "src/pages/mod.rs",
-            "use super::map;\nuse serde::Serialize;\npub fn show() { map::round(); }",
-        ),
+        ("src/pages/mod.rs", "use super::map;\nuse serde::Serialize;\npub fn show() { map::round(); }"),
         ("other/src/db.rs", "pub struct Doc;"),
     ]);
     assert_eq!(
@@ -194,51 +143,30 @@ fn go() {
             "cmd/main.go",
             "package main\nimport (\n\t\"fmt\"\n\t\"shop/internal/store\"\n)\nfunc main() { store.Open(); fmt.Println() }",
         ),
-        (
-            "internal/store/open.go",
-            "package store\nfunc Open() *Store { return load() }",
-        ),
+        ("internal/store/open.go", "package store\nfunc Open() *Store { return load() }"),
         (
             "internal/store/load.go",
             "package store\ntype Store struct{}\nfunc load() *Store { return nil }\nfunc Close() {}",
         ),
-        (
-            "internal/other/open.go",
-            "package other\nfunc Open() {}\nfunc Println() {}",
-        ),
+        ("internal/other/open.go", "package other\nfunc Open() {}\nfunc Println() {}"),
     ]);
     assert_eq!(
         found,
-        [
-            "cmd/main.go -> internal/store/open.go",
-            "internal/store/open.go -> internal/store/load.go",
-        ]
+        ["cmd/main.go -> internal/store/open.go", "internal/store/open.go -> internal/store/load.go",]
     );
 }
 
 #[test]
 fn java() {
     let found = lines(&[
-        (
-            "src/shop/model/User.java",
-            "package shop.model;\npublic class User { public void save() {} }",
-        ),
-        (
-            "src/shop/model/Team.java",
-            "package shop.model;\npublic class Team { User owner; }",
-        ),
+        ("src/shop/model/User.java", "package shop.model;\npublic class User { public void save() {} }"),
+        ("src/shop/model/Team.java", "package shop.model;\npublic class Team { User owner; }"),
         (
             "src/shop/web/Show.java",
             "package shop.web;\nimport shop.model.User;\nimport java.util.List;\nclass Show { void run() { new User().save(); } }",
         ),
-        (
-            "src/shop/web/All.java",
-            "package shop.web;\nimport shop.model.*;\nclass All { Team team; }",
-        ),
-        (
-            "src/other/User.java",
-            "package other;\npublic class User {}",
-        ),
+        ("src/shop/web/All.java", "package shop.web;\nimport shop.model.*;\nclass All { Team team; }"),
+        ("src/other/User.java", "package other;\npublic class User {}"),
     ]);
     assert_eq!(
         found,
@@ -254,10 +182,7 @@ fn java() {
 fn c_and_cpp() {
     let found = lines(&[
         ("src/price.h", "int format(int n);"),
-        (
-            "src/price.c",
-            "#include \"price.h\"\n#include <stdio.h>\nint format(int n) { return n; }",
-        ),
+        ("src/price.c", "#include \"price.h\"\n#include <stdio.h>\nint format(int n) { return n; }"),
         (
             "src/cart.cpp",
             "#include \"price.h\"\n#include \"util/log.hpp\"\nint total() { return format(1); }",
@@ -267,21 +192,14 @@ fn c_and_cpp() {
     ]);
     assert_eq!(
         found,
-        [
-            "src/price.c -> src/price.h",
-            "src/cart.cpp -> src/price.h",
-            "src/cart.cpp -> src/util/log.hpp",
-        ]
+        ["src/price.c -> src/price.h", "src/cart.cpp -> src/price.h", "src/cart.cpp -> src/util/log.hpp",]
     );
 }
 
 #[test]
 fn c_sharp() {
     let found = lines(&[
-        (
-            "Models/User.cs",
-            "namespace Shop.Models { public class User { } }",
-        ),
+        ("Models/User.cs", "namespace Shop.Models { public class User { } }"),
         (
             "Models/Team.cs",
             "namespace Shop.Models;\npublic class Team { public User Owner() { return new User(); } }",
@@ -290,39 +208,23 @@ fn c_sharp() {
             "Web/Show.cs",
             "using System;\nusing Shop.Models;\nnamespace Shop.Web;\npublic class Show { public User Run() { return new User(); } }",
         ),
-        (
-            "Web/Idle.cs",
-            "using Shop.Models;\nnamespace Shop.Web;\npublic class Idle { }",
-        ),
+        ("Web/Idle.cs", "using Shop.Models;\nnamespace Shop.Web;\npublic class Idle { }"),
         ("Old/User.cs", "namespace Old { public class User { } }"),
     ]);
-    assert_eq!(
-        found,
-        [
-            "Models/Team.cs -> Models/User.cs",
-            "Web/Show.cs -> Models/User.cs",
-        ]
-    );
+    assert_eq!(found, ["Models/Team.cs -> Models/User.cs", "Web/Show.cs -> Models/User.cs",]);
 }
 
 #[test]
 fn ruby() {
     let found = lines(&[
-        (
-            "lib/shop/price.rb",
-            "class Price\n  def self.format(n); n; end\nend",
-        ),
+        ("lib/shop/price.rb", "class Price\n  def self.format(n); n; end\nend"),
         (
             "lib/shop/cart.rb",
             "require_relative \"price\"\nrequire \"json\"\nclass Cart\n  def total; format(1); end\nend",
         ),
         ("bin/run.rb", "require \"shop/cart\"\nCart.new.total"),
-        // Rails finds a class by its name alone.
         ("app/models/user.rb", "class User < Record\nend"),
-        (
-            "app/models/record.rb",
-            "class Record\n  def total; end\nend",
-        ),
+        ("app/models/record.rb", "class Record\n  def total; end\nend"),
     ]);
     assert_eq!(
         found,
@@ -338,18 +240,12 @@ fn ruby() {
 fn swift() {
     let found = lines(&[
         ("Sources/Shop/User.swift", "struct User { func save() {} }"),
-        (
-            "Sources/Shop/Price.swift",
-            "enum Price { static func format(_ n: Int) -> Int { n } }",
-        ),
+        ("Sources/Shop/Price.swift", "enum Price { static func format(_ n: Int) -> Int { n } }"),
         (
             "Sources/Shop/Cart.swift",
             "import Foundation\nstruct Cart { var user: User\n func total() -> Int { Price.format(1) } }",
         ),
-        (
-            "Sources/App/Main.swift",
-            "import Shop\nlet cart = Cart(user: User())\ncart.save()",
-        ),
+        ("Sources/App/Main.swift", "import Shop\nlet cart = Cart(user: User())\ncart.save()"),
     ]);
     assert_eq!(
         found,
@@ -390,10 +286,7 @@ fn dart() {
 #[test]
 fn elixir() {
     let found = lines(&[
-        (
-            "lib/shop/price.ex",
-            "defmodule Shop.Price do\n  def format(n), do: n\nend",
-        ),
+        ("lib/shop/price.ex", "defmodule Shop.Price do\n  def format(n), do: n\nend"),
         ("lib/shop/user.ex", "defmodule Shop.User do\nend"),
         ("lib/shop/team.ex", "defmodule Shop.Team do\nend"),
         (
@@ -419,10 +312,7 @@ fn elixir() {
 #[test]
 fn lua() {
     let found = lines(&[
-        (
-            "shop/price.lua",
-            "local M = {}\nfunction M.format(n) return n end\nreturn M",
-        ),
+        ("shop/price.lua", "local M = {}\nfunction M.format(n) return n end\nreturn M"),
         ("shop/util/init.lua", "function log() end"),
         (
             "shop/cart.lua",
@@ -430,13 +320,7 @@ fn lua() {
         ),
         ("other/price.lua", "function format(n) end"),
     ]);
-    assert_eq!(
-        found,
-        [
-            "shop/cart.lua -> shop/price.lua",
-            "shop/cart.lua -> shop/util/init.lua",
-        ]
-    );
+    assert_eq!(found, ["shop/cart.lua -> shop/price.lua", "shop/cart.lua -> shop/util/init.lua",]);
 }
 
 #[test]
@@ -444,19 +328,10 @@ fn bash() {
     let found = lines(&[
         ("scripts/lib/price.sh", "format() { echo \"$1\"; }"),
         ("scripts/lib/util.sh", "log() { echo; }"),
-        (
-            "scripts/run.sh",
-            "source ./lib/price.sh\n. lib/util.sh\nsource /etc/profile\nformat 1",
-        ),
+        ("scripts/run.sh", "source ./lib/price.sh\n. lib/util.sh\nsource /etc/profile\nformat 1"),
         ("old/price.sh", "format() { :; }"),
     ]);
-    assert_eq!(
-        found,
-        [
-            "scripts/run.sh -> scripts/lib/price.sh",
-            "scripts/run.sh -> scripts/lib/util.sh",
-        ]
-    );
+    assert_eq!(found, ["scripts/run.sh -> scripts/lib/price.sh", "scripts/run.sh -> scripts/lib/util.sh",]);
 }
 
 #[test]
@@ -475,18 +350,9 @@ fn zig() {
 #[test]
 fn kotlin_and_scala() {
     let found = lines(&[
-        (
-            "src/shop/model/User.kt",
-            "package shop.model\nclass User { fun save() {} }",
-        ),
-        (
-            "src/shop/model/Team.scala",
-            "package shop.model\nclass Team { def owner(): User = new User() }",
-        ),
-        (
-            "src/shop/model/Plan.scala",
-            "package shop.model\nclass Plan",
-        ),
+        ("src/shop/model/User.kt", "package shop.model\nclass User { fun save() {} }"),
+        ("src/shop/model/Team.scala", "package shop.model\nclass Team { def owner(): User = new User() }"),
+        ("src/shop/model/Plan.scala", "package shop.model\nclass Plan"),
         (
             "src/shop/web/Show.kt",
             "package shop.web\nimport shop.model.User\nimport kotlin.math.max\nclass Show { fun run(): User = User() }",
@@ -495,10 +361,7 @@ fn kotlin_and_scala() {
             "src/shop/web/All.scala",
             "package shop.web\nimport shop.model.{Team, Plan => P}\nimport scala.util._\nclass All",
         ),
-        (
-            "src/shop/web/Any.kt",
-            "package shop.web\nimport shop.model.*\nclass Any { val user = User() }",
-        ),
+        ("src/shop/web/Any.kt", "package shop.web\nimport shop.model.*\nclass Any { val user = User() }"),
         ("src/other/User.kt", "package other\nclass User"),
     ]);
     assert_eq!(
@@ -516,18 +379,9 @@ fn kotlin_and_scala() {
 #[test]
 fn other_people_s_code_is_not_read() {
     let found = lines(&[
-        (
-            "src/Shop.php",
-            "<?php\nuse Vendor\\Tool;\nclass Shop { function run() { return new Tool(); } }",
-        ),
-        (
-            "vendor/acme/Tool.php",
-            "<?php\nnamespace Vendor;\nclass Tool {}",
-        ),
-        (
-            "web/node_modules/tool/index.js",
-            "export function Tool() {}",
-        ),
+        ("src/Shop.php", "<?php\nuse Vendor\\Tool;\nclass Shop { function run() { return new Tool(); } }"),
+        ("vendor/acme/Tool.php", "<?php\nnamespace Vendor;\nclass Tool {}"),
+        ("web/node_modules/tool/index.js", "export function Tool() {}"),
     ]);
     assert_eq!(found, [""; 0]);
     let read = read("vendor/acme/Tool.php", b"<?php\nclass Tool {}");
@@ -541,10 +395,7 @@ fn an_import_from_the_root_finds_the_file_highest_above() {
         ("app/src/price.rs", "pub fn format() {}"),
         ("app/src/cart/mod.rs", "mod price;\nmod total;"),
         ("app/src/cart/price.rs", "pub fn format() {}"),
-        (
-            "app/src/cart/total.rs",
-            "use crate::price::format;\nuse super::price as near;",
-        ),
+        ("app/src/cart/total.rs", "use crate::price::format;\nuse super::price as near;"),
         ("web/src/lib/api.ts", "export const get = 1"),
         ("web/src/pages/lib/api.ts", "export const get = 2"),
         ("web/src/pages/Home.ts", "import { get } from '@/lib/api'"),
@@ -567,10 +418,7 @@ fn an_import_from_the_root_finds_the_file_highest_above() {
 fn typescript_names_a_file_by_what_it_becomes() {
     let found = lines(&[
         ("src/price.ts", "export const price = 1"),
-        (
-            "src/cart.ts",
-            "import './price.js'\nimport { x } from './missing.js'",
-        ),
+        ("src/cart.ts", "import './price.js'\nimport { x } from './missing.js'"),
     ]);
     assert_eq!(found, ["src/cart.ts -> src/price.ts"]);
 }

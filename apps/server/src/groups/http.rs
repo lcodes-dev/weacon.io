@@ -1,0 +1,162 @@
+use axum::Json;
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::AnswerAsWeacon;
+use super::db::{self, Group};
+use crate::accounts::db::User;
+use crate::chats::http::After;
+use crate::error::{ApiError, Result};
+use crate::{AppState, accounts, jobs, live, projects};
+
+pub async fn list_groups(
+    State(state): State<AppState>,
+    user: User,
+    Path(team_id): Path<String>,
+) -> Result<Json<Vec<Group>>> {
+    Ok(Json(db::list(&state.pool, &team_id, &user.id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct NewGroup {
+    members: Vec<String>,
+    name: Option<String>,
+    project_id: Option<String>,
+}
+
+pub async fn create_group(
+    State(state): State<AppState>,
+    user: User,
+    Path(team_id): Path<String>,
+    Json(mut group): Json<NewGroup>,
+) -> Result<Json<Value>> {
+    group.members.push(user.id.clone());
+    check_members(&state, &team_id, &group.members).await?;
+    let about = group.project_id.as_deref();
+    check_project(&state, &team_id, about).await?;
+    let name = named(&group.name);
+    let id = db::create(&state.pool, &team_id, name, about, &group.members).await?;
+    live::group(&state, &id).await;
+    Ok(Json(json!({"id": id})))
+}
+
+pub async fn show_group(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, group_id)): Path<(String, String)>,
+    Query(after): Query<After>,
+) -> Result<Json<Value>> {
+    let group = found(&state, &user, &team_id, &group_id).await?;
+    let mut working = db::working(&state.pool, &group_id).await?;
+    if jobs::exists(&state.pool, &AnswerAsWeacon::key(&group_id)).await? {
+        working.push((String::new(), super::WEACON.into()));
+    }
+    let messages = db::messages(&state.pool, &group_id, &after.after).await?;
+    db::read(&state.pool, &group_id, &user.id).await?;
+    let mut group = json!(group);
+    group["messages"] = json!(messages);
+    group["working"] = json!(working);
+    Ok(Json(group))
+}
+
+#[derive(Deserialize)]
+pub struct Changes {
+    name: Option<String>,
+    project_id: Option<String>,
+}
+
+pub async fn update_group(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, group_id)): Path<(String, String)>,
+    Json(changes): Json<Changes>,
+) -> Result<StatusCode> {
+    let group = found(&state, &user, &team_id, &group_id).await?;
+    let about = changes.project_id.as_deref();
+    if group.project_id.is_some() && about.is_some() && group.project_id.as_deref() != about {
+        return Err(ApiError::invalid("A group keeps the project it was given"));
+    }
+    check_project(&state, &team_id, about).await?;
+    db::change(&state.pool, &group_id, named(&changes.name), about).await?;
+    live::group(&state, &group_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct Joining {
+    user_id: String,
+}
+
+pub async fn add_member(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, group_id)): Path<(String, String)>,
+    Json(joining): Json<Joining>,
+) -> Result<StatusCode> {
+    found(&state, &user, &team_id, &group_id).await?;
+    check_members(&state, &team_id, std::slice::from_ref(&joining.user_id)).await?;
+    db::join(&state.pool, &group_id, &joining.user_id).await?;
+    live::group(&state, &group_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn leave(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, group_id)): Path<(String, String)>,
+) -> Result<StatusCode> {
+    found(&state, &user, &team_id, &group_id).await?;
+    db::leave(&state.pool, &team_id, Some(&group_id), &user.id).await?;
+    live::group(&state, &group_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct Message {
+    text: String,
+}
+
+pub async fn write(
+    State(state): State<AppState>,
+    user: User,
+    Path((team_id, group_id)): Path<(String, String)>,
+    Json(message): Json<Message>,
+) -> Result<Json<Value>> {
+    let group = found(&state, &user, &team_id, &group_id).await?;
+    let text = message.text.trim();
+    if text.is_empty() {
+        return Err(ApiError::invalid("Write something"));
+    }
+    db::write(&state.pool, &group_id, &user.id, text).await?;
+    let refused = super::call_tagged(&state, &user, &team_id, &group, text).await?;
+    live::group(&state, &group_id).await;
+    Ok(Json(json!({"refused": refused})))
+}
+
+async fn found(state: &AppState, user: &User, team_id: &str, group_id: &str) -> Result<Group> {
+    let groups = db::list(&state.pool, team_id, &user.id).await?;
+    let group = groups.into_iter().find(|group| group.id == group_id);
+    group.ok_or_else(ApiError::not_found)
+}
+
+async fn check_members(state: &AppState, team_id: &str, people: &[String]) -> Result<()> {
+    let members = accounts::db::member_ids(&state.pool, team_id).await?;
+    if !people.iter().all(|person| members.contains(person)) {
+        return Err(ApiError::invalid("A group's members are members of its team"));
+    }
+    Ok(())
+}
+
+async fn check_project(state: &AppState, team_id: &str, project_id: Option<&str>) -> Result<()> {
+    let projects = projects::db::list(&state.pool, team_id).await?;
+    if !project_id.is_none_or(|id| projects.iter().any(|project| project.id == id)) {
+        return Err(ApiError::invalid("A group is about a project of its team"));
+    }
+    Ok(())
+}
+
+fn named(name: &Option<String>) -> Option<&str> {
+    name.as_deref().map(str::trim).filter(|name| !name.is_empty())
+}

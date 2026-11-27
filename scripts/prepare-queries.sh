@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Writes .sqlx/, which the build checks every query against. Run it after changing a query or a migration.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

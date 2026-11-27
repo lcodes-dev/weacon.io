@@ -4,10 +4,8 @@ apps/web/dist/
 .dev/
 .DS_Store
 
-# A database made by running the server from here with its default path.
 weacon.db*
 weacon.files/
 
-# What the web app's phone check leaves behind.
 apps/web/test-results/
 apps/web/playwright-report/

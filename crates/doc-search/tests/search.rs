@@ -1,5 +1,3 @@
-//! Cutting pages and scoring their parts, with the real model, which the first run fetches.
-
 use doc_search::{embed, parts, score};
 
 const PAGES: [(&str, &str); 4] = [
@@ -15,42 +13,27 @@ const PAGES: [(&str, &str); 4] = [
         "Teams",
         "## Invite\n\nAn owner invites people by email, and each takes a seat.\n\nThe `seat_count` column is checked in `app/Teams/Seats.php`.\n",
     ),
-    (
-        "Background jobs",
-        "## Queues\n\nSlow work runs on a queue. A job that fails is tried three times.\n",
-    ),
+    ("Background jobs", "## Queues\n\nSlow work runs on a queue. A job that fails is tried three times.\n"),
 ];
 
 #[test]
 fn a_page_is_cut_at_its_headings() {
     let cut = parts(PAGES[0].0, PAGES[0].1);
     assert_eq!(cut.len(), 2, "{cut:?}");
-    assert_eq!(
-        cut[0],
-        "Sign in\nOpen the sign-in page and type your email.\n\n"
-    );
+    assert_eq!(cut[0], "Sign in\nOpen the sign-in page and type your email.\n\n");
     assert!(cut[1].starts_with("Sign in\n## The link\n") && cut[1].contains("# not a heading"));
-    // A page that starts with a heading has no empty part before it, and an empty page has none.
     assert_eq!(parts(PAGES[1].0, PAGES[1].1).len(), 2);
     assert!(parts("Empty", "\n").is_empty());
 }
 
-/// The part each question finds first, among all the pages' parts.
 fn found(questions: &[&str]) -> Vec<String> {
-    let cut: Vec<String> = PAGES
-        .iter()
-        .flat_map(|(title, text)| parts(title, text))
-        .collect();
+    let cut: Vec<String> = PAGES.iter().flat_map(|(title, text)| parts(title, text)).collect();
     let embedded = embed(&cut).unwrap();
-    let questions: Vec<String> = questions
-        .iter()
-        .map(|question| question.to_string())
-        .collect();
+    let questions: Vec<String> = questions.iter().map(|question| question.to_string()).collect();
     let asked = embed(&questions).unwrap();
     let first = questions.iter().zip(&asked).map(|(question, asked)| {
         let scored = cut.iter().zip(&embedded);
-        let scored =
-            scored.map(|(text, embedding)| (score(question, asked, text, embedding), text));
+        let scored = scored.map(|(text, embedding)| (score(question, asked, text, embedding), text));
         let (_, best) = scored.max_by(|a, b| a.0.total_cmp(&b.0)).unwrap();
         best.lines().take(2).collect::<Vec<_>>().join(" / ")
     });
@@ -64,22 +47,11 @@ fn a_question_finds_the_part_about_it() {
         "Retry work that broke",
         "Log in without a password",
     ]);
-    assert_eq!(
-        first,
-        [
-            "Billing / ## Cancel",
-            "Background jobs / ## Queues",
-            "Sign in / ## The link"
-        ]
-    );
+    assert_eq!(first, ["Billing / ## Cancel", "Background jobs / ## Queues", "Sign in / ## The link"]);
 }
 
 #[test]
 fn a_name_written_exactly_comes_first() {
-    // The first is worded like billing; the column's name says where to look.
-    let first = found(&[
-        "Customers pay for more than seat_count says",
-        "What does Seats.php check?",
-    ]);
+    let first = found(&["Customers pay for more than seat_count says", "What does Seats.php check?"]);
     assert_eq!(first, ["Teams / ## Invite", "Teams / ## Invite"]);
 }

@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test"
 import { readFileSync } from "node:fs"
 
-// The owner signs up with the code the server prints to its log, while mail isn't set up.
 test.beforeEach(async ({ page }) => {
   const email = `ada${Date.now()}@example.com`
   await page.request.post("/api/sign-in/code", { data: { email, name: "Ada Dorn" } })
@@ -9,7 +8,6 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/sign-in/verify", { data: { email, code } })
 })
 
-/** Opens a page and says what doesn't fit a phone: what scrolls sideways, and what to tap is under 44px tall. */
 async function misfits(page: Page, path: string) {
   await page.goto(path)
   await page.waitForLoadState("networkidle")
@@ -21,7 +19,6 @@ async function misfits(page: Page, path: string) {
       if (box.width === 0 || style.visibility === "hidden" || element.closest("[aria-hidden=true], [inert]")) continue
       if (/auto|scroll/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1 && !element.closest("pre, code, [data-scrolls]"))
         found.push(`scrolls sideways: ${element.outerHTML.slice(0, 80)}`)
-      // A link written as underlined text is exempt, as WCAG 2.5.8 allows for links in text.
       const tapped = element.matches("a, button, select, input:not([type=checkbox], [type=radio]), textarea, summary")
       if (tapped && style.textDecorationLine !== "underline" && box.height < 44) found.push(`${Math.round(box.height)}px tall: ${element.outerHTML.slice(0, 80)}`)
     }

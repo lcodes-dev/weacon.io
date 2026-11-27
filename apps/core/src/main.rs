@@ -1,11 +1,8 @@
-//! The core: the program on a person's own machine that pairs with their Weacon, stays
-//! connected to it, and runs their agents there on their own sign-in.
-
 mod agents;
 mod chats;
 mod link;
-mod service;
 mod setup;
+mod terminals;
 
 use std::path::PathBuf;
 
@@ -20,19 +17,15 @@ weacon-core install                start with this computer and run in the backg
 weacon-core uninstall              undo that
 weacon-core add <user@host>        set up a server of yours over SSH and pair it";
 
-/// Which Weacon this machine is paired with, and the token it connects with.
 #[derive(Deserialize, Serialize)]
 struct Paired {
     server: String,
     token: String,
 }
 
-/// The folder the core keeps its one file in.
 fn home() -> PathBuf {
     let chosen = std::env::var_os("WEACON_CORE_HOME").map(PathBuf::from);
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
     chosen.unwrap_or_else(|| home.join(".config/weacon-core"))
 }
 
@@ -41,13 +34,10 @@ fn paired() -> Option<Paired> {
     serde_json::from_str(&text).ok()
 }
 
-/// Whether what is sent to a server's address is encrypted on its way, or never leaves this
-/// computer. The token is sent with every connection, so nothing else will do.
 fn private(server: &str) -> bool {
     let Some(address) = server.strip_prefix("http://") else {
         return server.starts_with("https://");
     };
-    // The host ends where a path begins, or a port: after the bracket of an IPv6 address.
     let host = address.split('/').next().unwrap_or_default();
     let host = match host.strip_prefix('[') {
         Some(v6) => v6.split(']').next().unwrap_or_default(),
@@ -58,25 +48,19 @@ fn private(server: &str) -> bool {
 
 const PLAIN: &str = "Weacon's address must start with https://, so that this machine's token can't be read on its way. Only an address on this computer itself may be plain.";
 
-/// What a command printed, when it ran and ended well.
 fn printed(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    let output = std::process::Command::new(program).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     output.status.success().then_some(text)
 }
 
-/// Ends with what went wrong, said to the person at the terminal.
 fn fail(message: impl std::fmt::Display) -> ! {
     eprintln!("{message}");
     std::process::exit(1)
 }
 
 fn needs_pairing() -> Paired {
-    let how =
-        "This machine isn't paired. Open Machines in your Weacon and run the command it shows.";
+    let how = "This machine isn't paired. Open Machines in your Weacon and run the command it shows.";
     let paired = paired().unwrap_or_else(|| fail(how));
     if !private(&paired.server) {
         fail(PLAIN);
@@ -96,8 +80,8 @@ async fn main() {
             None => println!("Not paired"),
         },
         ["agents"] => setup::say_agents().await,
-        ["install"] => service::install(),
-        ["uninstall"] => service::uninstall(),
+        ["install"] => setup::install(),
+        ["uninstall"] => setup::uninstall(),
         ["add", host] => setup::add(&needs_pairing(), host).await,
         _ => fail(USAGE),
     }
@@ -107,7 +91,6 @@ async fn main() {
 mod tests {
     use super::private;
 
-    // No request reaches the core's own checks in the server's tests.
     #[test]
     fn only_an_address_on_this_computer_may_be_plain() {
         for server in [

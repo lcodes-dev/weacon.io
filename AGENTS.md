@@ -3,12 +3,15 @@
 Weacon is a web harness for coding agents with tasks, docs and team chats built in. One Rust server holds the data in SQLite and serves a React web app from the same binary. A second small program, the core, runs on each person's own machine and runs their agents there. `docs/architecture.md` says how it fits together.
 
 - **Keep it simple.** Write the shortest code that reads in one pass. Build nothing ahead of the feature that needs it: no abstractions, options or dependencies for later.
-- **Comment only when strictly necessary.** A comment says why, or something the code can't show, in one short line. Never restate what the code does.
+- **No comments, as a rule.** Write a comment only where hard code needs a reason it can't show, in one short line. No comments at the top of files, above functions or on fields.
 - **One word per thing.** A group of people is a "team", never a "workspace"; the first account on a server is its "owner"; a person's own computer is a "machine", and the program on it is the "core".
 - **`.legacy/` is the previous codebase.** Read it for reference; never edit it or build on it.
 - **`.planning/reference_ui.html`** is the clickable prototype the web app follows.
 - **Plans** live in `.planning/` as numbered files with a status line and a checklist of steps; a plan is done when every step is ticked. Questions for the owner go in `.planning/open_questions.md`, and are deleted from it once answered. Improvements nobody asked for go in `.planning/improvements.md`. Neither goes in a plan.
-- **Queries are checked at build time.** Write each one with sqlx's `query!`, `query_as!` or `query_scalar!`, in `apps/server/src/db.rs`, never as a string built at run time. After changing a query or a migration, run `scripts/prepare-queries.sh` and commit `.sqlx/` with the change.
+- **Queries are checked at build time.** Write each one with sqlx's `query!`, `query_as!` or `query_scalar!`, in the area's `db.rs`, never as a string built at run time. After changing a query or a migration, run `scripts/prepare-queries.sh` and commit `.sqlx/` with the change.
+- **One folder per area.** The server and the web app have a folder for each area (`accounts`, `settings`, `projects`, `docs`, `chats`, `machines`, `groups`, `tasks`). On the server each holds `db.rs` for its queries, `http.rs` for its handlers and `mod.rs` for the rest; `routes.rs` lists the addresses. Group code into fewer, larger files by area rather than one file per thing, short of a file nobody can read in one sitting.
+- **Jobs.** Work that outlasts a request is a job, enqueued with `jobs::perform_later`, never a bare `tokio::spawn`. It is retried after a 5xx and discarded after a 4xx, and each step is logged.
+- **Errors.** A handler returns `Result<T>` and fails with an `ApiError` constructor such as `ApiError::not_found()`. Team membership is checked once, by `auth::team_member` on the team's routes.
 - **Tests are integration tests.** The server's tests live in `apps/server/tests/` and drive the API over HTTP, as a browser would. Write a unit test inside `src/` only for something no request can reach. A crate's tests live in its own `tests/` and call it as the server does.
 - **A crate for what is complex.** A piece of work with its own rules goes in `crates/`, behind a few functions, so that the app calling it stays simple. Whether a second app needs it doesn't matter.
 - **Docs** live in `docs/` as Markdown and are updated in the same change as the code they describe.

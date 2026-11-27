@@ -1,6 +1,3 @@
-//! What changed, told to the browsers that have a page open. Only the kind of thing is
-//! told, never the change: a browser then asks again for what it shows of that kind.
-
 use std::time::Duration;
 
 use axum::extract::State;
@@ -9,16 +6,35 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use tokio::sync::broadcast;
 
-use crate::db::{self, User};
-use crate::{ApiError, AppState, auth};
+use crate::accounts::db::User;
+use crate::error::Result;
+use crate::{AppState, accounts, auth, chats, groups, projects};
 
-/// How often a socket is checked to still have its session.
-const PING: Duration = Duration::from_secs(30);
+#[derive(Clone, Copy)]
+pub enum Topic {
+    Chats,
+    Docs,
+    Groups,
+    Machines,
+    Projects,
+    Tasks,
+}
 
-type News = (Vec<String>, &'static str);
+impl Topic {
+    pub fn name(self) -> &'static str {
+        match self {
+            Topic::Chats => "chats",
+            Topic::Docs => "docs",
+            Topic::Groups => "groups",
+            Topic::Machines => "machines",
+            Topic::Projects => "projects",
+            Topic::Tasks => "tasks",
+        }
+    }
+}
 
-/// The one channel every browser's socket listens to. It lives in memory only: a browser
-/// connects again after the server restarts.
+pub type News = (Vec<String>, Topic);
+
 #[derive(Clone)]
 pub struct Live(broadcast::Sender<News>);
 
@@ -28,54 +44,58 @@ impl Default for Live {
     }
 }
 
-/// Tells these people that something of a kind changed: `chats`, `groups`, `tasks`, `docs`,
-/// `projects` or `machines`.
-pub fn tell(state: &AppState, people: Vec<String>, kind: &'static str) {
-    state.live.0.send((people, kind)).ok();
+impl Live {
+    pub fn subscribe(&self) -> broadcast::Receiver<News> {
+        self.0.subscribe()
+    }
 }
 
-pub async fn team(state: &AppState, team_id: &str, kind: &'static str) {
-    let members = db::members(&state.pool, team_id).await;
-    let people = members.unwrap_or_default().into_iter();
-    tell(state, people.map(|member| member.id).collect(), kind);
+fn tell(state: &AppState, people: Vec<String>, topic: Topic) {
+    state.live.0.send((people, topic)).ok();
 }
 
-/// Tells the team of a project.
-pub async fn project(state: &AppState, project_id: &str, kind: &'static str) {
-    let people = db::project_people(&state.pool, project_id).await;
-    tell(state, people.unwrap_or_default(), kind);
+pub fn user(state: &AppState, user_id: &str, topic: Topic) {
+    tell(state, vec![user_id.to_owned()], topic);
 }
 
-/// Tells a group's members, and nobody else, since only they may know it is there.
+pub async fn team(state: &AppState, team_id: &str, topic: Topic) {
+    let people = accounts::db::member_ids(&state.pool, team_id).await;
+    tell(state, people.unwrap_or_default(), topic);
+}
+
+pub async fn project(state: &AppState, project_id: &str, topic: Topic) {
+    let people = projects::db::people(&state.pool, project_id).await;
+    tell(state, people.unwrap_or_default(), topic);
+}
+
 pub async fn group(state: &AppState, group_id: &str) {
-    let people = db::group_people(&state.pool, group_id).await;
-    tell(state, people.unwrap_or_default(), "groups");
+    let people = groups::db::people(&state.pool, group_id).await;
+    tell(state, people.unwrap_or_default(), Topic::Groups);
 }
 
-/// Tells who may read a chat: its team, or its group, which shows what its agent answers.
 pub async fn chat(state: &AppState, chat_id: &str) {
-    let found = db::chat_people(&state.pool, chat_id).await;
+    let found = chats::db::people(&state.pool, chat_id).await;
     let (people, grouped) = found.unwrap_or_default();
     if grouped {
-        tell(state, people.clone(), "groups");
+        tell(state, people.clone(), Topic::Groups);
     }
-    tell(state, people, "chats");
+    tell(state, people, Topic::Chats);
 }
 
-/// A browser's WebSocket.
-pub async fn socket(
+const PING: Duration = Duration::from_secs(30);
+
+pub async fn connect(
     State(state): State<AppState>,
     user: User,
     headers: HeaderMap,
     socket: WebSocketUpgrade,
-) -> Result<Response, ApiError> {
+) -> Result<Response> {
     auth::own_page(&state, &headers)?;
-    // Listened to from now, so that nothing is missed while the socket opens.
-    let news = state.live.0.subscribe();
-    Ok(socket.on_upgrade(move |socket| serve(state, headers, user.id, socket, news)))
+    let news = state.live.subscribe();
+    Ok(socket.on_upgrade(move |socket| serve_socket(state, headers, user.id, socket, news)))
 }
 
-async fn serve(
+async fn serve_socket(
     state: AppState,
     headers: HeaderMap,
     user: String,
@@ -85,15 +105,13 @@ async fn serve(
     let mut still = tokio::time::interval(PING);
     loop {
         let send = tokio::select! {
-            // The socket ends with the session it was opened in.
             _ = still.tick() => match auth::signed_in(&state, &headers).await {
                 Ok(Some(_)) => Message::Ping(Default::default()),
                 _ => break,
             },
             told = news.recv() => match told {
-                Ok((people, kind)) if people.contains(&user) => Message::Text(kind.into()),
+                Ok((people, topic)) if people.contains(&user) => Message::Text(topic.name().into()),
                 Ok(_) => continue,
-                // It fell behind, and asks for everything again when it connects anew.
                 Err(_) => break,
             },
             message = socket.recv() => match message {

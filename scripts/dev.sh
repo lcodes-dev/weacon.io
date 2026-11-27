@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Sets up and runs the server on :8080 and the web app on :5173. Ctrl-C stops both.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO jobs (id, job, unique_key, run_at, created_at)\n         VALUES (?, ?, ?, unixepoch(), unixepoch())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1cf3e9b2ef3b3d050e4dedd2a110ba48907f330f5a9547920d92500ad9caa5da"
+}
